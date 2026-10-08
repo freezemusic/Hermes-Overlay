@@ -1,0 +1,318 @@
+:root {
+  --panel-bg: rgba(18, 20, 28, 0.72);
+  --panel-border: rgba(255, 255, 255, 0.14);
+  --text: #f4f4f7;
+  --muted: rgba(244, 244, 247, 0.65);
+  --accent: #7c9cff;
+  --accent-strong: #a8c0ff;
+  --bot-size: 56px;
+  --edge-pad: 18px;
+  --radius: 16px;
+  --bubble-user: rgba(124, 156, 255, 0.35);
+  --bubble-bot: rgba(255, 255, 255, 0.1);
+  font-family: "PingFang HK", "Noto Sans TC", "Microsoft JhengHei", Inter, system-ui, sans-serif;
+  color: var(--text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+.overlay-root {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  background: transparent;
+  pointer-events: none; /* empty overlay areas pass through when OS supports ignore-cursor */
+}
+
+.overlay-root [data-interactive],
+.bot-btn {
+  pointer-events: auto;
+}
+
+/* —— Perimeter bot avatars —— */
+.bot-rail {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.bot-btn {
+  position: absolute;
+  width: var(--bot-size);
+  height: var(--bot-size);
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.35), transparent 45%),
+    var(--bot-color, #5b6cff);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  display: grid;
+  place-items: center;
+  user-select: none;
+}
+
+.bot-btn:hover {
+  transform: scale(1.08);
+  border-color: var(--accent-strong);
+}
+
+.bot-btn.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 3px rgba(124, 156, 255, 0.55), 0 10px 28px rgba(0, 0, 0, 0.4);
+  transform: scale(1.12);
+}
+
+.bot-btn .bot-label {
+  position: absolute;
+  bottom: calc(-1 * 1.4em);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  color: var(--text);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  opacity: 0.9;
+}
+
+/* —— Center panel —— */
+.center-panel {
+  position: absolute;
+  left: 12%;
+  top: 10%;
+  width: min(420px, 38vw);
+  height: min(78vh, 720px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: grab;
+}
+
+.bot-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.active-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  flex-shrink: 0;
+  background: var(--bot-color, #5b6cff);
+}
+
+.bot-meta {
+  min-width: 0;
+}
+
+.bot-meta h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bot-status {
+  margin: 2px 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.panel-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.icon-btn {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.icon-btn.danger:hover {
+  background: rgba(255, 80, 80, 0.35);
+}
+
+.icon-btn[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.section-label {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.detail-block {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.bot-detail {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.chat-block {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px 8px;
+}
+
+.bubble {
+  max-width: 88%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.bubble.bot {
+  align-self: flex-start;
+  background: var(--bubble-bot);
+  border-bottom-left-radius: 4px;
+}
+
+.bubble.user {
+  align-self: flex-end;
+  background: var(--bubble-user);
+  border-bottom-right-radius: 4px;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+}
+
+.composer input {
+  flex: 1;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  padding: 10px 12px;
+  outline: none;
+}
+
+.composer input::placeholder {
+  color: rgba(244, 244, 247, 0.45);
+}
+
+.send-btn {
+  border: none;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #0b1020;
+  font-weight: 700;
+  padding: 0 16px;
+  cursor: pointer;
+}
+
+.send-btn:hover {
+  background: var(--accent-strong);
+}
+
+/* —— Floating side bubble (wireframe right-side callout) —— */
+.float-bubble {
+  position: absolute;
+  right: 10%;
+  top: 28%;
+  max-width: 280px;
+  padding: 14px 16px 14px 18px;
+  border-radius: 18px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+}
+
+.float-avatar {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  top: -14px;
+  left: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: var(--bot-color, #5b6cff);
+}
+
+.float-text {
+  font-size: 0.88rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+@media (max-width: 900px) {
+  .center-panel {
+    left: 8%;
+    width: min(360px, 70vw);
+  }
+
+  .float-bubble {
+    display: none;
+  }
+}

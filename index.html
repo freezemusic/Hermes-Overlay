@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hermes Overlay</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="overlay-root">
+      <!-- Transparent hit layer: empty regions stay see-through -->
+      <div id="bot-rail" class="bot-rail" aria-label="Bot 列表"></div>
+
+      <aside id="center-panel" class="center-panel" data-interactive>
+        <header class="panel-header" data-tauri-drag-region>
+          <div class="bot-identity">
+            <div id="active-avatar" class="active-avatar" aria-hidden="true"></div>
+            <div class="bot-meta">
+              <h1 id="bot-name">載入中…</h1>
+              <p id="bot-status" class="bot-status">準備就緒</p>
+            </div>
+          </div>
+          <div class="panel-actions">
+            <button type="button" id="btn-pin" class="icon-btn" title="保持置頂" aria-pressed="true">置頂</button>
+            <button type="button" id="btn-close" class="icon-btn danger" title="關閉 Overlay">關閉</button>
+          </div>
+        </header>
+
+        <section class="detail-block" aria-label="Bot 詳情">
+          <h2 class="section-label">詳情</h2>
+          <p id="bot-detail" class="bot-detail"></p>
+        </section>
+
+        <section class="chat-block" aria-label="對話">
+          <h2 class="section-label">對話</h2>
+          <div id="chat-messages" class="chat-messages"></div>
+        </section>
+
+        <footer class="composer">
+          <input
+            id="chat-input"
+            type="text"
+            placeholder="輸入訊息給呢個 Bot…"
+            autocomplete="off"
+          />
+          <button type="button" id="btn-send" class="send-btn">傳送</button>
+        </footer>
+      </aside>
+
+      <div id="float-bubble" class="float-bubble" data-interactive hidden>
+        <div class="float-avatar" id="float-avatar"></div>
+        <div class="float-text" id="float-text"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
