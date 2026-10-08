@@ -17,6 +17,8 @@ pub struct HitRect {
     pub h: f64,
     /// Higher paints above. Used when two rects both contain the cursor.
     pub z: i32,
+    /// Circular avatar: capture and fade use distance from the centre.
+    pub round: bool,
 }
 
 pub struct InteractionHub {
@@ -64,6 +66,16 @@ pub fn modifier_held(keys: &[Keycode], modifier: &str) -> bool {
             .iter()
             .any(|key| matches!(key, Keycode::LControl | Keycode::RControl)),
     }
+}
+
+pub fn distance_to_hit(px: f64, py: f64, rect: &HitRect) -> f64 {
+    if !rect.round {
+        return distance_to_rect(px, py, rect);
+    }
+    let radius = rect.w.min(rect.h) / 2.0;
+    let dx = px - (rect.x + rect.w / 2.0);
+    let dy = py - (rect.y + rect.h / 2.0);
+    ((dx * dx + dy * dy).sqrt() - radius).max(0.0)
 }
 
 pub fn distance_to_rect(px: f64, py: f64, rect: &HitRect) -> f64 {
@@ -120,7 +132,7 @@ pub fn element_under_cursor<'a>(
     let (x, y) = cursor?;
     let mut best: Option<usize> = None;
     for (index, rect) in rects.iter().enumerate() {
-        let distance = distance_to_rect(x, y, rect);
+        let distance = distance_to_hit(x, y, rect);
         if distance > margin {
             continue;
         }
@@ -143,7 +155,7 @@ fn prefers_hit(
     x: f64,
     y: f64,
 ) -> bool {
-    let current_distance = distance_to_rect(x, y, current);
+    let current_distance = distance_to_hit(x, y, current);
     if candidate_distance < current_distance - f64::EPSILON {
         return true;
     }
@@ -197,7 +209,7 @@ pub fn interaction_frame(
             let targeted = held && under.as_deref() == Some(rect.id.as_str());
             let forced = latched || targeted;
             let opacity = match cursor {
-                Some((x, y)) => element_opacity(forced, distance_to_rect(x, y, rect), cfg),
+                Some((x, y)) => element_opacity(forced, distance_to_hit(x, y, rect), cfg),
                 None => 1.0,
             };
             let capture = under.as_deref() == Some(rect.id.as_str()) && (held || latched);
@@ -341,6 +353,7 @@ mod tests {
             w: 40.0,
             h: 20.0,
             z: 0,
+            round: false,
         }
     }
 
@@ -380,6 +393,7 @@ mod tests {
                 w: 40.0,
                 h: 40.0,
                 z: 0,
+                round: false,
             },
             HitRect {
                 id: "b".into(),
@@ -388,6 +402,7 @@ mod tests {
                 w: 40.0,
                 h: 40.0,
                 z: 0,
+                round: false,
             },
             HitRect {
                 id: "center".into(),
@@ -396,6 +411,7 @@ mod tests {
                 w: 120.0,
                 h: 40.0,
                 z: 0,
+                round: false,
             },
         ]
     }
@@ -523,6 +539,7 @@ mod tests {
                 w: 400.0,
                 h: 500.0,
                 z: 0,
+                round: false,
             },
             HitRect {
                 id: "settings".into(),
@@ -531,6 +548,7 @@ mod tests {
                 w: 420.0,
                 h: 640.0,
                 z: 30,
+                round: false,
             },
         ]
     }
@@ -571,5 +589,65 @@ mod tests {
         );
         assert!(frame_of(&latched_center, "center").capture);
         assert!(!frame_of(&latched_center, "settings").capture);
+    }
+
+    #[test]
+    fn round_avatar_capture_uses_radius_plus_margin() {
+        let orb = HitRect {
+            id: "bot".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+            z: 0,
+            round: true,
+        };
+        let cfg = fade_cfg();
+        assert_eq!(distance_to_hit(50.0, 50.0, &orb), 0.0);
+        let rim = distance_to_hit(110.0, 50.0, &orb);
+        assert!((rim - 10.0).abs() < 0.001);
+        let corner = distance_to_hit(100.0, 100.0, &orb);
+        assert!(corner > HIT_MARGIN_PX);
+
+        let inside = interaction_frame(
+            true,
+            &[],
+            Some((50.0, 50.0)),
+            &[orb.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        let padded = interaction_frame(
+            true,
+            &[],
+            Some((110.0, 50.0)),
+            &[orb.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        let bbox_corner = interaction_frame(
+            true,
+            &[],
+            Some((100.0, 100.0)),
+            &[orb.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(inside[0].capture);
+        assert!(padded[0].capture && padded[0].opacity == 1.0);
+        assert!(!bbox_corner[0].capture);
+        assert!(bbox_corner[0].opacity < 1.0);
+
+        let mut square = orb;
+        square.round = false;
+        let square_corner = interaction_frame(
+            true,
+            &[],
+            Some((100.0, 100.0)),
+            &[square],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(square_corner[0].capture);
     }
 }

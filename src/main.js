@@ -9,7 +9,6 @@ import {
   colorForIndex,
   elementStates,
   focusLossAction,
-  inkFor,
   latchedElementIds,
   linuxAltWarning,
   modifierLabel,
@@ -252,8 +251,8 @@ function renderBots() {
     if (state.busy.has(bot.id)) btn.classList.add("busy");
     const thread = threadFor(bot.id);
     if (thread.statusState === "error") btn.classList.add("error");
+    btn.style.background = "";
     btn.style.setProperty("--bot-color", bot.color);
-    btn.style.color = inkFor(bot.color);
     btn.dataset.botId = bot.id;
     btn.dataset.hitId = `bot:${bot.id}`;
     btn.setAttribute("aria-label", bot.name);
@@ -281,7 +280,8 @@ function renderChat() {
       state.mode === "mock"
         ? "離線示範。"
         : "Gateway 已設定，但名單係空。打開設定加入 profile、顯示名稱同 API 金鑰。";
-    $("#active-avatar").style.background = "var(--neutral)";
+    paintOrb($("#active-avatar"), "var(--neutral)", "");
+    paintOrb($("#float-avatar"), "var(--neutral)", "");
     $("#float-bubble").hidden = true;
     $("#btn-stop").hidden = true;
     return;
@@ -292,18 +292,18 @@ function renderChat() {
   statusEl.textContent = thread.status || bot.status || "閒置";
   statusEl.dataset.state = thread.statusState || "idle";
   $("#bot-detail").textContent = bot.detail || "";
-  $("#active-avatar").style.background = bot.color;
+  paintOrb($("#active-avatar"), bot.color, bot.short || "");
   thread.messages.forEach((m) => chat.appendChild(bubbleEl(m)));
   chat.scrollTop = chat.scrollHeight;
   const float = $("#float-bubble");
   if (thread.float) {
     float.hidden = false;
     $("#float-text").textContent = thread.float;
-    $("#float-avatar").style.background = bot.color;
+    paintOrb($("#float-avatar"), bot.color, bot.short || "");
   } else if (bot.float) {
     float.hidden = false;
     $("#float-text").textContent = bot.float;
-    $("#float-avatar").style.background = bot.color;
+    paintOrb($("#float-avatar"), bot.color, bot.short || "");
   } else {
     float.hidden = true;
   }
@@ -816,6 +816,13 @@ function setupComposer() {
   $("#btn-discover").addEventListener("click", discoverProfiles);
 }
 
+function paintOrb(el, color, letter) {
+  if (!el) return;
+  el.style.background = "";
+  el.style.setProperty("--bot-color", color || "var(--neutral)");
+  if (letter !== undefined) el.textContent = letter;
+}
+
 function isTextField(el) {
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
 }
@@ -850,17 +857,17 @@ function syncLatch() {
 
 function collectHits() {
   const rects = [];
-  const push = (id, el, z = 0) => {
+  const push = (id, el, z = 0, round = false) => {
     if (!el || el.hidden || el.closest("[hidden]")) return;
     const box = el.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
-    rects.push({ id, x: box.x, y: box.y, w: box.width, h: box.height, z });
+    rects.push({ id, x: box.x, y: box.y, w: box.width, h: box.height, z, round });
   };
   push("center", $("#center-panel"), 0);
   push("settings", document.querySelector(".settings-card"), 30);
   push("float", $("#float-bubble"), 10);
   document.querySelectorAll(".bot-btn").forEach((el) => {
-    if (el.dataset.hitId) push(el.dataset.hitId, el);
+    if (el.dataset.hitId) push(el.dataset.hitId, el, 0, true);
   });
   return rects;
 }
@@ -880,6 +887,7 @@ function scheduleHitSync() {
         w: Math.round(rect.w),
         h: Math.round(rect.h),
         z: rect.z || 0,
+        round: !!rect.round,
       })),
     );
     if (key !== lastHits) {

@@ -651,6 +651,8 @@ struct HitRectIn {
     h: f64,
     #[serde(default)]
     z: i32,
+    #[serde(default)]
+    round: bool,
 }
 
 #[tauri::command]
@@ -664,6 +666,7 @@ fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<()
             w: rect.w,
             h: rect.h,
             z: rect.z,
+            round: rect.round,
         })
         .collect();
     *state

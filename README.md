@@ -136,7 +136,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## 外觀
 
-色板、圓角同字體都係 `:root` 嘅 CSS 變數，之後可以整組換主題。色同公開 Nous / Hermes 站一致：電光藍 `#0000f2`、螢光黃 `#edff45`、紙色字 `#f5f5f5`、細圓角同髮絲線。面板大約 92% 不透明，配深色底，喺淺色或深色牆紙都讀到字。標題用 Barlow Condensed，正文用 Schibsted Grotesk，狀態用 IBM Plex Mono，中文繼續落 PingFang HK / Noto Sans TC。呢啲係開源替代，冇嵌入 Rules、Aeonik 或其他專有字檔同標誌。
+色板、圓角同字體都係 `:root` 嘅 CSS 變數，之後可以整組換主題。色同公開 Nous / Hermes 站一致：電光藍 `#0000f2`、螢光黃 `#edff45`、紙色字 `#f5f5f5`。頭像係圓形半透明光球（`--orb-opacity`、`--orb-glow-radius`、`--orb-glow-alpha`），狀態點同樣係圓。中間面板大約 76% 不透明，設定卡大約 80%，支援嘅 WebView 會加 `backdrop-filter` 模糊，冇支援就只係半透明底。字用紙色加陰影，淺色或深色牆紙都讀到。標題用 Barlow Condensed，正文用 Schibsted Grotesk，狀態用 IBM Plex Mono，中文繼續落 PingFang HK / Noto Sans TC。呢啲係開源替代，冇嵌入 Rules、Aeonik 或其他專有字檔同標誌。
 
 ## 游標同穿透
 
@@ -144,7 +144,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 - 預設成個 overlay（包括面板同頭像）係 click-through。點擊、滾動、hover 會去到底下嗰個程式。
 - 游標靠近某個元素就會按距離淡出：大約 120px 以外係實色，貼住元素大約 18% 透明度。可以喺設定改距離、最低透明度，或者關掉淡出。
-- 按住修飾鍵（預設 **Ctrl**，可改 Shift 或 Alt）時，**只係游標下面嗰一個元素**（矩形再加大約 12px）即刻回復實色同可點擊。其他元素繼續按距離淡出，而且保持穿透。游標由一個元素移去下一個，實色會跟住游標走。
+- 按住修飾鍵（預設 **Ctrl**，可改 Shift 或 Alt）時，**只係游標下面嗰一個元素**即刻去到全強度同可點擊。面板用矩形再加大約 12px。頭像用圓形：距離圓心唔超過半徑加 12px 先算對準，外接正方形嘅角位唔會接手。全強度頭像仍然係半透明光球（透明度乘 `--orb-opacity`），面板就係玻璃面嘅本來透明度。其他元素繼續按距離淡出，而且保持穿透。游標由一個元素移去下一個，全強度會跟住游標走。
 - 修飾鍵喺所有元素範圍以外撳（例如喺另一個程式 Ctrl+C / Ctrl+V）唔會改變任何元素，亦唔會接手點擊。
 - 輸入框聚焦會保持**中間對話面板**實色，游標喺塊面板上先可以點。設定頁打開會保持**設定面板**同樣處理。Esc、點到元素以外嘅空白，或者視窗失焦，會 blur 輸入框並解除鎖定。視窗交畀另一個程式會即時解除鎖定；網頁內短暫失焦先會等約 150ms。
 - 修飾鍵可以改做 Alt，但 Linux 視窗管理員（xfwm4 預設，GNOME／KDE 都常見）用 Alt 拖移視窗，Alt+click 可能去唔到 overlay。設定頁喺 Linux 會顯示呢個警告，Alt 仍然可以揀。唔使點擊都可以開設定：全域快捷鍵 **Ctrl+Shift+Alt+H**，或者系統匣選單「設定」。系統匣亦有「結束」。

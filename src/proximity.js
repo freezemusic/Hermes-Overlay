@@ -38,6 +38,14 @@ export function distanceToRect(px, py, rect) {
   return Math.hypot(dx, dy);
 }
 
+/** Round avatars: distance outside the circle. Corners of the bounding box stay outside. */
+export function distanceToHit(px, py, rect) {
+  if (!rect.round) return distanceToRect(px, py, rect);
+  const radius = Math.min(rect.w, rect.h) / 2;
+  const dist = Math.hypot(px - (rect.x + rect.w / 2), py - (rect.y + rect.h / 2));
+  return Math.max(0, dist - radius);
+}
+
 export function opacityForDistance(distance, fadeDistance, minOpacity, enabled) {
   if (!enabled) return 1;
   if (!(fadeDistance > 0)) return minOpacity;
@@ -60,7 +68,7 @@ export function elementUnderCursor(cursor, rects, margin = HIT_MARGIN_PX, latche
   if (!cursor) return null;
   let best = null;
   for (const rect of rects) {
-    const distance = distanceToRect(cursor.x, cursor.y, rect);
+    const distance = distanceToHit(cursor.x, cursor.y, rect);
     if (distance > margin) continue;
     const next = {
       id: rect.id,
@@ -100,7 +108,7 @@ export function elementStates({
   return rects.map((rect) => {
     const latched = latchedIds.includes(rect.id);
     const targeted = held && under === rect.id;
-    const distance = cursor ? distanceToRect(cursor.x, cursor.y, rect) : fadeDistance;
+    const distance = cursor ? distanceToHit(cursor.x, cursor.y, rect) : fadeDistance;
     const opacity =
       cursor == null
         ? 1

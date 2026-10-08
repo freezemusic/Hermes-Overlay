@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   colorForIndex,
+  distanceToHit,
   distanceToRect,
   elementOpacity,
   elementStates,
@@ -79,6 +80,35 @@ test("distance is zero inside a rect", () => {
   const rect = { x: 10, y: 10, w: 20, h: 20 };
   assert.equal(distanceToRect(15, 15, rect), 0);
   assert.equal(distanceToRect(10, 0, rect), 10);
+});
+
+test("round avatar ignores bounding-box corners", () => {
+  const orb = { id: "bot", x: 0, y: 0, w: 100, h: 100, round: true };
+  assert.equal(distanceToHit(50, 50, orb), 0);
+  assert.ok(Math.abs(distanceToHit(110, 50, orb) - 10) < 0.001);
+  assert.ok(distanceToHit(100, 100, orb) > 12);
+  const frames = elementStates({
+    held: true,
+    cursor: { x: 100, y: 100 },
+    rects: [orb],
+    ...fadeOpts,
+  });
+  assert.equal(frames[0].capture, false);
+  const rim = elementStates({
+    held: true,
+    cursor: { x: 110, y: 50 },
+    rects: [orb],
+    ...fadeOpts,
+  });
+  assert.equal(rim[0].capture, true);
+  assert.equal(rim[0].opacity, 1);
+  const square = elementStates({
+    held: true,
+    cursor: { x: 100, y: 100 },
+    rects: [{ ...orb, round: false }],
+    ...fadeOpts,
+  });
+  assert.equal(square[0].capture, true);
 });
 
 test("light swatches use dark ink", () => {
