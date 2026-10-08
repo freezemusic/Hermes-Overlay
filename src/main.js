@@ -8,13 +8,14 @@ import {
   PALETTE,
   colorForIndex,
   elementStates,
+  focusLossAction,
   inkFor,
-  latchOnWindowBlur,
-  latchWhenBlurDelayEnds,
   latchedElementIds,
+  linuxAltWarning,
   modifierLabel,
   modifierMatches,
-  selectHoldsInteractiveLock,
+  nextDropdownOpen,
+  selectKeyOpensDropdown,
   BLUR_RELEASE_MS,
 } from "./proximity.js";
 
@@ -210,6 +211,7 @@ const state = {
   heldKeys: new Set(),
   latchedIds: [],
   windowFocused: true,
+  dropdownOpen: false,
 };
 
 function threadFor(id) {
@@ -619,9 +621,14 @@ function fillSettings(settings) {
   $("#interaction-min-opacity").value = String(Math.round(Number(min) * 100));
   const support = $("#interaction-support");
   const supported = interaction.supported !== false;
-  support.textContent = supported
+    support.textContent = supported
     ? "Windows、macOS、Linux X11 會讀全域游標同修飾鍵。Wayland 冇 X11（DISPLAY）時唔會穿透。"
     : "而家讀唔到全域輸入（常見於純 Wayland）。Overlay 會保持可點擊。";
+  const altWarning = $("#interaction-alt-warning");
+  if (altWarning) {
+    const platform = `${navigator.platform || ""} ${navigator.userAgent || ""}`;
+    altWarning.hidden = !linuxAltWarning(platform);
+  }
 }
 
 function openSettings() {
@@ -765,6 +772,10 @@ function setupComposer() {
   });
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    if (state.dropdownOpen) {
+      state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "escape");
+      return;
+    }
     if (!$("#settings").hidden) {
       closeSettings();
       return;
@@ -777,6 +788,27 @@ function setupComposer() {
     $("#btn-close")?.click();
   });
   $("#btn-settings").addEventListener("click", openSettings);
+  const modifierSelect = $("#interaction-modifier");
+  modifierSelect?.addEventListener("pointerdown", () => {
+    state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "pointerdown");
+  });
+  modifierSelect?.addEventListener("keydown", (event) => {
+    if (selectKeyOpensDropdown(event.key)) {
+      state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "open-key");
+    }
+    if (event.key === "Escape" && state.dropdownOpen) {
+      state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "escape");
+      event.stopPropagation();
+    }
+  });
+  modifierSelect?.addEventListener("change", () => {
+    state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "change");
+  });
+  modifierSelect?.addEventListener("blur", () => {
+    const wasOpen = state.dropdownOpen;
+    state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "blur");
+    if (wasOpen && !document.hasFocus()) finishInteractiveRelease();
+  });
   $("#btn-settings-close").addEventListener("click", closeSettings);
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#btn-add-bot").addEventListener("click", () => $("#bot-editor").appendChild(rowFromBot()));
@@ -876,15 +908,10 @@ function applyFrames(frames, interactiveAll = false) {
 const cursorPoint = { x: -10000, y: -10000 };
 let blurReleaseTimer = 0;
 
-function activeInLatchedPanel(el = document.activeElement) {
-  const host = el && el.closest ? el.closest("[data-hit-id]") : null;
-  return {
-    tagName: el && el.tagName ? el.tagName : "",
-    insideLatchedPanel: !!(host && state.latchedIds.includes(host.dataset.hitId)),
-  };
-}
-
 function finishInteractiveRelease() {
+  window.clearTimeout(blurReleaseTimer);
+  blurReleaseTimer = 0;
+  state.dropdownOpen = false;
   state.windowFocused = false;
   state.pointerHitId = "";
   state.heldKeys.clear();
@@ -893,21 +920,21 @@ function finishInteractiveRelease() {
   syncLatch();
 }
 
-function releaseInteractiveLock() {
-  const active = activeInLatchedPanel();
-  if (selectHoldsInteractiveLock(active.tagName, active.insideLatchedPanel)) {
+function releaseInteractiveLock(source = "webview") {
+  const action = focusLossAction({ source, dropdownOpen: state.dropdownOpen });
+  if (action === "hold") {
     window.clearTimeout(blurReleaseTimer);
     blurReleaseTimer = 0;
     return;
   }
-  const decision = latchOnWindowBlur(active);
-  if (!decision.armDelay) return;
+  if (action === "release") {
+    finishInteractiveRelease();
+    return;
+  }
   window.clearTimeout(blurReleaseTimer);
   blurReleaseTimer = window.setTimeout(() => {
     blurReleaseTimer = 0;
-    const now = activeInLatchedPanel();
-    const selectHolds = selectHoldsInteractiveLock(now.tagName, now.insideLatchedPanel);
-    if (!latchWhenBlurDelayEnds({ focusReturned: false, selectHolds })) return;
+    if (state.dropdownOpen) return;
     finishInteractiveRelease();
   }, BLUR_RELEASE_MS);
 }
@@ -915,8 +942,19 @@ function releaseInteractiveLock() {
 function noteWindowFocus() {
   window.clearTimeout(blurReleaseTimer);
   blurReleaseTimer = 0;
+  state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "window-focus");
   state.windowFocused = true;
   syncLatch();
+}
+
+function openSettingsFromShortcut() {
+  state.dropdownOpen = false;
+  state.windowFocused = true;
+  openSettings();
+  if (!inTauri()) return;
+  import("@tauri-apps/api/window")
+    .then(({ getCurrentWindow }) => getCurrentWindow().setFocus())
+    .catch(() => {});
 }
 
 function paintLocalProximity(rects) {
@@ -951,7 +989,10 @@ function setupProximity() {
   });
   document.addEventListener("focusin", () => syncLatch());
   document.addEventListener("focusout", () => setTimeout(syncLatch, 0));
-  window.addEventListener("blur", releaseInteractiveLock);
+  window.addEventListener("blur", () => {
+    if (inTauri()) return;
+    releaseInteractiveLock("webview");
+  });
   window.addEventListener("focus", noteWindowFocus);
   window.addEventListener("resize", scheduleHitSync);
   if (inTauri()) {
@@ -959,7 +1000,7 @@ function setupProximity() {
       .then(({ getCurrentWindow }) =>
         getCurrentWindow().onFocusChanged(({ payload: focused }) => {
           if (focused) noteWindowFocus();
-          else releaseInteractiveLock();
+          else releaseInteractiveLock("tauri-window");
         }),
       )
       .catch(() => {});
@@ -1007,6 +1048,9 @@ async function boot() {
     const { invoke } = await import("@tauri-apps/api/core");
     const { listen } = await import("@tauri-apps/api/event");
     await listen("hermes", (event) => handleHermes(event.payload));
+    await listen("overlay-ui", (event) => {
+      if (event.payload?.type === "open-settings") openSettingsFromShortcut();
+    });
     const settings = await invoke("get_settings");
     state.settings = settings;
     applyInteraction(settings.interaction);

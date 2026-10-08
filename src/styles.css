@@ -586,6 +586,10 @@ html.overlay-passthrough .overlay-root [data-hit-capture] * {
   line-height: 1.45;
 }
 
+.alt-warning {
+  color: var(--warn);
+}
+
 .field {
   display: flex;
   flex-direction: column;

@@ -20,6 +20,7 @@
     "allow-send-chat",
     "allow-stop-chat",
     "allow-set-hit-rects",
-    "allow-set-interaction-latch"
+    "allow-set-interaction-latch",
+    "core:window:allow-set-focus"
   ]
 }

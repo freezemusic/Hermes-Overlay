@@ -13,6 +13,43 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+const SETTINGS_SHORTCUT: &str = "Ctrl+Shift+Alt+H";
+
+fn install_escape_hatches(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+    let settings = MenuItem::with_id(app, "settings", "設定", true, Some(SETTINGS_SHORTCUT))?;
+    let quit = MenuItem::with_id(app, "quit", "結束", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&settings, &quit])?;
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or("缺少視窗圖示，系統匣開唔到")?;
+    TrayIconBuilder::new()
+        .icon(icon)
+        .tooltip("Hermes Overlay")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "settings" => {
+                let _ = app.emit("overlay-ui", serde_json::json!({ "type": "open-settings" }));
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+
+    app.global_shortcut()
+        .on_shortcut(SETTINGS_SHORTCUT, |app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                let _ = app.emit("overlay-ui", serde_json::json!({ "type": "open-settings" }));
+            }
+        })?;
+    Ok(())
+}
+
 struct AppState {
     http: reqwest::Client,
     stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
@@ -664,6 +701,7 @@ fn stop_chat(state: State<'_, AppState>, profile: String) -> Result<(), String> 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState {
             http: http_client(),
             stops: Mutex::new(HashMap::new()),
@@ -681,6 +719,9 @@ pub fn run() {
             }
             let hub = Arc::clone(&app.state::<AppState>().interaction);
             interaction::spawn_poll(app.handle().clone(), hub);
+            if let Err(err) = install_escape_hatches(app.handle()) {
+                eprintln!("設定捷徑：{err}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

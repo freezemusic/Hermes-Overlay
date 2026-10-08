@@ -135,25 +135,39 @@ export function latchedElementIds({
   return ids;
 }
 
-/** Native dropdowns steal the window while the <select> stays active. */
+/** In-webview blur waits this long so a focus return can cancel it. */
 export const BLUR_RELEASE_MS = 150;
 
-export function selectHoldsInteractiveLock(tagName, insideLatchedPanel) {
-  return String(tagName || "").toUpperCase() === "SELECT" && !!insideLatchedPanel;
-}
-
-/** A select inside the latched panel keeps the lock. Any other blur waits out a short delay. */
-export function latchOnWindowBlur({ tagName = "", insideLatchedPanel = false } = {}) {
-  if (selectHoldsInteractiveLock(tagName, insideLatchedPanel)) {
-    return { release: false, armDelay: false };
+/** Native menu is open only while this flag is set. A focused select is not enough. */
+export function nextDropdownOpen(open, event) {
+  if (event === "pointerdown" || event === "open-key") return true;
+  if (event === "change" || event === "blur" || event === "escape" || event === "window-focus") {
+    return false;
   }
-  return { release: false, armDelay: true };
+  return !!open;
 }
 
-/** After the delay, release only if focus did not return and a select is not holding the panel. */
-export function latchWhenBlurDelayEnds({ focusReturned = false, selectHolds = false } = {}) {
-  return !focusReturned && !selectHolds;
+export function selectKeyOpensDropdown(key) {
+  return key === "ArrowDown" || key === "ArrowUp" || key === " " || key === "Enter" || key === "F4";
 }
+
+/**
+ * Another app taking the window releases immediately.
+ * In-webview blur waits. An open dropdown holds either way.
+ */
+export function focusLossAction({ source = "webview", dropdownOpen = false } = {}) {
+  if (dropdownOpen) return "hold";
+  if (source === "tauri-window") return "release";
+  return "debounce";
+}
+
+/** Linux window managers often bind Alt+drag, which can block the overlay modifier. */
+export function linuxAltWarning(platform) {
+  const value = String(platform || "");
+  return /linux/i.test(value) && !/android/i.test(value);
+}
+
+export const SETTINGS_SHORTCUT = "Ctrl+Shift+Alt+H";
 
 export function modifierMatches(kind, key) {
   if (kind === "shift") return key === "Shift";

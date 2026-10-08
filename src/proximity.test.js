@@ -5,12 +5,13 @@ import {
   distanceToRect,
   elementOpacity,
   elementStates,
+  focusLossAction,
   inkFor,
-  latchOnWindowBlur,
-  latchWhenBlurDelayEnds,
   latchedElementIds,
+  linuxAltWarning,
   modifierMatches,
-  selectHoldsInteractiveLock,
+  nextDropdownOpen,
+  selectKeyOpensDropdown,
 } from "./proximity.js";
 
 test("new bot colours walk the palette", () => {
@@ -144,15 +145,29 @@ test("overlap prefers latched settings, then higher z-order", () => {
   assert.equal(byId(latchedCenter, "settings").capture, false);
 });
 
-test("select inside the latched panel does not release on blur", () => {
-  const held = latchOnWindowBlur({ tagName: "SELECT", insideLatchedPanel: true });
-  assert.equal(held.release, false);
-  assert.equal(held.armDelay, false);
-  assert.equal(selectHoldsInteractiveLock("select", true), true);
+test("dropdown flag holds the lock only while the menu is open", () => {
+  assert.equal(nextDropdownOpen(false, "pointerdown"), true);
+  assert.equal(nextDropdownOpen(false, "open-key"), true);
+  assert.equal(selectKeyOpensDropdown("ArrowDown"), true);
+  assert.equal(selectKeyOpensDropdown(" "), true);
+  assert.equal(selectKeyOpensDropdown("Enter"), true);
+  assert.equal(selectKeyOpensDropdown("a"), false);
+  assert.equal(nextDropdownOpen(true, "change"), false);
+  assert.equal(nextDropdownOpen(true, "blur"), false);
+  assert.equal(nextDropdownOpen(true, "escape"), false);
+  assert.equal(nextDropdownOpen(true, "window-focus"), false);
+  assert.equal(nextDropdownOpen(false, "change"), false);
 
-  const leaving = latchOnWindowBlur({ tagName: "INPUT", insideLatchedPanel: true });
-  assert.equal(leaving.armDelay, true);
-  assert.equal(latchWhenBlurDelayEnds({ focusReturned: true, selectHolds: false }), false);
-  assert.equal(latchWhenBlurDelayEnds({ focusReturned: false, selectHolds: true }), false);
-  assert.equal(latchWhenBlurDelayEnds({ focusReturned: false, selectHolds: false }), true);
+  assert.equal(focusLossAction({ source: "tauri-window", dropdownOpen: true }), "hold");
+  assert.equal(focusLossAction({ source: "webview", dropdownOpen: true }), "hold");
+  assert.equal(focusLossAction({ source: "tauri-window", dropdownOpen: false }), "release");
+  assert.equal(focusLossAction({ source: "webview", dropdownOpen: false }), "debounce");
+});
+
+test("linux alt modifier shows a warning", () => {
+  assert.equal(linuxAltWarning("Linux x86_64"), true);
+  assert.equal(linuxAltWarning("X11; Linux x86_64"), true);
+  assert.equal(linuxAltWarning("MacIntel"), false);
+  assert.equal(linuxAltWarning("Win32"), false);
+  assert.equal(linuxAltWarning("Linux; Android 14"), false);
 });
