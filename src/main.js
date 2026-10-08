@@ -280,6 +280,10 @@ function renderBots() {
       btn.addEventListener("animationend", (event) => {
         if (event.animationName === "orb-pulse") btn.classList.remove("orb-enter");
       });
+      const hit = document.createElement("span");
+      hit.className = "bot-hit";
+      hit.setAttribute("aria-hidden", "true");
+      btn.appendChild(hit);
       const label = document.createElement("span");
       label.className = "bot-label";
       btn.appendChild(label);

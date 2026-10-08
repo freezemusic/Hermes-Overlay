@@ -58,7 +58,7 @@
   --orb-glare-tint: 15%;
   --orb-core-alpha: 0.92;
   --orb-glow-radius: 34px;
-  --orb-glow-alpha: 0.2;
+  --orb-glow-alpha: 0.28;
   --orb-selected-glow-radius: 52px;
   --orb-selected-glow-alpha: 0.35;
 
@@ -139,7 +139,9 @@ html.platform-linux {
   isolation: isolate;
   contain: layout style;
   will-change: opacity;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.8);
+  text-shadow:
+    0 0 5px rgba(255, 255, 255, 0.72),
+    0 1px 1px rgba(0, 0, 0, 0.8);
   display: grid;
   place-items: center;
   user-select: none;
@@ -155,8 +157,14 @@ html.platform-linux {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(circle at 72% 26%, rgba(255, 255, 255, 0.7) 0 2px, transparent 8px),
-    radial-gradient(circle at 30% 74%, rgba(255, 255, 255, 0.4) 0 1.5px, transparent 6px);
+    radial-gradient(circle at 36% 32%, rgba(255, 255, 255, 0.7) 0 2px, transparent 8px),
+    radial-gradient(circle at 64% 60%, rgba(255, 255, 255, 0.4) 0 1.5px, transparent 6px);
+}
+
+/* Header and float avatars sit against titles, so they keep the sun without specks. */
+.active-avatar::before,
+.float-avatar::before {
+  background: none;
 }
 
 /* Sun: small hot core, then a long bloom that ends fully transparent.
@@ -172,7 +180,7 @@ html.platform-linux {
   background: radial-gradient(
     circle closest-side at center,
     rgb(from var(--orb-glare) r g b / var(--orb-core-alpha)) 0%,
-    rgb(from var(--orb-glare) r g b / var(--orb-core-alpha)) 8%,
+    rgb(from var(--orb-glare) r g b / var(--orb-core-alpha)) 14%,
     rgb(from var(--orb-glare) r g b / var(--orb-glow-alpha)) 22%,
     rgb(from var(--orb-glare) r g b / calc(var(--orb-glow-alpha) * 0.35)) 48%,
     transparent 100%
@@ -188,7 +196,7 @@ html.platform-linux {
   background: radial-gradient(
     circle closest-side at center,
     rgb(from var(--orb-glare) r g b / 1) 0%,
-    rgb(from var(--orb-glare) r g b / 1) 8%,
+    rgb(from var(--orb-glare) r g b / 1) 14%,
     rgb(from var(--orb-glare) r g b / var(--orb-selected-glow-alpha)) 24%,
     rgb(from var(--orb-glare) r g b / calc(var(--orb-selected-glow-alpha) * 0.28)) 52%,
     transparent 100%
@@ -199,6 +207,15 @@ html.platform-linux {
 .bot-btn.orb-enter.busy::after {
   will-change: transform;
   animation: orb-pulse 1.8s ease-in-out 2;
+}
+
+/* Transparent click pad matching the Rust capture circle (HIT_MARGIN_PX = 12),
+   so a Ctrl+click in the 12px ring around the disc selects the orb instead of
+   being swallowed. Child of the button, so the click bubbles to it. */
+.bot-btn .bot-hit {
+  position: absolute;
+  inset: -12px;
+  border-radius: 50%;
 }
 
 .bot-btn .bot-label {
@@ -287,7 +304,9 @@ html.platform-linux {
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 0.95rem;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.8);
+  text-shadow:
+    0 0 5px rgba(255, 255, 255, 0.72),
+    0 1px 1px rgba(0, 0, 0, 0.8);
 }
 
 .bot-meta {
@@ -554,7 +573,9 @@ html.platform-linux {
   font-family: var(--font-display);
   font-size: 0.62rem;
   font-weight: 600;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.8);
+  text-shadow:
+    0 0 5px rgba(255, 255, 255, 0.72),
+    0 1px 1px rgba(0, 0, 0, 0.8);
 }
 
 .float-text {

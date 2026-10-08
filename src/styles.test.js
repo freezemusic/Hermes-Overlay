@@ -18,7 +18,7 @@ test("avatars are translucent orbs with tunable glow", () => {
   assert.match(css, /--orb-glare-tint:\s*15%/);
   assert.match(css, /--orb-core-alpha:\s*0\.92/);
   assert.match(css, /--orb-glow-radius:\s*34px/);
-  assert.match(css, /--orb-glow-alpha:\s*0\.2/);
+  assert.match(css, /--orb-glow-alpha:\s*0\.28/);
   assert.match(css, /--orb-selected-glow-radius:\s*52px/);
   assert.match(css, /--orb-selected-glow-alpha:\s*0\.35/);
   assert.match(css, /--edge-pad:\s*calc\(var\(--orb-selected-glow-radius\) \+ 8px\)/);
@@ -45,6 +45,7 @@ test("avatars are translucent orbs with tunable glow", () => {
   assert.match(idleHalo, /var\(--orb-glare\)/);
   assert.match(idleHalo, /var\(--orb-core-alpha\)/);
   assert.match(idleHalo, /transparent 100%/);
+  assert.match(idleHalo, /14%/);
   assert.match(idleHalo, /circle closest-side/);
   assert.doesNotMatch(idleHalo, /border-radius/);
   assert.doesNotMatch(idleHalo, /box-shadow|filter:|black/);
@@ -54,10 +55,14 @@ test("avatars are translucent orbs with tunable glow", () => {
   assert.match(selectedGlow, /transparent 100%/);
   assert.match(selectedGlow, /inset:\s*calc\(-1 \* var\(--orb-selected-glow-radius\)\)/);
   assert.match(selectedGlow, /var\(--orb-selected-glow-alpha\)/);
+  assert.match(selectedGlow, /14%/);
   assert.doesNotMatch(selectedGlow, /black|box-shadow|filter:/);
   assert.match(css, /\.bot-btn \{[^}]*border:\s*none/s);
   assert.match(css, /\.bot-btn \{[^}]*text-shadow:/s);
   assert.match(css, /\.bot-btn \.bot-label \{[^}]*text-shadow:/s);
+  assert.match(css, /\.bot-btn \.bot-hit \{[^}]*inset:\s*-12px/s);
+  assert.match(css, /\.bot-btn \.bot-hit \{[^}]*border-radius:\s*50%/s);
+  assert.match(css, /\.active-avatar::before,\s*\.float-avatar::before \{[^}]*background:\s*none/s);
   assert.match(css, /\.center-panel\[hidden\]\s*\{[^}]*display:\s*none/s);
   assert.match(css, /\.center-panel \{[^}]*translateZ\(0\)/s);
   assert.doesNotMatch(css.slice(css.indexOf(".center-panel {"), css.indexOf(".center-panel::after")), /var\(--shadow\)/);
