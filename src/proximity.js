@@ -52,6 +52,16 @@ export function elementOpacity({ solid, distance, fadeDistance, minOpacity, fade
   return opacityForDistance(distance, fadeDistance, minOpacity, fadeEnabled);
 }
 
+/** Focus lock is dropped while the overlay window itself is unfocused. */
+export function interactionLatched({
+  windowFocused = true,
+  textFocused = false,
+  settingsOpen = false,
+  pointerInside = false,
+} = {}) {
+  return windowFocused !== false && (textFocused || settingsOpen || pointerInside);
+}
+
 export function modifierMatches(kind, key) {
   if (kind === "shift") return key === "Shift";
   if (kind === "alt") return key === "Alt";

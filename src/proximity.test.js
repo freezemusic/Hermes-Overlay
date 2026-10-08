@@ -5,6 +5,7 @@ import {
   distanceToRect,
   elementOpacity,
   inkFor,
+  interactionLatched,
   modifierMatches,
 } from "./proximity.js";
 
@@ -39,4 +40,13 @@ test("modifier keys", () => {
   assert.equal(modifierMatches("ctrl", "Shift"), false);
   assert.equal(modifierMatches("shift", "Shift"), true);
   assert.equal(modifierMatches("alt", "Alt"), true);
+});
+
+test("interactive lock follows window focus", () => {
+  assert.equal(interactionLatched({ textFocused: true }), true);
+  assert.equal(interactionLatched({ settingsOpen: true }), true);
+  assert.equal(interactionLatched({ pointerInside: true }), true);
+  assert.equal(interactionLatched({ textFocused: true, windowFocused: false }), false);
+  assert.equal(interactionLatched({ settingsOpen: true, windowFocused: false }), false);
+  assert.equal(interactionLatched({}), false);
 });

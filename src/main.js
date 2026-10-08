@@ -10,6 +10,7 @@ import {
   distanceToRect,
   elementOpacity,
   inkFor,
+  interactionLatched,
   modifierLabel,
   modifierMatches,
 } from "./proximity.js";
@@ -205,6 +206,7 @@ const state = {
   pointerInside: false,
   heldKeys: new Set(),
   latched: false,
+  windowFocused: true,
 };
 
 function threadFor(id) {
@@ -788,7 +790,12 @@ function settingsOpen() {
 }
 
 function syncLatch() {
-  const latched = isTextField(document.activeElement) || settingsOpen() || state.pointerInside;
+  const latched = interactionLatched({
+    windowFocused: state.windowFocused,
+    textFocused: isTextField(document.activeElement),
+    settingsOpen: settingsOpen(),
+    pointerInside: state.pointerInside,
+  });
   state.latched = latched;
   if (inTauri()) {
     import("@tauri-apps/api/core")
@@ -883,6 +890,20 @@ function paintLocalProximity(rects) {
   );
 }
 
+function releaseInteractiveLock() {
+  state.windowFocused = false;
+  state.pointerInside = false;
+  state.heldKeys.clear();
+  const active = document.activeElement;
+  if (isTextField(active)) active.blur();
+  syncLatch();
+}
+
+function noteWindowFocus() {
+  state.windowFocused = true;
+  syncLatch();
+}
+
 function setupProximity() {
   document.addEventListener("pointerdown", (event) => {
     const hit = event.target.closest?.("[data-hit-id]");
@@ -896,8 +917,18 @@ function setupProximity() {
   });
   document.addEventListener("focusin", () => syncLatch());
   document.addEventListener("focusout", () => setTimeout(syncLatch, 0));
+  window.addEventListener("blur", releaseInteractiveLock);
+  window.addEventListener("focus", noteWindowFocus);
   window.addEventListener("resize", scheduleHitSync);
   if (inTauri()) {
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) =>
+        getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+          if (focused) noteWindowFocus();
+          else releaseInteractiveLock();
+        }),
+      )
+      .catch(() => {});
     import("@tauri-apps/api/event").then(({ listen }) => {
       listen("overlay-interaction", (event) => {
         const payload = event.payload || {};
@@ -924,10 +955,6 @@ function setupProximity() {
   });
   window.addEventListener("keyup", (event) => {
     state.heldKeys.delete(event.key);
-    paintLocalProximity();
-  });
-  window.addEventListener("blur", () => {
-    state.heldKeys.clear();
     paintLocalProximity();
   });
   paintLocalProximity();

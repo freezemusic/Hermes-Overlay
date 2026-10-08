@@ -1,5 +1,6 @@
 //! Rainmeter-style hit testing: click-through by default, proximity fade, and a
-//! held modifier that makes every overlay element solid and interactive.
+//! held modifier that makes every overlay element solid. Clicks are accepted
+//! only inside a hit rect (plus a small margin).
 
 use crate::config::InteractionConfig;
 use device_query::{DeviceQuery, DeviceState, Keycode};
@@ -103,6 +104,29 @@ pub fn opacity_for_distance(
     min_opacity + (1.0 - min_opacity) * (distance / fade_distance)
 }
 
+/// Extra CSS pixels around a hit rect that still accept a click.
+pub const HIT_MARGIN_PX: f64 = 12.0;
+
+pub fn cursor_hits_any(px: f64, py: f64, rects: &[HitRect], margin: f64) -> bool {
+    rects
+        .iter()
+        .any(|rect| distance_to_rect(px, py, rect) <= margin)
+}
+
+/// Solid or latched overlays only capture the pointer inside a padded hit rect.
+/// A missing cursor stays click-through so a failed query cannot swallow the screen.
+pub fn should_capture(
+    interactive: bool,
+    cursor: Option<(f64, f64)>,
+    rects: &[HitRect],
+    margin: f64,
+) -> bool {
+    let Some((x, y)) = cursor else {
+        return false;
+    };
+    interactive && cursor_hits_any(x, y, rects, margin)
+}
+
 /// Modifier held (or the input/settings latch) forces every element to full opacity.
 pub fn element_opacity(solid: bool, distance: f64, cfg: &InteractionConfig) -> f64 {
     if solid {
@@ -163,18 +187,18 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             let latched = hub.latched.load(Ordering::Relaxed);
             let held = modifier_held(&device.get_keys(), &cfg.modifier);
             let solid = held || latched;
-            let ignore = !solid;
-            if ignoring != Some(ignore) {
-                if window.set_ignore_cursor_events(ignore).is_ok() {
-                    ignoring = Some(ignore);
-                }
-            }
             let rects = hub
                 .rects
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .clone();
-            let cursor = if solid { None } else { cursor_in_view(&window) };
+            let cursor = cursor_in_view(&window);
+            let ignore = !should_capture(solid, cursor, &rects, HIT_MARGIN_PX);
+            if ignoring != Some(ignore) {
+                if window.set_ignore_cursor_events(ignore).is_ok() {
+                    ignoring = Some(ignore);
+                }
+            }
             let mut items = Vec::with_capacity(rects.len());
             for rect in &rects {
                 let opacity = if solid {
@@ -275,5 +299,20 @@ mod tests {
         assert_eq!(element_opacity(false, 400.0, &cfg), 1.0);
         let mid = element_opacity(false, 60.0, &cfg);
         assert!(mid > 0.18 && mid < 1.0);
+    }
+
+    #[test]
+    fn capture_only_inside_padded_hit_rects() {
+        let rects = [rect()];
+        let inside = Some((110.0, 110.0));
+        let padded = Some((152.0, 110.0));
+        let outside = Some((170.0, 110.0));
+        let far = Some((0.0, 0.0));
+        assert!(should_capture(true, inside, &rects, HIT_MARGIN_PX));
+        assert!(should_capture(true, padded, &rects, HIT_MARGIN_PX));
+        assert!(!should_capture(true, outside, &rects, HIT_MARGIN_PX));
+        assert!(!should_capture(true, far, &rects, HIT_MARGIN_PX));
+        assert!(!should_capture(false, inside, &rects, HIT_MARGIN_PX));
+        assert!(!should_capture(true, None, &rects, HIT_MARGIN_PX));
     }
 }
