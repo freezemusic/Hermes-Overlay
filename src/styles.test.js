@@ -17,7 +17,7 @@ test("avatars are translucent orbs with tunable glow", () => {
   assert.match(css, /--avatar-radius:\s*50%/);
   assert.match(css, /--orb-opacity:\s*0\.48/);
   assert.match(css, /--orb-glow-radius:\s*18px/);
-  assert.match(css, /--orb-glow-alpha:\s*0\.5/);
+  assert.match(css, /--orb-glow-alpha:\s*0\.3/);
   assert.match(css, /--panel-bg:\s*rgba\(7,\s*8,\s*28,\s*0\.76\)/);
   assert.match(css, /--panel-bg-solid:\s*rgba\(8,\s*8,\s*20,\s*0\.80\)/);
   assert.match(css, /--panel-blur:\s*18px/);
@@ -47,6 +47,7 @@ test("avatars are translucent orbs with tunable glow", () => {
   const selectedGlow = css.slice(css.indexOf(".bot-btn.active::after"), css.indexOf(".bot-btn.active::before"));
   assert.match(selectedGlow, /transparent calc\(var\(--orb-disc\) \/ 2\)/);
   assert.doesNotMatch(selectedGlow, /0\.85|1\.35/);
+  assert.match(css, /\.center-panel\[hidden\]\s*\{[^}]*display:\s*none/s);
   assert.match(css, /\.center-panel \{[^}]*translateZ\(0\)/s);
   assert.doesNotMatch(css.slice(css.indexOf(".center-panel {"), css.indexOf(".center-panel::after")), /var\(--shadow\)/);
   assert.match(css, /html\.platform-linux \.center-panel[\s\S]*backdrop-filter:\s*none/);

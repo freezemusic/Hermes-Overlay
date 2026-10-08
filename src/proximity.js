@@ -205,6 +205,29 @@ export function nextOrbPulse(previous, activeId) {
   return { rendered, pulseId: rendered && rendered !== previous ? rendered : null };
 }
 
+/**
+ * Forced close of the modifier menu. Blur and clear the flag.
+ * Toggling `disabled` leaves the select so the next click does not open it.
+ */
+export function applyDropdownDismiss(state) {
+  state.dropdownOpen = false;
+  return { blur: true, disable: false };
+}
+
+/**
+ * Pin only flips keep-above. It must not quit the process.
+ * `true` shows 「置頂」; `false` shows 「取消置頂」.
+ */
+export function pinToggle(alwaysOnTop) {
+  const next = !alwaysOnTop;
+  return {
+    alwaysOnTop: next,
+    label: next ? "置頂" : "取消置頂",
+    pressed: next,
+    quits: false,
+  };
+}
+
 /** Linux window managers often bind Alt+drag, which can block the overlay modifier. */
 export function linuxAltWarning(platform) {
   const value = String(platform || "");

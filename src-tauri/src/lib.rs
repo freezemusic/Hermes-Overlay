@@ -730,6 +730,15 @@ pub fn run() {
             interaction::spawn_poll(app.handle().clone(), hub);
             if let Some(window) = app.get_webview_window("main") {
                 interaction::install_option_menu_hook(&window);
+                // 置頂只係 gtk keep-above。最大化無邊框視窗切換時，視窗管理員可能送
+                // WM_DELETE_WINDOW。拒絕呢個關閉。系統匣「結束」用 app.exit(0)。
+                window.on_window_event(|event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        if interaction::refuse_window_close() {
+                            api.prevent_close();
+                        }
+                    }
+                });
             }
             if let Err(err) = install_escape_hatches(app.handle()) {
                 eprintln!("設定捷徑：{err}");

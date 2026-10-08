@@ -6,11 +6,13 @@
 
 import {
   PALETTE,
+  applyDropdownDismiss,
   colorForIndex,
   elementStates,
   focusLossAction,
   latchedElementIds,
   osFocusAction,
+  pinToggle,
   selectBlurAction,
   linuxAltWarning,
   nextOrbPulse,
@@ -784,13 +786,15 @@ async function setupWindowChrome() {
     }
   }
   const pinBtn = $("#btn-pin");
-  pinBtn?.addEventListener("click", async () => {
-    state.alwaysOnTop = !state.alwaysOnTop;
-    pinBtn.setAttribute("aria-pressed", String(state.alwaysOnTop));
-    pinBtn.textContent = state.alwaysOnTop ? "置頂" : "取消置頂";
+  pinBtn?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    const next = pinToggle(state.alwaysOnTop);
+    state.alwaysOnTop = next.alwaysOnTop;
+    pinBtn.setAttribute("aria-pressed", String(next.pressed));
+    pinBtn.textContent = next.label;
     if (win) {
       try {
-        await win.setAlwaysOnTop(state.alwaysOnTop);
+        await win.setAlwaysOnTop(next.alwaysOnTop);
       } catch (err) {
         console.warn("setAlwaysOnTop failed", err);
       }
@@ -918,6 +922,7 @@ function syncLatch() {
 function collectHits() {
   const rects = [];
   const push = (id, el, z = 0, round = false) => {
+    // [hidden] drops the rect even before layout. display:none makes the box empty too.
     if (!el || el.hidden || el.closest("[hidden]")) return;
     const box = el.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
@@ -978,13 +983,8 @@ let blurReleaseTimer = 0;
 
 function dismissModifierDropdown() {
   const select = $("#interaction-modifier");
-  if (!select) return;
-  // GTK may already have blurred the select when the popup opened, so blur()
-  // alone does not drop the grab. Disabling the control closes it.
-  select.blur();
-  const disabled = select.disabled;
-  select.disabled = true;
-  select.disabled = disabled;
+  const action = applyDropdownDismiss(state);
+  if (action.blur) select?.blur();
 }
 
 function finishInteractiveRelease() {

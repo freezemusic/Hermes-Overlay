@@ -335,6 +335,40 @@ pub fn close_option_menu(window: &tauri::WebviewWindow) {
     }
 }
 
+/// How a grabbed GTK widget is dismissed when another app takes focus.
+/// `hide` and `seat.ungrab` leave the select so the next click is swallowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrabDismiss {
+    /// `GtkMenuShell::cancel` then `deactivate`, after WebKit `menu.close()`.
+    CancelDeactivate,
+    /// `GtkPopover::popdown`.
+    Popdown,
+    /// Leave the grab. Do not `hide` or ungrab the seat.
+    Leave,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrabKind {
+    Menu,
+    Popover,
+    Other,
+}
+
+pub fn grab_dismiss(kind: GrabKind) -> GrabDismiss {
+    match kind {
+        GrabKind::Menu => GrabDismiss::CancelDeactivate,
+        GrabKind::Popover => GrabDismiss::Popdown,
+        GrabKind::Other => GrabDismiss::Leave,
+    }
+}
+
+/// A keep-above toggle on this maximized frameless window can make the window
+/// manager deliver delete. Swallow it. Tray 「結束」 uses `app.exit`, which
+/// does not emit `CloseRequested`.
+pub fn refuse_window_close() -> bool {
+    true
+}
+
 #[cfg(target_os = "linux")]
 mod native_popup {
     use std::cell::RefCell;
@@ -370,6 +404,33 @@ mod native_popup {
         });
     }
 
+    fn kind_of(widget: &gtk::Widget) -> super::GrabKind {
+        if widget.downcast_ref::<gtk::Menu>().is_some() {
+            super::GrabKind::Menu
+        } else if widget.downcast_ref::<gtk::Popover>().is_some() {
+            super::GrabKind::Popover
+        } else {
+            super::GrabKind::Other
+        }
+    }
+
+    fn dismiss_widget(widget: &gtk::Widget) {
+        match super::grab_dismiss(kind_of(widget)) {
+            super::GrabDismiss::CancelDeactivate => {
+                if let Some(menu) = widget.downcast_ref::<gtk::Menu>() {
+                    menu.cancel();
+                    menu.deactivate();
+                }
+            }
+            super::GrabDismiss::Popdown => {
+                if let Some(popover) = widget.downcast_ref::<gtk::Popover>() {
+                    popover.popdown();
+                }
+            }
+            super::GrabDismiss::Leave => {}
+        }
+    }
+
     pub fn close(window: &tauri::WebviewWindow) {
         flag().store(false, Ordering::Relaxed);
         let menu = SLOT.with(|slot| slot.replace(None));
@@ -377,25 +438,14 @@ mod native_popup {
             menu.close();
         }
         if let Some(widget) = gtk::grab_get_current() {
-            if let Some(popover) = widget.downcast_ref::<gtk::Popover>() {
-                popover.popdown();
-            } else if let Some(popup) = widget.downcast_ref::<gtk::Menu>() {
-                popup.popdown();
-            } else {
-                widget.hide();
-                widget.grab_remove();
-            }
+            dismiss_widget(&widget);
         }
         for toplevel in gtk::Window::list_toplevels() {
-            if let Some(popover) = toplevel.downcast_ref::<gtk::Popover>() {
-                if popover.is_visible() {
-                    popover.popdown();
+            if let Some(popup) = toplevel.downcast_ref::<gtk::Menu>() {
+                if popup.is_visible() {
+                    popup.cancel();
+                    popup.deactivate();
                 }
-            }
-        }
-        if let Ok(gtk_window) = window.gtk_window() {
-            if let Some(seat) = gtk_window.display().default_seat() {
-                seat.ungrab();
             }
         }
         let _ = window.set_ignore_cursor_events(true);
@@ -1264,6 +1314,14 @@ mod tests {
             classify_window_ids(Some(99), &[], &[], &[], &[]),
             FocusOwner::Unknown
         );
+    }
+
+    #[test]
+    fn option_menu_close_cancels_a_menu_and_does_not_ungrab() {
+        assert_eq!(grab_dismiss(GrabKind::Menu), GrabDismiss::CancelDeactivate);
+        assert_eq!(grab_dismiss(GrabKind::Popover), GrabDismiss::Popdown);
+        assert_eq!(grab_dismiss(GrabKind::Other), GrabDismiss::Leave);
+        assert!(refuse_window_close());
     }
 
     #[test]

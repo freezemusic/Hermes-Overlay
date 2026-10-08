@@ -136,7 +136,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## 外觀
 
-色板、圓角同字體都係 `:root` 嘅 CSS 變數，之後可以整組換主題。色同公開 Nous / Hermes 站一致：電光藍 `#0000f2`、螢光黃 `#edff45`、紙色字 `#f5f5f5`。頭像係圓形半透明光球（`--orb-opacity`、`--orb-glow-radius`、`--orb-glow-alpha`），光暈係圓邊外面嘅徑向漸變，填充保持半透明、中間較光、邊可以睇穿，外圈係 1px 環。選中只加一圈軟光。選中嘅光球只喺切換時脈衝兩次，之後保持呢圈靜態軟光。Linux 面板唔再用模糊 box-shadow，自己放喺一層合成上面。狀態點同樣係圓。中間面板大約 76% 不透明，設定卡大約 80%，支援嘅 WebView 會加 `backdrop-filter` 模糊。Linux 嘅 WebKitGTK 畫唔到 `backdrop-filter`，面板同設定卡會提高到大約 90% 不透明，對比唔再靠背後嘅牆紙。字用紙色加陰影，淺色或深色牆紙都讀到。標題用 Barlow Condensed，正文用 Schibsted Grotesk，狀態用 IBM Plex Mono，中文繼續落 PingFang HK / Noto Sans TC。呢啲係開源替代，冇嵌入 Rules、Aeonik 或其他專有字檔同標誌。
+色板、圓角同字體都係 `:root` 嘅 CSS 變數，之後可以整組換主題。色同公開 Nous / Hermes 站一致：電光藍 `#0000f2`、螢光黃 `#edff45`、紙色字 `#f5f5f5`。頭像係圓形半透明光球（`--orb-opacity`、`--orb-glow-radius`、`--orb-glow-alpha`），光暈係圓邊外面嘅徑向漸變，填充保持半透明、中間較光、邊可以睇穿，外圈係 1px 環。選中只加一圈軟光。未選中光暈 alpha 大約 0.3，選中嗰圈先會突出。選中嘅光球只喺切換時脈衝兩次，之後保持呢圈靜態軟光。Linux 面板唔再用模糊 box-shadow，自己放喺一層合成上面。狀態點同樣係圓。中間面板大約 76% 不透明，設定卡大約 80%，支援嘅 WebView 會加 `backdrop-filter` 模糊。Linux 嘅 WebKitGTK 畫唔到 `backdrop-filter`，面板同設定卡會提高到大約 90% 不透明，對比唔再靠背後嘅牆紙。字用紙色加陰影，淺色或深色牆紙都讀到。標題用 Barlow Condensed，正文用 Schibsted Grotesk，狀態用 IBM Plex Mono，中文繼續落 PingFang HK / Noto Sans TC。呢啲係開源替代，冇嵌入 Rules、Aeonik 或其他專有字檔同標誌。
 
 ## 游標同穿透
 
@@ -146,8 +146,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - 游標靠近某個元素就會按距離淡出：大約 120px 以外係實色，貼住元素大約 18% 透明度。可以喺設定改距離、最低透明度，或者關掉淡出。
 - 按住修飾鍵（預設 **Ctrl**，可改 Shift 或 Alt）時，**只係游標下面嗰一個元素**即刻去到全強度同可點擊。面板用矩形再加大約 12px。頭像用圓形：距離圓心唔超過半徑加 12px 先算對準，外接正方形嘅角位唔會接手。全強度頭像仍然係半透明光球（透明度乘 `--orb-opacity`），面板就係玻璃面嘅本來透明度。其他元素繼續按距離淡出，而且保持穿透。游標由一個元素移去下一個，全強度會跟住游標走。
 - 修飾鍵喺所有元素範圍以外撳（例如喺另一個程式 Ctrl+C / Ctrl+V）唔會改變任何元素，亦唔會接手點擊。
-- 輸入框聚焦會保持**中間對話面板**實色，游標喺塊面板上先可以點。設定頁打開會保持**設定面板**同樣處理。Esc、點到元素以外嘅空白，或者視窗失焦，會 blur 輸入框並解除鎖定。視窗交畀另一個程式會即時解除鎖定；網頁內短暫失焦先會等約 150ms。修飾鍵選單嘅彈出視窗、本程式視窗，同埋佢嘅外框，都仍然算本程式，設定卡會保持。Linux 用前景視窗嘅 X11 window id 對照呢啲 id，唔再靠 `_NET_WM_PID`；任何其他非零前景視窗都係另一個程式，連續兩次讀到就放開，並且 blur 修飾鍵選單，再叫 WebKit 閂 option menu、GTK popdown 同放開 seat grab，避免下拉視窗繼續吃掉下一次點擊。讀唔到前景視窗先保持。Windows 同 macOS 仍然用行程 id。
-- 修飾鍵可以改做 Alt，但 Linux 視窗管理員（xfwm4 預設，GNOME／KDE 都常見）用 Alt 拖移視窗，Alt+click 可能去唔到 overlay。設定頁喺 Linux 會顯示呢個警告，Alt 仍然可以揀。唔使點擊都可以開設定：全域快捷鍵 **Ctrl+Shift+Alt+H**，或者系統匣選單「設定 (Ctrl+Shift+Alt+H)」。系統匣亦有「結束」。中間面板嘅「關閉」只收起對話面板，唔會結束程式。
+- 輸入框聚焦會保持**中間對話面板**實色，游標喺塊面板上先可以點。設定頁打開會保持**設定面板**同樣處理。Esc、點到元素以外嘅空白，或者視窗失焦，會 blur 輸入框並解除鎖定。視窗交畀另一個程式會即時解除鎖定；網頁內短暫失焦先會等約 150ms。修飾鍵選單嘅彈出視窗、本程式視窗，同埋佢嘅外框，都仍然算本程式，設定卡會保持。Linux 用前景視窗嘅 X11 window id 對照呢啲 id，唔再靠 `_NET_WM_PID`；任何其他非零前景視窗都係另一個程式，連續兩次讀到就放開，並且清走 dropdown 旗、blur 修飾鍵選單，再叫 WebKit 閂 option menu，GTK menu 用 cancel／deactivate 收起。唔再用 hide 同 seat ungrab，避免下一次撳選單要撳兩下。讀唔到前景視窗先保持。Windows 同 macOS 仍然用行程 id。
+- 修飾鍵可以改做 Alt，但 Linux 視窗管理員（xfwm4 預設，GNOME／KDE 都常見）用 Alt 拖移視窗，Alt+click 可能去唔到 overlay。設定頁喺 Linux 會顯示呢個警告，Alt 仍然可以揀。唔使點擊都可以開設定：全域快捷鍵 **Ctrl+Shift+Alt+H**，或者系統匣選單「設定 (Ctrl+Shift+Alt+H)」。系統匣亦有「結束」。中間面板嘅「關閉」只收起對話面板，唔會結束程式。收起會設 `[hidden]`，`.center-panel[hidden]` 用 `display: none` 蓋過 `display: flex`，面板先會真係消失，hit-sync 亦會丟掉呢塊矩形。置頂只切換 keep-above，唔會結束程式；視窗管理員如果因為置頂彈出關閉要求，程式會拒絕，結束只係系統匣「結束」。
 
 實作用 Rust 大約每 16ms 讀全域游標同修飾鍵（`device_query`），前端報上元素矩形。`set_ignore_cursor_events` 只喺游標進入「修飾鍵對準嘅元素」或者「鎖定緊嘅面板」時先關閉。Windows、macOS、Linux X11（包括開咗 `DISPLAY` 嘅 XWayland）先支援。純 Wayland 讀唔到全域游標／修飾鍵，overlay 會保持可點擊，唔會穿透。macOS 要喺「私隱與保安 → 輔助使用」允許呢個 app，否則修飾鍵可能讀唔到。全域快捷鍵同樣要輔助使用權限。
 

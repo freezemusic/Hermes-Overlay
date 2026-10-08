@@ -15,6 +15,8 @@ import {
   modifierMatches,
   nextOrbPulse,
   nextDropdownOpen,
+  pinToggle,
+  applyDropdownDismiss,
   selectKeyOpensDropdown,
 } from "./proximity.js";
 
@@ -227,4 +229,25 @@ test("linux alt modifier shows a warning", () => {
   assert.equal(linuxAltWarning("MacIntel"), false);
   assert.equal(linuxAltWarning("Win32"), false);
   assert.equal(linuxAltWarning("Linux; Android 14"), false);
+});
+
+test("forced dropdown close clears the flag and does not disable the select", () => {
+  const state = { dropdownOpen: true };
+  const action = applyDropdownDismiss(state);
+  assert.equal(state.dropdownOpen, false);
+  assert.equal(action.blur, true);
+  assert.equal(action.disable, false);
+});
+
+test("pin toggle flips the label and does not quit", () => {
+  const off = pinToggle(true);
+  assert.equal(off.alwaysOnTop, false);
+  assert.equal(off.label, "取消置頂");
+  assert.equal(off.pressed, false);
+  assert.equal(off.quits, false);
+  const on = pinToggle(false);
+  assert.equal(on.alwaysOnTop, true);
+  assert.equal(on.label, "置頂");
+  assert.equal(on.pressed, true);
+  assert.equal(on.quits, false);
 });

@@ -57,7 +57,7 @@
   --avatar-radius: 50%;
   --orb-opacity: 0.48;
   --orb-glow-radius: 18px;
-  --orb-glow-alpha: 0.5;
+  --orb-glow-alpha: 0.3;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -244,6 +244,10 @@ html.platform-linux {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
   backdrop-filter: blur(var(--panel-blur));
   -webkit-backdrop-filter: blur(var(--panel-blur));
+}
+
+.center-panel[hidden] {
+  display: none;
 }
 
 .center-panel::after {
