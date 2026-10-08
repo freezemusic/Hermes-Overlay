@@ -42,6 +42,14 @@ test("avatars are translucent orbs with tunable glow", () => {
     /box-shadow|filter:/,
   );
   assert.match(css, /\.bot-btn\.active::after \{[^}]*radial-gradient\(/s);
+  assert.match(css, /transparent calc\(var\(--orb-disc\) \/ 2\)/);
+  assert.match(css, /rgba\(255,\s*255,\s*255,\s*0\.72\)/);
+  const selectedGlow = css.slice(css.indexOf(".bot-btn.active::after"), css.indexOf(".bot-btn.active::before"));
+  assert.match(selectedGlow, /transparent calc\(var\(--orb-disc\) \/ 2\)/);
+  assert.doesNotMatch(selectedGlow, /0\.85|1\.35/);
+  assert.match(css, /\.center-panel \{[^}]*translateZ\(0\)/s);
+  assert.doesNotMatch(css.slice(css.indexOf(".center-panel {"), css.indexOf(".center-panel::after")), /var\(--shadow\)/);
+  assert.match(css, /html\.platform-linux \.center-panel[\s\S]*backdrop-filter:\s*none/);
   assert.doesNotMatch(css, /\.bot-btn\.active::before \{[^}]*animation:/s);
   assert.match(css, /\.bot-btn\.orb-enter::before,\s*\.bot-btn\.orb-enter\.busy::before \{[^}]*orb-pulse[^;]*\b2\b/s);
   assert.match(css, /html\.platform-linux \{[^}]*--panel-bg:\s*rgba\(7,\s*8,\s*28,\s*0\.90\)/s);

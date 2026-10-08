@@ -113,7 +113,7 @@ const MOCK_BOTS = [
     messages: [
       { role: "bot", text: "全螢幕透明 overlay 要小心誤觸；空白位穿透仍屬實驗功能。" },
     ],
-    float: "Esc 可以快速關閉（開發用）。",
+    float: "Esc 會收起中間面板。結束程式用系統匣。",
   },
 ];
 
@@ -376,6 +376,7 @@ function setBotStatus(id, text, statusState) {
 
 async function selectBot(id) {
   state.activeId = id;
+  setCenterOpen(true);
   renderBots();
   renderChat();
   if (state.mode !== "hermes" || !inTauri()) return;
@@ -795,10 +796,22 @@ async function setupWindowChrome() {
       }
     }
   });
-  $("#btn-close")?.addEventListener("click", async () => {
-    if (win) await win.close();
-    else window.close();
+  $("#btn-close")?.addEventListener("click", () => {
+    setCenterOpen(false);
   });
+}
+
+function setCenterOpen(open) {
+  const panel = $("#center-panel");
+  if (!panel) return;
+  if (!open) {
+    const active = document.activeElement;
+    if (active && panel.contains(active)) active.blur();
+    if (state.pointerHitId === "center") state.pointerHitId = "";
+  }
+  panel.hidden = !open;
+  syncLatch();
+  scheduleHitSync();
 }
 
 function setupComposer() {

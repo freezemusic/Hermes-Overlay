@@ -728,6 +728,9 @@ pub fn run() {
             }
             let hub = Arc::clone(&app.state::<AppState>().interaction);
             interaction::spawn_poll(app.handle().clone(), hub);
+            if let Some(window) = app.get_webview_window("main") {
+                interaction::install_option_menu_hook(&window);
+            }
             if let Err(err) = install_escape_hatches(app.handle()) {
                 eprintln!("設定捷徑：{err}");
             }

@@ -306,6 +306,102 @@ pub fn current_focus_owner(window: &tauri::WebviewWindow) -> FocusOwner {
     probe.owner(&ids)
 }
 
+pub fn install_option_menu_hook(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    native_popup::install(window);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+    }
+}
+
+pub fn option_menu_is_open() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        native_popup::is_open()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+pub fn close_option_menu(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    native_popup::close(window);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod native_popup {
+    use std::cell::RefCell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use gtk::prelude::*;
+    use webkit2gtk::{OptionMenuExt, WebViewExt};
+
+    fn flag() -> &'static AtomicBool {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        &FLAG
+    }
+
+    thread_local! {
+        static SLOT: RefCell<Option<webkit2gtk::OptionMenu>> = const { RefCell::new(None) };
+    }
+
+    pub fn is_open() -> bool {
+        flag().load(Ordering::Relaxed)
+    }
+
+    pub fn install(window: &tauri::WebviewWindow) {
+        let _ = window.with_webview(|webview| {
+            webview.inner().connect_show_option_menu(|_, menu, _, _| {
+                menu.connect_close(|_| {
+                    flag().store(false, Ordering::Relaxed);
+                    SLOT.with(|slot| slot.replace(None));
+                });
+                SLOT.with(|slot| slot.replace(Some(menu.clone())));
+                flag().store(true, Ordering::Relaxed);
+                false
+            });
+        });
+    }
+
+    pub fn close(window: &tauri::WebviewWindow) {
+        flag().store(false, Ordering::Relaxed);
+        let menu = SLOT.with(|slot| slot.replace(None));
+        if let Some(menu) = menu {
+            menu.close();
+        }
+        if let Some(widget) = gtk::grab_get_current() {
+            if let Some(popover) = widget.downcast_ref::<gtk::Popover>() {
+                popover.popdown();
+            } else if let Some(popup) = widget.downcast_ref::<gtk::Menu>() {
+                popup.popdown();
+            } else {
+                widget.hide();
+                widget.grab_remove();
+            }
+        }
+        for toplevel in gtk::Window::list_toplevels() {
+            if let Some(popover) = toplevel.downcast_ref::<gtk::Popover>() {
+                if popover.is_visible() {
+                    popover.popdown();
+                }
+            }
+        }
+        if let Ok(gtk_window) = window.gtk_window() {
+            if let Some(seat) = gtk_window.display().default_seat() {
+                seat.ungrab();
+            }
+        }
+        let _ = window.set_ignore_cursor_events(true);
+    }
+}
+
 /// A forced element (modifier target or latched panel) is full opacity at any distance.
 pub fn element_opacity(solid: bool, distance: f64, cfg: &InteractionConfig) -> f64 {
     if solid {
@@ -356,6 +452,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
         let mut ignoring: Option<bool> = None;
         let mut focus_probe = FocusProbe::open();
         let mut other_samples = 0u8;
+        let mut closed_popup_for_other = false;
         let mut cached_window_ids: Option<Vec<u64>> = None;
         loop {
             std::thread::sleep(Duration::from_millis(16));
@@ -400,6 +497,22 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             let raw_owner = focus_probe.owner(cached_window_ids.as_deref().unwrap_or(&[]));
             let (owner, samples) = confirm_focus_owner(other_samples, raw_owner);
             other_samples = samples;
+            if owner == FocusOwner::Other {
+                if !closed_popup_for_other && option_menu_is_open() {
+                    if window.set_ignore_cursor_events(true).is_ok() {
+                        ignoring = Some(true);
+                    }
+                    let app_handle = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        if let Some(main) = app_handle.get_webview_window("main") {
+                            close_option_menu(&main);
+                        }
+                    });
+                }
+                closed_popup_for_other = true;
+            } else if owner == FocusOwner::Own {
+                closed_popup_for_other = false;
+            }
             let focus_owner = focus_owner_name(owner);
             let signature = format!(
                 "{}|focus={focus_owner}",

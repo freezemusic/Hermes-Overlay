@@ -1606,6 +1606,7 @@ version = "0.1.0"
 dependencies = [
  "device_query",
  "futures-util",
+ "gtk",
  "keyring",
  "raw-window-handle",
  "reqwest 0.12.28",
@@ -1616,6 +1617,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
  "tokio",
+ "webkit2gtk",
 ]
 
 [[package]]
