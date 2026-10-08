@@ -22,6 +22,8 @@
     "allow-set-hit-rects",
     "allow-set-interaction-latch",
     "allow-focus-owner",
-    "core:window:allow-set-focus"
+    "core:window:allow-set-focus",
+    "allow-arm-pin-close-guard",
+    "allow-quit-app"
   ]
 }

@@ -17,6 +17,7 @@ import {
   nextDropdownOpen,
   pinToggle,
   applyDropdownDismiss,
+  invokeFailureMessage,
   settingsQuitAction,
   selectKeyOpensDropdown,
 } from "./proximity.js";
@@ -259,4 +260,10 @@ test("settings quit uses the app exit command", () => {
   const action = settingsQuitAction();
   assert.equal(action.command, "quit_app");
   assert.equal(action.exitCode, 0);
+});
+
+test("invoke failures name the action for the error banner", () => {
+  assert.equal(invokeFailureMessage("結束程式", "command not allowed"), "結束程式失敗：command not allowed");
+  const denied = new Error("denied");
+  assert.equal(invokeFailureMessage("置頂保護", denied), "置頂保護失敗：denied");
 });

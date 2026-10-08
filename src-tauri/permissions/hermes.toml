@@ -47,3 +47,13 @@ commands.allow = ["set_interaction_latch"]
 identifier = "allow-focus-owner"
 description = "Read whether the focused OS window belongs to this process."
 commands.allow = ["focus_owner"]
+
+[[permission]]
+identifier = "allow-arm-pin-close-guard"
+description = "Briefly refuse the window-manager close that a keep-above toggle can cause."
+commands.allow = ["arm_pin_close_guard"]
+
+[[permission]]
+identifier = "allow-quit-app"
+description = "Quit the overlay from the Settings 結束 button."
+commands.allow = ["quit_app"]

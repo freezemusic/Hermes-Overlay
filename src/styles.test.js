@@ -20,6 +20,7 @@ test("avatars are translucent orbs with tunable glow", () => {
   assert.match(css, /--orb-glow-alpha:\s*0\.18/);
   assert.match(css, /--orb-selected-glow-radius:\s*26px/);
   assert.match(css, /--orb-selected-glow-alpha:\s*0\.45/);
+  assert.match(css, /--edge-pad:\s*calc\(var\(--orb-selected-glow-radius\) \+ 4px\)/);
   assert.match(css, /--panel-bg:\s*rgba\(7,\s*8,\s*28,\s*0\.76\)/);
   assert.match(css, /--panel-bg-solid:\s*rgba\(8,\s*8,\s*20,\s*0\.80\)/);
   assert.match(css, /--panel-blur:\s*18px/);

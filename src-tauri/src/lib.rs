@@ -818,4 +818,50 @@ mod tests {
         assert!(SETTINGS_TRAY_LABEL.starts_with("設定"));
         assert!(SETTINGS_TRAY_LABEL.contains(SETTINGS_SHORTCUT));
     }
+
+    fn invoke_commands() -> Vec<String> {
+        let src = include_str!("lib.rs");
+        let start = src
+            .find("tauri::generate_handler![")
+            .expect("invoke_handler");
+        let rest = &src[start..];
+        let end = rest.find("])").expect("invoke_handler end");
+        rest[..end]
+            .lines()
+            .skip(1)
+            .map(|line| line.trim().trim_end_matches(',').to_string())
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn every_invoke_command_is_in_the_default_capability() {
+        let commands = invoke_commands();
+        assert!(commands.len() >= 12, "handler parse missed commands: {commands:?}");
+        let perms = include_str!("../permissions/hermes.toml");
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).expect("capability");
+        let granted = cap["permissions"]
+            .as_array()
+            .expect("permissions")
+            .iter()
+            .filter_map(|item| item.as_str())
+            .collect::<Vec<_>>();
+        for command in &commands {
+            let allow = format!("commands.allow = [\"{command}\"]");
+            assert!(
+                perms.contains(&allow),
+                "permissions/hermes.toml 缺少 {command}"
+            );
+            let identifier = format!("allow-{}", command.replace('_', "-"));
+            assert!(
+                perms.contains(&format!("identifier = \"{identifier}\"")),
+                "缺少 permission {identifier}"
+            );
+            assert!(
+                granted.contains(&identifier.as_str()),
+                "capabilities/default.json 未允許 {identifier}"
+            );
+        }
+    }
 }

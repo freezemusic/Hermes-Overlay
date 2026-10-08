@@ -234,6 +234,12 @@ export function settingsQuitAction() {
   return { command: "quit_app", exitCode: 0 };
 }
 
+/** User-facing text when a settings or pin invoke is rejected. */
+export function invokeFailureMessage(action, err) {
+  const detail = typeof err === "string" ? err : err?.message || String(err ?? "");
+  return `${action}失敗：${detail}`;
+}
+
 /** Linux window managers often bind Alt+drag, which can block the overlay modifier. */
 export function linuxAltWarning(platform) {
   const value = String(platform || "");

@@ -68,7 +68,7 @@
   --space-5: 20px;
 
   --bot-size: 52px;
-  --edge-pad: 18px;
+  --edge-pad: calc(var(--orb-selected-glow-radius) + 4px);
   --bot-color: var(--brand);
 
   --font-cjk: "PingFang HK", "Noto Sans TC", "Microsoft JhengHei", sans-serif;

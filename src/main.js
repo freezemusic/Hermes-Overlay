@@ -13,6 +13,7 @@ import {
   latchedElementIds,
   osFocusAction,
   pinToggle,
+  invokeFailureMessage,
   settingsQuitAction,
   selectBlurAction,
   linuxAltWarning,
@@ -224,6 +225,13 @@ function threadFor(id) {
     state.threads.set(id, { messages: [], status: "閒置", float: null });
   }
   return state.threads.get(id);
+}
+
+function showActionError(message) {
+  console.warn(message);
+  setBanner(message, "error");
+  const status = $("#settings-status");
+  if (status && settingsOpen()) status.textContent = message;
 }
 
 function setBanner(text, kind = "error", sticky = "") {
@@ -798,7 +806,7 @@ async function setupWindowChrome() {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("arm_pin_close_guard");
       } catch (err) {
-        console.warn("arm_pin_close_guard failed", err);
+        showActionError(invokeFailureMessage("置頂保護", err));
       }
     }
     if (win) {
@@ -886,8 +894,12 @@ function setupComposer() {
   $("#btn-quit")?.addEventListener("click", async () => {
     const action = settingsQuitAction();
     if (!inTauri()) return;
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke(action.command);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke(action.command);
+    } catch (err) {
+      showActionError(invokeFailureMessage("結束程式", err));
+    }
   });
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#btn-add-bot").addEventListener("click", () => $("#bot-editor").appendChild(rowFromBot()));
