@@ -15,12 +15,13 @@ test("modifier select drops the native white box", () => {
 test("avatars are translucent orbs with tunable glow", () => {
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   assert.match(css, /--avatar-radius:\s*50%/);
-  assert.match(css, /--orb-opacity:\s*0\.48/);
-  assert.match(css, /--orb-glow-radius:\s*10px/);
-  assert.match(css, /--orb-glow-alpha:\s*0\.18/);
-  assert.match(css, /--orb-selected-glow-radius:\s*26px/);
-  assert.match(css, /--orb-selected-glow-alpha:\s*0\.45/);
-  assert.match(css, /--edge-pad:\s*calc\(var\(--orb-selected-glow-radius\) \+ 4px\)/);
+  assert.match(css, /--orb-glare-tint:\s*15%/);
+  assert.match(css, /--orb-core-alpha:\s*0\.92/);
+  assert.match(css, /--orb-glow-radius:\s*34px/);
+  assert.match(css, /--orb-glow-alpha:\s*0\.2/);
+  assert.match(css, /--orb-selected-glow-radius:\s*52px/);
+  assert.match(css, /--orb-selected-glow-alpha:\s*0\.35/);
+  assert.match(css, /--edge-pad:\s*calc\(var\(--orb-selected-glow-radius\) \+ 8px\)/);
   assert.match(css, /--panel-bg:\s*rgba\(7,\s*8,\s*28,\s*0\.76\)/);
   assert.match(css, /--panel-bg-solid:\s*rgba\(8,\s*8,\s*20,\s*0\.80\)/);
   assert.match(css, /--panel-blur:\s*18px/);
@@ -40,28 +41,29 @@ test("avatars are translucent orbs with tunable glow", () => {
   assert.match(orb, /contain:\s*layout style/);
   assert.doesNotMatch(orb, /box-shadow/);
   assert.match(css, /\.bot-btn::after,\s*\.active-avatar::after,\s*\.float-avatar::after \{[^}]*radial-gradient\(/s);
-  assert.doesNotMatch(
-    css.slice(css.indexOf(".bot-btn::after"), css.indexOf(".bot-btn:hover")),
-    /box-shadow|filter:/,
-  );
+  const idleHalo = css.slice(css.indexOf(".bot-btn::after"), css.indexOf(".bot-btn.active::before"));
+  assert.match(idleHalo, /var\(--orb-glare\)/);
+  assert.match(idleHalo, /var\(--orb-core-alpha\)/);
+  assert.match(idleHalo, /transparent 100%/);
+  assert.match(idleHalo, /circle closest-side/);
+  assert.doesNotMatch(idleHalo, /border-radius/);
+  assert.doesNotMatch(idleHalo, /box-shadow|filter:|black/);
+  assert.doesNotMatch(idleHalo, /--orb-selected-glow/);
   assert.match(css, /\.bot-btn\.active::after \{[^}]*radial-gradient\(/s);
-  assert.match(css, /transparent calc\(var\(--orb-disc\) \/ 2\)/);
-  assert.match(css, /rgba\(255,\s*255,\s*255,\s*0\.72\)/);
-  const selectedGlow = css.slice(css.indexOf(".bot-btn.active::after"), css.indexOf(".bot-btn.active::before"));
-  assert.match(selectedGlow, /transparent calc\(var\(--orb-disc\) \/ 2\)/);
+  const selectedGlow = css.slice(css.indexOf(".bot-btn.active::after"), css.indexOf(".bot-btn.orb-enter::after"));
+  assert.match(selectedGlow, /transparent 100%/);
   assert.match(selectedGlow, /inset:\s*calc\(-1 \* var\(--orb-selected-glow-radius\)\)/);
   assert.match(selectedGlow, /var\(--orb-selected-glow-alpha\)/);
-  assert.match(selectedGlow, /var\(--orb-selected-glow-radius\)/);
-  assert.doesNotMatch(selectedGlow, /0\.85|1\.35/);
-  const idleHalo = css.slice(css.indexOf(".bot-btn::after"), css.indexOf(".bot-btn:hover"));
-  assert.match(idleHalo, /var\(--orb-glow-alpha\)/);
-  assert.doesNotMatch(idleHalo, /--orb-selected-glow/);
+  assert.doesNotMatch(selectedGlow, /black|box-shadow|filter:/);
+  assert.match(css, /\.bot-btn \{[^}]*border:\s*none/s);
+  assert.match(css, /\.bot-btn \{[^}]*text-shadow:/s);
+  assert.match(css, /\.bot-btn \.bot-label \{[^}]*text-shadow:/s);
   assert.match(css, /\.center-panel\[hidden\]\s*\{[^}]*display:\s*none/s);
   assert.match(css, /\.center-panel \{[^}]*translateZ\(0\)/s);
   assert.doesNotMatch(css.slice(css.indexOf(".center-panel {"), css.indexOf(".center-panel::after")), /var\(--shadow\)/);
   assert.match(css, /html\.platform-linux \.center-panel[\s\S]*backdrop-filter:\s*none/);
   assert.doesNotMatch(css, /\.bot-btn\.active::before \{[^}]*animation:/s);
-  assert.match(css, /\.bot-btn\.orb-enter::before,\s*\.bot-btn\.orb-enter\.busy::before \{[^}]*orb-pulse[^;]*\b2\b/s);
+  assert.match(css, /\.bot-btn\.orb-enter::after,\s*\.bot-btn\.orb-enter\.busy::after \{[^}]*orb-pulse[^;]*\b2\b/s);
   assert.match(css, /html\.platform-linux \{[^}]*--panel-bg:\s*rgba\(7,\s*8,\s*28,\s*0\.90\)/s);
   assert.match(css, /html\.platform-linux \{[^}]*--panel-bg-solid:\s*rgba\(8,\s*8,\s*20,\s*0\.90\)/s);
 });

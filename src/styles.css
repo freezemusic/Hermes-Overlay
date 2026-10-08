@@ -55,11 +55,12 @@
   --radius-lg: 8px;
   --radius: 16px;
   --avatar-radius: 50%;
-  --orb-opacity: 0.48;
-  --orb-glow-radius: 10px;
-  --orb-glow-alpha: 0.18;
-  --orb-selected-glow-radius: 26px;
-  --orb-selected-glow-alpha: 0.45;
+  --orb-glare-tint: 15%;
+  --orb-core-alpha: 0.92;
+  --orb-glow-radius: 34px;
+  --orb-glow-alpha: 0.2;
+  --orb-selected-glow-radius: 52px;
+  --orb-selected-glow-alpha: 0.35;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -68,7 +69,7 @@
   --space-5: 20px;
 
   --bot-size: 52px;
-  --edge-pad: calc(var(--orb-selected-glow-radius) + 4px);
+  --edge-pad: calc(var(--orb-selected-glow-radius) + 8px);
   --bot-color: var(--brand);
 
   --font-cjk: "PingFang HK", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
@@ -125,48 +126,41 @@ html.platform-linux {
   width: var(--bot-size);
   height: var(--bot-size);
   border-radius: var(--avatar-radius);
-  border: 1px solid var(--bot-color, var(--brand));
-  border-color: color-mix(in srgb, var(--bot-color, var(--brand)) 72%, white);
+  border: none;
   background: transparent;
-  color: var(--paper);
+  color: #141414;
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 1.15rem;
   letter-spacing: 0.02em;
   cursor: pointer;
   --orb-disc: var(--bot-size);
+  --orb-glare: color-mix(in srgb, var(--bot-color, var(--brand)) var(--orb-glare-tint), white);
   isolation: isolate;
   contain: layout style;
   will-change: opacity;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.92), 0 0 8px rgba(0, 0, 0, 0.72);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.8);
   display: grid;
   place-items: center;
   user-select: none;
 }
 
+/* Two static flare specks, offset on the diagonal. The sun itself is ::after. */
 .bot-btn::before,
 .active-avatar::before,
 .float-avatar::before {
   content: "";
   position: absolute;
-  inset: 0;
+  inset: calc(-1 * var(--orb-glow-radius));
   z-index: -1;
-  border-radius: inherit;
   pointer-events: none;
   background:
-    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0) 42%),
-    radial-gradient(ellipse at 50% 30%, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 55%),
-    radial-gradient(
-      circle at 50% 62%,
-      color-mix(in srgb, var(--bot-color, var(--brand)) 62%, white) 0%,
-      var(--bot-color, var(--brand)) 58%,
-      color-mix(in srgb, var(--bot-color, var(--brand)) 42%, black) 100%
-    );
-  opacity: var(--orb-opacity);
+    radial-gradient(circle at 72% 26%, rgba(255, 255, 255, 0.7) 0 2px, transparent 8px),
+    radial-gradient(circle at 30% 74%, rgba(255, 255, 255, 0.4) 0 1.5px, transparent 6px);
 }
 
-/* Halo only. A filled gradient behind the disc stacks through the 0.48 fill
-   and makes the orb look opaque. The hole matches the disc. */
+/* Sun: small hot core, then a long bloom that ends fully transparent.
+   closest-side reaches 100% at the glow box edge, so no circle clip. */
 .bot-btn::after,
 .active-avatar::after,
 .float-avatar::after {
@@ -174,41 +168,35 @@ html.platform-linux {
   position: absolute;
   inset: calc(-1 * var(--orb-glow-radius));
   z-index: -2;
-  border-radius: 50%;
   pointer-events: none;
   background: radial-gradient(
-    circle at center,
-    transparent calc(var(--orb-disc) / 2),
-    rgb(from var(--bot-color, var(--brand)) r g b / var(--orb-glow-alpha)) calc(var(--orb-disc) / 2 + 2px),
-    transparent calc(var(--orb-disc) / 2 + var(--orb-glow-radius))
+    circle closest-side at center,
+    rgb(from var(--orb-glare) r g b / var(--orb-core-alpha)) 0%,
+    rgb(from var(--orb-glare) r g b / var(--orb-core-alpha)) 8%,
+    rgb(from var(--orb-glare) r g b / var(--orb-glow-alpha)) 22%,
+    rgb(from var(--orb-glare) r g b / calc(var(--orb-glow-alpha) * 0.35)) 48%,
+    transparent 100%
   );
 }
 
-.bot-btn:hover {
-  border-color: var(--accent);
-}
-
-.bot-btn.active {
-  border-color: var(--accent);
+.bot-btn.active::before {
+  inset: calc(-1 * var(--orb-selected-glow-radius));
 }
 
 .bot-btn.active::after {
   inset: calc(-1 * var(--orb-selected-glow-radius));
   background: radial-gradient(
-    circle at center,
-    transparent calc(var(--orb-disc) / 2),
-    rgb(from var(--accent) r g b / var(--orb-selected-glow-alpha)) calc(var(--orb-disc) / 2 + 2px),
-    rgb(from var(--bot-color, var(--brand)) r g b / 0.22) calc(var(--orb-disc) / 2 + 12px),
-    transparent calc(var(--orb-disc) / 2 + var(--orb-selected-glow-radius))
+    circle closest-side at center,
+    rgb(from var(--orb-glare) r g b / 1) 0%,
+    rgb(from var(--orb-glare) r g b / 1) 8%,
+    rgb(from var(--orb-glare) r g b / var(--orb-selected-glow-alpha)) 24%,
+    rgb(from var(--orb-glare) r g b / calc(var(--orb-selected-glow-alpha) * 0.28)) 52%,
+    transparent 100%
   );
 }
 
-.bot-btn.active::before {
-  opacity: min(0.72, calc(var(--orb-opacity) + 0.16));
-}
-
-.bot-btn.orb-enter::before,
-.bot-btn.orb-enter.busy::before {
+.bot-btn.orb-enter::after,
+.bot-btn.orb-enter.busy::after {
   will-change: transform;
   animation: orb-pulse 1.8s ease-in-out 2;
 }
@@ -285,21 +273,21 @@ html.platform-linux {
   width: 40px;
   height: 40px;
   border-radius: var(--avatar-radius);
-  border: 1px solid var(--bot-color, var(--brand));
-  border-color: color-mix(in srgb, var(--bot-color, var(--brand)) 72%, white);
+  border: none;
   flex-shrink: 0;
   --orb-disc: 40px;
+  --orb-glare: color-mix(in srgb, var(--bot-color, var(--brand)) var(--orb-glare-tint), white);
   isolation: isolate;
   contain: layout style;
   will-change: opacity;
   display: grid;
   place-items: center;
   background: transparent;
-  color: var(--paper);
+  color: #141414;
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 0.95rem;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.92), 0 0 8px rgba(0, 0, 0, 0.72);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.8);
 }
 
 .bot-meta {
@@ -553,20 +541,20 @@ html.platform-linux {
   border-radius: var(--avatar-radius);
   top: -10px;
   left: 12px;
-  border: 1px solid var(--bot-color, var(--brand));
-  border-color: color-mix(in srgb, var(--bot-color, var(--brand)) 72%, white);
+  border: none;
   background: transparent;
   --orb-disc: 22px;
+  --orb-glare: color-mix(in srgb, var(--bot-color, var(--brand)) var(--orb-glare-tint), white);
   isolation: isolate;
   contain: layout style;
   will-change: opacity;
   display: grid;
   place-items: center;
-  color: var(--paper);
+  color: #141414;
   font-family: var(--font-display);
   font-size: 0.62rem;
   font-weight: 600;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.92);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.8);
 }
 
 .float-text {
@@ -598,12 +586,8 @@ html.platform-linux {
   color: var(--banner-info-text);
 }
 
-.bot-btn.busy::before {
+.bot-btn.busy::after {
   animation: orb-busy 1.8s ease-in-out infinite;
-}
-
-.bot-btn.error {
-  border-color: var(--danger-soft);
 }
 
 @keyframes orb-pulse {
@@ -613,13 +597,13 @@ html.platform-linux {
 }
 
 @keyframes orb-busy {
-  50% { opacity: min(0.78, calc(var(--orb-opacity) + 0.2)); }
+  50% { opacity: 0.72; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bot-btn.orb-enter::before,
-  .bot-btn.orb-enter.busy::before,
-  .bot-btn.busy::before {
+  .bot-btn.orb-enter::after,
+  .bot-btn.orb-enter.busy::after,
+  .bot-btn.busy::after {
     animation: none;
   }
 }
