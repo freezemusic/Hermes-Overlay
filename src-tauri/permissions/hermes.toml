@@ -1,0 +1,34 @@
+[[permission]]
+identifier = "allow-get-settings"
+description = "Read overlay settings without secrets."
+commands.allow = ["get_settings"]
+
+[[permission]]
+identifier = "allow-save-settings"
+description = "Save gateway settings and keychain entries."
+commands.allow = ["save_settings"]
+
+[[permission]]
+identifier = "allow-probe-gateway"
+description = "Probe the Hermes gateway and saved bot keys."
+commands.allow = ["probe_gateway"]
+
+[[permission]]
+identifier = "allow-discover-profiles"
+description = "Experimentally list dashboard profiles."
+commands.allow = ["discover_profiles"]
+
+[[permission]]
+identifier = "allow-open-bot"
+description = "Load a bot chat transcript."
+commands.allow = ["open_bot"]
+
+[[permission]]
+identifier = "allow-send-chat"
+description = "Stream a chat turn."
+commands.allow = ["send_chat"]
+
+[[permission]]
+identifier = "allow-stop-chat"
+description = "Stop the local chat stream."
+commands.allow = ["stop_chat"]

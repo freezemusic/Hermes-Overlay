@@ -1,17 +1,17 @@
 /**
- * Hermes Overlay — interactive perimeter bots + center chat/detail panel
- * UI labels: Traditional Chinese (zh-HK)
+ * Hermes Overlay — perimeter bots + center chat.
+ * UI labels: Traditional Chinese (zh-HK).
+ * Gateway keys stay in the Rust process; this file only sees has_key.
  */
 
-const BOTS = [
+const MOCK_BOTS = [
   {
     id: "planner",
     name: "計劃助手",
     short: "計",
     color: "#5b6cff",
     status: "線上 · 可互動",
-    detail:
-      "幫你拆解任務、排優先次序，同埋跟進每日進度。適合長時 overlay 置頂使用。",
+    detail: "幫你拆解任務、排優先次序，同埋跟進每日進度。適合長時 overlay 置頂使用。",
     messages: [
       { role: "bot", text: "而家有 3 件待辦可以即刻開工——想我先排邊件？" },
       { role: "user", text: "先做最緊急嗰件。" },
@@ -31,7 +31,7 @@ const BOTS = [
       { role: "user", text: "稍後先。而家想確認 bot 邊框互動。" },
       { role: "bot", text: "點選邊框頭像就會切換中間面板內容。" },
     ],
-    float: "建議下一步：接真 Hermes Agent 通道。",
+    float: "而家係離線示範。設定 gateway 之後先會連 Hermes。",
   },
   {
     id: "research",
@@ -40,9 +40,7 @@ const BOTS = [
     color: "#f59e0b",
     status: "待命",
     detail: "負責搜尋、摘要同來源整理。呢個版本用 mock 內容示範版面。",
-    messages: [
-      { role: "bot", text: "你想查邊個主題？我可以先出重點摘要。" },
-    ],
+    messages: [{ role: "bot", text: "你想查邊個主題？我可以先出重點摘要。" }],
     float: null,
   },
   {
@@ -65,9 +63,7 @@ const BOTS = [
     color: "#94a3b8",
     status: "觀察中",
     detail: "預留位置顯示 CPU／網路／agent 狀態。目前係 stub。",
-    messages: [
-      { role: "bot", text: "監控面板尚未接真數據——骨架已就位。" },
-    ],
+    messages: [{ role: "bot", text: "監控面板尚未接真數據——骨架已就位。" }],
     float: null,
   },
   {
@@ -77,9 +73,7 @@ const BOTS = [
     color: "#a78bfa",
     status: "靜音",
     detail: "語音輸入／輸出預留。點選可睇 mock 對話。",
-    messages: [
-      { role: "bot", text: "語音通道未接上。你可以先用文字試 overlay。" },
-    ],
+    messages: [{ role: "bot", text: "語音通道未接上。你可以先用文字試 overlay。" }],
     float: null,
   },
   {
@@ -89,9 +83,7 @@ const BOTS = [
     color: "#34d399",
     status: "本地 stub",
     detail: "記住偏好同跨 session 上下文（未實作持久化）。",
-    messages: [
-      { role: "bot", text: "而家只係記憶示範字串，重開 app 會重置。" },
-    ],
+    messages: [{ role: "bot", text: "而家只係記憶示範字串，重開 app 會重置。" }],
     float: null,
   },
   {
@@ -108,16 +100,8 @@ const BOTS = [
   },
 ];
 
-/** Place N bots around the frame edges (matches wireframe: scattered on perimeter). */
 function edgePositions(count) {
-  // Normalized path around the rectangle: top → right → bottom → left
-  const pads = {
-    top: 0.08,
-    right: 0.08,
-    bottom: 0.08,
-    left: 0.08,
-  };
-  // Weight edges similar to the sketch (more on right/bottom)
+  const pads = { top: 0.08, right: 0.08, bottom: 0.08, left: 0.08 };
   const segments = [
     { edge: "top", weight: 1 },
     { edge: "right", weight: 3 },
@@ -137,14 +121,12 @@ function edgePositions(count) {
       slots.push({ edge: seg.edge, t });
     }
   });
-  // If rounding left extras, put on right
   while (remaining > 0) {
     slots.push({ edge: "right", t: 0.5 });
     remaining--;
   }
-
   return slots.map(({ edge, t }) => {
-    const inset = `var(--edge-pad)`;
+    const inset = "var(--edge-pad)";
     if (edge === "top") {
       return {
         style: {
@@ -182,21 +164,60 @@ function edgePositions(count) {
   });
 }
 
-let activeId = BOTS[0].id;
-let alwaysOnTop = true;
-
 function $(sel) {
   return document.querySelector(sel);
+}
+
+function inTauri() {
+  return "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
+}
+
+function shortLabel(name) {
+  const chars = Array.from((name || "").trim());
+  return chars[0] || "?";
+}
+
+const state = {
+  mode: "mock",
+  settings: null,
+  bots: [],
+  activeId: null,
+  threads: new Map(),
+  busy: new Set(),
+  alwaysOnTop: true,
+};
+
+function threadFor(id) {
+  if (!state.threads.has(id)) {
+    state.threads.set(id, { messages: [], status: "閒置", float: null });
+  }
+  return state.threads.get(id);
+}
+
+function setBanner(text, kind = "error") {
+  const banner = $("#conn-banner");
+  banner.classList.remove("ok", "info");
+  if (!text) {
+    banner.hidden = true;
+    banner.textContent = "";
+    return;
+  }
+  banner.hidden = false;
+  banner.textContent = text;
+  if (kind === "ok" || kind === "info") banner.classList.add(kind);
 }
 
 function renderBots() {
   const rail = $("#bot-rail");
   rail.innerHTML = "";
-  const positions = edgePositions(BOTS.length);
-  BOTS.forEach((bot, i) => {
+  const positions = edgePositions(Math.max(state.bots.length, 1));
+  state.bots.forEach((bot, i) => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "bot-btn" + (bot.id === activeId ? " active" : "");
+    btn.className = "bot-btn" + (bot.id === state.activeId ? " active" : "");
+    if (state.busy.has(bot.id)) btn.classList.add("busy");
+    const thread = threadFor(bot.id);
+    if (thread.statusState === "error") btn.classList.add("error");
     btn.style.setProperty("--bot-color", bot.color);
     btn.dataset.botId = bot.id;
     btn.setAttribute("aria-label", bot.name);
@@ -212,121 +233,484 @@ function renderBots() {
   });
 }
 
-function selectBot(id) {
-  activeId = id;
-  const bot = BOTS.find((b) => b.id === id);
-  if (!bot) return;
-
-  document.querySelectorAll(".bot-btn").forEach((el) => {
-    el.classList.toggle("active", el.dataset.botId === id);
-  });
-
-  $("#bot-name").textContent = bot.name;
-  $("#bot-status").textContent = bot.status;
-  $("#bot-detail").textContent = bot.detail;
-  $("#active-avatar").style.setProperty("--bot-color", bot.color);
-  $("#active-avatar").style.background = bot.color;
-
+function renderChat() {
+  const bot = state.bots.find((b) => b.id === state.activeId);
   const chat = $("#chat-messages");
   chat.innerHTML = "";
-  bot.messages.forEach((m) => {
-    const bubble = document.createElement("div");
-    bubble.className = `bubble ${m.role === "user" ? "user" : "bot"}`;
-    bubble.textContent = m.text;
-    chat.appendChild(bubble);
-  });
+  if (!bot) {
+    $("#bot-name").textContent = "未有 Bot";
+    $("#bot-status").textContent = state.mode === "mock" ? "示範模式" : "請喺設定加入 Bot";
+    $("#bot-detail").textContent =
+      state.mode === "mock"
+        ? "離線示範。"
+        : "Gateway 已設定，但名單係空。打開設定加入 profile、顯示名稱同 API 金鑰。";
+    $("#active-avatar").style.background = "#64748b";
+    $("#float-bubble").hidden = true;
+    $("#btn-stop").hidden = true;
+    return;
+  }
+  const thread = threadFor(bot.id);
+  $("#bot-name").textContent = bot.name;
+  $("#bot-status").textContent = thread.status || bot.status || "閒置";
+  $("#bot-detail").textContent = bot.detail || "";
+  $("#active-avatar").style.background = bot.color;
+  thread.messages.forEach((m) => chat.appendChild(bubbleEl(m)));
   chat.scrollTop = chat.scrollHeight;
-
   const float = $("#float-bubble");
-  if (bot.float) {
+  if (thread.float) {
+    float.hidden = false;
+    $("#float-text").textContent = thread.float;
+    $("#float-avatar").style.background = bot.color;
+  } else if (bot.float) {
     float.hidden = false;
     $("#float-text").textContent = bot.float;
     $("#float-avatar").style.background = bot.color;
   } else {
     float.hidden = true;
   }
+  $("#btn-stop").hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
+  $("#btn-send").disabled = state.mode === "hermes" && state.busy.has(bot.id);
 }
 
-function appendLocalMessage(text, role) {
-  const bot = BOTS.find((b) => b.id === activeId);
-  if (!bot) return;
-  bot.messages.push({ role, text });
-  const chat = $("#chat-messages");
+function bubbleEl(m) {
   const bubble = document.createElement("div");
-  bubble.className = `bubble ${role === "user" ? "user" : "bot"}`;
-  bubble.textContent = text;
-  chat.appendChild(bubble);
-  chat.scrollTop = chat.scrollHeight;
+  bubble.className = `bubble ${m.role === "user" ? "user" : m.role === "bot" ? "bot" : m.role}`;
+  bubble.textContent = m.text;
+  if (m.live) bubble.dataset.live = "1";
+  return bubble;
 }
 
-async function getCurrentWindow() {
+function appendMessage(id, message) {
+  const thread = threadFor(id);
+  thread.messages.push(message);
+  if (id === state.activeId) {
+    const chat = $("#chat-messages");
+    chat.appendChild(bubbleEl(message));
+    chat.scrollTop = chat.scrollHeight;
+  }
+}
+
+function setBotStatus(id, text, statusState) {
+  const thread = threadFor(id);
+  thread.status = text;
+  thread.statusState = statusState;
+  if (statusState === "busy") state.busy.add(id);
+  else state.busy.delete(id);
+  if (id === state.activeId) renderChat();
+  renderBots();
+}
+
+async function selectBot(id) {
+  state.activeId = id;
+  renderBots();
+  renderChat();
+  if (state.mode !== "hermes" || !inTauri()) return;
+  const thread = threadFor(id);
+  if (thread.loaded || thread.loading) return;
+  thread.loading = true;
+  setBotStatus(id, "載入對話…", "busy");
   try {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    return getCurrentWindow();
-  } catch {
-    return null;
+    const { invoke } = await import("@tauri-apps/api/core");
+    const opened = await invoke("open_bot", { profile: id });
+    thread.messages = (opened.messages || []).map(presentMessage);
+    thread.loaded = true;
+    thread.sessionId = opened.session_id;
+    setBotStatus(id, "閒置", "idle");
+  } catch (err) {
+    thread.loaded = false;
+    const message = String(err);
+    appendMessage(id, { role: "commentary", text: message });
+    setBotStatus(id, "連線錯誤", "error");
+    setBanner(message, "error");
+  } finally {
+    thread.loading = false;
+  }
+}
+
+function presentMessage(m) {
+  if (m.role === "tool") {
+    const name = m.tool_name || m.toolName || "tool";
+    return { role: "tool", text: `工具 ${name}：${m.text}` };
+  }
+  return { role: m.role, text: m.text };
+}
+
+function ensureLiveBubble(id) {
+  const thread = threadFor(id);
+  let live = thread.messages[thread.messages.length - 1];
+  if (!live || live.role !== "bot" || !live.live) {
+    live = { role: "bot", text: "", live: true };
+    thread.messages.push(live);
+    if (id === state.activeId) {
+      const chat = $("#chat-messages");
+      const el = bubbleEl(live);
+      el.dataset.live = "1";
+      chat.appendChild(el);
+    }
+  }
+  return live;
+}
+
+function patchLive(id) {
+  if (id !== state.activeId) return;
+  const thread = threadFor(id);
+  const live = [...thread.messages].reverse().find((m) => m.live);
+  const nodes = $("#chat-messages").querySelectorAll("[data-live]");
+  const node = nodes[nodes.length - 1];
+  if (live && node) node.textContent = live.text;
+  $("#chat-messages").scrollTop = $("#chat-messages").scrollHeight;
+}
+
+function handleHermes(payload) {
+  if (!payload || !payload.profile) return;
+  const id = payload.profile;
+  if (payload.type === "delta") {
+    const live = ensureLiveBubble(id);
+    live.text += payload.text || "";
+    patchLive(id);
+    return;
+  }
+  if (payload.type === "commentary") {
+    appendMessage(id, { role: "commentary", text: `過程：${payload.text || ""}` });
+    threadFor(id).float = payload.text || null;
+    if (id === state.activeId) renderChat();
+    return;
+  }
+  if (payload.type === "tool") {
+    const phase = payload.phase === "completed" ? "完成" : payload.phase === "failed" ? "失敗" : "開始";
+    const preview = payload.preview ? ` — ${payload.preview}` : "";
+    const text = `${phase} ${payload.name || "tool"}${preview}`;
+    appendMessage(id, { role: "tool", text });
+    threadFor(id).float = text;
+    if (id === state.activeId) renderChat();
+    return;
+  }
+  if (payload.type === "status") {
+    const label = payload.detail || (payload.state === "busy" ? "思考中…" : "閒置");
+    setBotStatus(id, label, payload.state === "busy" ? "busy" : payload.state === "error" ? "error" : "idle");
+    return;
+  }
+  if (payload.type === "done") {
+    const thread = threadFor(id);
+    const live = [...thread.messages].reverse().find((m) => m.live);
+    if (live) live.live = false;
+    if (payload.outcome === "failed" && payload.detail) {
+      appendMessage(id, { role: "commentary", text: payload.detail });
+    }
+    setBotStatus(
+      id,
+      payload.outcome === "failed" ? "回覆失敗" : payload.outcome === "cancelled" ? "已停止" : "閒置",
+      payload.outcome === "failed" ? "error" : "idle",
+    );
+    return;
+  }
+  if (payload.type === "error") {
+    appendMessage(id, { role: "commentary", text: payload.message || "未知錯誤" });
+    setBotStatus(id, "連線錯誤", "error");
+    setBanner(payload.message || "連線錯誤", "error");
+  }
+}
+
+async function sendActive() {
+  const input = $("#chat-input");
+  const text = input.value.trim();
+  if (!text || !state.activeId) return;
+  if (state.mode === "hermes" && state.busy.has(state.activeId)) return;
+  input.value = "";
+  appendMessage(state.activeId, { role: "user", text });
+  if (state.mode !== "hermes" || !inTauri()) {
+    setTimeout(() => {
+      appendMessage(state.activeId, {
+        role: "bot",
+        text: `（示範回覆）收到：「${text}」。未設定 Hermes gateway。`,
+      });
+    }, 350);
+    return;
+  }
+  setBotStatus(state.activeId, "思考中…", "busy");
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("send_chat", { profile: state.activeId, text });
+  } catch (err) {
+    const message = String(err);
+    appendMessage(state.activeId, { role: "commentary", text: message });
+    setBotStatus(state.activeId, "連線錯誤", "error");
+    setBanner(message, "error");
+  }
+}
+
+function botsFromSettings(settings) {
+  return (settings.bots || []).map((bot) => ({
+    id: bot.profile,
+    name: bot.display_name || bot.profile,
+    short: shortLabel(bot.display_name || bot.profile),
+    color: bot.color || "#5b6cff",
+    status: bot.has_key ? "閒置" : "未有金鑰",
+    detail: bot.detail || `profile ${bot.profile}`,
+    float: null,
+    hasKey: bot.has_key,
+  }));
+}
+
+function useMock(reason) {
+  state.mode = "mock";
+  state.bots = MOCK_BOTS.map((bot) => ({
+    ...bot,
+    messages: bot.messages.map((m) => ({ ...m })),
+  }));
+  state.threads = new Map();
+  state.bots.forEach((bot) => {
+    threadFor(bot.id).messages = bot.messages.map((m) => ({ ...m }));
+    threadFor(bot.id).status = bot.status;
+    threadFor(bot.id).loaded = true;
+  });
+  state.activeId = state.bots[0]?.id || null;
+  setBanner(reason, "info");
+  renderBots();
+  renderChat();
+}
+
+function useHermes(settings) {
+  state.mode = "hermes";
+  state.settings = settings;
+  state.bots = botsFromSettings(settings);
+  state.threads = new Map();
+  state.busy.clear();
+  state.activeId = state.bots[0]?.id || null;
+  if (settings.keyring_error) {
+    setBanner(`鑰匙圈：${settings.keyring_error}`, "error");
+  } else if (state.bots.length === 0) {
+    setBanner("Gateway 已設定，但未有 Bot。打開設定加入 profile 同金鑰。", "info");
+  } else {
+    setBanner("已連接設定。點頭像載入該 Bot 嘅 Bot Chat。", "ok");
+  }
+  renderBots();
+  renderChat();
+  if (state.activeId) selectBot(state.activeId);
+}
+
+function rowFromBot(bot = {}) {
+  const row = document.createElement("div");
+  row.className = "bot-row";
+  row.innerHTML = `
+    <input type="text" data-field="profile" placeholder="profile" autocomplete="off" />
+    <input type="text" data-field="display_name" placeholder="顯示名稱" autocomplete="off" />
+    <input type="color" data-field="color" aria-label="顏色" />
+    <button type="button" class="icon-btn" data-action="remove">移除</button>
+    <input class="span-2" type="text" data-field="detail" placeholder="詳情（可留空）" autocomplete="off" />
+    <input class="span-2" type="url" data-field="base_url" placeholder="專用位址（可留空）" autocomplete="off" />
+    <input class="span-2" type="password" data-field="key" placeholder="API 金鑰" autocomplete="off" />
+  `;
+  row.querySelector('[data-field="profile"]').value = bot.profile || "";
+  row.querySelector('[data-field="display_name"]').value = bot.display_name || "";
+  row.querySelector('[data-field="color"]').value = bot.color || "#5b6cff";
+  row.querySelector('[data-field="detail"]').value = bot.detail || "";
+  row.querySelector('[data-field="base_url"]').value = bot.base_url || "";
+  const key = row.querySelector('[data-field="key"]');
+  key.placeholder = bot.has_key ? "已儲存，留空代表保留" : "API 金鑰";
+  key.dataset.hasKey = bot.has_key ? "1" : "0";
+  row.querySelector('[data-action="remove"]').addEventListener("click", () => row.remove());
+  return row;
+}
+
+function readRows() {
+  return [...$("#bot-editor").querySelectorAll(".bot-row")].map((row) => {
+    const value = (field) => row.querySelector(`[data-field="${field}"]`).value.trim();
+    const keyInput = row.querySelector('[data-field="key"]');
+    return {
+      profile: value("profile"),
+      display_name: value("display_name"),
+      color: row.querySelector('[data-field="color"]').value,
+      detail: value("detail"),
+      base_url: value("base_url"),
+      key: keyInput.value,
+      clear_key: false,
+      has_key: keyInput.dataset.hasKey === "1",
+    };
+  });
+}
+
+function fillSettings(settings) {
+  $("#gateway-url").value = settings?.gateway_base_url || "";
+  $("#dashboard-url").value = settings?.dashboard_base_url || "http://127.0.0.1:9119";
+  $("#dashboard-token").value = "";
+  $("#dashboard-token").placeholder = settings?.has_dashboard_token
+    ? "已儲存，留空代表保留"
+    : "可留空";
+  const editor = $("#bot-editor");
+  editor.innerHTML = "";
+  const bots = settings?.bots?.length ? settings.bots : [];
+  if (bots.length === 0) editor.appendChild(rowFromBot());
+  bots.forEach((bot) => editor.appendChild(rowFromBot(bot)));
+}
+
+function openSettings() {
+  fillSettings(state.settings);
+  $("#settings-status").textContent = inTauri()
+    ? "儲存之後先會用新設定。測試連線讀已儲存嘅金鑰。"
+    : "瀏覽器預覽改唔到鑰匙圈。請用 npm run tauri dev。";
+  $("#settings").hidden = false;
+}
+
+function closeSettings() {
+  $("#settings").hidden = true;
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  if (!inTauri()) {
+    $("#settings-status").textContent = "瀏覽器預覽唔可以儲存。";
+    return;
+  }
+  const bots = readRows().filter((bot) => bot.profile || bot.display_name || bot.key);
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    const settings = await invoke("save_settings", {
+      input: {
+        gateway_base_url: $("#gateway-url").value.trim(),
+        dashboard_base_url: $("#dashboard-url").value.trim(),
+        dashboard_token: $("#dashboard-token").value,
+        clear_dashboard_token: false,
+        bots,
+      },
+    });
+    state.settings = settings;
+    $("#settings-status").textContent = "已儲存。";
+    $("#dashboard-token").value = "";
+    if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。");
+    else useHermes(settings);
+    closeSettings();
+  } catch (err) {
+    $("#settings-status").textContent = String(err);
+  }
+}
+
+async function probeSaved() {
+  if (!inTauri()) return;
+  $("#settings-status").textContent = "測試緊…";
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const report = await invoke("probe_gateway");
+    const lines = [
+      report.health_ok ? `健康檢查：${report.health_detail}` : `健康檢查失敗：${report.health_detail}`,
+      ...(report.bots || []).map((bot) => `${bot.ok ? "可讀" : "失敗"} ${bot.profile}：${bot.detail}`),
+    ];
+    $("#settings-status").textContent = lines.join("\n");
+    if (!report.health_ok) setBanner(report.health_detail, "error");
+    else if ((report.bots || []).every((bot) => bot.ok)) setBanner("Gateway 同名單金鑰可用。", "ok");
+    else setBanner("Gateway 有回應，但部分 Bot 金鑰或路徑失敗。睇設定入面嘅結果。", "error");
+  } catch (err) {
+    $("#settings-status").textContent = String(err);
+  }
+}
+
+async function discoverProfiles() {
+  if (!inTauri()) return;
+  $("#settings-status").textContent = "實驗匯入中…";
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const found = await invoke("discover_profiles", {
+      dashboardBaseUrl: $("#dashboard-url").value.trim(),
+      token: $("#dashboard-token").value,
+    });
+    $("#dashboard-token").value = "";
+    const existing = new Map(readRows().filter((b) => b.profile).map((b) => [b.profile, b]));
+    for (const bot of found) {
+      if (!existing.has(bot.profile)) {
+        existing.set(bot.profile, {
+          profile: bot.profile,
+          display_name: bot.display_name,
+          color: bot.color,
+          detail: bot.detail,
+          base_url: "",
+          has_key: false,
+        });
+      }
+    }
+    const editor = $("#bot-editor");
+    editor.innerHTML = "";
+    for (const bot of existing.values()) editor.appendChild(rowFromBot(bot));
+    $("#settings-status").textContent = found.length
+      ? `匯入 ${found.length} 個 profile。金鑰要自己填，然後儲存。`
+      : "Dashboard 冇返回 profile。";
+  } catch (err) {
+    $("#settings-status").textContent = String(err);
   }
 }
 
 async function setupWindowChrome() {
-  const win = await getCurrentWindow();
+  let win = null;
+  if (inTauri()) {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      win = getCurrentWindow();
+    } catch {
+      win = null;
+    }
+  }
   const pinBtn = $("#btn-pin");
-  const closeBtn = $("#btn-close");
-
   pinBtn?.addEventListener("click", async () => {
-    alwaysOnTop = !alwaysOnTop;
-    pinBtn.setAttribute("aria-pressed", String(alwaysOnTop));
-    pinBtn.textContent = alwaysOnTop ? "置頂" : "取消置頂";
+    state.alwaysOnTop = !state.alwaysOnTop;
+    pinBtn.setAttribute("aria-pressed", String(state.alwaysOnTop));
+    pinBtn.textContent = state.alwaysOnTop ? "置頂" : "取消置頂";
     if (win) {
       try {
-        await win.setAlwaysOnTop(alwaysOnTop);
-      } catch (e) {
-        console.warn("setAlwaysOnTop failed", e);
+        await win.setAlwaysOnTop(state.alwaysOnTop);
+      } catch (err) {
+        console.warn("setAlwaysOnTop failed", err);
       }
     }
   });
-
-  closeBtn?.addEventListener("click", async () => {
-    if (win) {
-      await win.close();
-    } else {
-      window.close();
-    }
+  $("#btn-close")?.addEventListener("click", async () => {
+    if (win) await win.close();
+    else window.close();
   });
-
-  // Click-through (setIgnoreCursorEvents) is stubbed OFF by default.
-  // Enabling it globally blocks receiving hover on empty areas, so toggles
-  // need a hotkey or native hit-test. See README "Known limitations".
-  // Example (manual): if (win) await win.setIgnoreCursorEvents(true);
 }
 
 function setupComposer() {
-  const input = $("#chat-input");
-  const send = $("#btn-send");
-  const submit = () => {
-    const text = input.value.trim();
-    if (!text) return;
-    appendLocalMessage(text, "user");
-    input.value = "";
-    // Stub bot reply
-    setTimeout(() => {
-      appendLocalMessage("（示範回覆）收到：「" + text + "」。之後會接真 Hermes Agent 通道。", "bot");
-    }, 350);
-  };
-  send.addEventListener("click", submit);
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") submit();
+  $("#btn-send").addEventListener("click", sendActive);
+  $("#chat-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") sendActive();
   });
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      $("#btn-close")?.click();
+  $("#btn-stop").addEventListener("click", async () => {
+    if (!state.activeId || !inTauri()) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("stop_chat", { profile: state.activeId });
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!$("#settings").hidden) {
+      closeSettings();
+      return;
     }
+    $("#btn-close")?.click();
   });
+  $("#btn-settings").addEventListener("click", openSettings);
+  $("#btn-settings-close").addEventListener("click", closeSettings);
+  $("#settings-form").addEventListener("submit", saveSettings);
+  $("#btn-add-bot").addEventListener("click", () => $("#bot-editor").appendChild(rowFromBot()));
+  $("#btn-probe").addEventListener("click", probeSaved);
+  $("#btn-discover").addEventListener("click", discoverProfiles);
 }
 
-window.addEventListener("DOMContentLoaded", () => {
-  renderBots();
-  selectBot(activeId);
+async function boot() {
   setupComposer();
   setupWindowChrome();
-});
+  if (!inTauri()) {
+    useMock("瀏覽器預覽：離線示範。Gateway 同金鑰只喺桌面版可用。");
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+    await listen("hermes", (event) => handleHermes(event.payload));
+    const settings = await invoke("get_settings");
+    state.settings = settings;
+    if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。");
+    else useHermes(settings);
+  } catch (err) {
+    useMock(`讀唔到設定，改用示範模式：${err}`);
+  }
+}
+
+window.addEventListener("DOMContentLoaded", boot);

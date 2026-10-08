@@ -21,10 +21,13 @@
             </div>
           </div>
           <div class="panel-actions">
+            <button type="button" id="btn-settings" class="icon-btn" title="Gateway 同 Bot 名單">設定</button>
             <button type="button" id="btn-pin" class="icon-btn" title="保持置頂" aria-pressed="true">置頂</button>
             <button type="button" id="btn-close" class="icon-btn danger" title="關閉 Overlay">關閉</button>
           </div>
         </header>
+
+        <p id="conn-banner" class="conn-banner" hidden></p>
 
         <section class="detail-block" aria-label="Bot 詳情">
           <h2 class="section-label">詳情</h2>
@@ -43,9 +46,51 @@
             placeholder="輸入訊息給呢個 Bot…"
             autocomplete="off"
           />
+          <button type="button" id="btn-stop" class="icon-btn" hidden>停止</button>
           <button type="button" id="btn-send" class="send-btn">傳送</button>
         </footer>
       </aside>
+
+      <div id="settings" class="settings-layer" data-interactive hidden>
+        <form id="settings-form" class="settings-card">
+          <header class="settings-head">
+            <h2>設定</h2>
+            <button type="button" id="btn-settings-close" class="icon-btn">關閉</button>
+          </header>
+          <p class="hint">金鑰只會寫入系統鑰匙圈，唔會放喺設定檔或者網頁。</p>
+          <label class="field">
+            <span>Gateway 位址</span>
+            <input id="gateway-url" type="url" placeholder="http://127.0.0.1:8642" autocomplete="off" />
+          </label>
+          <p class="hint">留空就用離線示範。有位址就連自架 Hermes API server（預設埠 8642，Bearer API_SERVER_KEY）。具名 profile 走 <code>/p/&lt;profile&gt;/</code>；<code>default</code> 用唔帶前綴嘅路徑。每個 profile 自己一埠嘅話，喺該 Bot 填專用位址。</p>
+
+          <div class="roster-head">
+            <h3>Bot 名單</h3>
+            <button type="button" id="btn-add-bot" class="icon-btn">加入</button>
+          </div>
+          <div id="bot-editor" class="bot-editor"></div>
+
+          <fieldset class="experimental">
+            <legend>實驗：由 dashboard 匯入名單</legend>
+            <p class="hint">用 Hermes dashboard 嘅 <code>GET /api/profiles</code>（預設 <code>http://127.0.0.1:9119</code>）。公開 API server 冇穩定嘅 profile 列表。匯入只填名稱同描述，<strong>唔會</strong>帶 API 金鑰。非 loopback 要貼 <code>window.__HERMES_SESSION_TOKEN__</code>，token 存喺鑰匙圈。</p>
+            <label class="field">
+              <span>Dashboard 位址</span>
+              <input id="dashboard-url" type="url" placeholder="http://127.0.0.1:9119" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Dashboard session token（可留空）</span>
+              <input id="dashboard-token" type="password" placeholder="已儲存就留空" autocomplete="off" />
+            </label>
+            <button type="button" id="btn-discover" class="icon-btn">匯入名單</button>
+          </fieldset>
+
+          <p id="settings-status" class="settings-status" role="status"></p>
+          <div class="settings-actions">
+            <button type="button" id="btn-probe" class="icon-btn">測試已儲存連線</button>
+            <button type="submit" class="send-btn">儲存</button>
+          </div>
+        </form>
+      </div>
 
       <div id="float-bubble" class="float-bubble" data-interactive hidden>
         <div class="float-avatar" id="float-avatar"></div>
