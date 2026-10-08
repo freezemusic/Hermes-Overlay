@@ -222,14 +222,14 @@ pub fn interaction_frame(
         .collect()
 }
 
-/// Whose process owns the OS-focused window.
+/// Whose window owns OS focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusOwner {
-    /// Main window or a popup created by this process, such as a GTK select menu.
+    /// This app's window, its frame, or a popup that belongs to it.
     Own,
-    /// Foreground window belongs to another process.
+    /// Another window is focused. On Windows and macOS this is another process.
     Other,
-    /// The foreground window could not be read.
+    /// The foreground window could not be read, or this app's window id is not known yet.
     Unknown,
 }
 
@@ -239,6 +239,41 @@ pub fn classify_focus_owner(focused_pid: Option<u32>, self_pid: u32) -> FocusOwn
         Some(_) => FocusOwner::Other,
         None => FocusOwner::Unknown,
     }
+}
+
+/// Linux focus, compared by X11 window id.
+/// `own` is this app's client window ids.
+/// `own_ancestors` are parents of those windows, excluding the root.
+/// `active_ancestors` are parents of the active window, excluding the root.
+/// `active_transient_for` is the WM_TRANSIENT_FOR chain of the active window.
+/// A missing pid must not matter: any other non-zero window is another app.
+pub fn classify_window_ids(
+    active: Option<u64>,
+    own: &[u64],
+    own_ancestors: &[u64],
+    active_ancestors: &[u64],
+    active_transient_for: &[u64],
+) -> FocusOwner {
+    if own.is_empty() {
+        return FocusOwner::Unknown;
+    }
+    let Some(active) = active.filter(|id| *id != 0) else {
+        return FocusOwner::Unknown;
+    };
+    let ours = |id: u64| own.iter().any(|own_id| *own_id == id);
+    if ours(active) || own_ancestors.iter().any(|id| *id == active) {
+        return FocusOwner::Own;
+    }
+    if active_ancestors.iter().any(|id| ours(*id)) {
+        return FocusOwner::Own;
+    }
+    if active_transient_for
+        .iter()
+        .any(|id| ours(*id) || own_ancestors.iter().any(|ancestor| *ancestor == *id))
+    {
+        return FocusOwner::Own;
+    }
+    FocusOwner::Other
 }
 
 pub fn focus_owner_name(owner: FocusOwner) -> &'static str {
@@ -265,8 +300,10 @@ pub fn confirm_focus_owner(previous_other_samples: u8, owner: FocusOwner) -> (Fo
     }
 }
 
-pub fn current_focus_owner() -> FocusOwner {
-    classify_focus_owner(FocusProbe::open().focused_pid(), std::process::id())
+pub fn current_focus_owner(window: &tauri::WebviewWindow) -> FocusOwner {
+    let mut probe = FocusProbe::open();
+    let ids = read_own_window_ids(window).unwrap_or_default();
+    probe.owner(&ids)
 }
 
 /// A forced element (modifier target or latched panel) is full opacity at any distance.
@@ -319,6 +356,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
         let mut ignoring: Option<bool> = None;
         let mut focus_probe = FocusProbe::open();
         let mut other_samples = 0u8;
+        let mut cached_window_ids: Option<Vec<u64>> = None;
         loop {
             std::thread::sleep(Duration::from_millis(16));
             let Some(window) = app.get_webview_window("main") else {
@@ -356,7 +394,10 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                     capture: item.capture,
                 })
                 .collect();
-            let raw_owner = classify_focus_owner(focus_probe.focused_pid(), std::process::id());
+            if cached_window_ids.is_none() {
+                cached_window_ids = read_own_window_ids(&window);
+            }
+            let raw_owner = focus_probe.owner(cached_window_ids.as_deref().unwrap_or(&[]));
             let (owner, samples) = confirm_focus_owner(other_samples, raw_owner);
             other_samples = samples;
             let focus_owner = focus_owner_name(owner);
@@ -417,26 +458,58 @@ impl FocusProbe {
         }
     }
 
-    fn focused_pid(&mut self) -> Option<u32> {
+    fn owner(&mut self, own_windows: &[u64]) -> FocusOwner {
         #[cfg(target_os = "linux")]
         {
-            x11_focus::focused_pid(self.display)
+            x11_focus::classify(self.display, own_windows)
         }
         #[cfg(target_os = "windows")]
         {
-            let _ = self;
-            windows_focus::focused_pid()
+            let _ = own_windows;
+            classify_focus_owner(windows_focus::focused_pid(), std::process::id())
         }
         #[cfg(target_os = "macos")]
         {
-            let _ = self;
-            macos_focus::focused_pid()
+            let _ = own_windows;
+            classify_focus_owner(macos_focus::focused_pid(), std::process::id())
         }
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         {
-            let _ = self;
-            None
+            let _ = (self, own_windows);
+            FocusOwner::Unknown
         }
+    }
+}
+
+/// `None` means the X id is not realized yet and the caller should retry.
+/// `Some(empty)` means this platform has no X window to compare.
+fn read_own_window_ids(window: &tauri::WebviewWindow) -> Option<Vec<u64>> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_window_ids(window)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+        Some(Vec::new())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_window_ids(window: &tauri::WebviewWindow) -> Option<Vec<u64>> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = window.window_handle().ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Xlib(handle) => {
+            let id = handle.window as u64;
+            if id == 0 {
+                None
+            } else {
+                Some(vec![id])
+            }
+        }
+        RawWindowHandle::Xcb(handle) => Some(vec![u64::from(handle.window.get())]),
+        _ => Some(Vec::new()),
     }
 }
 
@@ -449,7 +522,7 @@ impl Drop for FocusProbe {
 
 #[cfg(target_os = "linux")]
 mod x11_focus {
-    use std::ffi::{c_char, c_int, c_long, c_ulong, c_void};
+    use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
     use std::ptr;
 
     #[link(name = "X11")]
@@ -474,6 +547,14 @@ mod x11_focus {
             prop_return: *mut *mut u8,
         ) -> c_int;
         fn XFree(data: *mut c_void) -> c_int;
+        fn XQueryTree(
+            display: *mut c_void,
+            window: c_ulong,
+            root_return: *mut c_ulong,
+            parent_return: *mut c_ulong,
+            children_return: *mut *mut c_ulong,
+            nchildren_return: *mut c_uint,
+        ) -> c_int;
         fn XSync(display: *mut c_void, discard: c_int) -> c_int;
         fn XSetErrorHandler(
             handler: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,
@@ -496,32 +577,97 @@ mod x11_focus {
         }
     }
 
-    pub fn focused_pid(display: *mut c_void) -> Option<u32> {
-        if display.is_null() {
-            return None;
+    pub fn classify(display: *mut c_void, own: &[u64]) -> super::FocusOwner {
+        if display.is_null() || own.is_empty() {
+            return super::FocusOwner::Unknown;
         }
         unsafe {
             let previous = XSetErrorHandler(Some(swallow_error));
-            let pid = read_focused_pid(display);
+            let owner = read_owner(display, own);
             XSync(display, 0);
             XSetErrorHandler(previous);
-            pid
+            owner
         }
     }
 
-    unsafe fn read_focused_pid(display: *mut c_void) -> Option<u32> {
-        let active = intern(display, b"_NET_ACTIVE_WINDOW\0")?;
-        let pid_atom = intern(display, b"_NET_WM_PID\0")?;
+    unsafe fn read_owner(display: *mut c_void, own: &[u64]) -> super::FocusOwner {
+        let Some(active_atom) = intern(display, b"_NET_ACTIVE_WINDOW\0") else {
+            return super::FocusOwner::Unknown;
+        };
         let root = XDefaultRootWindow(display);
-        let window = read_ulong(display, root, active)?;
-        if window == 0 {
-            return None;
+        let active = read_ulong(display, root, active_atom).map(|id| id as u64);
+        let own_ancestors = ancestors(display, own, root);
+        let active_ancestors = match active {
+            Some(id) if id != 0 => ancestors(display, &[id], root),
+            _ => Vec::new(),
+        };
+        let transient = match active {
+            Some(id) if id != 0 => transient_chain(display, id as c_ulong, root),
+            _ => Vec::new(),
+        };
+        super::classify_window_ids(active, own, &own_ancestors, &active_ancestors, &transient)
+    }
+
+    unsafe fn ancestors(display: *mut c_void, seeds: &[u64], root: c_ulong) -> Vec<u64> {
+        let mut out = Vec::new();
+        for seed in seeds {
+            let mut current = *seed as c_ulong;
+            if current == 0 {
+                continue;
+            }
+            for _ in 0..16 {
+                let Some(parent) = query_parent(display, current) else {
+                    break;
+                };
+                if parent == 0 || parent == current || parent == root {
+                    break;
+                }
+                out.push(parent as u64);
+                current = parent;
+            }
         }
-        let pid = read_ulong(display, window, pid_atom)?;
-        if pid == 0 {
+        out
+    }
+
+    unsafe fn transient_chain(display: *mut c_void, window: c_ulong, root: c_ulong) -> Vec<u64> {
+        let Some(atom) = intern(display, b"WM_TRANSIENT_FOR\0") else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut current = window;
+        for _ in 0..8 {
+            let Some(next) = read_ulong(display, current, atom) else {
+                break;
+            };
+            if next == 0 || next == current || next == root {
+                break;
+            }
+            out.push(next as u64);
+            current = next;
+        }
+        out
+    }
+
+    unsafe fn query_parent(display: *mut c_void, window: c_ulong) -> Option<c_ulong> {
+        let mut root = 0;
+        let mut parent = 0;
+        let mut children = ptr::null_mut();
+        let mut nchildren = 0;
+        let status = XQueryTree(
+            display,
+            window,
+            &mut root,
+            &mut parent,
+            &mut children,
+            &mut nchildren,
+        );
+        if !children.is_null() {
+            XFree(children.cast());
+        }
+        if status == 0 {
             None
         } else {
-            Some(pid as u32)
+            Some(parent)
         }
     }
 
@@ -964,6 +1110,47 @@ mod tests {
         assert_eq!(classify_focus_owner(None, 10), FocusOwner::Unknown);
         assert_eq!(focus_owner_name(FocusOwner::Own), "own");
         assert_eq!(focus_owner_name(FocusOwner::Other), "other");
+    }
+
+    #[test]
+    fn another_x_window_releases_without_a_pid() {
+        let own = [10u64];
+        assert_eq!(
+            classify_window_ids(Some(10), &own, &[], &[], &[]),
+            FocusOwner::Own
+        );
+        assert_eq!(
+            classify_window_ids(Some(9), &own, &[9], &[], &[]),
+            FocusOwner::Own
+        );
+        assert_eq!(
+            classify_window_ids(Some(11), &own, &[], &[10], &[]),
+            FocusOwner::Own
+        );
+        assert_eq!(
+            classify_window_ids(Some(12), &own, &[], &[], &[10]),
+            FocusOwner::Own
+        );
+        assert_eq!(
+            classify_window_ids(Some(12), &own, &[9], &[], &[9]),
+            FocusOwner::Own
+        );
+        assert_eq!(
+            classify_window_ids(Some(99), &own, &[9], &[], &[]),
+            FocusOwner::Other
+        );
+        assert_eq!(
+            classify_window_ids(None, &own, &[], &[], &[]),
+            FocusOwner::Unknown
+        );
+        assert_eq!(
+            classify_window_ids(Some(0), &own, &[], &[], &[]),
+            FocusOwner::Unknown
+        );
+        assert_eq!(
+            classify_window_ids(Some(99), &[], &[], &[], &[]),
+            FocusOwner::Unknown
+        );
     }
 
     #[test]

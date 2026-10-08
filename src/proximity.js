@@ -171,7 +171,7 @@ export function selectBlurAction({ dropdownOpen = false, documentFocused = true 
 
 /**
  * OS focus owner, already confirmed by the native poll.
- * own: this process, including its dropdown popup. other: another process.
+ * own: this app's window, its frame, or its popup. other: another window.
  */
 export function osFocusAction(owner) {
   if (owner === "own") return "hold";
@@ -193,6 +193,16 @@ export function focusLossAction({
   if (dropdownOpen) return "hold";
   if (source === "tauri-window") return "release";
   return "debounce";
+}
+
+/**
+ * The first observed selection does not pulse. A later change pulses that orb once.
+ * `previous` is `undefined` before the first paint.
+ */
+export function nextOrbPulse(previous, activeId) {
+  const rendered = activeId ?? null;
+  if (previous === undefined) return { rendered, pulseId: null };
+  return { rendered, pulseId: rendered && rendered !== previous ? rendered : null };
 }
 
 /** Linux window managers often bind Alt+drag, which can block the overlay modifier. */

@@ -13,6 +13,7 @@ import {
   latchedElementIds,
   linuxAltWarning,
   modifierMatches,
+  nextOrbPulse,
   nextDropdownOpen,
   selectKeyOpensDropdown,
 } from "./proximity.js";
@@ -205,6 +206,19 @@ test("select blur while the page is unfocused does not close the dropdown flag",
   assert.equal(selectBlurAction({ dropdownOpen: true, documentFocused: false }), "defer");
   assert.equal(selectBlurAction({ dropdownOpen: true, documentFocused: true }), "close");
   assert.equal(selectBlurAction({ dropdownOpen: false, documentFocused: false }), "ignore");
+});
+
+test("selected orb pulses only after the first known selection changes", () => {
+  const first = nextOrbPulse(undefined, "planner");
+  assert.equal(first.pulseId, null);
+  assert.equal(first.rendered, "planner");
+  const same = nextOrbPulse(first.rendered, "planner");
+  assert.equal(same.pulseId, null);
+  const changed = nextOrbPulse(same.rendered, "coder");
+  assert.equal(changed.pulseId, "coder");
+  const cleared = nextOrbPulse(changed.rendered, null);
+  assert.equal(cleared.pulseId, null);
+  assert.equal(cleared.rendered, null);
 });
 
 test("linux alt modifier shows a warning", () => {

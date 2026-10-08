@@ -679,8 +679,8 @@ fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<()
 }
 
 #[tauri::command]
-fn focus_owner() -> String {
-    interaction::focus_owner_name(interaction::current_focus_owner()).to_string()
+fn focus_owner(window: tauri::WebviewWindow) -> String {
+    interaction::focus_owner_name(interaction::current_focus_owner(&window)).to_string()
 }
 
 #[tauri::command]

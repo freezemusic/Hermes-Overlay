@@ -32,4 +32,18 @@ test("avatars are translucent orbs with tunable glow", () => {
   assert.doesNotMatch(busy, /box-shadow|filter:|blur\(/);
   assert.doesNotMatch(css, /\.bot-btn\.error \{[^}]*box-shadow/s);
   assert.doesNotMatch(css, /@keyframes bot-pulse/);
+  const orb = css.slice(css.indexOf(".bot-btn {"), css.indexOf(".bot-btn::before"));
+  assert.match(orb, /will-change:\s*opacity/);
+  assert.match(orb, /contain:\s*layout style/);
+  assert.doesNotMatch(orb, /box-shadow/);
+  assert.match(css, /\.bot-btn::after,\s*\.active-avatar::after,\s*\.float-avatar::after \{[^}]*radial-gradient\(/s);
+  assert.doesNotMatch(
+    css.slice(css.indexOf(".bot-btn::after"), css.indexOf(".bot-btn:hover")),
+    /box-shadow|filter:/,
+  );
+  assert.match(css, /\.bot-btn\.active::after \{[^}]*radial-gradient\(/s);
+  assert.doesNotMatch(css, /\.bot-btn\.active::before \{[^}]*animation:/s);
+  assert.match(css, /\.bot-btn\.orb-enter::before,\s*\.bot-btn\.orb-enter\.busy::before \{[^}]*orb-pulse[^;]*\b2\b/s);
+  assert.match(css, /html\.platform-linux \{[^}]*--panel-bg:\s*rgba\(7,\s*8,\s*28,\s*0\.90\)/s);
+  assert.match(css, /html\.platform-linux \{[^}]*--panel-bg-solid:\s*rgba\(8,\s*8,\s*20,\s*0\.90\)/s);
 });

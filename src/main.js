@@ -13,6 +13,7 @@ import {
   osFocusAction,
   selectBlurAction,
   linuxAltWarning,
+  nextOrbPulse,
   modifierLabel,
   modifierMatches,
   nextDropdownOpen,
@@ -242,33 +243,64 @@ function clearConnectionBanner() {
   setBanner("");
 }
 
+/** undefined until the first paint, so the initial selection does not pulse. */
+let renderedActiveId;
+
 function renderBots() {
   const rail = $("#bot-rail");
-  rail.innerHTML = "";
   const positions = edgePositions(Math.max(state.bots.length, 1));
+  const pulse = nextOrbPulse(renderedActiveId, state.activeId);
+  renderedActiveId = pulse.rendered;
+  const pulseId = pulse.pulseId;
+  const keep = new Set(state.bots.map((bot) => bot.id));
+  const existing = new Map();
+  rail.querySelectorAll(".bot-btn").forEach((el) => {
+    if (!keep.has(el.dataset.botId)) el.remove();
+    else existing.set(el.dataset.botId, el);
+  });
   state.bots.forEach((bot, i) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "bot-btn" + (bot.id === state.activeId ? " active" : "");
-    if (state.busy.has(bot.id)) btn.classList.add("busy");
-    const thread = threadFor(bot.id);
-    if (thread.statusState === "error") btn.classList.add("error");
+    let btn = existing.get(bot.id);
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.botId = bot.id;
+      btn.dataset.hitId = `bot:${bot.id}`;
+      btn.addEventListener("click", () => selectBot(bot.id));
+      btn.addEventListener("animationend", (event) => {
+        if (event.animationName === "orb-pulse") btn.classList.remove("orb-enter");
+      });
+      const label = document.createElement("span");
+      label.className = "bot-label";
+      btn.appendChild(label);
+    }
+    const keepEnter = btn.classList.contains("orb-enter") && bot.id === state.activeId;
+    const classes = ["bot-btn"];
+    if (bot.id === state.activeId) classes.push("active");
+    if (state.busy.has(bot.id)) classes.push("busy");
+    if (threadFor(bot.id).statusState === "error") classes.push("error");
+    if (bot.id === pulseId || keepEnter) classes.push("orb-enter");
+    btn.className = classes.join(" ");
     btn.style.background = "";
+    btn.style.top = "";
+    btn.style.right = "";
+    btn.style.bottom = "";
+    btn.style.left = "";
+    btn.style.transform = "";
     btn.style.setProperty("--bot-color", bot.color);
-    btn.dataset.botId = bot.id;
-    btn.dataset.hitId = `bot:${bot.id}`;
+    Object.assign(btn.style, positions[i].style);
     btn.setAttribute("aria-label", bot.name);
     btn.title = bot.name;
-    Object.assign(btn.style, positions[i].style);
-    btn.textContent = bot.short;
-    const label = document.createElement("span");
-    label.className = "bot-label";
-    label.textContent = bot.name;
-    btn.appendChild(label);
-    btn.addEventListener("click", () => selectBot(bot.id));
+    setBotLetter(btn, bot.short);
+    btn.querySelector(".bot-label").textContent = bot.name;
     rail.appendChild(btn);
   });
   scheduleHitSync();
+}
+
+function setBotLetter(btn, letter) {
+  const text = [...btn.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);
+  if (text) text.nodeValue = letter;
+  else btn.insertBefore(document.createTextNode(letter || ""), btn.firstChild);
 }
 
 function renderChat() {
@@ -931,15 +963,28 @@ function applyFrames(frames, interactiveAll = false) {
 const cursorPoint = { x: -10000, y: -10000 };
 let blurReleaseTimer = 0;
 
+function dismissModifierDropdown() {
+  const select = $("#interaction-modifier");
+  if (!select) return;
+  // GTK may already have blurred the select when the popup opened, so blur()
+  // alone does not drop the grab. Disabling the control closes it.
+  select.blur();
+  const disabled = select.disabled;
+  select.disabled = true;
+  select.disabled = disabled;
+}
+
 function finishInteractiveRelease() {
   window.clearTimeout(blurReleaseTimer);
   blurReleaseTimer = 0;
+  const dropdownWasOpen = state.dropdownOpen;
   state.dropdownOpen = false;
   state.windowFocused = false;
   state.pointerHitId = "";
   state.heldKeys.clear();
   const active = document.activeElement;
   if (isTextField(active)) active.blur();
+  if (dropdownWasOpen) dismissModifierDropdown();
   syncLatch();
 }
 
@@ -1103,6 +1148,10 @@ async function boot() {
   } catch (err) {
     useMock(`讀唔到設定，改用示範模式：${err}`);
   }
+}
+
+if (linuxAltWarning(`${navigator.platform || ""} ${navigator.userAgent || ""}`)) {
+  document.documentElement.classList.add("platform-linux");
 }
 
 window.addEventListener("DOMContentLoaded", boot);
