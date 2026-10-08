@@ -9,9 +9,13 @@ import {
   colorForIndex,
   elementStates,
   inkFor,
+  latchOnWindowBlur,
+  latchWhenBlurDelayEnds,
   latchedElementIds,
   modifierLabel,
   modifierMatches,
+  selectHoldsInteractiveLock,
+  BLUR_RELEASE_MS,
 } from "./proximity.js";
 
 const MOCK_BOTS = [
@@ -624,6 +628,7 @@ function openSettings() {
   fillSettings(state.settings);
   $("#settings").hidden = false;
   syncLatch();
+  scheduleHitSync();
   $("#settings-status").textContent = inTauri()
     ? "儲存之後先會用新設定。測試連線讀已儲存嘅金鑰。"
     : "瀏覽器預覽改唔到鑰匙圈。請用 npm run tauri dev。";
@@ -813,15 +818,15 @@ function syncLatch() {
 
 function collectHits() {
   const rects = [];
-  const push = (id, el) => {
+  const push = (id, el, z = 0) => {
     if (!el || el.hidden || el.closest("[hidden]")) return;
     const box = el.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
-    rects.push({ id, x: box.x, y: box.y, w: box.width, h: box.height });
+    rects.push({ id, x: box.x, y: box.y, w: box.width, h: box.height, z });
   };
-  push("center", $("#center-panel"));
-  push("settings", document.querySelector(".settings-card"));
-  push("float", $("#float-bubble"));
+  push("center", $("#center-panel"), 0);
+  push("settings", document.querySelector(".settings-card"), 30);
+  push("float", $("#float-bubble"), 10);
   document.querySelectorAll(".bot-btn").forEach((el) => {
     if (el.dataset.hitId) push(el.dataset.hitId, el);
   });
@@ -842,6 +847,7 @@ function scheduleHitSync() {
         y: Math.round(rect.y),
         w: Math.round(rect.w),
         h: Math.round(rect.h),
+        z: rect.z || 0,
       })),
     );
     if (key !== lastHits) {
@@ -868,6 +874,50 @@ function applyFrames(frames, interactiveAll = false) {
 }
 
 const cursorPoint = { x: -10000, y: -10000 };
+let blurReleaseTimer = 0;
+
+function activeInLatchedPanel(el = document.activeElement) {
+  const host = el && el.closest ? el.closest("[data-hit-id]") : null;
+  return {
+    tagName: el && el.tagName ? el.tagName : "",
+    insideLatchedPanel: !!(host && state.latchedIds.includes(host.dataset.hitId)),
+  };
+}
+
+function finishInteractiveRelease() {
+  state.windowFocused = false;
+  state.pointerHitId = "";
+  state.heldKeys.clear();
+  const active = document.activeElement;
+  if (isTextField(active)) active.blur();
+  syncLatch();
+}
+
+function releaseInteractiveLock() {
+  const active = activeInLatchedPanel();
+  if (selectHoldsInteractiveLock(active.tagName, active.insideLatchedPanel)) {
+    window.clearTimeout(blurReleaseTimer);
+    blurReleaseTimer = 0;
+    return;
+  }
+  const decision = latchOnWindowBlur(active);
+  if (!decision.armDelay) return;
+  window.clearTimeout(blurReleaseTimer);
+  blurReleaseTimer = window.setTimeout(() => {
+    blurReleaseTimer = 0;
+    const now = activeInLatchedPanel();
+    const selectHolds = selectHoldsInteractiveLock(now.tagName, now.insideLatchedPanel);
+    if (!latchWhenBlurDelayEnds({ focusReturned: false, selectHolds })) return;
+    finishInteractiveRelease();
+  }, BLUR_RELEASE_MS);
+}
+
+function noteWindowFocus() {
+  window.clearTimeout(blurReleaseTimer);
+  blurReleaseTimer = 0;
+  state.windowFocused = true;
+  syncLatch();
+}
 
 function paintLocalProximity(rects) {
   const list = rects || collectHits();
@@ -883,20 +933,6 @@ function paintLocalProximity(rects) {
     fadeEnabled: cfg.fadeEnabled,
   });
   applyFrames(frames);
-}
-
-function releaseInteractiveLock() {
-  state.windowFocused = false;
-  state.pointerHitId = "";
-  state.heldKeys.clear();
-  const active = document.activeElement;
-  if (isTextField(active)) active.blur();
-  syncLatch();
-}
-
-function noteWindowFocus() {
-  state.windowFocused = true;
-  syncLatch();
 }
 
 function setupProximity() {

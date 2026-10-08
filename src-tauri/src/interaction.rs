@@ -15,6 +15,8 @@ pub struct HitRect {
     pub y: f64,
     pub w: f64,
     pub h: f64,
+    /// Higher paints above. Used when two rects both contain the cursor.
+    pub z: i32,
 }
 
 pub struct InteractionHub {
@@ -108,32 +110,55 @@ pub const HIT_MARGIN_PX: f64 = 12.0;
 
 /// The single element whose rect (plus margin) contains the cursor.
 /// A point inside a rect beats a neighbour that is only within the margin.
-/// Equal distances prefer the smaller rect.
+/// When distances tie, a latched panel wins, then the higher z-order, then the smaller rect.
 pub fn element_under_cursor<'a>(
     cursor: Option<(f64, f64)>,
     rects: &'a [HitRect],
     margin: f64,
+    latched_ids: &[String],
 ) -> Option<&'a HitRect> {
     let (x, y) = cursor?;
-    let mut best: Option<(usize, f64, f64)> = None;
+    let mut best: Option<usize> = None;
     for (index, rect) in rects.iter().enumerate() {
         let distance = distance_to_rect(x, y, rect);
         if distance > margin {
             continue;
         }
-        let area = rect.w * rect.h;
         let replace = match best {
             None => true,
-            Some((_, best_distance, best_area)) => {
-                distance < best_distance
-                    || ((distance - best_distance).abs() <= f64::EPSILON && area < best_area)
-            }
+            Some(best_index) => prefers_hit(rect, distance, latched_ids, &rects[best_index], x, y),
         };
         if replace {
-            best = Some((index, distance, area));
+            best = Some(index);
         }
     }
-    best.map(|(index, _, _)| &rects[index])
+    best.map(|index| &rects[index])
+}
+
+fn prefers_hit(
+    candidate: &HitRect,
+    candidate_distance: f64,
+    latched_ids: &[String],
+    current: &HitRect,
+    x: f64,
+    y: f64,
+) -> bool {
+    let current_distance = distance_to_rect(x, y, current);
+    if candidate_distance < current_distance - f64::EPSILON {
+        return true;
+    }
+    if candidate_distance > current_distance + f64::EPSILON {
+        return false;
+    }
+    let candidate_latched = id_listed(latched_ids, &candidate.id);
+    let current_latched = id_listed(latched_ids, &current.id);
+    if candidate_latched != current_latched {
+        return candidate_latched;
+    }
+    if candidate.z != current.z {
+        return candidate.z > current.z;
+    }
+    candidate.w * candidate.h < current.w * current.h
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -163,7 +188,8 @@ pub fn interaction_frame(
     margin: f64,
     cfg: &InteractionConfig,
 ) -> Vec<ElementFrame> {
-    let under = element_under_cursor(cursor, rects, margin).map(|rect| rect.id.clone());
+    let under =
+        element_under_cursor(cursor, rects, margin, latched_ids).map(|rect| rect.id.clone());
     rects
         .iter()
         .map(|rect| {
@@ -314,6 +340,7 @@ mod tests {
             y: 100.0,
             w: 40.0,
             h: 20.0,
+            z: 0,
         }
     }
 
@@ -352,6 +379,7 @@ mod tests {
                 y: 0.0,
                 w: 40.0,
                 h: 40.0,
+                z: 0,
             },
             HitRect {
                 id: "b".into(),
@@ -359,6 +387,7 @@ mod tests {
                 y: 0.0,
                 w: 40.0,
                 h: 40.0,
+                z: 0,
             },
             HitRect {
                 id: "center".into(),
@@ -366,6 +395,7 @@ mod tests {
                 y: 80.0,
                 w: 120.0,
                 h: 40.0,
+                z: 0,
             },
         ]
     }
@@ -482,5 +512,64 @@ mod tests {
         assert!(!outside[0].capture && outside[0].opacity < 1.0);
         assert!(!unheld[0].capture && unheld[0].opacity < 1.0);
         assert!(!missing[0].capture);
+    }
+
+    fn overlap_panels() -> Vec<HitRect> {
+        vec![
+            HitRect {
+                id: "center".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 400.0,
+                h: 500.0,
+                z: 0,
+            },
+            HitRect {
+                id: "settings".into(),
+                x: 360.0,
+                y: 40.0,
+                w: 420.0,
+                h: 640.0,
+                z: 30,
+            },
+        ]
+    }
+
+    #[test]
+    fn overlap_prefers_latched_settings_then_higher_z() {
+        let rects = overlap_panels();
+        let cfg = fade_cfg();
+        let strip = Some((380.0, 80.0));
+        let both = vec!["center".to_string(), "settings".to_string()];
+        let latched = interaction_frame(false, &both, strip, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&latched, "settings").capture);
+        assert!(!frame_of(&latched, "center").capture);
+        assert_eq!(frame_of(&latched, "settings").opacity, 1.0);
+
+        let only_settings = interaction_frame(
+            false,
+            &["settings".to_string()],
+            strip,
+            &rects,
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(frame_of(&only_settings, "settings").capture);
+        assert!(!frame_of(&only_settings, "center").capture);
+
+        let by_z = interaction_frame(true, &[], strip, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&by_z, "settings").capture);
+        assert!(!frame_of(&by_z, "center").capture);
+
+        let latched_center = interaction_frame(
+            false,
+            &["center".to_string()],
+            strip,
+            &rects,
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(frame_of(&latched_center, "center").capture);
+        assert!(!frame_of(&latched_center, "settings").capture);
     }
 }

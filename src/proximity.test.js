@@ -6,8 +6,11 @@ import {
   elementOpacity,
   elementStates,
   inkFor,
+  latchOnWindowBlur,
+  latchWhenBlurDelayEnds,
   latchedElementIds,
   modifierMatches,
+  selectHoldsInteractiveLock,
 } from "./proximity.js";
 
 test("new bot colours walk the palette", () => {
@@ -97,4 +100,59 @@ test("interactive lock names one panel and follows window focus", () => {
   assert.deepEqual(latchedElementIds({ textFocused: true, windowFocused: false }), []);
   assert.deepEqual(latchedElementIds({ settingsOpen: true, windowFocused: false }), []);
   assert.deepEqual(latchedElementIds({}), []);
+});
+
+const overlapPanels = [
+  { id: "center", x: 0, y: 0, w: 400, h: 500, z: 0 },
+  { id: "settings", x: 360, y: 40, w: 420, h: 640, z: 30 },
+];
+
+test("overlap prefers latched settings, then higher z-order", () => {
+  const cursor = { x: 380, y: 80 };
+  const both = elementStates({
+    held: false,
+    latchedIds: ["center", "settings"],
+    cursor,
+    rects: overlapPanels,
+    ...fadeOpts,
+  });
+  assert.equal(byId(both, "settings").capture, true);
+  assert.equal(byId(both, "center").capture, false);
+
+  const onlySettings = elementStates({
+    held: false,
+    latchedIds: ["settings"],
+    cursor,
+    rects: overlapPanels,
+    ...fadeOpts,
+  });
+  assert.equal(byId(onlySettings, "settings").capture, true);
+  assert.equal(byId(onlySettings, "center").capture, false);
+
+  const byZ = elementStates({ held: true, latchedIds: [], cursor, rects: overlapPanels, ...fadeOpts });
+  assert.equal(byId(byZ, "settings").capture, true);
+  assert.equal(byId(byZ, "center").capture, false);
+
+  const latchedCenter = elementStates({
+    held: false,
+    latchedIds: ["center"],
+    cursor,
+    rects: overlapPanels,
+    ...fadeOpts,
+  });
+  assert.equal(byId(latchedCenter, "center").capture, true);
+  assert.equal(byId(latchedCenter, "settings").capture, false);
+});
+
+test("select inside the latched panel does not release on blur", () => {
+  const held = latchOnWindowBlur({ tagName: "SELECT", insideLatchedPanel: true });
+  assert.equal(held.release, false);
+  assert.equal(held.armDelay, false);
+  assert.equal(selectHoldsInteractiveLock("select", true), true);
+
+  const leaving = latchOnWindowBlur({ tagName: "INPUT", insideLatchedPanel: true });
+  assert.equal(leaving.armDelay, true);
+  assert.equal(latchWhenBlurDelayEnds({ focusReturned: true, selectHolds: false }), false);
+  assert.equal(latchWhenBlurDelayEnds({ focusReturned: false, selectHolds: true }), false);
+  assert.equal(latchWhenBlurDelayEnds({ focusReturned: false, selectHolds: false }), true);
 });

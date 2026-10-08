@@ -56,22 +56,30 @@ export function elementOpacity({ solid, distance, fadeDistance, minOpacity, fade
 export const HIT_MARGIN_PX = 12;
 
 /** One element under the cursor. Inside a rect beats margin-only neighbours. */
-export function elementUnderCursor(cursor, rects, margin = HIT_MARGIN_PX) {
+export function elementUnderCursor(cursor, rects, margin = HIT_MARGIN_PX, latchedIds = []) {
   if (!cursor) return null;
   let best = null;
   for (const rect of rects) {
     const distance = distanceToRect(cursor.x, cursor.y, rect);
     if (distance > margin) continue;
-    const area = rect.w * rect.h;
-    if (
-      !best ||
-      distance < best.distance ||
-      (distance === best.distance && area < best.area)
-    ) {
-      best = { id: rect.id, distance, area };
-    }
+    const next = {
+      id: rect.id,
+      distance,
+      area: rect.w * rect.h,
+      latched: latchedIds.includes(rect.id),
+      z: rect.z || 0,
+    };
+    if (!best || preferHit(next, best)) best = next;
   }
   return best ? best.id : null;
+}
+
+function preferHit(candidate, current) {
+  if (candidate.distance < current.distance - 1e-9) return true;
+  if (candidate.distance > current.distance + 1e-9) return false;
+  if (candidate.latched !== current.latched) return candidate.latched;
+  if (candidate.z !== current.z) return candidate.z > current.z;
+  return candidate.area < current.area;
 }
 
 /**
@@ -88,7 +96,7 @@ export function elementStates({
   minOpacity = 0.18,
   fadeEnabled = true,
 } = {}) {
-  const under = elementUnderCursor(cursor, rects, margin);
+  const under = elementUnderCursor(cursor, rects, margin, latchedIds);
   return rects.map((rect) => {
     const latched = latchedIds.includes(rect.id);
     const targeted = held && under === rect.id;
@@ -125,6 +133,26 @@ export function latchedElementIds({
   if (textFocused && !textInSettings) ids.push("center");
   if (pointerHitId && !ids.includes(pointerHitId)) ids.push(pointerHitId);
   return ids;
+}
+
+/** Native dropdowns steal the window while the <select> stays active. */
+export const BLUR_RELEASE_MS = 150;
+
+export function selectHoldsInteractiveLock(tagName, insideLatchedPanel) {
+  return String(tagName || "").toUpperCase() === "SELECT" && !!insideLatchedPanel;
+}
+
+/** A select inside the latched panel keeps the lock. Any other blur waits out a short delay. */
+export function latchOnWindowBlur({ tagName = "", insideLatchedPanel = false } = {}) {
+  if (selectHoldsInteractiveLock(tagName, insideLatchedPanel)) {
+    return { release: false, armDelay: false };
+  }
+  return { release: false, armDelay: true };
+}
+
+/** After the delay, release only if focus did not return and a select is not holding the panel. */
+export function latchWhenBlurDelayEnds({ focusReturned = false, selectHolds = false } = {}) {
+  return !focusReturned && !selectHolds;
 }
 
 export function modifierMatches(kind, key) {
