@@ -7,10 +7,9 @@
 import {
   PALETTE,
   colorForIndex,
-  distanceToRect,
-  elementOpacity,
+  elementStates,
   inkFor,
-  interactionLatched,
+  latchedElementIds,
   modifierLabel,
   modifierMatches,
 } from "./proximity.js";
@@ -203,9 +202,9 @@ const state = {
     minOpacity: 0.18,
     supported: true,
   },
-  pointerInside: false,
+  pointerHitId: "",
   heldKeys: new Set(),
-  latched: false,
+  latchedIds: [],
   windowFocused: true,
 };
 
@@ -582,7 +581,7 @@ function applyInteraction(raw) {
   if (hint) {
     const name = modifierLabel(state.interaction.modifier);
     hint.textContent = state.interaction.supported
-      ? `按住 ${name}：所有元素即刻實色同可點擊。放開就回復穿透同淡出。`
+      ? `按住 ${name}：游標下面嗰個元素先會實色同可點擊。`
       : "呢個環境讀唔到全域游標或修飾鍵，所以保持可點擊，唔會穿透。";
   }
 }
@@ -789,17 +788,23 @@ function settingsOpen() {
   return !!layer && !layer.hidden;
 }
 
-function syncLatch() {
-  const latched = interactionLatched({
+function currentLatchedIds() {
+  const active = document.activeElement;
+  return latchedElementIds({
     windowFocused: state.windowFocused,
-    textFocused: isTextField(document.activeElement),
+    textFocused: isTextField(active),
+    textInSettings: !!(active && active.closest && active.closest("#settings")),
     settingsOpen: settingsOpen(),
-    pointerInside: state.pointerInside,
+    pointerHitId: state.pointerHitId,
   });
-  state.latched = latched;
+}
+
+function syncLatch() {
+  const ids = currentLatchedIds();
+  state.latchedIds = ids;
   if (inTauri()) {
     import("@tauri-apps/api/core")
-      .then(({ invoke }) => invoke("set_interaction_latch", { latched }))
+      .then(({ invoke }) => invoke("set_interaction_latch", { ids }))
       .catch(() => {});
     return;
   }
@@ -851,48 +856,38 @@ function scheduleHitSync() {
   });
 }
 
-function applyOpacities(solid, opacities) {
-  const map = new Map((opacities || []).map((item) => [item.id, item.opacity]));
+function applyFrames(frames, interactiveAll = false) {
+  const map = new Map((frames || []).map((item) => [item.id, item]));
   document.querySelectorAll("[data-hit-id]").forEach((el) => {
     const known = map.get(el.dataset.hitId);
-    const value = solid ? 1 : known == null ? 1 : known;
+    const value = known == null ? 1 : known.opacity;
     el.style.setProperty("--hit-opacity", String(value));
+    if (interactiveAll || known?.capture) el.dataset.hitCapture = "1";
+    else delete el.dataset.hitCapture;
   });
-  if (!inTauri()) {
-    document.documentElement.classList.toggle("overlay-passthrough", !solid);
-    document.documentElement.classList.toggle("overlay-solid", !!solid);
-  }
 }
 
 const cursorPoint = { x: -10000, y: -10000 };
 
-function localSolid() {
-  const held = [...state.heldKeys].some((key) => modifierMatches(state.interaction.modifier, key));
-  return held || state.latched;
-}
-
 function paintLocalProximity(rects) {
   const list = rects || collectHits();
-  const solid = localSolid();
   const cfg = state.interaction;
-  applyOpacities(
-    solid,
-    list.map((rect) => ({
-      id: rect.id,
-      opacity: elementOpacity({
-        solid,
-        distance: distanceToRect(cursorPoint.x, cursorPoint.y, rect),
-        fadeDistance: cfg.fadeDistance,
-        minOpacity: cfg.minOpacity,
-        fadeEnabled: cfg.fadeEnabled,
-      }),
-    })),
-  );
+  const held = [...state.heldKeys].some((key) => modifierMatches(state.interaction.modifier, key));
+  const frames = elementStates({
+    held,
+    latchedIds: state.latchedIds,
+    cursor: { x: cursorPoint.x, y: cursorPoint.y },
+    rects: list,
+    fadeDistance: cfg.fadeDistance,
+    minOpacity: cfg.minOpacity,
+    fadeEnabled: cfg.fadeEnabled,
+  });
+  applyFrames(frames);
 }
 
 function releaseInteractiveLock() {
   state.windowFocused = false;
-  state.pointerInside = false;
+  state.pointerHitId = "";
   state.heldKeys.clear();
   const active = document.activeElement;
   if (isTextField(active)) active.blur();
@@ -907,12 +902,15 @@ function noteWindowFocus() {
 function setupProximity() {
   document.addEventListener("pointerdown", (event) => {
     const hit = event.target.closest?.("[data-hit-id]");
-    if (hit) state.pointerInside = true;
-    else if (isTextField(document.activeElement)) document.activeElement.blur();
+    if (hit) state.pointerHitId = hit.dataset.hitId || "";
+    else {
+      state.pointerHitId = "";
+      if (isTextField(document.activeElement)) document.activeElement.blur();
+    }
     syncLatch();
   });
   document.addEventListener("pointerup", () => {
-    state.pointerInside = false;
+    state.pointerHitId = "";
     syncLatch();
   });
   document.addEventListener("focusin", () => syncLatch());
@@ -935,10 +933,10 @@ function setupProximity() {
         if (payload.supported === false) {
           state.interaction.supported = false;
           applyInteraction({ ...state.interaction, fade_enabled: state.interaction.fadeEnabled, supported: false });
-          applyOpacities(true, []);
+          applyFrames([], true);
           return;
         }
-        applyOpacities(!!payload.solid, payload.opacities || []);
+        applyFrames(payload.opacities || []);
       });
     });
     return;

@@ -1,11 +1,9 @@
 //! Rainmeter-style hit testing: click-through by default, proximity fade, and a
-//! held modifier that makes every overlay element solid. Clicks are accepted
-//! only inside a hit rect (plus a small margin).
+//! held modifier that solids only the element under the cursor.
 
 use crate::config::InteractionConfig;
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -21,7 +19,8 @@ pub struct HitRect {
 
 pub struct InteractionHub {
     pub rects: Mutex<Vec<HitRect>>,
-    pub latched: AtomicBool,
+    /// Element ids that stay solid while focused (center chat, settings card).
+    pub latched_ids: Mutex<Vec<String>>,
     pub config: Mutex<InteractionConfig>,
     pub supported: bool,
 }
@@ -30,7 +29,7 @@ impl InteractionHub {
     pub fn new() -> Self {
         Self {
             rects: Mutex::new(Vec::new()),
-            latched: AtomicBool::new(false),
+            latched_ids: Mutex::new(Vec::new()),
             config: Mutex::new(InteractionConfig::default()),
             supported: platform_supports_global_input(),
         }
@@ -104,30 +103,88 @@ pub fn opacity_for_distance(
     min_opacity + (1.0 - min_opacity) * (distance / fade_distance)
 }
 
-/// Extra CSS pixels around a hit rect that still accept a click.
+/// Extra CSS pixels around a hit rect that still count as "under the cursor".
 pub const HIT_MARGIN_PX: f64 = 12.0;
 
-pub fn cursor_hits_any(px: f64, py: f64, rects: &[HitRect], margin: f64) -> bool {
-    rects
-        .iter()
-        .any(|rect| distance_to_rect(px, py, rect) <= margin)
+/// The single element whose rect (plus margin) contains the cursor.
+/// A point inside a rect beats a neighbour that is only within the margin.
+/// Equal distances prefer the smaller rect.
+pub fn element_under_cursor<'a>(
+    cursor: Option<(f64, f64)>,
+    rects: &'a [HitRect],
+    margin: f64,
+) -> Option<&'a HitRect> {
+    let (x, y) = cursor?;
+    let mut best: Option<(usize, f64, f64)> = None;
+    for (index, rect) in rects.iter().enumerate() {
+        let distance = distance_to_rect(x, y, rect);
+        if distance > margin {
+            continue;
+        }
+        let area = rect.w * rect.h;
+        let replace = match best {
+            None => true,
+            Some((_, best_distance, best_area)) => {
+                distance < best_distance
+                    || ((distance - best_distance).abs() <= f64::EPSILON && area < best_area)
+            }
+        };
+        if replace {
+            best = Some((index, distance, area));
+        }
+    }
+    best.map(|(index, _, _)| &rects[index])
 }
 
-/// Solid or latched overlays only capture the pointer inside a padded hit rect.
-/// A missing cursor stays click-through so a failed query cannot swallow the screen.
-pub fn should_capture(
-    interactive: bool,
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElementFrame {
+    pub id: String,
+    pub opacity: f64,
+    pub capture: bool,
+}
+
+fn round_opacity(opacity: f64) -> f64 {
+    (opacity * 100.0).round() / 100.0
+}
+
+fn id_listed(ids: &[String], id: &str) -> bool {
+    ids.iter().any(|item| item == id)
+}
+
+/// Per-element Rainmeter frame.
+/// Holding the modifier solids and captures only the element under the cursor.
+/// Latched ids stay solid; they capture only while the cursor is over that element.
+/// A missing cursor does not capture and does not change fade.
+pub fn interaction_frame(
+    held: bool,
+    latched_ids: &[String],
     cursor: Option<(f64, f64)>,
     rects: &[HitRect],
     margin: f64,
-) -> bool {
-    let Some((x, y)) = cursor else {
-        return false;
-    };
-    interactive && cursor_hits_any(x, y, rects, margin)
+    cfg: &InteractionConfig,
+) -> Vec<ElementFrame> {
+    let under = element_under_cursor(cursor, rects, margin).map(|rect| rect.id.clone());
+    rects
+        .iter()
+        .map(|rect| {
+            let latched = id_listed(latched_ids, &rect.id);
+            let targeted = held && under.as_deref() == Some(rect.id.as_str());
+            let forced = latched || targeted;
+            let opacity = match cursor {
+                Some((x, y)) => element_opacity(forced, distance_to_rect(x, y, rect), cfg),
+                None => 1.0,
+            };
+            let capture = under.as_deref() == Some(rect.id.as_str()) && (held || latched);
+            ElementFrame {
+                id: rect.id.clone(),
+                opacity: round_opacity(opacity),
+                capture,
+            }
+        })
+        .collect()
 }
 
-/// Modifier held (or the input/settings latch) forces every element to full opacity.
+/// A forced element (modifier target or latched panel) is full opacity at any distance.
 pub fn element_opacity(solid: bool, distance: f64, cfg: &InteractionConfig) -> f64 {
     if solid {
         return 1.0;
@@ -144,6 +201,7 @@ pub fn element_opacity(solid: bool, distance: f64, cfg: &InteractionConfig) -> f
 struct OpacityItem {
     id: String,
     opacity: f64,
+    capture: bool,
 }
 
 pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
@@ -184,44 +242,38 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .clone();
-            let latched = hub.latched.load(Ordering::Relaxed);
+            let latched_ids = hub
+                .latched_ids
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone();
             let held = modifier_held(&device.get_keys(), &cfg.modifier);
-            let solid = held || latched;
             let rects = hub
                 .rects
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .clone();
             let cursor = cursor_in_view(&window);
-            let ignore = !should_capture(solid, cursor, &rects, HIT_MARGIN_PX);
+            let frames = interaction_frame(held, &latched_ids, cursor, &rects, HIT_MARGIN_PX, &cfg);
+            let ignore = !frames.iter().any(|item| item.capture);
             if ignoring != Some(ignore) {
                 if window.set_ignore_cursor_events(ignore).is_ok() {
                     ignoring = Some(ignore);
                 }
             }
-            let mut items = Vec::with_capacity(rects.len());
-            for rect in &rects {
-                let opacity = if solid {
-                    1.0
-                } else if let Some((x, y)) = cursor {
-                    let distance = distance_to_rect(x, y, rect);
-                    element_opacity(false, distance, &cfg)
-                } else {
-                    1.0
-                };
-                items.push(OpacityItem {
-                    id: rect.id.clone(),
-                    opacity: (opacity * 100.0).round() / 100.0,
-                });
-            }
-            let signature = format!(
-                "{solid}:{}",
-                items
-                    .iter()
-                    .map(|item| format!("{}={:.2}", item.id, item.opacity))
-                    .collect::<Vec<_>>()
-                    .join("|")
-            );
+            let items: Vec<OpacityItem> = frames
+                .iter()
+                .map(|item| OpacityItem {
+                    id: item.id.clone(),
+                    opacity: item.opacity,
+                    capture: item.capture,
+                })
+                .collect();
+            let signature = items
+                .iter()
+                .map(|item| format!("{}={:.2}:{}", item.id, item.opacity, item.capture))
+                .collect::<Vec<_>>()
+                .join("|");
             if signature == last_signature {
                 continue;
             }
@@ -231,7 +283,6 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 serde_json::json!({
                     "type": "proximity",
                     "supported": true,
-                    "solid": solid,
                     "opacities": items,
                 }),
             );
@@ -284,14 +335,48 @@ mod tests {
         assert!((distance_to_rect(100.0, 80.0, &rect) - 20.0).abs() < 0.001);
     }
 
-    #[test]
-    fn held_modifier_is_solid_regardless_of_distance() {
-        let cfg = InteractionConfig {
+    fn fade_cfg() -> InteractionConfig {
+        InteractionConfig {
             modifier: "ctrl".into(),
             fade_enabled: true,
             fade_distance: 120.0,
             min_opacity: 0.18,
-        };
+        }
+    }
+
+    fn bots() -> Vec<HitRect> {
+        vec![
+            HitRect {
+                id: "a".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 40.0,
+            },
+            HitRect {
+                id: "b".into(),
+                x: 100.0,
+                y: 0.0,
+                w: 40.0,
+                h: 40.0,
+            },
+            HitRect {
+                id: "center".into(),
+                x: 0.0,
+                y: 80.0,
+                w: 120.0,
+                h: 40.0,
+            },
+        ]
+    }
+
+    fn frame_of<'a>(frames: &'a [ElementFrame], id: &str) -> &'a ElementFrame {
+        frames.iter().find(|item| item.id == id).unwrap()
+    }
+
+    #[test]
+    fn forced_solid_element_ignores_distance() {
+        let cfg = fade_cfg();
         assert_eq!(element_opacity(true, 0.0, &cfg), 1.0);
         assert_eq!(element_opacity(true, 10_000.0, &cfg), 1.0);
         assert!((element_opacity(false, 0.0, &cfg) - 0.18).abs() < 0.001);
@@ -302,17 +387,100 @@ mod tests {
     }
 
     #[test]
-    fn capture_only_inside_padded_hit_rects() {
+    fn modifier_far_from_elements_changes_nothing_and_does_not_capture() {
+        let rects = bots();
+        let cfg = fade_cfg();
+        let far = Some((1000.0, 1000.0));
+        let held = interaction_frame(true, &[], far, &rects, HIT_MARGIN_PX, &cfg);
+        let idle = interaction_frame(false, &[], far, &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(held, idle);
+        assert!(held.iter().all(|item| !item.capture));
+        assert!(held.iter().all(|item| (item.opacity - 1.0).abs() < 0.001));
+
+        let outside_margin = Some((70.0, 20.0));
+        let near = interaction_frame(true, &[], outside_margin, &rects, HIT_MARGIN_PX, &cfg);
+        let faded = interaction_frame(false, &[], outside_margin, &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(near, faded);
+        assert!(frame_of(&near, "a").opacity < 1.0);
+        assert!(!frame_of(&near, "a").capture);
+    }
+
+    #[test]
+    fn modifier_solids_only_the_element_under_the_cursor() {
+        let rects = bots();
+        let cfg = fade_cfg();
+        let over_a = interaction_frame(true, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(frame_of(&over_a, "a").opacity, 1.0);
+        assert!(frame_of(&over_a, "a").capture);
+        assert!(frame_of(&over_a, "b").opacity < 1.0);
+        assert!(!frame_of(&over_a, "b").capture);
+        assert!(frame_of(&over_a, "center").opacity < 1.0);
+        assert!(!frame_of(&over_a, "center").capture);
+        assert_eq!(over_a.iter().filter(|item| item.capture).count(), 1);
+
+        let over_b = interaction_frame(true, &[], Some((120.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&over_b, "a").opacity < 1.0);
+        assert!(!frame_of(&over_b, "a").capture);
+        assert_eq!(frame_of(&over_b, "b").opacity, 1.0);
+        assert!(frame_of(&over_b, "b").capture);
+        assert_eq!(over_b.iter().filter(|item| item.capture).count(), 1);
+
+        let over_center =
+            interaction_frame(true, &[], Some((40.0, 100.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(frame_of(&over_center, "center").opacity, 1.0);
+        assert!(frame_of(&over_center, "center").capture);
+        assert!(!frame_of(&over_center, "a").capture);
+        assert!(!frame_of(&over_center, "b").capture);
+    }
+
+    #[test]
+    fn latched_panel_stays_solid_and_captures_only_itself() {
+        let rects = bots();
+        let cfg = fade_cfg();
+        let latched = vec!["center".to_string()];
+        let cursor_on_a = Some((20.0, 20.0));
+        let away = interaction_frame(false, &latched, cursor_on_a, &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(frame_of(&away, "center").opacity, 1.0);
+        assert!(!frame_of(&away, "center").capture);
+        assert!(frame_of(&away, "a").opacity < 1.0);
+        assert!(away.iter().all(|item| !item.capture));
+
+        let over_center = interaction_frame(
+            false,
+            &latched,
+            Some((40.0, 100.0)),
+            &rects,
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(frame_of(&over_center, "center").capture);
+        assert!(!frame_of(&over_center, "a").capture);
+        assert!(!frame_of(&over_center, "b").capture);
+    }
+
+    #[test]
+    fn capture_follows_the_padded_rect_only_while_held() {
         let rects = [rect()];
-        let inside = Some((110.0, 110.0));
-        let padded = Some((152.0, 110.0));
-        let outside = Some((170.0, 110.0));
-        let far = Some((0.0, 0.0));
-        assert!(should_capture(true, inside, &rects, HIT_MARGIN_PX));
-        assert!(should_capture(true, padded, &rects, HIT_MARGIN_PX));
-        assert!(!should_capture(true, outside, &rects, HIT_MARGIN_PX));
-        assert!(!should_capture(true, far, &rects, HIT_MARGIN_PX));
-        assert!(!should_capture(false, inside, &rects, HIT_MARGIN_PX));
-        assert!(!should_capture(true, None, &rects, HIT_MARGIN_PX));
+        let cfg = fade_cfg();
+        let inside =
+            interaction_frame(true, &[], Some((110.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
+        let padded =
+            interaction_frame(true, &[], Some((152.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
+        let outside =
+            interaction_frame(true, &[], Some((170.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
+        let unheld = interaction_frame(
+            false,
+            &[],
+            Some((110.0, 110.0)),
+            &rects,
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        let missing = interaction_frame(true, &[], None, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(inside[0].capture && inside[0].opacity == 1.0);
+        assert!(padded[0].capture && padded[0].opacity == 1.0);
+        assert!(!outside[0].capture && outside[0].opacity < 1.0);
+        assert!(!unheld[0].capture && unheld[0].opacity < 1.0);
+        assert!(!missing[0].capture);
     }
 }

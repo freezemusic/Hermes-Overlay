@@ -46,20 +46,85 @@ export function opacityForDistance(distance, fadeDistance, minOpacity, enabled) 
   return minOpacity + (1 - minOpacity) * (distance / fadeDistance);
 }
 
-/** Holding the modifier (or a focus latch) is full opacity at every distance. */
+/** An element marked solid (modifier target or latched panel) is full opacity at any distance. */
 export function elementOpacity({ solid, distance, fadeDistance, minOpacity, fadeEnabled }) {
   if (solid) return 1;
   return opacityForDistance(distance, fadeDistance, minOpacity, fadeEnabled);
 }
 
-/** Focus lock is dropped while the overlay window itself is unfocused. */
-export function interactionLatched({
+/** CSS pixels around a hit rect that still count as under the cursor. */
+export const HIT_MARGIN_PX = 12;
+
+/** One element under the cursor. Inside a rect beats margin-only neighbours. */
+export function elementUnderCursor(cursor, rects, margin = HIT_MARGIN_PX) {
+  if (!cursor) return null;
+  let best = null;
+  for (const rect of rects) {
+    const distance = distanceToRect(cursor.x, cursor.y, rect);
+    if (distance > margin) continue;
+    const area = rect.w * rect.h;
+    if (
+      !best ||
+      distance < best.distance ||
+      (distance === best.distance && area < best.area)
+    ) {
+      best = { id: rect.id, distance, area };
+    }
+  }
+  return best ? best.id : null;
+}
+
+/**
+ * Modifier solids only the element under the cursor.
+ * Latched ids stay solid and capture only while the cursor is over them.
+ */
+export function elementStates({
+  held = false,
+  latchedIds = [],
+  cursor = null,
+  rects = [],
+  margin = HIT_MARGIN_PX,
+  fadeDistance = 120,
+  minOpacity = 0.18,
+  fadeEnabled = true,
+} = {}) {
+  const under = elementUnderCursor(cursor, rects, margin);
+  return rects.map((rect) => {
+    const latched = latchedIds.includes(rect.id);
+    const targeted = held && under === rect.id;
+    const distance = cursor ? distanceToRect(cursor.x, cursor.y, rect) : fadeDistance;
+    const opacity =
+      cursor == null
+        ? 1
+        : elementOpacity({
+            solid: latched || targeted,
+            distance,
+            fadeDistance,
+            minOpacity,
+            fadeEnabled,
+          });
+    return {
+      id: rect.id,
+      opacity,
+      capture: under === rect.id && (held || latched),
+    };
+  });
+}
+
+/** Focus lock names the panel that stays interactive. Dropped when the window blurs. */
+export function latchedElementIds({
   windowFocused = true,
   textFocused = false,
+  textInSettings = false,
   settingsOpen = false,
-  pointerInside = false,
+  pointerHitId = "",
 } = {}) {
-  return windowFocused !== false && (textFocused || settingsOpen || pointerInside);
+  if (windowFocused === false) return [];
+  const ids = [];
+  if (settingsOpen || (textFocused && textInSettings)) ids.push("settings");
+  if (textFocused && !textInSettings) ids.push("center");
+  if (pointerHitId && !ids.includes(pointerHitId)) ids.push(pointerHitId);
+  return ids;
 }
 
 export function modifierMatches(kind, key) {

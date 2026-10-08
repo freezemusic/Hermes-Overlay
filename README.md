@@ -144,10 +144,11 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 - 預設成個 overlay（包括面板同頭像）係 click-through。點擊、滾動、hover 會去到底下嗰個程式。
 - 游標靠近某個元素就會按距離淡出：大約 120px 以外係實色，貼住元素大約 18% 透明度。可以喺設定改距離、最低透明度，或者關掉淡出。
-- 按住修飾鍵（預設 **Ctrl**，可改 Shift 或 Alt）時，**所有**元素即刻回復實色，唔理游標距離。可以點擊嘅範圍只限元素矩形再加大約 12px 邊距；矩形以外仍然穿透，所以喺其他程式度 Ctrl+click 連結唔會被 overlay 食咗。放開就回復淡出。
-- 輸入框聚焦，或者設定頁打開，會喺元素範圍內保持可互動。視窗失焦（例如轉去第二個程式）會 blur 輸入框並解除鎖定。Esc 同樣離開。
+- 按住修飾鍵（預設 **Ctrl**，可改 Shift 或 Alt）時，**只係游標下面嗰一個元素**（矩形再加大約 12px）即刻回復實色同可點擊。其他元素繼續按距離淡出，而且保持穿透。游標由一個元素移去下一個，實色會跟住游標走。
+- 修飾鍵喺所有元素範圍以外撳（例如喺另一個程式 Ctrl+C / Ctrl+V）唔會改變任何元素，亦唔會接手點擊。
+- 輸入框聚焦會保持**中間對話面板**實色，游標喺塊面板上先可以點。設定頁打開會保持**設定面板**同樣處理。Esc、點到元素以外嘅空白，或者視窗失焦，會 blur 輸入框並解除鎖定。
 
-實作用 Rust 大約每 16ms 讀全域游標同修飾鍵（`device_query`），前端報上元素矩形。修飾鍵按住或者鎖定期間，元素全部實色，但 `set_ignore_cursor_events` 只喺游標進入矩形（加邊距）時先關閉。Windows、macOS、Linux X11（包括開咗 `DISPLAY` 嘅 XWayland）先支援。純 Wayland 讀唔到全域游標／修飾鍵，overlay 會保持可點擊，唔會穿透。macOS 要喺「私隱與保安 → 輔助使用」允許呢個 app，否則修飾鍵可能讀唔到。
+實作用 Rust 大約每 16ms 讀全域游標同修飾鍵（`device_query`），前端報上元素矩形。`set_ignore_cursor_events` 只喺游標進入「修飾鍵對準嘅元素」或者「鎖定緊嘅面板」時先關閉。Windows、macOS、Linux X11（包括開咗 `DISPLAY` 嘅 XWayland）先支援。純 Wayland 讀唔到全域游標／修飾鍵，overlay 會保持可點擊，唔會穿透。macOS 要喺「私隱與保安 → 輔助使用」允許呢個 app，否則修飾鍵可能讀唔到。
 
 設定檔（位址、名稱、顏色、詳情）喺 app config 目錄嘅 `config.json`。金鑰同 dashboard token 喺 OS keychain，service 名 `com.freezemusic.hermes-overlay`。網頁層只知道 `has_key`，唔會再攞到明文。
 

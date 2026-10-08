@@ -523,10 +523,8 @@ html.overlay-passthrough .overlay-root * {
   pointer-events: none !important;
 }
 
-html.overlay-solid .overlay-root [data-hit-id],
-html.overlay-solid .overlay-root [data-hit-id] *,
-html.overlay-solid .settings-layer,
-html.overlay-solid .settings-layer * {
+html.overlay-passthrough .overlay-root [data-hit-capture],
+html.overlay-passthrough .overlay-root [data-hit-capture] * {
   pointer-events: auto !important;
 }
 

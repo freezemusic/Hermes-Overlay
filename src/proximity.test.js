@@ -4,8 +4,9 @@ import {
   colorForIndex,
   distanceToRect,
   elementOpacity,
+  elementStates,
   inkFor,
-  interactionLatched,
+  latchedElementIds,
   modifierMatches,
 } from "./proximity.js";
 
@@ -14,7 +15,7 @@ test("new bot colours walk the palette", () => {
   assert.equal(colorForIndex(10), colorForIndex(0));
 });
 
-test("modifier hold is solid regardless of cursor distance", () => {
+test("forced element stays solid at any distance", () => {
   const fade = { fadeDistance: 120, minOpacity: 0.18, fadeEnabled: true };
   assert.equal(elementOpacity({ solid: true, distance: 0, ...fade }), 1);
   assert.equal(elementOpacity({ solid: true, distance: 5000, ...fade }), 1);
@@ -22,6 +23,52 @@ test("modifier hold is solid regardless of cursor distance", () => {
   assert.equal(elementOpacity({ solid: false, distance: 120, ...fade }), 1);
   const mid = elementOpacity({ solid: false, distance: 60, ...fade });
   assert.ok(mid > 0.18 && mid < 1);
+});
+
+const sampleBots = [
+  { id: "a", x: 0, y: 0, w: 40, h: 40 },
+  { id: "b", x: 100, y: 0, w: 40, h: 40 },
+  { id: "center", x: 0, y: 80, w: 120, h: 40 },
+];
+
+const fadeOpts = { fadeDistance: 120, minOpacity: 0.18, fadeEnabled: true };
+
+function byId(frames, id) {
+  return frames.find((item) => item.id === id);
+}
+
+test("modifier far from elements changes nothing and does not capture", () => {
+  const cursor = { x: 1000, y: 1000 };
+  const held = elementStates({ held: true, cursor, rects: sampleBots, ...fadeOpts });
+  const idle = elementStates({ held: false, cursor, rects: sampleBots, ...fadeOpts });
+  assert.deepEqual(held, idle);
+  assert.ok(held.every((item) => !item.capture));
+  assert.ok(held.every((item) => item.opacity === 1));
+
+  const outside = { x: 70, y: 20 };
+  const near = elementStates({ held: true, cursor: outside, rects: sampleBots, ...fadeOpts });
+  const faded = elementStates({ held: false, cursor: outside, rects: sampleBots, ...fadeOpts });
+  assert.deepEqual(near, faded);
+  assert.ok(byId(near, "a").opacity < 1);
+  assert.equal(byId(near, "a").capture, false);
+});
+
+test("modifier solids only the element under the cursor", () => {
+  const overA = elementStates({ held: true, cursor: { x: 20, y: 20 }, rects: sampleBots, ...fadeOpts });
+  assert.equal(byId(overA, "a").opacity, 1);
+  assert.equal(byId(overA, "a").capture, true);
+  assert.ok(byId(overA, "b").opacity < 1);
+  assert.equal(byId(overA, "b").capture, false);
+  assert.ok(byId(overA, "center").opacity < 1);
+  assert.equal(byId(overA, "center").capture, false);
+  assert.equal(overA.filter((item) => item.capture).length, 1);
+
+  const overB = elementStates({ held: true, cursor: { x: 120, y: 20 }, rects: sampleBots, ...fadeOpts });
+  assert.ok(byId(overB, "a").opacity < 1);
+  assert.equal(byId(overB, "a").capture, false);
+  assert.equal(byId(overB, "b").opacity, 1);
+  assert.equal(byId(overB, "b").capture, true);
+  assert.equal(overB.filter((item) => item.capture).length, 1);
 });
 
 test("distance is zero inside a rect", () => {
@@ -42,11 +89,12 @@ test("modifier keys", () => {
   assert.equal(modifierMatches("alt", "Alt"), true);
 });
 
-test("interactive lock follows window focus", () => {
-  assert.equal(interactionLatched({ textFocused: true }), true);
-  assert.equal(interactionLatched({ settingsOpen: true }), true);
-  assert.equal(interactionLatched({ pointerInside: true }), true);
-  assert.equal(interactionLatched({ textFocused: true, windowFocused: false }), false);
-  assert.equal(interactionLatched({ settingsOpen: true, windowFocused: false }), false);
-  assert.equal(interactionLatched({}), false);
+test("interactive lock names one panel and follows window focus", () => {
+  assert.deepEqual(latchedElementIds({ textFocused: true }), ["center"]);
+  assert.deepEqual(latchedElementIds({ settingsOpen: true }), ["settings"]);
+  assert.deepEqual(latchedElementIds({ textFocused: true, textInSettings: true }), ["settings"]);
+  assert.deepEqual(latchedElementIds({ pointerHitId: "bot:a" }), ["bot:a"]);
+  assert.deepEqual(latchedElementIds({ textFocused: true, windowFocused: false }), []);
+  assert.deepEqual(latchedElementIds({ settingsOpen: true, windowFocused: false }), []);
+  assert.deepEqual(latchedElementIds({}), []);
 });

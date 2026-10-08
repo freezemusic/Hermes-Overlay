@@ -635,8 +635,12 @@ fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<()
 }
 
 #[tauri::command]
-fn set_interaction_latch(state: State<'_, AppState>, latched: bool) -> Result<(), String> {
-    state.interaction.latched.store(latched, Ordering::Relaxed);
+fn set_interaction_latch(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
+    *state
+        .interaction
+        .latched_ids
+        .lock()
+        .unwrap_or_else(|err| err.into_inner()) = ids;
     Ok(())
 }
 

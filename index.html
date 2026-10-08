@@ -24,7 +24,7 @@
             <div class="bot-meta">
               <h1 id="bot-name">載入中…</h1>
               <p id="bot-status" class="bot-status">準備就緒</p>
-              <p id="interact-hint" class="interact-hint">按住 Ctrl 先可以點擊同輸入。</p>
+              <p id="interact-hint" class="interact-hint">按住 Ctrl：游標下面嗰個元素先會實色同可點擊。</p>
             </div>
           </div>
           <div class="panel-actions">
@@ -93,7 +93,7 @@
 
           <fieldset class="experimental">
             <legend>游標同穿透</legend>
-            <p class="hint">預設成個視窗穿透，游標越近元素越淡。按住修飾鍵時，<strong>所有</strong>元素即刻回復實色，唔理游標距離。可以點擊嘅範圍只限元素本身再加少少邊距，其他位置仍然穿透。視窗失焦會解除鎖定；Esc 同樣離開。</p>
+            <p class="hint">預設成個視窗穿透，游標越近元素越淡。按住修飾鍵時，只係游標下面嗰一個元素（加少少邊距）回復實色同可點擊；其他元素繼續按距離淡出。游標唔喺任何元素附近就冇變化。輸入框聚焦會保持中間面板可互動；設定頁打開會保持設定面板可互動。Esc、點空白，或者視窗失焦就離開。</p>
             <label class="field">
               <span>修飾鍵</span>
               <select id="interaction-modifier">
