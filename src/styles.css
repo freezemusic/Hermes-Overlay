@@ -56,8 +56,10 @@
   --radius: 16px;
   --avatar-radius: 50%;
   --orb-opacity: 0.48;
-  --orb-glow-radius: 18px;
-  --orb-glow-alpha: 0.3;
+  --orb-glow-radius: 10px;
+  --orb-glow-alpha: 0.18;
+  --orb-selected-glow-radius: 26px;
+  --orb-selected-glow-alpha: 0.45;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -191,12 +193,13 @@ html.platform-linux {
 }
 
 .bot-btn.active::after {
+  inset: calc(-1 * var(--orb-selected-glow-radius));
   background: radial-gradient(
     circle at center,
     transparent calc(var(--orb-disc) / 2),
-    rgb(from var(--accent) r g b / 0.28) calc(var(--orb-disc) / 2 + 2px),
-    rgb(from var(--bot-color, var(--brand)) r g b / 0.18) calc(var(--orb-disc) / 2 + 10px),
-    transparent calc(var(--orb-disc) / 2 + var(--orb-glow-radius))
+    rgb(from var(--accent) r g b / var(--orb-selected-glow-alpha)) calc(var(--orb-disc) / 2 + 2px),
+    rgb(from var(--bot-color, var(--brand)) r g b / 0.22) calc(var(--orb-disc) / 2 + 12px),
+    transparent calc(var(--orb-disc) / 2 + var(--orb-selected-glow-radius))
   );
 }
 
@@ -718,6 +721,13 @@ html.platform-linux .settings-card {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+}
+
+.settings-actions-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 
 .settings-card h3 {

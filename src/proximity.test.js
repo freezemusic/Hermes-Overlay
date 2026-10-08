@@ -17,6 +17,7 @@ import {
   nextDropdownOpen,
   pinToggle,
   applyDropdownDismiss,
+  settingsQuitAction,
   selectKeyOpensDropdown,
 } from "./proximity.js";
 
@@ -245,9 +246,17 @@ test("pin toggle flips the label and does not quit", () => {
   assert.equal(off.label, "取消置頂");
   assert.equal(off.pressed, false);
   assert.equal(off.quits, false);
+  assert.equal(off.armsCloseGuard, true);
   const on = pinToggle(false);
   assert.equal(on.alwaysOnTop, true);
   assert.equal(on.label, "置頂");
   assert.equal(on.pressed, true);
   assert.equal(on.quits, false);
+  assert.equal(on.armsCloseGuard, true);
+});
+
+test("settings quit uses the app exit command", () => {
+  const action = settingsQuitAction();
+  assert.equal(action.command, "quit_app");
+  assert.equal(action.exitCode, 0);
 });

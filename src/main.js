@@ -13,6 +13,7 @@ import {
   latchedElementIds,
   osFocusAction,
   pinToggle,
+  settingsQuitAction,
   selectBlurAction,
   linuxAltWarning,
   nextOrbPulse,
@@ -115,7 +116,7 @@ const MOCK_BOTS = [
     messages: [
       { role: "bot", text: "全螢幕透明 overlay 要小心誤觸；空白位穿透仍屬實驗功能。" },
     ],
-    float: "Esc 會收起中間面板。結束程式用系統匣。",
+    float: "Esc 會收起中間面板。結束程式用設定入面嘅「結束」，或者系統匣。",
   },
 ];
 
@@ -792,6 +793,14 @@ async function setupWindowChrome() {
     state.alwaysOnTop = next.alwaysOnTop;
     pinBtn.setAttribute("aria-pressed", String(next.pressed));
     pinBtn.textContent = next.label;
+    if (next.armsCloseGuard && inTauri()) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("arm_pin_close_guard");
+      } catch (err) {
+        console.warn("arm_pin_close_guard failed", err);
+      }
+    }
     if (win) {
       try {
         await win.setAlwaysOnTop(next.alwaysOnTop);
@@ -874,6 +883,12 @@ function setupComposer() {
     if (action === "close") state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "blur");
   });
   $("#btn-settings-close").addEventListener("click", closeSettings);
+  $("#btn-quit")?.addEventListener("click", async () => {
+    const action = settingsQuitAction();
+    if (!inTauri()) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke(action.command);
+  });
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#btn-add-bot").addEventListener("click", () => $("#bot-editor").appendChild(rowFromBot()));
   $("#btn-probe").addEventListener("click", probeSaved);

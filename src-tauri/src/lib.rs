@@ -16,6 +16,41 @@ use tauri::{AppHandle, Emitter, Manager, State};
 const SETTINGS_SHORTCUT: &str = "Ctrl+Shift+Alt+H";
 const SETTINGS_TRAY_LABEL: &str = "設定 (Ctrl+Shift+Alt+H)";
 
+#[cfg(unix)]
+fn install_unix_signal_exit(app: AppHandle) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static REQUESTED: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn on_signal(sig: i32) {
+        if interaction::signal_requests_exit(sig) {
+            REQUESTED.store(true, Ordering::SeqCst);
+        }
+    }
+
+    extern "C" {
+        fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
+    }
+
+    unsafe {
+        for sig in [interaction::SIGINT, interaction::SIGTERM] {
+            if interaction::signal_requests_exit(sig) {
+                signal(sig, on_signal);
+            }
+        }
+    }
+
+    std::thread::Builder::new()
+        .name("unix-signal-exit".into())
+        .spawn(move || loop {
+            if REQUESTED.swap(false, Ordering::SeqCst) {
+                app.exit(interaction::APP_EXIT_CODE);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        })
+        .ok();
+}
+
 fn install_escape_hatches(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::TrayIconBuilder;
@@ -679,6 +714,16 @@ fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<()
 }
 
 #[tauri::command]
+fn arm_pin_close_guard() {
+    interaction::arm_pin_close_guard();
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(interaction::APP_EXIT_CODE);
+}
+
+#[tauri::command]
 fn focus_owner(window: tauri::WebviewWindow) -> String {
     interaction::focus_owner_name(interaction::current_focus_owner(&window)).to_string()
 }
@@ -730,8 +775,7 @@ pub fn run() {
             interaction::spawn_poll(app.handle().clone(), hub);
             if let Some(window) = app.get_webview_window("main") {
                 interaction::install_option_menu_hook(&window);
-                // 置頂只係 gtk keep-above。最大化無邊框視窗切換時，視窗管理員可能送
-                // WM_DELETE_WINDOW。拒絕呢個關閉。系統匣「結束」用 app.exit(0)。
+                // 置頂之後約 1 秒先拒絕 CloseRequested。過咗就俾 Alt+F4 / wmctrl -c 結束。
                 window.on_window_event(|event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         if interaction::refuse_window_close() {
@@ -740,6 +784,8 @@ pub fn run() {
                     }
                 });
             }
+            #[cfg(unix)]
+            install_unix_signal_exit(app.handle().clone());
             if let Err(err) = install_escape_hatches(app.handle()) {
                 eprintln!("設定捷徑：{err}");
             }
@@ -755,7 +801,9 @@ pub fn run() {
             stop_chat,
             set_hit_rects,
             set_interaction_latch,
-            focus_owner
+            focus_owner,
+            arm_pin_close_guard,
+            quit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

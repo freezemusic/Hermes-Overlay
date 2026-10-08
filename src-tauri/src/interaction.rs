@@ -4,7 +4,8 @@
 use crate::config::InteractionConfig;
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use serde::Serialize;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -343,9 +344,15 @@ pub enum GrabDismiss {
     CancelDeactivate,
     /// `GtkPopover::popdown`.
     Popdown,
-    /// Leave the grab. Do not `hide` or ungrab the seat.
+    /// Plain popup (WebKit's own select window). Send Escape with `widget.event`.
+    /// Do not `hide` or ungrab the seat.
     Leave,
 }
+
+/// `GDK_KEY_Escape`. Delivered to the popup with `widget.event`.
+pub const POPUP_CANCEL_KEYVAL: u32 = 0xff1b;
+/// X11 hardware keycode for Escape. `gtk::test_widget_send_key` did not dismiss the popup.
+pub const POPUP_CANCEL_KEYCODE: u16 = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrabKind {
@@ -362,11 +369,49 @@ pub fn grab_dismiss(kind: GrabKind) -> GrabDismiss {
     }
 }
 
-/// A keep-above toggle on this maximized frameless window can make the window
-/// manager deliver delete. Swallow it. Tray 「結束」 uses `app.exit`, which
-/// does not emit `CloseRequested`.
+/// How long a pin toggle swallows `CloseRequested`. Alt+F4 and `wmctrl -c` quit after this.
+pub const PIN_CLOSE_GUARD_MS: u64 = 1000;
+
+/// `guard_until_ms == 0` means the guard was never armed.
+pub fn close_refused_during_pin_guard(now_ms: u64, guard_until_ms: u64) -> bool {
+    guard_until_ms != 0 && now_ms < guard_until_ms
+}
+
+fn pin_guard_until() -> &'static AtomicU64 {
+    static UNTIL: AtomicU64 = AtomicU64::new(0);
+    &UNTIL
+}
+
+fn mono_ms() -> u64 {
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
+}
+
+/// Call immediately before `set_always_on_top`. A keep-above change on this
+/// maximized frameless window can make the WM deliver delete for about a second.
+pub fn arm_pin_close_guard() {
+    let until = mono_ms().saturating_add(PIN_CLOSE_GUARD_MS);
+    pin_guard_until().store(until, Ordering::Relaxed);
+}
+
 pub fn refuse_window_close() -> bool {
-    true
+    close_refused_during_pin_guard(mono_ms(), pin_guard_until().load(Ordering::Relaxed))
+}
+
+/// Normal quit code for the settings button, the tray, and Unix signals.
+pub const APP_EXIT_CODE: i32 = 0;
+
+#[cfg(unix)]
+pub const SIGINT: i32 = 2;
+#[cfg(unix)]
+pub const SIGTERM: i32 = 15;
+
+#[cfg(unix)]
+pub fn signal_requests_exit(sig: i32) -> bool {
+    sig == SIGINT || sig == SIGTERM
 }
 
 #[cfg(target_os = "linux")]
@@ -427,7 +472,34 @@ mod native_popup {
                     popover.popdown();
                 }
             }
-            super::GrabDismiss::Leave => {}
+            super::GrabDismiss::Leave => {
+                // WebKit draws <select> in its own GTK popup window, not a GtkMenu, and
+                // webkit_option_menu_close() does not hide it. Deliver Escape straight to the
+                // popup's key handler so WebKit runs its normal cancel path (hide, ungrab, notify).
+                use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+                let Some(gdk_window) = widget.window() else {
+                    return;
+                };
+                let mut ev = gtk::gdk::Event::new(gtk::gdk::EventType::KeyPress);
+                unsafe {
+                    let raw = <gtk::gdk::Event as ToGlibPtrMut<
+                        *mut gtk::gdk::ffi::GdkEvent,
+                    >>::to_glib_none_mut(&mut ev)
+                    .0 as *mut gtk::gdk::ffi::GdkEventKey;
+                    (*raw).window = gdk_window.to_glib_full();
+                    (*raw).send_event = 1;
+                    (*raw).keyval = super::POPUP_CANCEL_KEYVAL;
+                    (*raw).hardware_keycode = super::POPUP_CANCEL_KEYCODE;
+                }
+                if let Some(keyboard) = widget
+                    .display()
+                    .default_seat()
+                    .and_then(|seat| seat.keyboard())
+                {
+                    ev.set_device(Some(&keyboard));
+                }
+                let _ = widget.event(&ev);
+            }
         }
     }
 
@@ -1321,7 +1393,25 @@ mod tests {
         assert_eq!(grab_dismiss(GrabKind::Menu), GrabDismiss::CancelDeactivate);
         assert_eq!(grab_dismiss(GrabKind::Popover), GrabDismiss::Popdown);
         assert_eq!(grab_dismiss(GrabKind::Other), GrabDismiss::Leave);
-        assert!(refuse_window_close());
+        assert_eq!(POPUP_CANCEL_KEYVAL, 0xff1b);
+        assert_eq!(POPUP_CANCEL_KEYCODE, 9);
+        assert!(!close_refused_during_pin_guard(0, 0));
+        assert!(close_refused_during_pin_guard(0, PIN_CLOSE_GUARD_MS));
+        assert!(close_refused_during_pin_guard(999, PIN_CLOSE_GUARD_MS));
+        assert!(!close_refused_during_pin_guard(
+            PIN_CLOSE_GUARD_MS,
+            PIN_CLOSE_GUARD_MS
+        ));
+        assert!(!close_refused_during_pin_guard(1500, PIN_CLOSE_GUARD_MS));
+        assert_eq!(APP_EXIT_CODE, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigint_and_sigterm_request_app_exit() {
+        assert!(signal_requests_exit(SIGINT));
+        assert!(signal_requests_exit(SIGTERM));
+        assert!(!signal_requests_exit(1));
     }
 
     #[test]

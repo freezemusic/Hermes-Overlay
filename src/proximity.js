@@ -225,7 +225,13 @@ export function pinToggle(alwaysOnTop) {
     label: next ? "置頂" : "取消置頂",
     pressed: next,
     quits: false,
+    armsCloseGuard: true,
   };
+}
+
+/** Settings 「結束」 quits through the app exit path. */
+export function settingsQuitAction() {
+  return { command: "quit_app", exitCode: 0 };
 }
 
 /** Linux window managers often bind Alt+drag, which can block the overlay modifier. */
