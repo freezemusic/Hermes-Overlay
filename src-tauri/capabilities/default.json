@@ -18,6 +18,8 @@
     "allow-discover-profiles",
     "allow-open-bot",
     "allow-send-chat",
-    "allow-stop-chat"
+    "allow-stop-chat",
+    "allow-set-hit-rects",
+    "allow-set-interaction-latch"
   ]
 }

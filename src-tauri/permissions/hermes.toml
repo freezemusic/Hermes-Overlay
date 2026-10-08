@@ -32,3 +32,13 @@ commands.allow = ["send_chat"]
 identifier = "allow-stop-chat"
 description = "Stop the local chat stream."
 commands.allow = ["stop_chat"]
+
+[[permission]]
+identifier = "allow-set-hit-rects"
+description = "Report overlay element rectangles for proximity fade."
+commands.allow = ["set_hit_rects"]
+
+[[permission]]
+identifier = "allow-set-interaction-latch"
+description = "Keep the overlay interactive while a field or settings is in use."
+commands.allow = ["set_interaction_latch"]

@@ -11,13 +11,14 @@
       <!-- Transparent hit layer: empty regions stay see-through -->
       <div id="bot-rail" class="bot-rail" aria-label="Bot 列表"></div>
 
-      <aside id="center-panel" class="center-panel" data-interactive>
+      <aside id="center-panel" class="center-panel" data-interactive data-hit-id="center">
         <header class="panel-header" data-tauri-drag-region>
           <div class="bot-identity">
             <div id="active-avatar" class="active-avatar" aria-hidden="true"></div>
             <div class="bot-meta">
               <h1 id="bot-name">載入中…</h1>
               <p id="bot-status" class="bot-status">準備就緒</p>
+              <p id="interact-hint" class="interact-hint">按住 Ctrl 先可以點擊同輸入。</p>
             </div>
           </div>
           <div class="panel-actions">
@@ -52,7 +53,7 @@
       </aside>
 
       <div id="settings" class="settings-layer" data-interactive hidden>
-        <form id="settings-form" class="settings-card">
+        <form id="settings-form" class="settings-card" data-hit-id="settings">
           <header class="settings-head">
             <h2>設定</h2>
             <button type="button" id="btn-settings-close" class="icon-btn">關閉</button>
@@ -72,7 +73,7 @@
 
           <fieldset class="experimental">
             <legend>實驗：由 dashboard 匯入名單</legend>
-            <p class="hint">用 Hermes dashboard 嘅 <code>GET /api/profiles</code>（預設 <code>http://127.0.0.1:9119</code>）。公開 API server 冇穩定嘅 profile 列表。匯入只填名稱同描述，<strong>唔會</strong>帶 API 金鑰。非 loopback 要貼 <code>window.__HERMES_SESSION_TOKEN__</code>，token 存喺鑰匙圈。</p>
+            <p class="hint">用 Hermes dashboard 嘅 <code>GET /api/profiles</code>（預設 <code>http://127.0.0.1:9119</code>）。公開 API server 冇穩定嘅 profile 列表。匯入只填名稱同描述，<strong>唔會</strong>帶 API 金鑰。Hermes 0.21.6 嘅 dashboard <strong>即使係 localhost</strong> 都要 session token，否則 401。Token 係 dashboard 頁面嘅 <code>window.__HERMES_SESSION_TOKEN__</code>，唔係 <code>API_SERVER_KEY</code>，存喺鑰匙圈。</p>
             <label class="field">
               <span>Dashboard 位址</span>
               <input id="dashboard-url" type="url" placeholder="http://127.0.0.1:9119" autocomplete="off" />
@@ -84,6 +85,32 @@
             <button type="button" id="btn-discover" class="icon-btn">匯入名單</button>
           </fieldset>
 
+          <fieldset class="experimental">
+            <legend>游標同穿透</legend>
+            <p class="hint">預設成個視窗穿透，游標越近元素越淡。按住修飾鍵時，<strong>所有</strong>元素即刻回復實色，而且可以點擊同輸入，唔理游標距離。放開就回復穿透同淡出。輸入框聚焦或者設定頁打開期間會保持可互動；Esc 或點空白就離開。</p>
+            <label class="field">
+              <span>修飾鍵</span>
+              <select id="interaction-modifier">
+                <option value="ctrl">Ctrl</option>
+                <option value="shift">Shift</option>
+                <option value="alt">Alt</option>
+              </select>
+            </label>
+            <label class="field field-inline">
+              <input id="interaction-fade" type="checkbox" checked />
+              <span>游標靠近時淡出</span>
+            </label>
+            <label class="field">
+              <span>淡出距離（px）</span>
+              <input id="interaction-distance" type="number" min="24" max="480" step="1" value="120" />
+            </label>
+            <label class="field">
+              <span>最近時透明度（%）</span>
+              <input id="interaction-min-opacity" type="number" min="5" max="60" step="1" value="18" />
+            </label>
+            <p id="interaction-support" class="hint"></p>
+          </fieldset>
+
           <p id="settings-status" class="settings-status" role="status"></p>
           <div class="settings-actions">
             <button type="button" id="btn-probe" class="icon-btn">測試已儲存連線</button>
@@ -92,7 +119,7 @@
         </form>
       </div>
 
-      <div id="float-bubble" class="float-bubble" data-interactive hidden>
+      <div id="float-bubble" class="float-bubble" data-interactive data-hit-id="float" hidden>
         <div class="float-avatar" id="float-avatar"></div>
         <div class="float-text" id="float-text"></div>
       </div>

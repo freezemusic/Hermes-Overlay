@@ -72,10 +72,42 @@ pub fn delete_dashboard_token() -> Result<(), String> {
     delete_account(DASHBOARD_ACCOUNT)
 }
 
+/// `true` when this process is using keyring's in-memory mock store.
+/// That happens if the crate is built without a platform backend feature:
+/// `set_password` appears to work, then a later `Entry` cannot see the secret.
+pub fn store_is_mock() -> Result<bool, String> {
+    let entry = entry("store-kind")?;
+    Ok(entry
+        .get_credential()
+        .downcast_ref::<keyring::mock::MockCredential>()
+        .is_some())
+}
+
 fn delete_account(account: &str) -> Result<(), String> {
     match entry(account)?.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),
         Err(err) => Err(format!("刪除鑰匙圈項目失敗：{err}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_backend_is_not_the_mock_store() {
+        match store_is_mock() {
+            Ok(true) => {
+                panic!("keyring resolved to the in-memory mock store; saved API keys will vanish")
+            }
+            Ok(false) => {}
+            Err(err) => {
+                assert!(
+                    !err.to_lowercase().contains("mock"),
+                    "keyring mock store error: {err}"
+                );
+            }
+        }
     }
 }

@@ -57,7 +57,7 @@ gateway:
 
 如果唔開 multiplex，而係每個 profile 自己一個埠（`hermes -p alice gateway`），喺 Overlay 嗰個 Bot 填「專用位址」（例如 `http://127.0.0.1:8643`）。專用位址唔再加 `/p/<profile>/`。
 
-公開 API server **冇**穩定嘅「列出所有 profile」端點。名單要自己加。實驗按鈕先會問 dashboard 嘅 `GET /api/profiles`（預設 `http://127.0.0.1:9119`，`hermes dashboard`），而且**唔會**帶返 API 金鑰。非 loopback 嘅 dashboard 要另貼 `window.__HERMES_SESSION_TOKEN__`（session token，唔係 `API_SERVER_KEY`）。
+公開 API server **冇**穩定嘅「列出所有 profile」端點。名單要自己加。實驗按鈕先會問 dashboard 嘅 `GET /api/profiles`（預設 `http://127.0.0.1:9119`，`hermes dashboard`），而且**唔會**帶返 API 金鑰。Hermes 0.21.6 嘅 dashboard **即使係 localhost** 都會 401，除非你貼 dashboard 頁面入面嘅 `window.__HERMES_SESSION_TOKEN__`（session token，唔係 `API_SERVER_KEY`）。
 
 參考：
 
@@ -77,10 +77,12 @@ sudo apt install -y \
   pkg-config \
   build-essential \
   libssl-dev \
-  libgtk-3-dev
+  libgtk-3-dev \
+  libdbus-1-dev \
+  libx11-dev
 ```
 
-金鑰用系統 Secret Service（gnome-keyring 或 KWallet）。無 keyring daemon 時，儲存金鑰會失敗並顯示錯誤。
+金鑰用系統 Secret Service（gnome-keyring 或 KWallet）。程式連結咗 `sync-secret-service`，唔會靜靜雞退回 keyring 嘅記憶體 mock。無 keyring daemon 時，儲存金鑰會失敗並顯示錯誤。編譯需要 `libdbus-1-dev`。
 
 ### macOS
 
@@ -132,6 +134,17 @@ cargo test --manifest-path src-tauri/Cargo.toml
 6. 傳送會 `POST /api/sessions/{id}/chat/stream`，即時顯示文字、工具開始／完成／失敗，同埋忙碌或閒置。
 7. 「測試已儲存連線」打 `GET /health`，再對每個已存金鑰打 `GET /api/sessions?limit=1`。
 
+## 游標同穿透
+
+互動對齊 Rainmeter：
+
+- 預設成個 overlay（包括面板同頭像）係 click-through。點擊、滾動、hover 會去到底下嗰個程式。
+- 游標靠近某個元素就會按距離淡出：大約 120px 以外係實色，貼住元素大約 18% 透明度。可以喺設定改距離、最低透明度，或者關掉淡出。
+- 按住修飾鍵（預設 **Ctrl**，可改 Shift 或 Alt）時，**所有**元素即刻回復實色，而且可以點擊同輸入，唔理游標距離。放開就回復穿透同淡出。
+- 輸入框聚焦，或者設定頁打開，會保持可互動，方便打字。Esc，或者點面板以外嘅空白，就離開。
+
+實作用 Rust 大約每 16ms 讀全域游標同修飾鍵（`device_query`），前端報上元素矩形，再 `set_ignore_cursor_events`。Windows、macOS、Linux X11（包括開咗 `DISPLAY` 嘅 XWayland）先支援。純 Wayland 讀唔到全域游標／修飾鍵，overlay 會保持可點擊，唔會穿透。macOS 要喺「私隱與保安 → 輔助使用」允許呢個 app，否則修飾鍵可能讀唔到。
+
 設定檔（位址、名稱、顏色、詳情）喺 app config 目錄嘅 `config.json`。金鑰同 dashboard token 喺 OS keychain，service 名 `com.freezemusic.hermes-overlay`。網頁層只知道 `has_key`，唔會再攞到明文。
 
 ## 設定重點
@@ -150,8 +163,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## 已知限制
 
-1. **Click-through（空白位滑鼠穿透）**  
-   Tauri 有 `setIgnoreCursorEvents`，但一開全域穿透，空白位就收唔到 hover。預設**關閉**。要自己做嘅話，用快捷鍵切換，或者平台原生 hit-test。Linux 支援唔穩定。
+1. **Click-through**  
+   預設開啟（見上面「游標同穿透」）。純 Wayland 未支援全域游標／修飾鍵查詢，會保持可點擊。Linux 用 X11 或 XWayland。
 
 2. **Profile 列表**  
    API server 冇已文件化、穩定嘅 roster 端點（曾經提出嘅 `GET /api/profiles` 冇落地）。Dashboard 嘅 `GET /api/profiles` 先係實驗匯入，而且唔包含 API 金鑰。Hidden 嘅 `Bot Chat` 要 gateway 支援 `include_hidden=true` 先搵到；舊版忽略呢個 query 時，如果標題已被隱藏 session 佔用，建立會 400。
@@ -165,8 +178,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 5. **Wayland**  
    部分合成器對 transparent / always-on-top 嘅行為同 X11 唔同。
 
-6. **未對住真實 Hermes 跑過**  
-   協議係對住公開文件同 upstream `api_server.py` 嘅欄位（`message`/`input`、`assistant.delta` 嘅 `delta`、`tool.started` 嘅 `tool_name`）寫嘅。單元測試用本機假 HTTP。見 PR 說明。
+6. **真實 Hermes**  
+   協議對過 Hermes v0.21.6 實機（Ollama qwen2.5 1.5B，`default` / `researcher` / `writer` / `broken`，multiplex `/p/<profile>/`）：重複 `Bot Chat` 標題、失敗回合 `display_kind: failed_turn`、中文 SSE 分塊。單元測試用本機假 HTTP 鎖住呢啲形狀。金鑰圈要有 Secret Service / Keychain / Credential Manager 先寫到持久金鑰。
 
 ## 專案結構
 
@@ -180,6 +193,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
     └── src/
         ├── lib.rs           # Tauri commands、事件
         ├── hermes.rs        # Sessions / SSE
+        ├── interaction.rs   # 穿透、淡出、修飾鍵
         ├── secrets.rs       # OS keychain
         └── config.rs
 ```

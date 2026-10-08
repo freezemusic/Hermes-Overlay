@@ -18,7 +18,30 @@ pub struct BotConfig {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InteractionConfig {
+    #[serde(default = "default_modifier")]
+    pub modifier: String,
+    #[serde(default = "default_true")]
+    pub fade_enabled: bool,
+    #[serde(default = "default_fade_distance")]
+    pub fade_distance: f64,
+    #[serde(default = "default_min_opacity")]
+    pub min_opacity: f64,
+}
+
+impl Default for InteractionConfig {
+    fn default() -> Self {
+        Self {
+            modifier: default_modifier(),
+            fade_enabled: default_true(),
+            fade_distance: default_fade_distance(),
+            min_opacity: default_min_opacity(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppConfig {
     #[serde(default = "one")]
     pub version: u32,
@@ -28,6 +51,8 @@ pub struct AppConfig {
     pub dashboard_base_url: String,
     #[serde(default)]
     pub bots: Vec<BotConfig>,
+    #[serde(default)]
+    pub interaction: InteractionConfig,
 }
 
 fn one() -> u32 {
@@ -38,6 +63,44 @@ fn default_dashboard() -> String {
     "http://127.0.0.1:9119".into()
 }
 
+fn default_modifier() -> String {
+    "ctrl".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_fade_distance() -> f64 {
+    120.0
+}
+
+fn default_min_opacity() -> f64 {
+    0.18
+}
+
+pub fn normalize_modifier(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "shift" => "shift".into(),
+        "alt" | "option" => "alt".into(),
+        _ => "ctrl".into(),
+    }
+}
+
+pub fn normalize_fade_distance(value: f64) -> f64 {
+    if !value.is_finite() {
+        return default_fade_distance();
+    }
+    value.clamp(24.0, 480.0)
+}
+
+pub fn normalize_min_opacity(value: f64) -> f64 {
+    if !value.is_finite() {
+        return default_min_opacity();
+    }
+    value.clamp(0.05, 0.6)
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -45,6 +108,7 @@ impl Default for AppConfig {
             gateway_base_url: String::new(),
             dashboard_base_url: default_dashboard(),
             bots: Vec::new(),
+            interaction: InteractionConfig::default(),
         }
     }
 }
@@ -94,9 +158,7 @@ pub fn validate_profile(name: &str) -> Result<(), String> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     {
-        return Err(format!(
-            "profile「{name}」只可以有英數、點、底線同連字號"
-        ));
+        return Err(format!("profile「{name}」只可以有英數、點、底線同連字號"));
     }
     Ok(())
 }
@@ -124,14 +186,18 @@ pub fn normalize_http_base(raw: &str, allow_empty: bool) -> Result<String, Strin
     let host = url.host_str().ok_or_else(|| "位址缺少 host".to_string())?;
     let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
     let path = url.path().trim_end_matches('/');
-    let path = if path.is_empty() || path == "/" { "" } else { path };
+    let path = if path.is_empty() || path == "/" {
+        ""
+    } else {
+        path
+    };
     Ok(format!("{}://{host}{port}{path}", url.scheme()))
 }
 
 pub fn color_for(name: &str) -> String {
     const COLORS: [&str; 10] = [
-        "#5b6cff", "#2dd4bf", "#f59e0b", "#f472b6", "#94a3b8", "#a78bfa", "#34d399",
-        "#fb7185", "#38bdf8", "#facc15",
+        "#5b6cff", "#2dd4bf", "#f59e0b", "#f472b6", "#94a3b8", "#a78bfa", "#34d399", "#fb7185",
+        "#38bdf8", "#facc15",
     ];
     let n = name
         .bytes()
@@ -141,10 +207,7 @@ pub fn color_for(name: &str) -> String {
 
 pub fn normalize_color(raw: &str, fallback_name: &str) -> String {
     let raw = raw.trim();
-    if raw.len() == 7
-        && raw.starts_with('#')
-        && raw[1..].chars().all(|c| c.is_ascii_hexdigit())
-    {
+    if raw.len() == 7 && raw.starts_with('#') && raw[1..].chars().all(|c| c.is_ascii_hexdigit()) {
         return raw.to_ascii_lowercase();
     }
     color_for(fallback_name)
@@ -187,5 +250,17 @@ mod tests {
         let text = serde_json::to_string(&cfg).unwrap();
         assert!(!text.contains("\"key\""));
         assert!(!text.contains("token"));
+    }
+
+    #[test]
+    fn missing_interaction_uses_ctrl_and_fade() {
+        let cfg: AppConfig = serde_json::from_str(r#"{"gateway_base_url":""}"#).unwrap();
+        assert_eq!(cfg.interaction.modifier, "ctrl");
+        assert!(cfg.interaction.fade_enabled);
+        assert_eq!(cfg.interaction.fade_distance, 120.0);
+        assert_eq!(cfg.interaction.min_opacity, 0.18);
+        assert_eq!(normalize_modifier("ALT"), "alt");
+        assert_eq!(normalize_fade_distance(8.0), 24.0);
+        assert_eq!(normalize_min_opacity(0.9), 0.6);
     }
 }

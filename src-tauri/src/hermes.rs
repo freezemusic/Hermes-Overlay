@@ -1,8 +1,9 @@
 //! HTTP client for a self-hosted Hermes Agent API server.
 //!
-//! Field names follow the public API-server docs and `gateway/platforms/api_server.py`
-//! (`assistant.delta` uses `delta`, tool events use `tool_name` / `preview`, chat accepts
-//! `message` or `input`). This module was not run against a live Hermes gateway.
+//! Field names follow the public API-server docs, `gateway/platforms/api_server.py`,
+//! and a live Hermes v0.21.6 gateway (`assistant.delta` uses `delta`, tool events use
+//! `tool_name` / `preview`, chat accepts `message` or `input`, failed turns use
+//! `display_kind: failed_turn` rather than `run.failed.error`).
 
 use crate::config::BOT_CHAT_TITLE;
 use crate::sse::{self, SseEvent};
@@ -68,7 +69,10 @@ pub enum TurnEvent {
         name: String,
         preview: String,
     },
-    Finished { outcome: String, detail: String },
+    Finished {
+        outcome: String,
+        detail: String,
+    },
 }
 
 pub fn route_root(gateway: &str, profile: &str, bot_base: &str) -> String {
@@ -167,6 +171,18 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
             .to_string();
         let text = content_to_text(item.get("content").unwrap_or(&Value::Null));
         let text = clip(&text, 8000);
+        let display_kind = item
+            .get("display_kind")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if display_kind == "failed_turn" && !text.trim().is_empty() {
+            out.push(UiMessage {
+                role: "failure".into(),
+                text,
+                tool_name: String::new(),
+            });
+            continue;
+        }
         match role {
             "user" if !text.trim().is_empty() => out.push(UiMessage {
                 role: "user".into(),
@@ -217,7 +233,9 @@ pub fn session_id_from_create(value: &Value) -> Option<String> {
 }
 
 pub fn conflict_session_id(body: &str) -> Option<String> {
-    const MARKER: &str = "Title already in use by session ";
+    // Hermes 0.21.6: `Title 'Bot Chat' is already in use by session api_…`
+    // Older wording was `Title already in use by session api_…`.
+    const MARKER: &str = "already in use by session ";
     let idx = body.find(MARKER)?;
     let rest = &body[idx + MARKER.len()..];
     let id: String = rest
@@ -281,7 +299,10 @@ fn authed(builder: reqwest::RequestBuilder, key: &str) -> reqwest::RequestBuilde
         .header("Accept", "application/json")
 }
 
-async fn send(builder: reqwest::RequestBuilder, key: &str) -> Result<reqwest::Response, HermesError> {
+async fn send(
+    builder: reqwest::RequestBuilder,
+    key: &str,
+) -> Result<reqwest::Response, HermesError> {
     let resp = authed(builder, key).send().await.map_err(map_reqwest)?;
     let status = resp.status();
     if status.is_success() {
@@ -334,8 +355,9 @@ pub async fn ensure_bot_chat(http: &Client, root: &str, key: &str) -> Result<Str
             session_id_from_create(&value)
                 .ok_or_else(|| HermesError::Protocol("建立 session 回應冇 id".into()))
         }
-        Err(HermesError::Http { status: 400, body }) => conflict_session_id(&body)
-            .ok_or(HermesError::Http { status: 400, body }),
+        Err(HermesError::Http { status: 400, body }) => {
+            conflict_session_id(&body).ok_or(HermesError::Http { status: 400, body })
+        }
         Err(err) => Err(err),
     }
 }
@@ -492,24 +514,39 @@ where
     }
 
     let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
+    let mut decoder = sse::ByteBuf::new();
     let mut saw_terminal = false;
     let mut streamed = false;
+    let mut pending_failure: Option<String> = None;
     while let Some(chunk) = stream.next().await {
         if stop.load(Ordering::Relaxed) {
             return Err(HermesError::Cancelled);
         }
         let bytes = chunk.map_err(map_reqwest)?;
-        buf.push_str(&String::from_utf8_lossy(&bytes));
-        let (events, rest) = sse::drain(&buf);
-        buf = rest;
-        for event in events {
+        for event in decoder.push(&bytes) {
             if stop.load(Ordering::Relaxed) {
                 return Err(HermesError::Cancelled);
             }
-            if apply_sse(event, &mut streamed, &mut saw_terminal, &mut on_event) {
+            if apply_sse(
+                event,
+                &mut streamed,
+                &mut saw_terminal,
+                &mut pending_failure,
+                &mut on_event,
+            ) {
                 saw_terminal = true;
             }
+        }
+    }
+    for event in decoder.finish() {
+        if apply_sse(
+            event,
+            &mut streamed,
+            &mut saw_terminal,
+            &mut pending_failure,
+            &mut on_event,
+        ) {
+            saw_terminal = true;
         }
     }
     if stop.load(Ordering::Relaxed) {
@@ -523,7 +560,13 @@ where
     Ok(())
 }
 
-fn apply_sse<F>(event: SseEvent, streamed: &mut bool, saw_terminal: &mut bool, on_event: &mut F) -> bool
+fn apply_sse<F>(
+    event: SseEvent,
+    streamed: &mut bool,
+    saw_terminal: &mut bool,
+    pending_failure: &mut Option<String>,
+    on_event: &mut F,
+) -> bool
 where
     F: FnMut(TurnEvent),
 {
@@ -537,14 +580,23 @@ where
                 .unwrap_or("");
             if !text.is_empty() {
                 *streamed = true;
+                *pending_failure = None;
                 on_event(TurnEvent::Delta(text.to_string()));
             }
             false
         }
         "assistant.completed" => {
             let text = content_to_text(payload.get("content").unwrap_or(&Value::Null));
+            let completed = payload.get("completed").and_then(Value::as_bool);
+            if completed == Some(false) {
+                if !text.trim().is_empty() {
+                    *pending_failure = Some(text);
+                }
+                return false;
+            }
             if !*streamed && !text.is_empty() {
                 *streamed = true;
+                *pending_failure = None;
                 on_event(TurnEvent::Delta(text));
             }
             false
@@ -583,13 +635,10 @@ where
         }
         "run.failed" => {
             *saw_terminal = true;
-            let detail = payload
-                .get("error")
-                .map(value_text)
-                .unwrap_or_default();
+            let detail = failure_detail(&payload, pending_failure.as_deref());
             on_event(TurnEvent::Finished {
                 outcome: "failed".into(),
-                detail: clip(&detail, 400),
+                detail,
             });
             true
         }
@@ -645,6 +694,35 @@ fn value_text(value: &Value) -> String {
     }
 }
 
+fn failure_detail(payload: &Value, prior: Option<&str>) -> String {
+    let mut parts = Vec::new();
+    if let Some(prior) = prior.map(str::trim).filter(|text| !text.is_empty()) {
+        parts.push(prior.to_string());
+    }
+    let failed_turn = payload
+        .get("messages")
+        .and_then(Value::as_array)
+        .and_then(|messages| {
+            messages.iter().rev().find(|item| {
+                item.get("display_kind").and_then(Value::as_str) == Some("failed_turn")
+            })
+        });
+    if let Some(item) = failed_turn {
+        let text = content_to_text(item.get("content").unwrap_or(&Value::Null));
+        let text = text.trim();
+        if !text.is_empty() && parts.last().map(String::as_str) != Some(text) {
+            parts.push(text.to_string());
+        }
+    } else if parts.is_empty() {
+        let fallback = payload.get("error").map(value_text).unwrap_or_default();
+        let fallback = fallback.trim();
+        if !fallback.is_empty() && fallback != "null" {
+            parts.push(fallback.to_string());
+        }
+    }
+    clip(&parts.join("\n\n"), 2000)
+}
+
 pub fn explain(err: &HermesError) -> String {
     match err {
         HermesError::Http { status: 401, .. } => {
@@ -656,9 +734,16 @@ pub fn explain(err: &HermesError) -> String {
         ),
         HermesError::Http { status: 429, .. } => "Gateway 太忙（429），稍後再試。".into(),
         HermesError::Http { status, body } => format!("Gateway 回應 {status}。{body}"),
-        HermesError::Connect(msg) => format!("連唔到 Hermes：{msg}"),
-        HermesError::Timeout(msg) => format!("Hermes 逾時：{msg}"),
-        HermesError::Transport(msg) => format!("連線中斷：{msg}"),
+        HermesError::Connect(_) => {
+            "連唔到 Hermes gateway。請確認 gateway 已開，位址係設定入面嗰個（預設埠 8642）。".into()
+        }
+        HermesError::Timeout(_) => {
+            "Hermes gateway 逾時。請確認 gateway 已開，位址係設定入面嗰個（預設埠 8642）。".into()
+        }
+        HermesError::Transport(_) => {
+            "同 Hermes gateway 嘅連線中斷。請確認 gateway 已開，位址係設定入面嗰個（預設埠 8642）。"
+                .into()
+        }
         HermesError::Protocol(msg) => msg.clone(),
         HermesError::Cancelled => "已停止呢次回覆。".into(),
     }
@@ -725,19 +810,30 @@ mod tests {
                 {"role": "user", "content": "你好"},
                 {"role": "assistant", "content": [{"type": "text", "text": "早晨"}]},
                 {"role": "tool", "tool_name": "terminal", "content": "ok"},
+                {"role": "assistant", "content": "Your request was not processed.", "display_kind": "failed_turn"},
                 {"role": "system", "content": "skip"}
             ],
             "pagination": {"order": "oldest"}
         });
         let msgs = normalize_messages(&value);
-        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[1].role, "bot");
         assert_eq!(msgs[1].text, "早晨");
         assert_eq!(msgs[2].tool_name, "terminal");
+        assert_eq!(msgs[3].role, "failure");
+        assert!(!msgs
+            .iter()
+            .any(|m| m.role == "bot" && m.text.contains("not processed")));
         let body = r#"{"error":{"message":"Title already in use by session api_1_abcd","code":"invalid_title"}}"#;
         assert_eq!(conflict_session_id(body).as_deref(), Some("api_1_abcd"));
+        let live = r#"{"error":{"message":"Title 'Bot Chat' is already in use by session api_1791473313_291c4f1b","code":"invalid_title"}}"#;
         assert_eq!(
-            session_id_from_create(&json!({"object":"hermes.session","session":{"id":"s1"}})).as_deref(),
+            conflict_session_id(live).as_deref(),
+            Some("api_1791473313_291c4f1b")
+        );
+        assert_eq!(
+            session_id_from_create(&json!({"object":"hermes.session","session":{"id":"s1"}}))
+                .as_deref(),
             Some("s1")
         );
     }
@@ -812,6 +908,53 @@ data: {\"completed\":true}\n\
         let seen = seen.lock().unwrap();
         assert!(matches!(seen[0], TurnEvent::Delta(ref t) if t == "你好"));
         assert!(matches!(seen[1], TurnEvent::Tool { ref phase, .. } if phase == "started"));
-        assert!(matches!(seen.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
+        assert!(
+            matches!(seen.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed")
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_turn_uses_provider_text_not_a_normal_reply() {
+        let body = "\
+event: assistant.completed\n\
+data: {\"content\":\"HTTP 404: model 'does-not-exist-model' not found\",\"completed\":false}\n\
+\n\
+event: run.failed\n\
+data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not processed.\",\"display_kind\":\"failed_turn\"}]}\n\
+\n";
+        let base = oneshot("200 OK", "text/event-stream", body);
+        let http = Client::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let stop = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, |ev| {
+            seen2.lock().unwrap().push(ev);
+        })
+        .await
+        .unwrap();
+        let seen = seen.lock().unwrap();
+        assert!(
+            !seen.iter().any(|ev| matches!(ev, TurnEvent::Delta(_))),
+            "a failed turn must not render as a normal reply"
+        );
+        match seen.last() {
+            Some(TurnEvent::Finished { outcome, detail }) => {
+                assert_eq!(outcome, "failed");
+                assert!(detail.contains("does-not-exist-model"));
+                assert!(detail.contains("Your request was not processed."));
+                assert!(!detail.is_empty());
+            }
+            other => panic!("expected failed finish, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_explanation_hides_the_gateway_url() {
+        let msg = explain(&HermesError::Connect(
+            "error sending request for url (http://127.0.0.1:8642/)".into(),
+        ));
+        assert!(!msg.contains("http://"));
+        assert!(!msg.contains("127.0.0.1"));
+        assert!(msg.contains("8642"));
     }
 }

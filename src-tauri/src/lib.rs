@@ -1,5 +1,6 @@
 mod config;
 mod hermes;
+mod interaction;
 mod secrets;
 mod sse;
 
@@ -15,6 +16,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct AppState {
     http: reqwest::Client,
     stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    sessions: Arc<Mutex<HashMap<String, String>>>,
+    interaction: Arc<interaction::InteractionHub>,
 }
 
 fn http_client() -> reqwest::Client {
@@ -48,12 +51,22 @@ struct PublicBot {
 }
 
 #[derive(Serialize)]
+struct PublicInteraction {
+    modifier: String,
+    fade_enabled: bool,
+    fade_distance: f64,
+    min_opacity: f64,
+    supported: bool,
+}
+
+#[derive(Serialize)]
 struct PublicSettings {
     mode: String,
     gateway_base_url: String,
     dashboard_base_url: String,
     has_dashboard_token: bool,
     keyring_error: Option<String>,
+    interaction: PublicInteraction,
     bots: Vec<PublicBot>,
 }
 
@@ -84,7 +97,18 @@ struct SaveSettings {
     dashboard_token: String,
     #[serde(default)]
     clear_dashboard_token: bool,
+    #[serde(default)]
+    interaction: Option<SaveInteraction>,
     bots: Vec<SaveBot>,
+}
+
+#[derive(Deserialize)]
+struct SaveInteraction {
+    #[serde(default)]
+    modifier: String,
+    fade_enabled: Option<bool>,
+    fade_distance: Option<f64>,
+    min_opacity: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -132,10 +156,20 @@ fn bot_or_err<'a>(cfg: &'a AppConfig, profile: &str) -> Result<&'a BotConfig, St
 fn profile_key(profile: &str) -> Result<String, String> {
     match secrets::get_profile_key(profile)? {
         Lookup::Value(key) if !key.trim().is_empty() => Ok(key),
-        Lookup::Value(_) | Lookup::Missing => {
-            Err(format!("profile「{profile}」未有 API 金鑰"))
-        }
+        Lookup::Value(_) | Lookup::Missing => Err(format!("profile「{profile}」未有 API 金鑰")),
     }
+}
+
+fn session_map(state: &AppState) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
+    state.sessions.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+fn cached_session(state: &AppState, profile: &str) -> Option<String> {
+    session_map(state).get(profile).cloned()
+}
+
+fn remember_session(state: &AppState, profile: &str, id: &str) {
+    session_map(state).insert(profile.to_string(), id.to_string());
 }
 
 fn replace_stop(state: &AppState, profile: &str) -> Arc<AtomicBool> {
@@ -166,7 +200,14 @@ fn emit_status(app: &AppHandle, profile: &str, state_name: &str, detail: &str) {
 #[tauri::command]
 fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
     let cfg = load_config(&app)?;
-    let mut keyring_error = None;
+    let mut keyring_error = match secrets::store_is_mock() {
+        Ok(true) => Some(
+            "鑰匙圈係記憶體模擬，金鑰唔會保存。呢個版本應該用系統鑰匙圈（Windows Credential Manager、macOS Keychain、Linux Secret Service）。"
+                .into(),
+        ),
+        Ok(false) => None,
+        Err(err) => Some(err),
+    };
     let mut bots = Vec::new();
     for bot in &cfg.bots {
         let has_key = match secrets::get_profile_key(&bot.profile) {
@@ -194,12 +235,23 @@ fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
             false
         }
     };
+    let supported = app
+        .try_state::<AppState>()
+        .map(|state| state.interaction.supported)
+        .unwrap_or_else(interaction::platform_supports_global_input);
     Ok(PublicSettings {
         mode: cfg.mode().into(),
         gateway_base_url: cfg.gateway_base_url,
         dashboard_base_url: cfg.dashboard_base_url,
         has_dashboard_token,
         keyring_error,
+        interaction: PublicInteraction {
+            modifier: cfg.interaction.modifier,
+            fade_enabled: cfg.interaction.fade_enabled,
+            fade_distance: cfg.interaction.fade_distance,
+            min_opacity: cfg.interaction.min_opacity,
+            supported,
+        },
         bots,
     })
 }
@@ -264,13 +316,31 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
         secrets::set_dashboard_token(&input.dashboard_token)?;
     }
 
+    let interaction = match &input.interaction {
+        Some(raw) => config::InteractionConfig {
+            modifier: config::normalize_modifier(&raw.modifier),
+            fade_enabled: raw.fade_enabled.unwrap_or(true),
+            fade_distance: config::normalize_fade_distance(raw.fade_distance.unwrap_or(120.0)),
+            min_opacity: config::normalize_min_opacity(raw.min_opacity.unwrap_or(0.18)),
+        },
+        None => previous.interaction.clone(),
+    };
     let cfg = AppConfig {
         version: 1,
         gateway_base_url,
         dashboard_base_url,
         bots,
+        interaction,
     };
     config::save(&config_path(&app)?, &cfg)?;
+    if let Some(state) = app.try_state::<AppState>() {
+        session_map(&state).clear();
+        *state
+            .interaction
+            .config
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = cfg.interaction.clone();
+    }
     get_settings(app)
 }
 
@@ -345,7 +415,7 @@ async fn discover_profiles(
         .await
         .map_err(|err| match err {
             HermesError::Http { status: 401 | 403, .. } => {
-                "Dashboard 拒絕存取。Loopback 通常唔使 token；否則請貼 window.__HERMES_SESSION_TOKEN__。呢個端點係實驗性質。".into()
+                "Dashboard 拒絕存取。Hermes dashboard 即使喺 localhost 都要 session token（dashboard 頁面嘅 window.__HERMES_SESSION_TOKEN__，唔係 API_SERVER_KEY）。呢個匯入係實驗性質。".into()
             }
             other => format!("匯入名單失敗（實驗）：{}", explain(&other)),
         })?;
@@ -386,6 +456,7 @@ async fn open_bot(
     .await;
     match result {
         Ok((session_id, messages)) => {
+            remember_session(&state, &profile, &session_id);
             emit_status(&app, &profile, "idle", "閒置");
             Ok(OpenedChat {
                 profile,
@@ -419,15 +490,44 @@ async fn send_chat(
     let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
     let stop = replace_stop(&state, &profile);
     let http = state.http.clone();
+    let session_cache = Arc::clone(&state.sessions);
+    let cached = cached_session(&state, &profile);
     emit_status(&app, &profile, "busy", "思考中…");
 
     tauri::async_runtime::spawn(async move {
         let run = async {
-            let session_id = hermes::ensure_bot_chat(&http, &root, &key).await?;
-            hermes::stream_turn(&http, &root, &key, &session_id, &text, &stop, |event| {
-                dispatch_turn(&app, &profile, event)
-            })
-            .await
+            let mut session_id = if let Some(id) = cached {
+                id
+            } else {
+                let id = hermes::ensure_bot_chat(&http, &root, &key).await?;
+                session_cache
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .insert(profile.clone(), id.clone());
+                id
+            };
+            let first =
+                hermes::stream_turn(&http, &root, &key, &session_id, &text, &stop, |event| {
+                    dispatch_turn(&app, &profile, event)
+                })
+                .await;
+            if matches!(first, Err(HermesError::Http { status: 404, .. })) {
+                session_cache
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .remove(&profile);
+                session_id = hermes::ensure_bot_chat(&http, &root, &key).await?;
+                session_cache
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .insert(profile.clone(), session_id.clone());
+                hermes::stream_turn(&http, &root, &key, &session_id, &text, &stop, |event| {
+                    dispatch_turn(&app, &profile, event)
+                })
+                .await
+            } else {
+                first
+            }
         };
         match run.await {
             Ok(()) => {}
@@ -470,7 +570,11 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
             app,
             serde_json::json!({"type": "commentary", "profile": profile, "text": text}),
         ),
-        TurnEvent::Tool { phase, name, preview } => emit(
+        TurnEvent::Tool {
+            phase,
+            name,
+            preview,
+        } => emit(
             app,
             serde_json::json!({
                 "type": "tool",
@@ -483,7 +587,7 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
         TurnEvent::Finished { outcome, detail } => {
             let state_name = if outcome == "failed" { "error" } else { "idle" };
             let label = match outcome.as_str() {
-                "failed" => detail.as_str(),
+                "failed" => "回覆失敗",
                 "cancelled" => "已停止",
                 _ => "閒置",
             };
@@ -499,6 +603,41 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
             );
         }
     }
+}
+
+#[derive(Deserialize)]
+struct HitRectIn {
+    id: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[tauri::command]
+fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<(), String> {
+    let mapped = rects
+        .into_iter()
+        .map(|rect| interaction::HitRect {
+            id: rect.id,
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+        })
+        .collect();
+    *state
+        .interaction
+        .rects
+        .lock()
+        .unwrap_or_else(|err| err.into_inner()) = mapped;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_interaction_latch(state: State<'_, AppState>, latched: bool) -> Result<(), String> {
+    state.interaction.latched.store(latched, Ordering::Relaxed);
+    Ok(())
 }
 
 #[tauri::command]
@@ -521,6 +660,21 @@ pub fn run() {
         .manage(AppState {
             http: http_client(),
             stops: Mutex::new(HashMap::new()),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            interaction: Arc::new(interaction::InteractionHub::new()),
+        })
+        .setup(|app| {
+            if let Ok(cfg) = load_config(app.handle()) {
+                let state = app.state::<AppState>();
+                *state
+                    .interaction
+                    .config
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner()) = cfg.interaction;
+            }
+            let hub = Arc::clone(&app.state::<AppState>().interaction);
+            interaction::spawn_poll(app.handle().clone(), hub);
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -529,7 +683,9 @@ pub fn run() {
             discover_profiles,
             open_bot,
             send_chat,
-            stop_chat
+            stop_chat,
+            set_hit_rects,
+            set_interaction_latch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

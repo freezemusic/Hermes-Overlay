@@ -4,6 +4,14 @@
  * Gateway keys stay in the Rust process; this file only sees has_key.
  */
 
+import {
+  colorForIndex,
+  distanceToRect,
+  elementOpacity,
+  modifierLabel,
+  modifierMatches,
+} from "./proximity.js";
+
 const MOCK_BOTS = [
   {
     id: "planner",
@@ -185,6 +193,16 @@ const state = {
   threads: new Map(),
   busy: new Set(),
   alwaysOnTop: true,
+  interaction: {
+    modifier: "ctrl",
+    fadeEnabled: true,
+    fadeDistance: 120,
+    minOpacity: 0.18,
+    supported: true,
+  },
+  pointerInside: false,
+  heldKeys: new Set(),
+  latched: false,
 };
 
 function threadFor(id) {
@@ -194,9 +212,10 @@ function threadFor(id) {
   return state.threads.get(id);
 }
 
-function setBanner(text, kind = "error") {
+function setBanner(text, kind = "error", sticky = "") {
   const banner = $("#conn-banner");
   banner.classList.remove("ok", "info");
+  banner.dataset.sticky = sticky || "";
   if (!text) {
     banner.hidden = true;
     banner.textContent = "";
@@ -205,6 +224,12 @@ function setBanner(text, kind = "error") {
   banner.hidden = false;
   banner.textContent = text;
   if (kind === "ok" || kind === "info") banner.classList.add(kind);
+}
+
+function clearConnectionBanner() {
+  const banner = $("#conn-banner");
+  if (banner.dataset.sticky === "keyring") return;
+  setBanner("");
 }
 
 function renderBots() {
@@ -220,6 +245,7 @@ function renderBots() {
     if (thread.statusState === "error") btn.classList.add("error");
     btn.style.setProperty("--bot-color", bot.color);
     btn.dataset.botId = bot.id;
+    btn.dataset.hitId = `bot:${bot.id}`;
     btn.setAttribute("aria-label", bot.name);
     btn.title = bot.name;
     Object.assign(btn.style, positions[i].style);
@@ -231,6 +257,7 @@ function renderBots() {
     btn.addEventListener("click", () => selectBot(bot.id));
     rail.appendChild(btn);
   });
+  scheduleHitSync();
 }
 
 function renderChat() {
@@ -270,6 +297,7 @@ function renderChat() {
   }
   $("#btn-stop").hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
   $("#btn-send").disabled = state.mode === "hermes" && state.busy.has(bot.id);
+  scheduleHitSync();
 }
 
 function bubbleEl(m) {
@@ -315,6 +343,7 @@ async function selectBot(id) {
     thread.messages = (opened.messages || []).map(presentMessage);
     thread.loaded = true;
     thread.sessionId = opened.session_id;
+    clearConnectionBanner();
     setBotStatus(id, "閒置", "idle");
   } catch (err) {
     thread.loaded = false;
@@ -392,10 +421,12 @@ function handleHermes(payload) {
   }
   if (payload.type === "done") {
     const thread = threadFor(id);
+    thread.float = null;
     const live = [...thread.messages].reverse().find((m) => m.live);
     if (live) live.live = false;
+    if (payload.outcome === "completed") clearConnectionBanner();
     if (payload.outcome === "failed" && payload.detail) {
-      appendMessage(id, { role: "commentary", text: payload.detail });
+      appendMessage(id, { role: "failure", text: payload.detail });
     }
     setBotStatus(
       id,
@@ -478,7 +509,7 @@ function useHermes(settings) {
   state.busy.clear();
   state.activeId = state.bots[0]?.id || null;
   if (settings.keyring_error) {
-    setBanner(`鑰匙圈：${settings.keyring_error}`, "error");
+    setBanner(`鑰匙圈：${settings.keyring_error}`, "error", "keyring");
   } else if (state.bots.length === 0) {
     setBanner("Gateway 已設定，但未有 Bot。打開設定加入 profile 同金鑰。", "info");
   } else {
@@ -503,7 +534,8 @@ function rowFromBot(bot = {}) {
   `;
   row.querySelector('[data-field="profile"]').value = bot.profile || "";
   row.querySelector('[data-field="display_name"]').value = bot.display_name || "";
-  row.querySelector('[data-field="color"]').value = bot.color || "#5b6cff";
+  const existingRows = $("#bot-editor") ? $("#bot-editor").querySelectorAll(".bot-row").length : 0;
+  row.querySelector('[data-field="color"]').value = bot.color || colorForIndex(existingRows);
   row.querySelector('[data-field="detail"]').value = bot.detail || "";
   row.querySelector('[data-field="base_url"]').value = bot.base_url || "";
   const key = row.querySelector('[data-field="key"]');
@@ -530,6 +562,33 @@ function readRows() {
   });
 }
 
+function applyInteraction(raw) {
+  const interaction = raw || {};
+  state.interaction = {
+    modifier: interaction.modifier || "ctrl",
+    fadeEnabled: interaction.fade_enabled !== false && interaction.fadeEnabled !== false,
+    fadeDistance: Number(interaction.fade_distance ?? interaction.fadeDistance ?? 120),
+    minOpacity: Number(interaction.min_opacity ?? interaction.minOpacity ?? 0.18),
+    supported: interaction.supported !== false,
+  };
+  const hint = $("#interact-hint");
+  if (hint) {
+    const name = modifierLabel(state.interaction.modifier);
+    hint.textContent = state.interaction.supported
+      ? `按住 ${name}：所有元素即刻實色同可點擊。放開就回復穿透同淡出。`
+      : "呢個環境讀唔到全域游標或修飾鍵，所以保持可點擊，唔會穿透。";
+  }
+}
+
+function readInteractionForm() {
+  return {
+    modifier: $("#interaction-modifier").value,
+    fade_enabled: $("#interaction-fade").checked,
+    fade_distance: Number($("#interaction-distance").value),
+    min_opacity: Number($("#interaction-min-opacity").value) / 100,
+  };
+}
+
 function fillSettings(settings) {
   $("#gateway-url").value = settings?.gateway_base_url || "";
   $("#dashboard-url").value = settings?.dashboard_base_url || "http://127.0.0.1:9119";
@@ -542,18 +601,32 @@ function fillSettings(settings) {
   const bots = settings?.bots?.length ? settings.bots : [];
   if (bots.length === 0) editor.appendChild(rowFromBot());
   bots.forEach((bot) => editor.appendChild(rowFromBot(bot)));
+  const interaction = settings?.interaction || state.interaction;
+  $("#interaction-modifier").value = interaction.modifier || "ctrl";
+  $("#interaction-fade").checked = interaction.fade_enabled !== false && interaction.fadeEnabled !== false;
+  $("#interaction-distance").value = String(interaction.fade_distance ?? interaction.fadeDistance ?? 120);
+  const min = interaction.min_opacity ?? interaction.minOpacity ?? 0.18;
+  $("#interaction-min-opacity").value = String(Math.round(Number(min) * 100));
+  const support = $("#interaction-support");
+  const supported = interaction.supported !== false;
+  support.textContent = supported
+    ? "Windows、macOS、Linux X11 會讀全域游標同修飾鍵。Wayland 冇 X11（DISPLAY）時唔會穿透。"
+    : "而家讀唔到全域輸入（常見於純 Wayland）。Overlay 會保持可點擊。";
 }
 
 function openSettings() {
   fillSettings(state.settings);
+  $("#settings").hidden = false;
+  syncLatch();
   $("#settings-status").textContent = inTauri()
     ? "儲存之後先會用新設定。測試連線讀已儲存嘅金鑰。"
     : "瀏覽器預覽改唔到鑰匙圈。請用 npm run tauri dev。";
-  $("#settings").hidden = false;
 }
 
 function closeSettings() {
   $("#settings").hidden = true;
+  syncLatch();
+  scheduleHitSync();
 }
 
 async function saveSettings(event) {
@@ -571,9 +644,11 @@ async function saveSettings(event) {
         dashboard_base_url: $("#dashboard-url").value.trim(),
         dashboard_token: $("#dashboard-token").value,
         clear_dashboard_token: false,
+        interaction: readInteractionForm(),
         bots,
       },
     });
+    applyInteraction(settings.interaction);
     state.settings = settings;
     $("#settings-status").textContent = "已儲存。";
     $("#dashboard-token").value = "";
@@ -683,6 +758,11 @@ function setupComposer() {
       closeSettings();
       return;
     }
+    if (isTextField(document.activeElement)) {
+      document.activeElement.blur();
+      syncLatch();
+      return;
+    }
     $("#btn-close")?.click();
   });
   $("#btn-settings").addEventListener("click", openSettings);
@@ -693,9 +773,166 @@ function setupComposer() {
   $("#btn-discover").addEventListener("click", discoverProfiles);
 }
 
+function isTextField(el) {
+  return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+}
+
+function settingsOpen() {
+  const layer = $("#settings");
+  return !!layer && !layer.hidden;
+}
+
+function syncLatch() {
+  const latched = isTextField(document.activeElement) || settingsOpen() || state.pointerInside;
+  state.latched = latched;
+  if (inTauri()) {
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("set_interaction_latch", { latched }))
+      .catch(() => {});
+    return;
+  }
+  paintLocalProximity();
+}
+
+function collectHits() {
+  const rects = [];
+  const push = (id, el) => {
+    if (!el || el.hidden || el.closest("[hidden]")) return;
+    const box = el.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) return;
+    rects.push({ id, x: box.x, y: box.y, w: box.width, h: box.height });
+  };
+  push("center", $("#center-panel"));
+  push("settings", document.querySelector(".settings-card"));
+  push("float", $("#float-bubble"));
+  document.querySelectorAll(".bot-btn").forEach((el) => {
+    if (el.dataset.hitId) push(el.dataset.hitId, el);
+  });
+  return rects;
+}
+
+let hitFrame = 0;
+let lastHits = "";
+
+function scheduleHitSync() {
+  cancelAnimationFrame(hitFrame);
+  hitFrame = requestAnimationFrame(() => {
+    const rects = collectHits();
+    const key = JSON.stringify(
+      rects.map((rect) => ({
+        id: rect.id,
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        w: Math.round(rect.w),
+        h: Math.round(rect.h),
+      })),
+    );
+    if (key !== lastHits) {
+      lastHits = key;
+      if (inTauri()) {
+        import("@tauri-apps/api/core")
+          .then(({ invoke }) => invoke("set_hit_rects", { rects }))
+          .catch(() => {});
+      }
+    }
+    if (!inTauri()) paintLocalProximity(rects);
+  });
+}
+
+function applyOpacities(solid, opacities) {
+  const map = new Map((opacities || []).map((item) => [item.id, item.opacity]));
+  document.querySelectorAll("[data-hit-id]").forEach((el) => {
+    const known = map.get(el.dataset.hitId);
+    const value = solid ? 1 : known == null ? 1 : known;
+    el.style.setProperty("--hit-opacity", String(value));
+  });
+  if (!inTauri()) {
+    document.documentElement.classList.toggle("overlay-passthrough", !solid);
+    document.documentElement.classList.toggle("overlay-solid", !!solid);
+  }
+}
+
+const cursorPoint = { x: -10000, y: -10000 };
+
+function localSolid() {
+  const held = [...state.heldKeys].some((key) => modifierMatches(state.interaction.modifier, key));
+  return held || state.latched;
+}
+
+function paintLocalProximity(rects) {
+  const list = rects || collectHits();
+  const solid = localSolid();
+  const cfg = state.interaction;
+  applyOpacities(
+    solid,
+    list.map((rect) => ({
+      id: rect.id,
+      opacity: elementOpacity({
+        solid,
+        distance: distanceToRect(cursorPoint.x, cursorPoint.y, rect),
+        fadeDistance: cfg.fadeDistance,
+        minOpacity: cfg.minOpacity,
+        fadeEnabled: cfg.fadeEnabled,
+      }),
+    })),
+  );
+}
+
+function setupProximity() {
+  document.addEventListener("pointerdown", (event) => {
+    const hit = event.target.closest?.("[data-hit-id]");
+    if (hit) state.pointerInside = true;
+    else if (isTextField(document.activeElement)) document.activeElement.blur();
+    syncLatch();
+  });
+  document.addEventListener("pointerup", () => {
+    state.pointerInside = false;
+    syncLatch();
+  });
+  document.addEventListener("focusin", () => syncLatch());
+  document.addEventListener("focusout", () => setTimeout(syncLatch, 0));
+  window.addEventListener("resize", scheduleHitSync);
+  if (inTauri()) {
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen("overlay-interaction", (event) => {
+        const payload = event.payload || {};
+        if (payload.supported === false) {
+          state.interaction.supported = false;
+          applyInteraction({ ...state.interaction, fade_enabled: state.interaction.fadeEnabled, supported: false });
+          applyOpacities(true, []);
+          return;
+        }
+        applyOpacities(!!payload.solid, payload.opacities || []);
+      });
+    });
+    return;
+  }
+  document.documentElement.classList.add("overlay-passthrough");
+  window.addEventListener("mousemove", (event) => {
+    cursorPoint.x = event.clientX;
+    cursorPoint.y = event.clientY;
+    paintLocalProximity();
+  });
+  window.addEventListener("keydown", (event) => {
+    state.heldKeys.add(event.key);
+    paintLocalProximity();
+  });
+  window.addEventListener("keyup", (event) => {
+    state.heldKeys.delete(event.key);
+    paintLocalProximity();
+  });
+  window.addEventListener("blur", () => {
+    state.heldKeys.clear();
+    paintLocalProximity();
+  });
+  paintLocalProximity();
+}
+
 async function boot() {
   setupComposer();
   setupWindowChrome();
+  setupProximity();
+  applyInteraction(state.interaction);
   if (!inTauri()) {
     useMock("瀏覽器預覽：離線示範。Gateway 同金鑰只喺桌面版可用。");
     return;
@@ -706,8 +943,12 @@ async function boot() {
     await listen("hermes", (event) => handleHermes(event.payload));
     const settings = await invoke("get_settings");
     state.settings = settings;
+    applyInteraction(settings.interaction);
     if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。");
     else useHermes(settings);
+    if (settings.keyring_error) {
+      setBanner(`鑰匙圈：${settings.keyring_error}`, "error", "keyring");
+    }
   } catch (err) {
     useMock(`讀唔到設定，改用示範模式：${err}`);
   }
