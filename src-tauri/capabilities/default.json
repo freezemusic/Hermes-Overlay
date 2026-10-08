@@ -21,6 +21,7 @@
     "allow-stop-chat",
     "allow-set-hit-rects",
     "allow-set-interaction-latch",
+    "allow-focus-owner",
     "core:window:allow-set-focus"
   ]
 }

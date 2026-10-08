@@ -10,6 +10,8 @@ import {
   elementStates,
   focusLossAction,
   latchedElementIds,
+  osFocusAction,
+  selectBlurAction,
   linuxAltWarning,
   modifierLabel,
   modifierMatches,
@@ -632,6 +634,9 @@ function fillSettings(settings) {
 }
 
 function openSettings() {
+  window.clearTimeout(blurReleaseTimer);
+  blurReleaseTimer = 0;
+  state.windowFocused = true;
   fillSettings(state.settings);
   $("#settings").hidden = false;
   syncLatch();
@@ -639,6 +644,10 @@ function openSettings() {
   $("#settings-status").textContent = inTauri()
     ? "儲存之後先會用新設定。測試連線讀已儲存嘅金鑰。"
     : "瀏覽器預覽改唔到鑰匙圈。請用 npm run tauri dev。";
+  if (!inTauri()) return;
+  import("@tauri-apps/api/window")
+    .then(({ getCurrentWindow }) => getCurrentWindow().setFocus())
+    .catch(() => {});
 }
 
 function closeSettings() {
@@ -805,9 +814,15 @@ function setupComposer() {
     state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "change");
   });
   modifierSelect?.addEventListener("blur", () => {
-    const wasOpen = state.dropdownOpen;
-    state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "blur");
-    if (wasOpen && !document.hasFocus()) finishInteractiveRelease();
+    const action = selectBlurAction({
+      dropdownOpen: state.dropdownOpen,
+      documentFocused: document.hasFocus(),
+    });
+    if (action === "defer") {
+      void queryOsFocus();
+      return;
+    }
+    if (action === "close") state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "blur");
   });
   $("#btn-settings-close").addEventListener("click", closeSettings);
   $("#settings-form").addEventListener("submit", saveSettings);
@@ -957,11 +972,28 @@ function noteWindowFocus() {
 
 function openSettingsFromShortcut() {
   state.dropdownOpen = false;
-  state.windowFocused = true;
   openSettings();
-  if (!inTauri()) return;
-  import("@tauri-apps/api/window")
-    .then(({ getCurrentWindow }) => getCurrentWindow().setFocus())
+}
+
+function applyOsFocus(owner) {
+  const action = osFocusAction(owner);
+  if (action === "release") {
+    finishInteractiveRelease();
+    return;
+  }
+  if (action === "hold" && state.dropdownOpen && !state.windowFocused) {
+    state.windowFocused = true;
+    syncLatch();
+  }
+}
+
+function queryOsFocus() {
+  if (!inTauri()) return Promise.resolve();
+  return import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("focus_owner"))
+    .then((owner) => {
+      if (owner === "own") applyOsFocus(owner);
+    })
     .catch(() => {});
 }
 
@@ -1021,6 +1053,7 @@ function setupProximity() {
           applyFrames([], true);
           return;
         }
+        if (payload.focus_owner) applyOsFocus(payload.focus_owner);
         applyFrames(payload.opacities || []);
       });
     });

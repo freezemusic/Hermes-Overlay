@@ -222,6 +222,53 @@ pub fn interaction_frame(
         .collect()
 }
 
+/// Whose process owns the OS-focused window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusOwner {
+    /// Main window or a popup created by this process, such as a GTK select menu.
+    Own,
+    /// Foreground window belongs to another process.
+    Other,
+    /// The foreground window could not be read.
+    Unknown,
+}
+
+pub fn classify_focus_owner(focused_pid: Option<u32>, self_pid: u32) -> FocusOwner {
+    match focused_pid {
+        Some(pid) if pid == self_pid => FocusOwner::Own,
+        Some(_) => FocusOwner::Other,
+        None => FocusOwner::Unknown,
+    }
+}
+
+pub fn focus_owner_name(owner: FocusOwner) -> &'static str {
+    match owner {
+        FocusOwner::Own => "own",
+        FocusOwner::Other => "other",
+        FocusOwner::Unknown => "unknown",
+    }
+}
+
+/// One other-process sample stays unconfirmed so a popup mapping does not release the lock.
+/// The second consecutive sample is another process. Our own process reports immediately.
+pub fn confirm_focus_owner(previous_other_samples: u8, owner: FocusOwner) -> (FocusOwner, u8) {
+    match owner {
+        FocusOwner::Other => {
+            let samples = previous_other_samples.saturating_add(1);
+            if samples >= 2 {
+                (FocusOwner::Other, samples)
+            } else {
+                (FocusOwner::Unknown, samples)
+            }
+        }
+        other => (other, 0),
+    }
+}
+
+pub fn current_focus_owner() -> FocusOwner {
+    classify_focus_owner(FocusProbe::open().focused_pid(), std::process::id())
+}
+
 /// A forced element (modifier target or latched panel) is full opacity at any distance.
 pub fn element_opacity(solid: bool, distance: f64, cfg: &InteractionConfig) -> f64 {
     if solid {
@@ -270,6 +317,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
         };
         let mut last_signature = String::new();
         let mut ignoring: Option<bool> = None;
+        let mut focus_probe = FocusProbe::open();
+        let mut other_samples = 0u8;
         loop {
             std::thread::sleep(Duration::from_millis(16));
             let Some(window) = app.get_webview_window("main") else {
@@ -307,11 +356,18 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                     capture: item.capture,
                 })
                 .collect();
-            let signature = items
-                .iter()
-                .map(|item| format!("{}={:.2}:{}", item.id, item.opacity, item.capture))
-                .collect::<Vec<_>>()
-                .join("|");
+            let raw_owner = classify_focus_owner(focus_probe.focused_pid(), std::process::id());
+            let (owner, samples) = confirm_focus_owner(other_samples, raw_owner);
+            other_samples = samples;
+            let focus_owner = focus_owner_name(owner);
+            let signature = format!(
+                "{}|focus={focus_owner}",
+                items
+                    .iter()
+                    .map(|item| format!("{}={:.2}:{}", item.id, item.opacity, item.capture))
+                    .collect::<Vec<_>>()
+                    .join("|")
+            );
             if signature == last_signature {
                 continue;
             }
@@ -321,6 +377,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 serde_json::json!({
                     "type": "proximity",
                     "supported": true,
+                    "focus_owner": focus_owner,
                     "opacities": items,
                 }),
             );
@@ -339,6 +396,255 @@ fn cursor_in_view(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
         (cursor.x - f64::from(origin.x)) / scale,
         (cursor.y - f64::from(origin.y)) / scale,
     ))
+}
+
+struct FocusProbe {
+    #[cfg(target_os = "linux")]
+    display: *mut std::ffi::c_void,
+}
+
+impl FocusProbe {
+    fn open() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self {
+                display: x11_focus::open_display(),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self {}
+        }
+    }
+
+    fn focused_pid(&mut self) -> Option<u32> {
+        #[cfg(target_os = "linux")]
+        {
+            x11_focus::focused_pid(self.display)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = self;
+            windows_focus::focused_pid()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = self;
+            macos_focus::focused_pid()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+        {
+            let _ = self;
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for FocusProbe {
+    fn drop(&mut self) {
+        x11_focus::close_display(self.display);
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod x11_focus {
+    use std::ffi::{c_char, c_int, c_long, c_ulong, c_void};
+    use std::ptr;
+
+    #[link(name = "X11")]
+    extern "C" {
+        fn XOpenDisplay(name: *const c_char) -> *mut c_void;
+        fn XCloseDisplay(display: *mut c_void) -> c_int;
+        fn XDefaultRootWindow(display: *mut c_void) -> c_ulong;
+        fn XInternAtom(display: *mut c_void, name: *const c_char, only_if_exists: c_int)
+            -> c_ulong;
+        fn XGetWindowProperty(
+            display: *mut c_void,
+            window: c_ulong,
+            property: c_ulong,
+            long_offset: c_long,
+            long_length: c_long,
+            delete: c_int,
+            req_type: c_ulong,
+            actual_type_return: *mut c_ulong,
+            actual_format_return: *mut c_int,
+            nitems_return: *mut c_ulong,
+            bytes_after_return: *mut c_ulong,
+            prop_return: *mut *mut u8,
+        ) -> c_int;
+        fn XFree(data: *mut c_void) -> c_int;
+        fn XSync(display: *mut c_void, discard: c_int) -> c_int;
+        fn XSetErrorHandler(
+            handler: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,
+        ) -> Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>;
+    }
+
+    unsafe extern "C" fn swallow_error(_: *mut c_void, _: *mut c_void) -> c_int {
+        0
+    }
+
+    pub fn open_display() -> *mut c_void {
+        unsafe { XOpenDisplay(ptr::null()) }
+    }
+
+    pub fn close_display(display: *mut c_void) {
+        if !display.is_null() {
+            unsafe {
+                XCloseDisplay(display);
+            }
+        }
+    }
+
+    pub fn focused_pid(display: *mut c_void) -> Option<u32> {
+        if display.is_null() {
+            return None;
+        }
+        unsafe {
+            let previous = XSetErrorHandler(Some(swallow_error));
+            let pid = read_focused_pid(display);
+            XSync(display, 0);
+            XSetErrorHandler(previous);
+            pid
+        }
+    }
+
+    unsafe fn read_focused_pid(display: *mut c_void) -> Option<u32> {
+        let active = intern(display, b"_NET_ACTIVE_WINDOW\0")?;
+        let pid_atom = intern(display, b"_NET_WM_PID\0")?;
+        let root = XDefaultRootWindow(display);
+        let window = read_ulong(display, root, active)?;
+        if window == 0 {
+            return None;
+        }
+        let pid = read_ulong(display, window, pid_atom)?;
+        if pid == 0 {
+            None
+        } else {
+            Some(pid as u32)
+        }
+    }
+
+    unsafe fn intern(display: *mut c_void, name: &[u8]) -> Option<c_ulong> {
+        let atom = XInternAtom(display, name.as_ptr().cast(), 0);
+        if atom == 0 {
+            None
+        } else {
+            Some(atom)
+        }
+    }
+
+    unsafe fn read_ulong(
+        display: *mut c_void,
+        window: c_ulong,
+        property: c_ulong,
+    ) -> Option<c_ulong> {
+        let mut actual_type = 0;
+        let mut actual_format = 0;
+        let mut nitems = 0;
+        let mut bytes_after = 0;
+        let mut prop = ptr::null_mut();
+        let status = XGetWindowProperty(
+            display,
+            window,
+            property,
+            0,
+            1,
+            0,
+            0,
+            &mut actual_type,
+            &mut actual_format,
+            &mut nitems,
+            &mut bytes_after,
+            &mut prop,
+        );
+        if status != 0 || prop.is_null() || nitems == 0 {
+            if !prop.is_null() {
+                XFree(prop.cast());
+            }
+            return None;
+        }
+        let value = *prop.cast::<c_ulong>();
+        XFree(prop.cast());
+        Some(value)
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_focus {
+    use std::ffi::c_void;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetForegroundWindow() -> *mut c_void;
+        fn GetWindowThreadProcessId(hwnd: *mut c_void, process_id: *mut u32) -> u32;
+    }
+
+    pub fn focused_pid() -> Option<u32> {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.is_null() {
+                return None;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == 0 {
+                None
+            } else {
+                Some(pid)
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos_focus {
+    use std::ffi::c_void;
+
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {}
+
+    #[link(name = "objc", kind = "dylib")]
+    extern "C" {
+        fn objc_getClass(name: *const u8) -> *mut c_void;
+        fn sel_registerName(name: *const u8) -> *mut c_void;
+        fn objc_msgSend();
+    }
+
+    pub fn focused_pid() -> Option<u32> {
+        unsafe {
+            let class = objc_getClass(b"NSWorkspace\0".as_ptr());
+            if class.is_null() {
+                return None;
+            }
+            let shared = msg(class, b"sharedWorkspace\0");
+            if shared.is_null() {
+                return None;
+            }
+            let app = msg(shared, b"frontmostApplication\0");
+            if app.is_null() {
+                return None;
+            }
+            let pid = msg_i32(app, b"processIdentifier\0");
+            if pid <= 0 {
+                None
+            } else {
+                Some(pid as u32)
+            }
+        }
+    }
+
+    unsafe fn msg(receiver: *mut c_void, selector: &[u8]) -> *mut c_void {
+        let send: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+            std::mem::transmute(objc_msgSend as *const ());
+        send(receiver, sel_registerName(selector.as_ptr()))
+    }
+
+    unsafe fn msg_i32(receiver: *mut c_void, selector: &[u8]) -> i32 {
+        let send: unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32 =
+            std::mem::transmute(objc_msgSend as *const ());
+        send(receiver, sel_registerName(selector.as_ptr()))
+    }
 }
 
 #[cfg(test)]
@@ -649,5 +955,26 @@ mod tests {
             &cfg,
         );
         assert!(square_corner[0].capture);
+    }
+
+    #[test]
+    fn focus_owner_is_own_process_or_another_process() {
+        assert_eq!(classify_focus_owner(Some(10), 10), FocusOwner::Own);
+        assert_eq!(classify_focus_owner(Some(11), 10), FocusOwner::Other);
+        assert_eq!(classify_focus_owner(None, 10), FocusOwner::Unknown);
+        assert_eq!(focus_owner_name(FocusOwner::Own), "own");
+        assert_eq!(focus_owner_name(FocusOwner::Other), "other");
+    }
+
+    #[test]
+    fn other_process_focus_is_confirmed_on_the_second_sample() {
+        let (first, samples) = confirm_focus_owner(0, FocusOwner::Other);
+        assert_eq!(first, FocusOwner::Unknown);
+        assert_eq!(samples, 1);
+        let (second, _) = confirm_focus_owner(samples, FocusOwner::Other);
+        assert_eq!(second, FocusOwner::Other);
+        let (own, reset) = confirm_focus_owner(samples, FocusOwner::Own);
+        assert_eq!(own, FocusOwner::Own);
+        assert_eq!(reset, 0);
     }
 }

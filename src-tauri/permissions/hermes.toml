@@ -42,3 +42,8 @@ commands.allow = ["set_hit_rects"]
 identifier = "allow-set-interaction-latch"
 description = "Keep the overlay interactive while a field or settings is in use."
 commands.allow = ["set_interaction_latch"]
+
+[[permission]]
+identifier = "allow-focus-owner"
+description = "Read whether the focused OS window belongs to this process."
+commands.allow = ["focus_owner"]

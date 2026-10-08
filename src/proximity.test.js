@@ -7,6 +7,8 @@ import {
   elementOpacity,
   elementStates,
   focusLossAction,
+  osFocusAction,
+  selectBlurAction,
   inkFor,
   latchedElementIds,
   linuxAltWarning,
@@ -192,6 +194,17 @@ test("dropdown flag holds the lock only while the menu is open", () => {
   assert.equal(focusLossAction({ source: "webview", dropdownOpen: true }), "hold");
   assert.equal(focusLossAction({ source: "tauri-window", dropdownOpen: false }), "release");
   assert.equal(focusLossAction({ source: "webview", dropdownOpen: false }), "debounce");
+  assert.equal(focusLossAction({ dropdownOpen: true, focusOwner: "own" }), "hold");
+  assert.equal(focusLossAction({ dropdownOpen: true, focusOwner: "other" }), "release");
+  assert.equal(osFocusAction("own"), "hold");
+  assert.equal(osFocusAction("other"), "release");
+  assert.equal(osFocusAction("unknown"), "ignore");
+});
+
+test("select blur while the page is unfocused does not close the dropdown flag", () => {
+  assert.equal(selectBlurAction({ dropdownOpen: true, documentFocused: false }), "defer");
+  assert.equal(selectBlurAction({ dropdownOpen: true, documentFocused: true }), "close");
+  assert.equal(selectBlurAction({ dropdownOpen: false, documentFocused: false }), "ignore");
 });
 
 test("linux alt modifier shows a warning", () => {

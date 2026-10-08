@@ -160,10 +160,36 @@ export function selectKeyOpensDropdown(key) {
 }
 
 /**
- * Another app taking the window releases immediately.
- * In-webview blur waits. An open dropdown holds either way.
+ * GTK fires select blur when its popup opens, and the page then has no DOM focus.
+ * That blur must not clear the dropdown flag. An in-page blur means the menu closed.
  */
-export function focusLossAction({ source = "webview", dropdownOpen = false } = {}) {
+export function selectBlurAction({ dropdownOpen = false, documentFocused = true } = {}) {
+  if (!dropdownOpen) return "ignore";
+  if (!documentFocused) return "defer";
+  return "close";
+}
+
+/**
+ * OS focus owner, already confirmed by the native poll.
+ * own: this process, including its dropdown popup. other: another process.
+ */
+export function osFocusAction(owner) {
+  if (owner === "own") return "hold";
+  if (owner === "other") return "release";
+  return "ignore";
+}
+
+/**
+ * Another app taking the window releases immediately.
+ * In-webview blur waits. An open dropdown holds until the OS says another process is focused.
+ */
+export function focusLossAction({
+  source = "webview",
+  dropdownOpen = false,
+  focusOwner = "unknown",
+} = {}) {
+  const os = osFocusAction(focusOwner);
+  if (os !== "ignore") return os;
   if (dropdownOpen) return "hold";
   if (source === "tauri-window") return "release";
   return "debounce";

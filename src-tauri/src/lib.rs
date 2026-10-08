@@ -14,13 +14,14 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const SETTINGS_SHORTCUT: &str = "Ctrl+Shift+Alt+H";
+const SETTINGS_TRAY_LABEL: &str = "設定 (Ctrl+Shift+Alt+H)";
 
 fn install_escape_hatches(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::TrayIconBuilder;
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
-    let settings = MenuItem::with_id(app, "settings", "設定", true, Some(SETTINGS_SHORTCUT))?;
+    let settings = MenuItem::with_id(app, "settings", SETTINGS_TRAY_LABEL, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "結束", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&settings, &quit])?;
     let icon = app
@@ -678,6 +679,11 @@ fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<()
 }
 
 #[tauri::command]
+fn focus_owner() -> String {
+    interaction::focus_owner_name(interaction::current_focus_owner()).to_string()
+}
+
+#[tauri::command]
 fn set_interaction_latch(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
     *state
         .interaction
@@ -736,8 +742,20 @@ pub fn run() {
             send_chat,
             stop_chat,
             set_hit_rects,
-            set_interaction_latch
+            set_interaction_latch,
+            focus_owner
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SETTINGS_SHORTCUT, SETTINGS_TRAY_LABEL};
+
+    #[test]
+    fn tray_settings_label_shows_the_shortcut() {
+        assert!(SETTINGS_TRAY_LABEL.starts_with("設定"));
+        assert!(SETTINGS_TRAY_LABEL.contains(SETTINGS_SHORTCUT));
+    }
 }
