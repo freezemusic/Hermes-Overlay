@@ -5,9 +5,11 @@
  */
 
 import {
+  PALETTE,
   colorForIndex,
   distanceToRect,
   elementOpacity,
+  inkFor,
   modifierLabel,
   modifierMatches,
 } from "./proximity.js";
@@ -17,7 +19,7 @@ const MOCK_BOTS = [
     id: "planner",
     name: "計劃助手",
     short: "計",
-    color: "#5b6cff",
+    color: PALETTE[0],
     status: "線上 · 可互動",
     detail: "幫你拆解任務、排優先次序，同埋跟進每日進度。適合長時 overlay 置頂使用。",
     messages: [
@@ -31,7 +33,7 @@ const MOCK_BOTS = [
     id: "coder",
     name: "程式夥伴",
     short: "碼",
-    color: "#2dd4bf",
+    color: PALETTE[1],
     status: "線上 · 程式碼模式",
     detail: "跨平台桌面／網頁開發助手。而家呢個骨架就係用 Tauri 2 整出嚟。",
     messages: [
@@ -45,7 +47,7 @@ const MOCK_BOTS = [
     id: "research",
     name: "資料搜查",
     short: "查",
-    color: "#f59e0b",
+    color: PALETTE[2],
     status: "待命",
     detail: "負責搜尋、摘要同來源整理。呢個版本用 mock 內容示範版面。",
     messages: [{ role: "bot", text: "你想查邊個主題？我可以先出重點摘要。" }],
@@ -55,7 +57,7 @@ const MOCK_BOTS = [
     id: "writer",
     name: "文案助手",
     short: "文",
-    color: "#f472b6",
+    color: PALETTE[3],
     status: "線上",
     detail: "粵語／書面語文稿、回覆草稿、標題建議。",
     messages: [
@@ -68,7 +70,7 @@ const MOCK_BOTS = [
     id: "ops",
     name: "系統監控",
     short: "監",
-    color: "#94a3b8",
+    color: PALETTE[4],
     status: "觀察中",
     detail: "預留位置顯示 CPU／網路／agent 狀態。目前係 stub。",
     messages: [{ role: "bot", text: "監控面板尚未接真數據——骨架已就位。" }],
@@ -78,7 +80,7 @@ const MOCK_BOTS = [
     id: "voice",
     name: "語音 Bot",
     short: "聲",
-    color: "#a78bfa",
+    color: PALETTE[5],
     status: "靜音",
     detail: "語音輸入／輸出預留。點選可睇 mock 對話。",
     messages: [{ role: "bot", text: "語音通道未接上。你可以先用文字試 overlay。" }],
@@ -88,7 +90,7 @@ const MOCK_BOTS = [
     id: "memory",
     name: "記憶庫",
     short: "憶",
-    color: "#34d399",
+    color: PALETTE[6],
     status: "本地 stub",
     detail: "記住偏好同跨 session 上下文（未實作持久化）。",
     messages: [{ role: "bot", text: "而家只係記憶示範字串，重開 app 會重置。" }],
@@ -98,7 +100,7 @@ const MOCK_BOTS = [
     id: "security",
     name: "安全守門",
     short: "安",
-    color: "#fb7185",
+    color: PALETTE[7],
     status: "守護中",
     detail: "提示敏感操作、權限同 click-through 風險。",
     messages: [
@@ -244,6 +246,7 @@ function renderBots() {
     const thread = threadFor(bot.id);
     if (thread.statusState === "error") btn.classList.add("error");
     btn.style.setProperty("--bot-color", bot.color);
+    btn.style.color = inkFor(bot.color);
     btn.dataset.botId = bot.id;
     btn.dataset.hitId = `bot:${bot.id}`;
     btn.setAttribute("aria-label", bot.name);
@@ -271,14 +274,16 @@ function renderChat() {
       state.mode === "mock"
         ? "離線示範。"
         : "Gateway 已設定，但名單係空。打開設定加入 profile、顯示名稱同 API 金鑰。";
-    $("#active-avatar").style.background = "#64748b";
+    $("#active-avatar").style.background = "var(--neutral)";
     $("#float-bubble").hidden = true;
     $("#btn-stop").hidden = true;
     return;
   }
   const thread = threadFor(bot.id);
   $("#bot-name").textContent = bot.name;
-  $("#bot-status").textContent = thread.status || bot.status || "閒置";
+  const statusEl = $("#bot-status");
+  statusEl.textContent = thread.status || bot.status || "閒置";
+  statusEl.dataset.state = thread.statusState || "idle";
   $("#bot-detail").textContent = bot.detail || "";
   $("#active-avatar").style.background = bot.color;
   thread.messages.forEach((m) => chat.appendChild(bubbleEl(m)));
@@ -475,7 +480,7 @@ function botsFromSettings(settings) {
     id: bot.profile,
     name: bot.display_name || bot.profile,
     short: shortLabel(bot.display_name || bot.profile),
-    color: bot.color || "#5b6cff",
+    color: bot.color || PALETTE[0],
     status: bot.has_key ? "閒置" : "未有金鑰",
     detail: bot.detail || `profile ${bot.profile}`,
     float: null,

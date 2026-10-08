@@ -4,6 +4,7 @@ import {
   colorForIndex,
   distanceToRect,
   elementOpacity,
+  inkFor,
   modifierMatches,
 } from "./proximity.js";
 
@@ -26,6 +27,11 @@ test("distance is zero inside a rect", () => {
   const rect = { x: 10, y: 10, w: 20, h: 20 };
   assert.equal(distanceToRect(15, 15, rect), 0);
   assert.equal(distanceToRect(10, 0, rect), 10);
+});
+
+test("light swatches use dark ink", () => {
+  assert.equal(inkFor("#edff45"), "#1a1a1a");
+  assert.equal(inkFor("#0000f2"), "#f5f5f5");
 });
 
 test("modifier keys", () => {

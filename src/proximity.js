@@ -1,17 +1,30 @@
 /** Distance fade shared by the browser preview and unit tests. */
 
+/** Chart colours sampled from the public Hermes / Nous UI, not their logos. */
 export const PALETTE = [
-  "#5b6cff",
-  "#2dd4bf",
-  "#f59e0b",
-  "#f472b6",
-  "#94a3b8",
-  "#a78bfa",
-  "#34d399",
-  "#fb7185",
-  "#38bdf8",
-  "#facc15",
+  "#0000f2",
+  "#edff45",
+  "#0847c4",
+  "#ff8442",
+  "#6effd6",
+  "#6e6eff",
+  "#f0949e",
+  "#ffcd42",
+  "#8cc4a7",
+  "#6eddff",
 ];
+
+/** Dark ink on light swatches so avatar letters stay readable. */
+export function inkFor(hex) {
+  const raw = String(hex || "").trim().replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return "#f5f5f5";
+  const n = Number.parseInt(raw, 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luminance > 0.58 ? "#1a1a1a" : "#f5f5f5";
+}
 
 export function colorForIndex(index) {
   const n = PALETTE.length;

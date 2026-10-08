@@ -195,9 +195,10 @@ pub fn normalize_http_base(raw: &str, allow_empty: bool) -> Result<String, Strin
 }
 
 pub fn color_for(name: &str) -> String {
+    // Same chart colours as src/proximity.js. Not a copy of Nous artwork.
     const COLORS: [&str; 10] = [
-        "#5b6cff", "#2dd4bf", "#f59e0b", "#f472b6", "#94a3b8", "#a78bfa", "#34d399", "#fb7185",
-        "#38bdf8", "#facc15",
+        "#0000f2", "#edff45", "#0847c4", "#ff8442", "#6effd6", "#6e6eff", "#f0949e", "#ffcd42",
+        "#8cc4a7", "#6eddff",
     ];
     let n = name
         .bytes()
