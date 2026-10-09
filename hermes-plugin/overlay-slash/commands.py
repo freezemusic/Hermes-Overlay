@@ -249,7 +249,7 @@ _BUILTINS: tuple[_Builtin, ...] = (
              "Switch model (session-scoped; --global to persist)",
              "[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
              maps_to="POST /api/sessions/{id}/model"),
-    _Builtin("client", "stop", "Session", "Kill all running background processes",
+    _Builtin("client", "stop", "Session", "Stop the current reply",
              maps_to="overlay stop"),
 )
 
@@ -278,12 +278,18 @@ def _builtin_row(spec: _Builtin) -> dict[str, Any]:
     description, args_hint, aliases, category = (
         spec.description, spec.args_hint, list(spec.aliases), spec.category,
     )
+    # /stop in this catalog is the overlay client action (stop the current
+    # reply). Hermes' own CommandDef still says "Kill all running background
+    # processes"; do not let describe() replace the client wording.
+    keep_overlay_description = spec.kind == "client" and spec.name == "stop"
     live = _live_command(spec.name)
     if live is not None:
         try:
-            description = str(live.describe() or description)
+            if not keep_overlay_description:
+                description = str(live.describe() or description)
         except Exception:
-            description = str(getattr(live, "description", None) or description)
+            if not keep_overlay_description:
+                description = str(getattr(live, "description", None) or description)
         args_hint = str(getattr(live, "args_hint", None) or args_hint)
         raw_aliases = getattr(live, "aliases", None) or aliases
         aliases = [str(a) for a in raw_aliases]
@@ -509,6 +515,19 @@ def _skill_slash(name: str, slugify: Callable | None) -> str:
     return _slug(name, slugify)
 
 
+def _skill_file_missing(info: Mapping[str, Any]) -> bool:
+    """True when a cached slash entry records a skill file that is no longer on disk.
+
+    Entries with no path stay listed: nothing proves they were deleted.
+    """
+    raw = info.get("skill_md_path")
+    if not raw and info.get("skill_dir"):
+        raw = os.path.join(str(info["skill_dir"]), "SKILL.md")
+    if not raw:
+        return False
+    return not os.path.isfile(os.path.expanduser(str(raw)))
+
+
 def _disk_skill_missing(found: list[dict[str, Any]], interactive: Mapping[str, Any], *,
                         slugify: Callable | None, collision: Callable | None,
                         disabled: set[str], claimed: set[str]) -> bool:
@@ -592,6 +611,10 @@ def skill_rows(claimed: set[str]) -> tuple[list[dict[str, Any]], str]:
                 continue
             slug = str(key).lstrip("/").lower()
             if not slug or slug in claimed or slug in seen:
+                continue
+            # The slash map is a process cache. A skill deleted while the
+            # gateway runs is still in it, and invoking it fails to load.
+            if _skill_file_missing(info):
                 continue
             name = str(info.get("name") or slug)
             if collision is not None:
@@ -825,6 +848,40 @@ def _resolve_skill_key(resolve: Callable, token: str) -> Any:
     return resolve(token)
 
 
+def _load_skill_expansion(
+    token: str, key: str, extra: list[str], instruction: str, task_id: str | None,
+    display: str, skill_name: str,
+) -> Expansion | None:
+    """Build the skill prompt. None means the skill file did not load."""
+    if extra:
+        build = load_symbol("agent.skill_commands", "build_stacked_skill_invocation_message")
+        if build is None:
+            raise ExpandError(422, "skill_load_failed", "stacked skill builder is unavailable", command=token)
+        result = build([key, *list(extra)], instruction, task_id=task_id) if accepts_param(build, "task_id") else build([key, *list(extra)], instruction)
+        if not result:
+            return None
+        message, loaded, missing = result[0], result[1], result[2] if len(result) > 2 else []
+        slugs = "+".join(str(k).lstrip("/") for k in [key, *extra])
+        notice = f"Loading {len(loaded)} stacked skills: {', '.join(loaded)}"
+        if missing:
+            notice += f"\nSkipped missing skills: {', '.join(missing)}"
+        return Expansion("skill", command=slugs, message=str(message), display=display.strip(), notice=notice)
+
+    build = load_symbol("agent.skill_commands", "build_skill_invocation_message")
+    if build is None:
+        raise ExpandError(422, "skill_load_failed", "skill builder is unavailable", command=token)
+    if accepts_param(build, "task_id"):
+        message = build(key, instruction, task_id=task_id)
+    else:
+        message = build(key, instruction)
+    if not message:
+        return None
+    return Expansion(
+        "skill", command=str(key).lstrip("/"), message=str(message),
+        display=display.strip(), notice=f"Loading skill: {skill_name}",
+    )
+
+
 def _expand_skill(token: str, args: str, task_id: str | None) -> Expansion:
     display = f"/{token}" + (f" {args}" if args else "")
     disabled = _disabled_skill_token(token)
@@ -871,33 +928,43 @@ def _expand_skill(token: str, args: str, task_id: str | None) -> Expansion:
         except Exception as exc:
             warn_once("skill-stack", f"overlay-slash: split_stacked_skill_commands failed ({exc})")
             extra, instruction = [], args
-    if extra:
-        build = load_symbol("agent.skill_commands", "build_stacked_skill_invocation_message")
-        if build is None:
-            raise ExpandError(422, "skill_load_failed", "stacked skill builder is unavailable", command=token)
-        result = build([key, *list(extra)], instruction, task_id=task_id) if accepts_param(build, "task_id") else build([key, *list(extra)], instruction)
-        if not result:
-            raise ExpandError(422, "skill_load_failed", f"failed to load stacked skills starting at {key}", command=token)
-        message, loaded, missing = result[0], result[1], result[2] if len(result) > 2 else []
-        slugs = "+".join(str(k).lstrip("/") for k in [key, *extra])
-        notice = f"Loading {len(loaded)} stacked skills: {', '.join(loaded)}"
-        if missing:
-            notice += f"\nSkipped missing skills: {', '.join(missing)}"
-        return Expansion("skill", command=slugs, message=str(message), display=display.strip(), notice=notice)
-
-    build = load_symbol("agent.skill_commands", "build_skill_invocation_message")
-    if build is None:
-        raise ExpandError(422, "skill_load_failed", "skill builder is unavailable", command=token)
-    if accepts_param(build, "task_id"):
-        message = build(key, instruction, task_id=task_id)
-    else:
-        message = build(key, instruction)
-    if not message:
+    loaded = _load_skill_expansion(token, key, extra, instruction, task_id, display, skill_name)
+    if loaded is not None:
+        return loaded
+    # The cached key pointed at a skill whose file is gone (or failed to read).
+    # Rescan once. If it is no longer a command, this is unknown_command.
+    if not _reload_skill_commands():
         raise ExpandError(422, "skill_load_failed", f"failed to load skill {key}", command=token)
-    return Expansion(
-        "skill", command=str(key).lstrip("/"), message=str(message),
-        display=display.strip(), notice=f"Loading skill: {skill_name}",
-    )
+    try:
+        key = _resolve_skill_key(resolve, token)
+    except Exception as exc:
+        warn_once("skill-resolve", f"overlay-slash: resolve_skill_command_key failed ({exc})")
+        raise
+    if not key:
+        return Expansion("none")
+    info = {}
+    if interactive is not None:
+        try:
+            info = (interactive() or {}).get(key) or {}
+        except Exception as exc:
+            warn_once("skills-interactive", f"overlay-slash: get_interactive_skill_commands failed ({exc})")
+    skill_name = str(info.get("name") or str(key).lstrip("/"))
+    if skill_name in _disabled_names() or str(key).lstrip("/") in _disabled_names():
+        raise ExpandError(409, "skill_disabled", f"Skill '{skill_name}' is disabled for api_server", command=token)
+    extra, instruction = [], args
+    if split is not None:
+        try:
+            if accepts_param(split, "interactive"):
+                extra, instruction = split(args, interactive=True)
+            else:
+                extra, instruction = split(args)
+        except Exception as exc:
+            warn_once("skill-stack", f"overlay-slash: split_stacked_skill_commands failed ({exc})")
+            extra, instruction = [], args
+    loaded = _load_skill_expansion(token, key, extra, instruction, task_id, display, skill_name)
+    if loaded is None:
+        return Expansion("none")
+    return loaded
 
 
 def _expand_bundle(token: str, args: str, task_id: str | None) -> Expansion | None:

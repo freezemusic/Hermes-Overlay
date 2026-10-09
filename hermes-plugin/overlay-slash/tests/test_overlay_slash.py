@@ -191,6 +191,8 @@ def test_catalog_shape_and_whitelist():
             assert rows["/branch"]["maps_to"] == "POST /api/sessions/{id}/fork"
             assert rows["/model"]["maps_to"] == "POST /api/sessions/{id}/model"
             assert rows["/stop"]["kind"] == "client"
+            assert rows["/stop"]["description"] == "Stop the current reply"
+            assert rows["/stop"]["maps_to"] == "overlay stop"
             assert "/init" not in rows
             for excluded in ("/clear", "/approve", "/compress", "/yolo", "/undo", "/retry", "/quit", "/platform"):
                 assert excluded not in rows
@@ -818,6 +820,145 @@ def test_stale_skill_map_reloads_once_and_catalog_matches(monkeypatch):
             assert rows["/fresh"]["kind"] == "skill"
             assert rows["/fresh"]["enabled"] is True
             assert "/ghost" not in rows
+
+    _run(inner())
+    assert chat["calls"] == 1
+
+
+def test_stop_keeps_overlay_description_when_hermes_describes_it(monkeypatch):
+    class Live:
+        description = "Kill all running background processes"
+        args_hint = ""
+        aliases = ()
+        category = "Session"
+
+        def describe(self):
+            return "Kill all running background processes"
+
+    def load_symbol(module: str, name: str):
+        if (module, name) == ("hermes_cli.commands", "resolve_command"):
+            return lambda command: Live() if command == "stop" else None
+        return None
+
+    monkeypatch.setattr(commands, "load_symbol", load_symbol)
+    app, _state = _app()
+
+    async def inner():
+        async with Server(app) as server:
+            _status, _headers, body = await _catalog(server)
+            row = _by_name(body)["/stop"]
+            assert row["kind"] == "client"
+            assert row["description"] == "Stop the current reply"
+            assert row["maps_to"] == "overlay stop"
+
+    _run(inner())
+
+
+def test_deleted_skill_is_omitted_and_expand_is_unknown(monkeypatch, tmp_path):
+    kept = tmp_path / "kept" / "SKILL.md"
+    kept.parent.mkdir()
+    kept.write_text("name: kept\n", encoding="utf-8")
+    gone = tmp_path / "gone" / "SKILL.md"
+    orphan = tmp_path / "orphan"
+    orphan.mkdir()
+    state = {"reloads": 0, "gone": True, "stuck": False}
+
+    def resolve(command: str, interactive: bool = False):
+        if command == "kept":
+            return "/kept"
+        if command == "gone" and state["gone"]:
+            return "/gone"
+        if command == "stuck":
+            return "/stuck"
+        return None
+
+    def reload_skills():
+        state["reloads"] += 1
+        state["gone"] = False
+        return {"removed": [{"name": "gone"}]}
+
+    def interactive():
+        rows = {
+            "/kept": {
+                "name": "kept", "description": "still here",
+                "skill_md_path": str(kept), "skill_dir": str(kept.parent),
+            },
+            "/orphan": {"name": "orphan", "description": "dir only", "skill_dir": str(orphan)},
+            "/legacy": {"name": "legacy", "description": "no recorded path"},
+        }
+        if state["gone"]:
+            rows["/gone"] = {
+                "name": "gone", "description": "deleted on disk",
+                "skill_md_path": str(gone), "skill_dir": str(gone.parent),
+            }
+        if state["stuck"]:
+            rows["/stuck"] = {
+                "name": "stuck", "description": "still cached",
+                "skill_md_path": str(gone),
+            }
+        return rows
+
+    def build(key: str, instruction: str = "", task_id: str | None = None):
+        if key in {"/gone", "/stuck"}:
+            return None
+        return f"SKILL {key} :: {instruction}"
+
+    def load_symbol(module: str, name: str):
+        table = {
+            ("agent.skill_commands", "resolve_skill_command_key"): resolve,
+            ("agent.skill_commands", "reload_skills"): reload_skills,
+            ("agent.skill_commands", "get_interactive_skill_commands"): interactive,
+            ("agent.skill_commands", "build_skill_invocation_message"): build,
+            ("agent.skill_commands", "split_stacked_skill_commands"): lambda rest, interactive=False: ([], rest),
+            ("tools.skills_tool", "_find_all_skills"): lambda **_kwargs: [],
+            ("tools.skills_tool", "_sort_skills"): lambda skills: skills,
+            ("agent.skill_commands", "slugify_skill_name"): lambda name: name.lower(),
+        }
+        return table.get((module, name))
+
+    monkeypatch.setattr(commands, "load_symbol", load_symbol)
+    app, chat = _app()
+
+    async def inner():
+        async with Server(app) as server:
+            assert server.session is not None
+            _status, _headers, catalog = await _catalog(server)
+            rows = _by_name(catalog)
+            assert rows["/kept"]["kind"] == "skill"
+            assert rows["/legacy"]["kind"] == "skill"
+            assert "/gone" not in rows
+            assert "/orphan" not in rows
+            assert state["reloads"] == 0
+            async with server.session.post(
+                server.base + "/v1/overlay/expand",
+                headers=server.headers(),
+                json={"text": "/gone please"},
+            ) as resp:
+                assert resp.status == 404
+                err = await resp.json()
+            assert err["error"]["code"] == "unknown_command"
+            assert "failed to load" not in err["error"]["message"]
+            assert state["reloads"] == 1
+            async with server.session.post(
+                server.base + "/api/sessions/s/chat",
+                headers=server.headers(),
+                json={"input": "/gone please"},
+            ) as resp:
+                seen = await resp.json()
+            assert seen["seen_input"] == "/gone please"
+            # The chat miss reloads once more (the command is already gone).
+            assert state["reloads"] == 2
+            # Reload ran, the file is still missing, and the builder still returns nothing.
+            state["stuck"] = True
+            async with server.session.post(
+                server.base + "/v1/overlay/expand",
+                headers=server.headers(),
+                json={"text": "/stuck"},
+            ) as resp:
+                assert resp.status == 404
+                err = await resp.json()
+            assert err["error"]["code"] == "unknown_command"
+            assert state["reloads"] == 3
 
     _run(inner())
     assert chat["calls"] == 1
