@@ -507,6 +507,13 @@ html.platform-linux {
   text-underline-offset: 2px;
 }
 
+.bubble.bot a:not([href]) {
+  color: inherit;
+  text-decoration: none;
+  cursor: text;
+  pointer-events: none;
+}
+
 .bubble.bot code {
   font-family: var(--font-mono);
   font-size: 0.84em;
@@ -586,9 +593,111 @@ html.platform-linux {
   color: var(--bubble-user-text);
 }
 
+.user-line {
+  white-space: pre-wrap;
+}
+
+.cmd-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  vertical-align: 1px;
+}
+
+.prompt-toggle {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.full-prompt {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--paper);
+}
+
 .composer {
+  position: relative;
   display: flex;
   gap: var(--space-2);
+}
+
+.slash-popup {
+  position: absolute;
+  z-index: 6;
+  left: 0;
+  right: 72px;
+  bottom: calc(100% + 6px);
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--panel-bg-solid);
+  color: var(--paper);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.slash-cat,
+.slash-hint {
+  margin: 6px 4px 2px;
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  opacity: 0.72;
+}
+
+.slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--paper);
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  text-align: start;
+  cursor: pointer;
+}
+
+.slash-item.active {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.slash-item.disabled,
+.slash-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.slash-name {
+  flex: none;
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+
+.slash-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer input,

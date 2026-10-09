@@ -6,6 +6,18 @@
 
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 import {
+  PREVIEW_COMMANDS,
+  completionText,
+  filterCommands,
+  gatewayDown,
+  modelFields,
+  moveSlashIndex,
+  parseSlashMarker,
+  reconnectDelayMs,
+  resolveClient,
+  slashFilterQuery,
+} from "./slash.js";
+import {
   PALETTE,
   applyDropdownDismiss,
   colorForIndex,
@@ -219,6 +231,12 @@ const state = {
   latchedIds: [],
   windowFocused: true,
   dropdownOpen: false,
+  catalog: null,
+  catalogHint: "",
+  catalogProfile: "",
+  slashIndex: 0,
+  reconnectToken: 0,
+  reconnectTimer: 0,
 };
 
 function threadFor(id) {
@@ -366,9 +384,38 @@ function bubbleEl(m) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${m.role === "user" ? "user" : m.role === "bot" ? "bot" : m.role}`;
   if (m.role === "bot") paintBotBubble(bubble, m.text);
+  else if (m.role === "user") paintUserBubble(bubble, m);
   else bubble.textContent = m.text;
   if (m.live) bubble.dataset.live = "1";
   return bubble;
+}
+
+function paintUserBubble(bubble, message) {
+  const line = document.createElement("span");
+  line.className = "user-line";
+  line.textContent = message.text || "";
+  bubble.appendChild(line);
+  if (message.command) {
+    const chip = document.createElement("span");
+    chip.className = "cmd-chip";
+    chip.textContent = message.command;
+    bubble.appendChild(chip);
+  }
+  if (!message.full) return;
+  const full = document.createElement("div");
+  full.className = "full-prompt";
+  full.hidden = !message.expanded;
+  full.textContent = message.full;
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "prompt-toggle";
+  toggle.textContent = message.expanded ? "收起完整提示" : "顯示完整提示";
+  toggle.addEventListener("click", () => {
+    message.expanded = !message.expanded;
+    full.hidden = !message.expanded;
+    toggle.textContent = message.expanded ? "收起完整提示" : "顯示完整提示";
+  });
+  bubble.append(toggle, full);
 }
 
 function paintBotBubble(el, text) {
@@ -424,30 +471,72 @@ function setBotStatus(id, text, statusState) {
   renderBots();
 }
 
+function cancelReconnect() {
+  state.reconnectToken += 1;
+  window.clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = 0;
+}
+
+async function loadBotHistory(id, token) {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const opened = await invoke("open_bot", { profile: id });
+  if (token !== state.reconnectToken || state.activeId !== id || state.mode !== "hermes") return false;
+  const thread = threadFor(id);
+  thread.messages = (opened.messages || []).map(presentMessage);
+  thread.loaded = true;
+  thread.sessionId = opened.session_id;
+  thread.loading = false;
+  clearConnectionBanner();
+  setBotStatus(id, "閒置", "idle");
+  return true;
+}
+
+function armReconnect(id, attempt, token) {
+  window.clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = window.setTimeout(() => {
+    if (token !== state.reconnectToken) return;
+    retryHistory(id, attempt, token);
+  }, reconnectDelayMs(attempt));
+}
+
+async function retryHistory(id, attempt, token) {
+  if (token !== state.reconnectToken || state.activeId !== id || state.mode !== "hermes") return;
+  try {
+    await loadBotHistory(id, token);
+  } catch (err) {
+    if (token !== state.reconnectToken || state.activeId !== id) return;
+    if (gatewayDown(String(err))) armReconnect(id, attempt + 1, token);
+  }
+}
+
 async function selectBot(id) {
   state.activeId = id;
+  state.catalog = null;
+  state.catalogProfile = "";
   setCenterOpen(true);
   renderBots();
   renderChat();
   if (state.mode !== "hermes" || !inTauri()) return;
   const thread = threadFor(id);
   if (thread.loaded || thread.loading) return;
+  cancelReconnect();
+  const token = state.reconnectToken;
   thread.loading = true;
   setBotStatus(id, "載入對話…", "busy");
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const opened = await invoke("open_bot", { profile: id });
-    thread.messages = (opened.messages || []).map(presentMessage);
-    thread.loaded = true;
-    thread.sessionId = opened.session_id;
-    clearConnectionBanner();
-    setBotStatus(id, "閒置", "idle");
+    await loadBotHistory(id, token);
   } catch (err) {
     thread.loaded = false;
     const message = String(err);
-    appendMessage(id, { role: "commentary", text: message });
-    setBotStatus(id, "連線錯誤", "error");
-    setBanner(message, "error");
+    if (gatewayDown(message)) {
+      setBotStatus(id, "連線錯誤", "error");
+      setBanner(message, "error");
+      armReconnect(id, 0, token);
+    } else {
+      appendMessage(id, { role: "commentary", text: message });
+      setBotStatus(id, "連線錯誤", "error");
+      setBanner(message, "error");
+    }
   } finally {
     thread.loading = false;
   }
@@ -457,6 +546,18 @@ function presentMessage(m) {
   if (m.role === "tool") {
     const name = m.tool_name || m.toolName || "tool";
     return { role: "tool", text: `工具 ${name}：${m.text}` };
+  }
+  if (m.role === "user") {
+    const marker = parseSlashMarker(m.text);
+    if (marker) {
+      return {
+        role: "user",
+        text: marker.display,
+        command: marker.command,
+        full: marker.rest,
+        expanded: false,
+      };
+    }
   }
   return { role: m.role, text: m.text };
 }
@@ -501,6 +602,14 @@ function handleHermes(payload) {
     const live = ensureLiveBubble(id);
     live.text += payload.text || "";
     patchLive(id);
+    return;
+  }
+  if (payload.type === "command") {
+    const user = [...threadFor(id).messages].reverse().find((item) => item.role === "user");
+    if (user && payload.command) {
+      user.command = payload.command;
+      if (id === state.activeId) renderChat();
+    }
     return;
   }
   if (payload.type === "commentary") {
@@ -552,7 +661,14 @@ async function sendActive() {
   const text = input.value.trim();
   if (!text || !state.activeId) return;
   if (state.mode === "hermes" && state.busy.has(state.activeId)) return;
+  closeSlash();
   input.value = "";
+  input.placeholder = "輸入訊息給呢個 Bot…";
+  const action = resolveClient(text, state.catalog || []);
+  if (action) {
+    await sendClientCommand(state.activeId, text, action);
+    return;
+  }
   appendMessage(state.activeId, { role: "user", text });
   if (state.mode !== "hermes" || !inTauri()) {
     setTimeout(() => {
@@ -588,7 +704,55 @@ function botsFromSettings(settings) {
   }));
 }
 
+async function sendClientCommand(id, text, action) {
+  appendMessage(id, { role: "user", text, command: action.command });
+  if (action.command === "stop") {
+    if (state.mode === "hermes" && inTauri()) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("stop_chat", { profile: id });
+    }
+    appendMessage(id, { role: "commentary", text: "已停止呢次回覆。" });
+    setBotStatus(id, "已停止", "idle");
+    return;
+  }
+  if (state.mode !== "hermes" || !inTauri()) {
+    appendMessage(id, { role: "commentary", text: `（示範）${action.mapsTo || action.command}` });
+    return;
+  }
+  const fields = action.command === "model" ? modelFields(action.args) : { model: "", provider: "" };
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke("client_command", {
+      input: {
+        profile: id,
+        command: action.command,
+        args: action.args,
+        model: fields.model,
+        provider: fields.provider,
+      },
+    });
+    const thread = threadFor(id);
+    if (result.session_id) thread.sessionId = result.session_id;
+    if (action.command === "new" || action.command === "branch") {
+      thread.messages = [{ role: "user", text, command: action.command }];
+      if (result.notice) thread.messages.push({ role: "commentary", text: result.notice });
+      renderChat();
+      return;
+    }
+    if (result.options?.length) {
+      appendMessage(id, { role: "commentary", text: result.options.join("\n") });
+    } else if (result.notice) {
+      appendMessage(id, { role: "commentary", text: result.notice });
+    }
+  } catch (err) {
+    const message = String(err);
+    appendMessage(id, { role: "commentary", text: message });
+    setBanner(message, "error");
+  }
+}
+
 function useMock(reason) {
+  cancelReconnect();
   state.mode = "mock";
   state.bots = MOCK_BOTS.map((bot) => ({
     ...bot,
@@ -607,6 +771,9 @@ function useMock(reason) {
 }
 
 function useHermes(settings) {
+  cancelReconnect();
+  state.catalog = null;
+  state.catalogProfile = "";
   state.mode = "hermes";
   state.settings = settings;
   state.bots = botsFromSettings(settings);
@@ -882,6 +1049,119 @@ function setCenterOpen(open) {
   scheduleHitSync();
 }
 
+function slashPopupOpen() {
+  const popup = $("#slash-popup");
+  return !!popup && !popup.hidden;
+}
+
+function closeSlash() {
+  const popup = $("#slash-popup");
+  if (!popup) return;
+  popup.hidden = true;
+  popup.replaceChildren();
+  syncLatch();
+  scheduleHitSync();
+}
+
+function activeSlashItems() {
+  const query = slashFilterQuery($("#chat-input")?.value || "");
+  if (query == null) return [];
+  return filterCommands(state.catalog || [], query);
+}
+
+async function ensureCatalog() {
+  if (!inTauri() || state.mode !== "hermes" || !state.activeId) {
+    state.catalog = PREVIEW_COMMANDS;
+    state.catalogHint = "";
+    return;
+  }
+  if (state.catalog && state.catalogProfile === state.activeId) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke("list_commands", { profile: state.activeId });
+    state.catalog = result.commands || [];
+    state.catalogHint = result.hint || "";
+    state.catalogProfile = state.activeId;
+  } catch (err) {
+    state.catalog = [];
+    state.catalogHint = String(err);
+    state.catalogProfile = state.activeId;
+  }
+}
+
+function renderSlashPopup() {
+  const popup = $("#slash-popup");
+  const input = $("#chat-input");
+  if (!popup || !input) return;
+  const query = slashFilterQuery(input.value);
+  if (query == null) {
+    closeSlash();
+    return;
+  }
+  const items = filterCommands(state.catalog || [], query);
+  if (!items.length && !(state.catalogHint && !(state.catalog || []).length)) {
+    closeSlash();
+    return;
+  }
+  if (state.slashIndex >= items.length) state.slashIndex = 0;
+  popup.replaceChildren();
+  if (!items.length) {
+    const hint = document.createElement("p");
+    hint.className = "slash-hint";
+    hint.textContent = state.catalogHint || "未裝 overlay-slash，/ 選單唔會出現。";
+    popup.appendChild(hint);
+  }
+  let category = "";
+  items.forEach((command, index) => {
+    if (command.category !== category) {
+      category = command.category || "其他";
+      const label = document.createElement("div");
+      label.className = "slash-cat";
+      label.textContent = category;
+      popup.appendChild(label);
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `slash-item${index === state.slashIndex ? " active" : ""}${command.enabled === false ? " disabled" : ""}`;
+    button.disabled = command.enabled === false;
+    button.setAttribute("role", "option");
+    const name = document.createElement("span");
+    name.className = "slash-name";
+    name.textContent = command.name;
+    const desc = document.createElement("span");
+    desc.className = "slash-desc";
+    desc.textContent = command.description || "";
+    button.append(name, desc);
+    button.addEventListener("click", () => completeSlash(command));
+    popup.appendChild(button);
+  });
+  popup.hidden = false;
+  const active = popup.querySelector(".slash-item.active");
+  active?.scrollIntoView({ block: "nearest" });
+  syncLatch();
+  scheduleHitSync();
+}
+
+function completeSlash(command) {
+  if (!command || command.enabled === false) return;
+  const input = $("#chat-input");
+  input.value = completionText(command);
+  input.placeholder = command.args_hint || "輸入訊息給呢個 Bot…";
+  input.focus();
+  closeSlash();
+}
+
+async function refreshSlash() {
+  const query = slashFilterQuery($("#chat-input")?.value || "");
+  if (query == null) {
+    closeSlash();
+    return;
+  }
+  await ensureCatalog();
+  if (slashFilterQuery($("#chat-input")?.value || "") == null) return;
+  renderSlashPopup();
+}
+
 function setupComposer() {
   $("#chat-messages").addEventListener("click", (event) => {
     const anchor = event.target.closest?.("a");
@@ -893,7 +1173,36 @@ function setupComposer() {
     openExternal(href);
   });
   $("#btn-send").addEventListener("click", sendActive);
-  $("#chat-input").addEventListener("keydown", (event) => {
+  const chatInput = $("#chat-input");
+  chatInput.addEventListener("input", () => {
+    state.slashIndex = 0;
+    refreshSlash();
+  });
+  chatInput.addEventListener("keydown", (event) => {
+    if (slashPopupOpen()) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const items = activeSlashItems();
+        state.slashIndex = moveSlashIndex(items, state.slashIndex, event.key);
+        renderSlashPopup();
+        return;
+      }
+      if (event.key === "Tab" || event.key === "Enter") {
+        const items = activeSlashItems();
+        const picked = items[state.slashIndex];
+        if (picked && picked.enabled !== false) {
+          event.preventDefault();
+          completeSlash(picked);
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeSlash();
+        return;
+      }
+    }
     if (event.key === "Enter") sendActive();
   });
   $("#btn-stop").addEventListener("click", async () => {
@@ -987,6 +1296,7 @@ function currentLatchedIds() {
     textInSettings: !!(active && active.closest && active.closest("#settings")),
     settingsOpen: settingsOpen(),
     pointerHitId: state.pointerHitId,
+    slashOpen: slashPopupOpen(),
   });
 }
 
@@ -1012,6 +1322,7 @@ function collectHits() {
     rects.push({ id, x: box.x, y: box.y, w: box.width, h: box.height, z, round });
   };
   push("center", $("#center-panel"), 0);
+  push("slash", $("#slash-popup"), 20);
   push("settings", document.querySelector(".settings-card"), 30);
   push("float", $("#float-bubble"), 10);
   document.querySelectorAll(".bot-btn").forEach((el) => {

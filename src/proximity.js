@@ -134,11 +134,13 @@ export function latchedElementIds({
   textInSettings = false,
   settingsOpen = false,
   pointerHitId = "",
+  slashOpen = false,
 } = {}) {
   if (windowFocused === false) return [];
   const ids = [];
   if (settingsOpen || (textFocused && textInSettings)) ids.push("settings");
   if (textFocused && !textInSettings) ids.push("center");
+  if (slashOpen && textFocused && !textInSettings) ids.push("slash");
   if (pointerHitId && !ids.includes(pointerHitId)) ids.push(pointerHitId);
   return ids;
 }

@@ -132,6 +132,7 @@ test("modifier keys", () => {
 
 test("interactive lock names one panel and follows window focus", () => {
   assert.deepEqual(latchedElementIds({ textFocused: true }), ["center"]);
+  assert.deepEqual(latchedElementIds({ textFocused: true, slashOpen: true }), ["center", "slash"]);
   assert.deepEqual(latchedElementIds({ settingsOpen: true }), ["settings"]);
   assert.deepEqual(latchedElementIds({ textFocused: true, textInSettings: true }), ["settings"]);
   assert.deepEqual(latchedElementIds({ pointerHitId: "bot:a" }), ["bot:a"]);

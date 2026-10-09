@@ -34,6 +34,16 @@ description = "Stop the local chat stream."
 commands.allow = ["stop_chat"]
 
 [[permission]]
+identifier = "allow-list-commands"
+description = "List overlay slash commands for one bot."
+commands.allow = ["list_commands"]
+
+[[permission]]
+identifier = "allow-client-command"
+description = "Run a client slash command against the Hermes session API."
+commands.allow = ["client_command"]
+
+[[permission]]
 identifier = "allow-set-hit-rects"
 description = "Report overlay element rectangles for proximity fade."
 commands.allow = ["set_hit_rects"]

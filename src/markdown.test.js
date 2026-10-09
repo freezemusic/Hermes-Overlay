@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
-import { createLivePainter, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
+import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 
 const purify = createDOMPurify(new JSDOM("<!DOCTYPE html><html><body></body></html>").window);
 
@@ -138,4 +138,26 @@ test("streaming re-render is throttled and an open fence stays a code block", ()
   assert.match(paints[2], /完成<\/strong> 尾/);
   queued?.();
   assert.equal(paints.length, 3);
+});
+
+test("ordered lists keep their start number and table cells keep colspan", () => {
+  const html = renderAssistantMarkdown("2. 第二步\n\n```\ncd x\n```\n\n3. 第三步\n", purify);
+  assert.match(html, /<ol start="2">/);
+  assert.match(html, /<ol start="3">/);
+  const cell = purify.sanitize('<table><tr><td colspan="2">甲</td></tr></table>', {
+    ALLOWED_TAGS: ["table", "tbody", "tr", "td"],
+    ALLOWED_ATTR: ["colspan"],
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):)/i,
+    ADD_URI_SAFE_ATTR: ["colspan"],
+  });
+  assert.match(cell, /colspan="2"/);
+  assert.doesNotMatch(renderAssistantMarkdown("[x](javascript:alert(1))", purify), /javascript:/);
+});
+
+test("an empty code block does not get a copy button", () => {
+  const dom = new JSDOM("<!DOCTYPE html><body><pre><code>\n</code></pre><pre><code>const 甲 = 1</code></pre></body></html>");
+  decorateCodeBlocks(dom.window.document.body);
+  const pres = [...dom.window.document.querySelectorAll("pre")];
+  assert.equal(pres[0].querySelector(".code-copy"), null);
+  assert.equal(pres[1].querySelector(".code-copy")?.textContent, "複製");
 });

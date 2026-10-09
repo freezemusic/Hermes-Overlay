@@ -71,4 +71,7 @@ test("avatars are translucent orbs with tunable glow", () => {
   assert.match(css, /\.bot-btn\.orb-enter::after,\s*\.bot-btn\.orb-enter\.busy::after \{[^}]*orb-pulse[^;]*\b2\b/s);
   assert.match(css, /html\.platform-linux \{[^}]*--panel-bg:\s*rgba\(7,\s*8,\s*28,\s*0\.90\)/s);
   assert.match(css, /html\.platform-linux \{[^}]*--panel-bg-solid:\s*rgba\(8,\s*8,\s*20,\s*0\.90\)/s);
+  assert.match(css, /\.bubble\.bot a:not\(\[href\]\) \{[^}]*color:\s*inherit/s);
+  assert.match(css, /\.slash-popup \{[^}]*background:\s*var\(--panel-bg-solid\)/s);
+  assert.match(css, /\.cmd-chip \{[^}]*font-family:\s*var\(--font-mono\)/s);
 });

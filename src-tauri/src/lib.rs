@@ -86,10 +86,17 @@ fn install_escape_hatches(app: &AppHandle) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+#[derive(Clone)]
+struct CommandCacheEntry {
+    etag: String,
+    commands: Vec<hermes::OverlayCommand>,
+}
+
 struct AppState {
     http: reqwest::Client,
     stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
     sessions: Arc<Mutex<HashMap<String, String>>>,
+    command_cache: Mutex<HashMap<String, CommandCacheEntry>>,
     interaction: Arc<interaction::InteractionHub>,
 }
 
@@ -521,7 +528,15 @@ async fn open_bot(
     let key = profile_key(&profile)?;
     let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
     emit_status(&app, &profile, "busy", "載入對話…");
+    let cached = cached_session(&state, &profile);
     let result = async {
+        if let Some(session_id) = cached {
+            match hermes::fetch_messages(&state.http, &root, &key, &session_id).await {
+                Ok(messages) => return Ok((session_id, messages)),
+                Err(HermesError::Http { status: 404, .. }) => {}
+                Err(err) => return Err(err),
+            }
+        }
         let session_id = hermes::ensure_bot_chat(&state.http, &root, &key).await?;
         let messages = hermes::fetch_messages(&state.http, &root, &key, &session_id).await?;
         Ok::<_, HermesError>((session_id, messages))
@@ -639,6 +654,10 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
             app,
             serde_json::json!({"type": "delta", "profile": profile, "text": text}),
         ),
+        TurnEvent::Command(command) => emit(
+            app,
+            serde_json::json!({"type": "command", "profile": profile, "command": command}),
+        ),
         TurnEvent::Commentary(text) => emit(
             app,
             serde_json::json!({"type": "commentary", "profile": profile, "text": text}),
@@ -738,6 +757,196 @@ fn set_interaction_latch(state: State<'_, AppState>, ids: Vec<String>) -> Result
     Ok(())
 }
 
+#[derive(Serialize)]
+struct CommandList {
+    commands: Vec<hermes::OverlayCommand>,
+    hint: String,
+}
+
+#[tauri::command]
+async fn list_commands(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+) -> Result<CommandList, String> {
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?;
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let cached = state
+        .command_cache
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .get(&profile)
+        .cloned();
+    let etag = cached.as_ref().map(|entry| entry.etag.clone());
+    let fetched = hermes::fetch_overlay_commands(&state.http, &root, &key, etag.as_deref()).await;
+    let mut cache = state.command_cache.lock().unwrap_or_else(|err| err.into_inner());
+    let (commands, hint) = match fetched {
+        Ok(hermes::CatalogFetch::Fresh { etag, commands }) => {
+            cache.insert(
+                profile,
+                CommandCacheEntry {
+                    etag,
+                    commands: commands.clone(),
+                },
+            );
+            (commands, String::new())
+        }
+        Ok(hermes::CatalogFetch::NotModified) => {
+            let commands = cache.get(&profile).map(|entry| entry.commands.clone()).unwrap_or_default();
+            (commands, String::new())
+        }
+        Ok(hermes::CatalogFetch::Missing)
+        | Err(HermesError::Connect(_) | HermesError::Timeout(_) | HermesError::Transport(_))
+        | Err(HermesError::Http { status: 404, .. }) => {
+            cache.remove(&profile);
+            (Vec::new(), hermes::PLUGIN_HINT.to_string())
+        }
+        Err(err) => {
+            cache.remove(&profile);
+            (Vec::new(), explain(&err))
+        }
+    };
+    Ok(CommandList { commands, hint })
+}
+
+#[derive(Deserialize)]
+struct ClientCommandIn {
+    profile: String,
+    command: String,
+    #[serde(default)]
+    args: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    provider: String,
+}
+
+#[derive(Serialize)]
+struct ClientCommandOut {
+    command: String,
+    notice: String,
+    session_id: String,
+    options: Vec<String>,
+}
+
+#[tauri::command]
+async fn client_command(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: ClientCommandIn,
+) -> Result<ClientCommandOut, String> {
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &input.profile)?.clone();
+    let key = profile_key(&input.profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let command = input.command.trim().to_string();
+    let args = input.args.trim().to_string();
+    match command.as_str() {
+        "stop" => {
+            if let Some(flag) = state
+                .stops
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .get(&input.profile)
+            {
+                flag.store(true, Ordering::Relaxed);
+            }
+            Ok(ClientCommandOut {
+                command,
+                notice: "已停止呢次回覆。".into(),
+                session_id: cached_session(&state, &input.profile).unwrap_or_default(),
+                options: Vec::new(),
+            })
+        }
+        "new" => {
+            let title = if args.is_empty() { None } else { Some(args.as_str()) };
+            let session_id = hermes::create_session(&state.http, &root, &key, title)
+                .await
+                .map_err(|err| explain(&err))?;
+            remember_session(&state, &input.profile, &session_id);
+            Ok(ClientCommandOut {
+                command,
+                notice: format!("新 session {session_id}"),
+                session_id,
+                options: Vec::new(),
+            })
+        }
+        "title" => {
+            if args.is_empty() {
+                return Err("要有標題。".into());
+            }
+            let session_id = session_for_client(&state, &input.profile, &root, &key).await?;
+            hermes::patch_session_title(&state.http, &root, &key, &session_id, &args)
+                .await
+                .map_err(|err| explain(&err))?;
+            Ok(ClientCommandOut {
+                command,
+                notice: format!("標題已改做 {args}"),
+                session_id,
+                options: Vec::new(),
+            })
+        }
+        "branch" => {
+            let session_id = session_for_client(&state, &input.profile, &root, &key).await?;
+            let forked = hermes::fork_session(&state.http, &root, &key, &session_id, &args)
+                .await
+                .map_err(|err| explain(&err))?;
+            remember_session(&state, &input.profile, &forked);
+            Ok(ClientCommandOut {
+                command,
+                notice: format!("已分支做 {forked}"),
+                session_id: forked,
+                options: Vec::new(),
+            })
+        }
+        "model" => {
+            if input.model.trim().is_empty() && args.is_empty() {
+                let options = hermes::list_model_options(&state.http, &root, &key)
+                    .await
+                    .map_err(|err| explain(&err))?;
+                return Ok(ClientCommandOut {
+                    command,
+                    notice: if options.is_empty() { "冇模型選項。".into() } else { String::new() },
+                    session_id: cached_session(&state, &input.profile).unwrap_or_default(),
+                    options,
+                });
+            }
+            let model = if input.model.trim().is_empty() { args } else { input.model.trim().to_string() };
+            let session_id = session_for_client(&state, &input.profile, &root, &key).await?;
+            hermes::lock_session_model(&state.http, &root, &key, &session_id, &model, input.provider.trim())
+                .await
+                .map_err(|err| explain(&err))?;
+            Ok(ClientCommandOut {
+                command,
+                notice: format!("已切換模型 {model}"),
+                session_id,
+                options: Vec::new(),
+            })
+        }
+        other => Err(format!("唔係 client 指令：{other}")),
+    }
+}
+
+async fn session_for_client(
+    state: &AppState,
+    profile: &str,
+    root: &str,
+    key: &str,
+) -> Result<String, String> {
+    if let Some(id) = cached_session(state, profile) {
+        return Ok(id);
+    }
+    let id = hermes::ensure_bot_chat(&state.http, root, key)
+        .await
+        .map_err(|err| explain(&err))?;
+    remember_session(state, profile, &id);
+    Ok(id)
+}
+
 #[tauri::command]
 fn stop_chat(state: State<'_, AppState>, profile: String) -> Result<(), String> {
     if let Some(flag) = state
@@ -760,6 +969,7 @@ pub fn run() {
             http: http_client(),
             stops: Mutex::new(HashMap::new()),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            command_cache: Mutex::new(HashMap::new()),
             interaction: Arc::new(interaction::InteractionHub::new()),
         })
         .setup(|app| {
@@ -799,6 +1009,8 @@ pub fn run() {
             open_bot,
             send_chat,
             stop_chat,
+            list_commands,
+            client_command,
             set_hit_rects,
             set_interaction_latch,
             focus_owner,

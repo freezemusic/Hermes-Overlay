@@ -27,6 +27,9 @@ const PURIFY_CONFIG = {
   ALLOWED_ATTR: ["href", "title", "class", "start", "colspan", "rowspan"],
   ALLOW_DATA_ATTR: false,
   ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):)/i,
+  // A custom ALLOWED_URI_REGEXP makes DOMPurify test every attribute outside its URI-safe list
+  // against it, so scheme-less values like start="2" / colspan="2" would be stripped.
+  ADD_URI_SAFE_ATTR: ["start", "colspan", "rowspan"],
 };
 
 let browserPurify = null;
@@ -72,6 +75,8 @@ export function decorateCodeBlocks(root) {
   if (!doc) return;
   root.querySelectorAll("pre").forEach((pre) => {
     if (pre.querySelector(":scope > .code-copy")) return;
+    const code = pre.querySelector("code")?.textContent ?? "";
+    if (!code.trim()) return;
     const button = doc.createElement("button");
     button.type = "button";
     button.className = "code-copy";
