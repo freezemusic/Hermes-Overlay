@@ -6,6 +6,64 @@
 
 未填 gateway 位址時，畫面用內置 mock Bot，可以離線睇版面。填咗位址就改由名單上嘅 profile 排邊框頭像；連唔到會顯示錯誤，唔會靜靜雞退返去 mock。
 
+## 安裝 / Install
+
+由 [GitHub Releases](https://github.com/freezemusic/Hermes-Overlay/releases) 下載草稿或已發佈嘅安裝檔。而家嘅 build **未簽名**。`macOSPrivateApi` 開住先至透明，所以呢個 app **入唔到 Mac App Store**。
+
+Download a draft or published build from [GitHub Releases](https://github.com/freezemusic/Hermes-Overlay/releases). Current builds are **unsigned**. `macOSPrivateApi` is on so the window can be transparent, which means this app **cannot ship on the Mac App Store**.
+
+| 平台 | 檔案 |
+|------|------|
+| Windows | `Hermes Overlay_0.1.0_x64-setup.exe`（NSIS）、`Hermes Overlay_0.1.0_x64_en-US.msi` |
+| macOS | `Hermes Overlay_0.1.0_universal.dmg`（Apple silicon + Intel）、`Hermes Overlay.app.tar.gz` |
+| Linux | `Hermes Overlay_0.1.0_amd64.AppImage`、`Hermes Overlay_0.1.0_amd64.deb` |
+
+### 第一次打開未簽名 build
+
+**macOS：** 右鍵 `.app` →「打開」，或者喺終端：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Hermes Overlay.app"
+```
+
+系統匣同全域快捷鍵 **Ctrl+Shift+Alt+H** 要喺「私隱與保安 → 輔助使用」允許呢個 app。金鑰寫入 Keychain。
+
+**Windows：** SmartScreen 出「Windows protected your PC」時揀 **More info → Run anyway**。金鑰寫入 Credential Manager。要有 WebView2 Runtime。
+
+**Linux：** AppImage 先加執行權，再裝 WebKit、GTK 同系統匣依賴（`.deb` 會自己拉呢三個套件）：
+
+```bash
+chmod +x "Hermes Overlay_0.1.0_amd64.AppImage"
+sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1
+```
+
+金鑰用 Secret Service（gnome-keyring 或 KWallet）。純 Wayland 讀唔到全域游標同修飾鍵，overlay 會保持可點擊、唔會穿透。用 X11 或開咗 `DISPLAY` 嘅 XWayland 先有穿透。
+
+### First launch of an unsigned build
+
+**macOS:** right-click the app and choose Open, or run `xattr -dr com.apple.quarantine` on the `.app`. Grant Accessibility for the tray and the **Ctrl+Shift+Alt+H** shortcut. Keys go to Keychain.
+
+**Windows:** on SmartScreen, choose **More info → Run anyway**. Keys go to Credential Manager. WebView2 Runtime is required.
+
+**Linux:** `chmod +x` the AppImage, then install `libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `libayatana-appindicator3-1` (the `.deb` depends on these). Keys use Secret Service. On pure Wayland the overlay stays clickable because the global cursor and modifier cannot be read; click-through needs X11 or XWayland with `DISPLAY` set.
+
+### 設定 gateway
+
+打開設定（系統匣「設定」或 **Ctrl+Shift+Alt+H**）。Gateway 位址填 `http://127.0.0.1:8642`，每個 Bot 填 profile 同 API 金鑰，然後儲存。
+
+Open Settings from the tray or **Ctrl+Shift+Alt+H**. Set the gateway URL to `http://127.0.0.1:8642`, then add each bot's profile and API key.
+
+### overlay-slash（可選）
+
+`/plan`、skill 目錄要裝 [PR #2](https://github.com/freezemusic/Hermes-Overlay/pull/2) 嘅 plugin。裝完同 enable 之後**重啟 gateway**。`<sha>` 用 40 位 commit（而家對住 `d422aae152a59028d991be0dcc6b36c805ff8b30`）。
+
+Optional. Slash commands such as `/plan` need the plugin from [PR #2](https://github.com/freezemusic/Hermes-Overlay/pull/2). Restart the gateway after install and enable. Pin a 40-character commit; the current pin is `d422aae152a59028d991be0dcc6b36c805ff8b30`.
+
+```bash
+hermes plugins install https://github.com/freezemusic/Hermes-Overlay.git#hermes-plugin/overlay-slash --ref d422aae152a59028d991be0dcc6b36c805ff8b30 --enable --yes-deps
+hermes gateway
+```
+
 ## 前置需求
 
 ### 共通

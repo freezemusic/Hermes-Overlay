@@ -1234,5 +1234,23 @@ mod tests {
                 "capabilities/default.json 未允許 {identifier}"
             );
         }
+        assert!(
+            granted.contains(&"global-shortcut:default"),
+            "capabilities/default.json 未允許 global-shortcut:default"
+        );
+    }
+
+    #[test]
+    fn keyring_features_follow_the_target_os() {
+        let cargo = include_str!("../Cargo.toml");
+        assert!(cargo.contains("sync-secret-service"));
+        assert!(cargo.contains("apple-native"));
+        assert!(cargo.contains("windows-native"));
+        assert!(
+            !cargo.contains(
+                "features = [\"apple-native\", \"windows-native\", \"sync-secret-service\""
+            ),
+            "keyring features must stay split by target_os"
+        );
     }
 }
