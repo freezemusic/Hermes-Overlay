@@ -7,10 +7,16 @@ import {
   gatewayDown,
   modelFields,
   moveSlashIndex,
+  groupByCategory,
+  inlineArgsHint,
   markerChip,
+  orderSlashCommands,
   parseSlashMarker,
   reconnectDelayMs,
   resolveClient,
+  sendBlockedWhileBusy,
+  shouldRefreshCatalog,
+  slashEnterSubmits,
   slashFilterQuery,
 } from "./slash.js";
 
@@ -73,6 +79,45 @@ test("client commands map to session endpoints and prompts stay on the server", 
     model: "MiniMax-M2",
     provider: "minimax",
   });
+});
+
+test("slash categories stay in first-seen order", () => {
+  const items = [
+    { name: "/plan", category: "Session" },
+    { name: "/model", category: "Configuration" },
+    { name: "/stop", category: "Session" },
+    { name: "/help", category: "Info" },
+    { name: "/x", category: "" },
+  ];
+  const groups = groupByCategory(items);
+  assert.deepEqual(groups.map((group) => group.category), ["Session", "Configuration", "Info", "其他"]);
+  assert.deepEqual(groups[0].items.map((item) => item.name), ["/plan", "/stop"]);
+  assert.deepEqual(orderSlashCommands(items).map((item) => item.name), ["/plan", "/stop", "/model", "/help", "/x"]);
+});
+
+test("empty args submit on enter and hints sit after the command", () => {
+  assert.equal(slashEnterSubmits({ name: "/version", args_hint: "", enabled: true }), true);
+  assert.equal(slashEnterSubmits({ name: "/new", args_hint: "  ", enabled: true }), true);
+  assert.equal(slashEnterSubmits({ name: "/plan", args_hint: "[task]", enabled: true }), false);
+  assert.equal(slashEnterSubmits({ name: "/voice", args_hint: "", enabled: false }), false);
+  assert.equal(inlineArgsHint("/plan ", "[task]"), "[task]");
+  assert.equal(inlineArgsHint("/plan add", "[task]"), "");
+  assert.equal(inlineArgsHint("/stop ", ""), "");
+});
+
+test("a running turn still accepts stop", () => {
+  assert.equal(sendBlockedWhileBusy("/stop", PREVIEW_COMMANDS, true), false);
+  assert.equal(sendBlockedWhileBusy("/stop", [], true), false);
+  assert.equal(sendBlockedWhileBusy("/plan task", PREVIEW_COMMANDS, true), true);
+  assert.equal(sendBlockedWhileBusy("hello", PREVIEW_COMMANDS, true), true);
+  assert.equal(sendBlockedWhileBusy("/new", PREVIEW_COMMANDS, true), true);
+  assert.equal(sendBlockedWhileBusy("/stop", PREVIEW_COMMANDS, false), false);
+});
+
+test("the command catalog refreshes when the popup opens", () => {
+  assert.equal(shouldRefreshCatalog(false, true), true);
+  assert.equal(shouldRefreshCatalog(true, true), false);
+  assert.equal(shouldRefreshCatalog(true, false), true);
 });
 
 test("gateway retry backs off to 30 seconds", () => {

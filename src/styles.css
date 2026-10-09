@@ -721,6 +721,20 @@ html.platform-linux {
   padding: 10px 12px;
 }
 
+.slash-ghost {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  color: rgba(245, 245, 245, 0.42);
+  white-space: pre;
+}
+
+.slash-ghost[hidden] {
+  display: none;
+}
+
 .composer input:focus,
 .field input:focus,
 .field select:focus,

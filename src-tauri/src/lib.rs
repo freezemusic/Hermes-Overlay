@@ -96,6 +96,7 @@ struct AppState {
     http: reqwest::Client,
     stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
     sessions: Arc<Mutex<HashMap<String, String>>>,
+    config_write: Arc<Mutex<()>>,
     command_cache: Mutex<HashMap<String, CommandCacheEntry>>,
     interaction: Arc<interaction::InteractionHub>,
 }
@@ -248,8 +249,50 @@ fn cached_session(state: &AppState, profile: &str) -> Option<String> {
     session_map(state).get(profile).cloned()
 }
 
-fn remember_session(state: &AppState, profile: &str, id: &str) {
-    session_map(state).insert(profile.to_string(), id.to_string());
+fn remember_session(app: &AppHandle, state: &AppState, profile: &str, id: &str) {
+    persist_session(app, &state.sessions, &state.config_write, profile, id);
+}
+
+fn active_session(app: &AppHandle, state: &AppState, profile: &str) -> Option<String> {
+    let stored = load_config(app)
+        .ok()
+        .and_then(|cfg| cfg.bot(profile).map(|bot| bot.session_id.clone()))
+        .unwrap_or_default();
+    let memory = cached_session(state, profile);
+    config::preferred_session(memory.as_deref(), &stored).map(str::to_string)
+}
+
+fn persist_session(
+    app: &AppHandle,
+    sessions: &Mutex<HashMap<String, String>>,
+    config_write: &Mutex<()>,
+    profile: &str,
+    id: &str,
+) {
+    let _write = config_write.lock().unwrap_or_else(|err| err.into_inner());
+    let id = id.trim();
+    {
+        let mut map = sessions.lock().unwrap_or_else(|err| err.into_inner());
+        if id.is_empty() {
+            map.remove(profile);
+        } else {
+            map.insert(profile.to_string(), id.to_string());
+        }
+    }
+    let Ok(path) = config_path(app) else {
+        return;
+    };
+    let Ok(mut cfg) = config::load(&path) else {
+        return;
+    };
+    let Some(bot) = cfg.bot_mut(profile) else {
+        return;
+    };
+    if bot.session_id == id {
+        return;
+    }
+    bot.session_id = id.to_string();
+    let _ = config::save(&path, &cfg);
 }
 
 fn replace_stop(state: &AppState, profile: &str) -> Arc<AtomicBool> {
@@ -338,6 +381,17 @@ fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
 
 #[tauri::command]
 fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, String> {
+    let state = app.try_state::<AppState>();
+    let _config_write = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let memory_sessions = state
+        .as_ref()
+        .map(|state| session_map(state).clone())
+        .unwrap_or_default();
     let previous = load_config(&app)?;
     let gateway_base_url = config::normalize_http_base(&input.gateway_base_url, true)?;
     let dashboard_base_url = {
@@ -366,12 +420,21 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
             }
         };
         let base_url = config::normalize_http_base(&bot.base_url, true)?;
+        let previous_id = previous
+            .bot(&profile)
+            .map(|bot| bot.session_id.as_str())
+            .unwrap_or("");
+        let session_id = config::session_to_keep(
+            memory_sessions.get(&profile).map(String::as_str),
+            previous_id,
+        );
         bots.push(BotConfig {
             color: config::normalize_color(&bot.color, &profile),
             detail: bot.detail.trim().to_string(),
             profile,
             display_name,
             base_url,
+            session_id,
         });
     }
 
@@ -413,14 +476,24 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
         interaction,
     };
     config::save(&config_path(&app)?, &cfg)?;
-    if let Some(state) = app.try_state::<AppState>() {
-        session_map(&state).clear();
+    if let Some(state) = state.as_ref() {
+        let mut map = session_map(state);
+        map.clear();
+        for bot in &cfg.bots {
+            let id = bot.session_id.trim();
+            if !id.is_empty() {
+                map.insert(bot.profile.clone(), id.to_string());
+            }
+        }
+        drop(map);
         *state
             .interaction
             .config
             .lock()
             .unwrap_or_else(|err| err.into_inner()) = cfg.interaction.clone();
     }
+    drop(_config_write);
+    drop(state);
     get_settings(app)
 }
 
@@ -528,12 +601,14 @@ async fn open_bot(
     let key = profile_key(&profile)?;
     let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
     emit_status(&app, &profile, "busy", "載入對話…");
-    let cached = cached_session(&state, &profile);
+    let cached = active_session(&app, &state, &profile);
     let result = async {
         if let Some(session_id) = cached {
             match hermes::fetch_messages(&state.http, &root, &key, &session_id).await {
                 Ok(messages) => return Ok((session_id, messages)),
-                Err(HermesError::Http { status: 404, .. }) => {}
+                Err(HermesError::Http { status: 404, .. }) => {
+                    persist_session(&app, &state.sessions, &state.config_write, &profile, "");
+                }
                 Err(err) => return Err(err),
             }
         }
@@ -544,7 +619,7 @@ async fn open_bot(
     .await;
     match result {
         Ok((session_id, messages)) => {
-            remember_session(&state, &profile, &session_id);
+            remember_session(&app, &state, &profile, &session_id);
             emit_status(&app, &profile, "idle", "閒置");
             Ok(OpenedChat {
                 profile,
@@ -579,7 +654,8 @@ async fn send_chat(
     let stop = replace_stop(&state, &profile);
     let http = state.http.clone();
     let session_cache = Arc::clone(&state.sessions);
-    let cached = cached_session(&state, &profile);
+    let config_write = Arc::clone(&state.config_write);
+    let cached = active_session(&app, &state, &profile);
     emit_status(&app, &profile, "busy", "思考中…");
 
     tauri::async_runtime::spawn(async move {
@@ -588,10 +664,7 @@ async fn send_chat(
                 id
             } else {
                 let id = hermes::ensure_bot_chat(&http, &root, &key).await?;
-                session_cache
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .insert(profile.clone(), id.clone());
+                persist_session(&app, &session_cache, &config_write, &profile, &id);
                 id
             };
             let first =
@@ -600,15 +673,9 @@ async fn send_chat(
                 })
                 .await;
             if matches!(first, Err(HermesError::Http { status: 404, .. })) {
-                session_cache
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .remove(&profile);
+                persist_session(&app, &session_cache, &config_write, &profile, "");
                 session_id = hermes::ensure_bot_chat(&http, &root, &key).await?;
-                session_cache
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .insert(profile.clone(), session_id.clone());
+                persist_session(&app, &session_cache, &config_write, &profile, &session_id);
                 hermes::stream_turn(&http, &root, &key, &session_id, &text, &stop, |event| {
                     dispatch_turn(&app, &profile, event)
                 })
@@ -782,7 +849,10 @@ async fn list_commands(
         .cloned();
     let etag = cached.as_ref().map(|entry| entry.etag.clone());
     let fetched = hermes::fetch_overlay_commands(&state.http, &root, &key, etag.as_deref()).await;
-    let mut cache = state.command_cache.lock().unwrap_or_else(|err| err.into_inner());
+    let mut cache = state
+        .command_cache
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     let (commands, hint) = match fetched {
         Ok(hermes::CatalogFetch::Fresh { etag, commands }) => {
             cache.insert(
@@ -795,7 +865,10 @@ async fn list_commands(
             (commands, String::new())
         }
         Ok(hermes::CatalogFetch::NotModified) => {
-            let commands = cache.get(&profile).map(|entry| entry.commands.clone()).unwrap_or_default();
+            let commands = cache
+                .get(&profile)
+                .map(|entry| entry.commands.clone())
+                .unwrap_or_default();
             (commands, String::new())
         }
         Ok(hermes::CatalogFetch::Missing)
@@ -863,11 +936,15 @@ async fn client_command(
             })
         }
         "new" => {
-            let title = if args.is_empty() { None } else { Some(args.as_str()) };
+            let title = if args.is_empty() {
+                None
+            } else {
+                Some(args.as_str())
+            };
             let session_id = hermes::create_session(&state.http, &root, &key, title)
                 .await
                 .map_err(|err| explain(&err))?;
-            remember_session(&state, &input.profile, &session_id);
+            remember_session(&app, &state, &input.profile, &session_id);
             Ok(ClientCommandOut {
                 command,
                 notice: format!("新 session {session_id}"),
@@ -879,10 +956,25 @@ async fn client_command(
             if args.is_empty() {
                 return Err("要有標題。".into());
             }
-            let session_id = session_for_client(&state, &input.profile, &root, &key).await?;
-            hermes::patch_session_title(&state.http, &root, &key, &session_id, &args)
-                .await
-                .map_err(|err| explain(&err))?;
+            let session_id = session_for_client(&app, &state, &input.profile, &root, &key).await?;
+            if let Err(err) =
+                hermes::patch_session_title(&state.http, &root, &key, &session_id, &args).await
+            {
+                if !matches!(err, HermesError::Http { status: 404, .. }) {
+                    return Err(explain(&err));
+                }
+                let session_id =
+                    replace_missing_session(&app, &state, &input.profile, &root, &key).await?;
+                hermes::patch_session_title(&state.http, &root, &key, &session_id, &args)
+                    .await
+                    .map_err(|err| explain(&err))?;
+                return Ok(ClientCommandOut {
+                    command,
+                    notice: format!("標題已改做 {args}"),
+                    session_id,
+                    options: Vec::new(),
+                });
+            }
             Ok(ClientCommandOut {
                 command,
                 notice: format!("標題已改做 {args}"),
@@ -891,11 +983,21 @@ async fn client_command(
             })
         }
         "branch" => {
-            let session_id = session_for_client(&state, &input.profile, &root, &key).await?;
-            let forked = hermes::fork_session(&state.http, &root, &key, &session_id, &args)
+            let session_id = session_for_client(&app, &state, &input.profile, &root, &key).await?;
+            let forked = match hermes::fork_session(&state.http, &root, &key, &session_id, &args)
                 .await
-                .map_err(|err| explain(&err))?;
-            remember_session(&state, &input.profile, &forked);
+            {
+                Ok(id) => id,
+                Err(HermesError::Http { status: 404, .. }) => {
+                    let session_id =
+                        replace_missing_session(&app, &state, &input.profile, &root, &key).await?;
+                    hermes::fork_session(&state.http, &root, &key, &session_id, &args)
+                        .await
+                        .map_err(|err| explain(&err))?
+                }
+                Err(err) => return Err(explain(&err)),
+            };
+            remember_session(&app, &state, &input.profile, &forked);
             Ok(ClientCommandOut {
                 command,
                 notice: format!("已分支做 {forked}"),
@@ -910,16 +1012,53 @@ async fn client_command(
                     .map_err(|err| explain(&err))?;
                 return Ok(ClientCommandOut {
                     command,
-                    notice: if options.is_empty() { "冇模型選項。".into() } else { String::new() },
-                    session_id: cached_session(&state, &input.profile).unwrap_or_default(),
+                    notice: if options.is_empty() {
+                        "冇模型選項。".into()
+                    } else {
+                        String::new()
+                    },
+                    session_id: active_session(&app, &state, &input.profile).unwrap_or_default(),
                     options,
                 });
             }
-            let model = if input.model.trim().is_empty() { args } else { input.model.trim().to_string() };
-            let session_id = session_for_client(&state, &input.profile, &root, &key).await?;
-            hermes::lock_session_model(&state.http, &root, &key, &session_id, &model, input.provider.trim())
+            let model = if input.model.trim().is_empty() {
+                args
+            } else {
+                input.model.trim().to_string()
+            };
+            let session_id = session_for_client(&app, &state, &input.profile, &root, &key).await?;
+            if let Err(err) = hermes::lock_session_model(
+                &state.http,
+                &root,
+                &key,
+                &session_id,
+                &model,
+                input.provider.trim(),
+            )
+            .await
+            {
+                if !matches!(err, HermesError::Http { status: 404, .. }) {
+                    return Err(explain(&err));
+                }
+                let session_id =
+                    replace_missing_session(&app, &state, &input.profile, &root, &key).await?;
+                hermes::lock_session_model(
+                    &state.http,
+                    &root,
+                    &key,
+                    &session_id,
+                    &model,
+                    input.provider.trim(),
+                )
                 .await
                 .map_err(|err| explain(&err))?;
+                return Ok(ClientCommandOut {
+                    command,
+                    notice: format!("已切換模型 {model}"),
+                    session_id,
+                    options: Vec::new(),
+                });
+            }
             Ok(ClientCommandOut {
                 command,
                 notice: format!("已切換模型 {model}"),
@@ -932,18 +1071,34 @@ async fn client_command(
 }
 
 async fn session_for_client(
+    app: &AppHandle,
     state: &AppState,
     profile: &str,
     root: &str,
     key: &str,
 ) -> Result<String, String> {
-    if let Some(id) = cached_session(state, profile) {
+    if let Some(id) = active_session(app, state, profile) {
         return Ok(id);
     }
     let id = hermes::ensure_bot_chat(&state.http, root, key)
         .await
         .map_err(|err| explain(&err))?;
-    remember_session(state, profile, &id);
+    remember_session(app, state, profile, &id);
+    Ok(id)
+}
+
+async fn replace_missing_session(
+    app: &AppHandle,
+    state: &AppState,
+    profile: &str,
+    root: &str,
+    key: &str,
+) -> Result<String, String> {
+    persist_session(app, &state.sessions, &state.config_write, profile, "");
+    let id = hermes::ensure_bot_chat(&state.http, root, key)
+        .await
+        .map_err(|err| explain(&err))?;
+    remember_session(app, state, profile, &id);
     Ok(id)
 }
 
@@ -969,6 +1124,7 @@ pub fn run() {
             http: http_client(),
             stops: Mutex::new(HashMap::new()),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            config_write: Arc::new(Mutex::new(())),
             command_cache: Mutex::new(HashMap::new()),
             interaction: Arc::new(interaction::InteractionHub::new()),
         })
@@ -1049,7 +1205,10 @@ mod tests {
     #[test]
     fn every_invoke_command_is_in_the_default_capability() {
         let commands = invoke_commands();
-        assert!(commands.len() >= 12, "handler parse missed commands: {commands:?}");
+        assert!(
+            commands.len() >= 12,
+            "handler parse missed commands: {commands:?}"
+        );
         let perms = include_str!("../permissions/hermes.toml");
         let cap: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).expect("capability");

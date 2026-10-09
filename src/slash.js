@@ -176,6 +176,53 @@ export function completionText(command) {
   return `${slash} `;
 }
 
+/** First-seen category order. Items inside a category keep their relative order. */
+export function groupByCategory(commands) {
+  const groups = [];
+  const index = new Map();
+  for (const command of commands || []) {
+    const category = String(command?.category || "").trim() || "其他";
+    let group = index.get(category);
+    if (!group) {
+      group = { category, items: [] };
+      index.set(category, group);
+      groups.push(group);
+    }
+    group.items.push(command);
+  }
+  return groups;
+}
+
+export function orderSlashCommands(commands) {
+  return groupByCategory(commands).flatMap((group) => group.items);
+}
+
+/** Enter completes and sends when the command takes no arguments. */
+export function slashEnterSubmits(command) {
+  return !!command && command.enabled !== false && !String(command.args_hint || "").trim();
+}
+
+/** Ghost args hint while the input is still only the command token. */
+export function inlineArgsHint(value, argsHint) {
+  const hint = String(argsHint || "").trim();
+  if (!hint) return "";
+  const parsed = parseSlashInput(String(value || "").trimEnd());
+  if (!parsed || parsed.args) return "";
+  return hint;
+}
+
+/** A running turn still accepts `/stop`. Other text waits. */
+export function sendBlockedWhileBusy(text, commands, busy) {
+  if (!busy) return false;
+  return resolveClient(text, commands)?.command !== "stop";
+}
+
+/** Refetch the catalog each time the popup opens. An open menu keeps the list it just loaded. */
+export function shouldRefreshCatalog(popupAlreadyOpen, sameProfile) {
+  if (!sameProfile) return true;
+  return !popupAlreadyOpen;
+}
+
 export function parseSlashInput(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed.startsWith("/") || trimmed.startsWith("//")) return null;

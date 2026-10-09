@@ -75,7 +75,10 @@ pub struct OverlayCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatalogFetch {
-    Fresh { etag: String, commands: Vec<OverlayCommand> },
+    Fresh {
+        etag: String,
+        commands: Vec<OverlayCommand>,
+    },
     NotModified,
     Missing,
 }
@@ -436,7 +439,11 @@ pub fn parse_command_catalog(value: &Value) -> Vec<OverlayCommand> {
     items
         .iter()
         .filter_map(|item| {
-            let name = item.get("name").and_then(Value::as_str).unwrap_or("").trim();
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             if name.is_empty() {
                 return None;
             }
@@ -451,7 +458,11 @@ pub fn parse_command_catalog(value: &Value) -> Vec<OverlayCommand> {
                 .unwrap_or_default();
             Some(OverlayCommand {
                 name: name.to_string(),
-                kind: item.get("kind").and_then(Value::as_str).unwrap_or("").to_string(),
+                kind: item
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 category: item
                     .get("category")
                     .and_then(Value::as_str)
@@ -548,12 +559,17 @@ pub async fn create_session(
         body["title"] = Value::String(title.to_string());
     }
     let url = format!("{root}/api/sessions");
-    let resp = send(http.post(url).timeout(Duration::from_secs(20)).json(&body), key).await?;
+    let resp = send(
+        http.post(url).timeout(Duration::from_secs(20)).json(&body),
+        key,
+    )
+    .await?;
     let value: Value = resp
         .json()
         .await
         .map_err(|err| HermesError::Protocol(format!("建立 session 回應唔係 JSON：{err}")))?;
-    session_id_from_create(&value).ok_or_else(|| HermesError::Protocol("建立 session 回應冇 id".into()))
+    session_id_from_create(&value)
+        .ok_or_else(|| HermesError::Protocol("建立 session 回應冇 id".into()))
 }
 
 pub async fn patch_session_title(
@@ -586,7 +602,11 @@ pub async fn fork_session(
         body["title"] = Value::String(title.trim().to_string());
     }
     let url = format!("{root}/api/sessions/{session_id}/fork");
-    let resp = send(http.post(url).timeout(Duration::from_secs(20)).json(&body), key).await?;
+    let resp = send(
+        http.post(url).timeout(Duration::from_secs(20)).json(&body),
+        key,
+    )
+    .await?;
     let value: Value = resp
         .json()
         .await
@@ -652,7 +672,11 @@ pub fn parse_model_options(value: &Value) -> Vec<String> {
     out
 }
 
-pub async fn list_model_options(http: &Client, root: &str, key: &str) -> Result<Vec<String>, HermesError> {
+pub async fn list_model_options(
+    http: &Client,
+    root: &str,
+    key: &str,
+) -> Result<Vec<String>, HermesError> {
     let url = format!("{root}/api/model/options");
     let resp = send(http.get(url).timeout(Duration::from_secs(20)), key).await?;
     let value: Value = resp
@@ -675,7 +699,11 @@ pub async fn lock_session_model(
         body["provider"] = Value::String(provider.trim().to_string());
     }
     let url = format!("{root}/api/sessions/{session_id}/model");
-    let _ = send(http.post(url).timeout(Duration::from_secs(20)).json(&body), key).await?;
+    let _ = send(
+        http.post(url).timeout(Duration::from_secs(20)).json(&body),
+        key,
+    )
+    .await?;
     Ok(())
 }
 
@@ -1251,7 +1279,8 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
         let (kept, quiet) = commands_from_fetch(Ok(CatalogFetch::NotModified), &cmds);
         assert_eq!(kept.len(), 2);
         assert!(quiet.is_empty());
-        let (down, down_hint) = commands_from_fetch(Err(HermesError::Connect("refused".into())), &[]);
+        let (down, down_hint) =
+            commands_from_fetch(Err(HermesError::Connect("refused".into())), &[]);
         assert!(down.is_empty());
         assert_eq!(down_hint, PLUGIN_HINT);
         let models = parse_model_options(&json!({
@@ -1289,18 +1318,24 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
         });
         let http = Client::new();
         let base = format!("http://{addr}");
-        let fresh = fetch_overlay_commands(&http, &base, "k", None).await.unwrap();
+        let fresh = fetch_overlay_commands(&http, &base, "k", None)
+            .await
+            .unwrap();
         match fresh {
             CatalogFetch::Fresh { etag, commands } => {
                 assert_eq!(etag, "\"cat\"");
                 assert_eq!(commands[0].name, "/plan");
-                let again = fetch_overlay_commands(&http, &base, "k", Some(&etag)).await.unwrap();
+                let again = fetch_overlay_commands(&http, &base, "k", Some(&etag))
+                    .await
+                    .unwrap();
                 assert!(matches!(again, CatalogFetch::NotModified));
             }
             other => panic!("expected catalog, got {other:?}"),
         }
         let missing = oneshot("404 Not Found", "application/json", r#"{"error":"no"}"#);
-        let gone = fetch_overlay_commands(&http, &missing, "k", None).await.unwrap();
+        let gone = fetch_overlay_commands(&http, &missing, "k", None)
+            .await
+            .unwrap();
         assert!(matches!(gone, CatalogFetch::Missing));
     }
 
@@ -1331,9 +1366,17 @@ data: {}\n\
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen2 = seen.clone();
         let stop = AtomicBool::new(false);
-        stream_turn(&http, &format!("http://{addr}"), "k", "sid", "/arxiv q", &stop, |ev| {
-            seen2.lock().unwrap().push(ev);
-        })
+        stream_turn(
+            &http,
+            &format!("http://{addr}"),
+            "k",
+            "sid",
+            "/arxiv q",
+            &stop,
+            |ev| {
+                seen2.lock().unwrap().push(ev);
+            },
+        )
         .await
         .unwrap();
         let seen = seen.lock().unwrap();

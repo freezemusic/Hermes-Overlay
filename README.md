@@ -130,8 +130,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 2. Gateway 位址填 `http://127.0.0.1:8642`（留空 = 示範模式）。
 3. 每個 Bot：profile 名稱、顯示名稱、顏色、API 金鑰。金鑰留空代表保留鑰匙圈入面已有嗰條。
 4. 儲存。邊框會按名單數量排頭像。
-5. 點一個頭像：Rust 用該 profile 嘅 key 搵標題係 `Bot Chat` 嘅 session（包含 hidden），載入訊息。冇就建立一條。
-6. 傳送會 `POST /api/sessions/{id}/chat/stream`，即時顯示文字、工具開始／完成／失敗，同埋忙碌或閒置。助手同歷史訊息會渲染 Markdown（標題、粗斜體、清單、程式碼、引用、表格、分隔線）；串流期間約 50ms 更新一次，未閉合嘅程式碼圍欄都會保持成塊程式碼。連結用系統瀏覽器打開，唔會喺 overlay 裡面跳頁。你自己打嘅字維持純文字。輸入 `/` 會向 overlay-slash 攞指令目錄（`GET /v1/overlay/commands`，有 ETag）。選單跟分類，↑↓ 移動，Tab 或 Enter 補全。`/new`、`/title`、`/branch`、`/model`、`/stop` 由 overlay 自己處理；其他指令原文送出，由 plugin 改寫。串流回應嘅 `X-Hermes-Command` 會變成氣泡上嘅小標籤（例如 `plan`、`skill:arxiv`）。歷史入面第一行 `<!-- overlay-slash: {"display":"/plan add dark mode","command":"plan"} -->` 會顯示 `display` 同 chip；`command` 係指令名或 skill slug（疊加係 `arxiv+pdf`），唔帶 `skill:`。如果 overlay 開得比 gateway 早，會以 1 秒、2 秒、4 秒退避到 30 秒，之後每 30 秒再試健康同對話紀錄，成功就清走「連唔到 Hermes gateway」並載入歷史。
+5. 點一個頭像：先用設定檔入面呢個 profile 記低嘅 session id。冇或者個 id 已經無效，先搵標題係 `Bot Chat` 嘅 session（包含 hidden），再冇就建立一條。`/new` 同 `/branch` 會更新呢個 id，重開 overlay 仍然開返同一條。
+6. 傳送會 `POST /api/sessions/{id}/chat/stream`，即時顯示文字、工具開始／完成／失敗，同埋忙碌或閒置。助手同歷史訊息會渲染 Markdown（標題、粗斜體、清單、程式碼、引用、表格、分隔線）；串流期間約 50ms 更新一次，未閉合嘅程式碼圍欄都會保持成塊程式碼。連結用系統瀏覽器打開，唔會喺 overlay 裡面跳頁。你自己打嘅字維持純文字。每次打開 `/` 選單都會再攞 overlay-slash 目錄（`GET /v1/overlay/commands`，有 ETag，未變就 304）。分類按首次出現次序合併。↑↓ 移動，Tab 補全；有參數提示嘅指令會喺游標後面顯示淡色提示。`args_hint` 空嘅指令按 Enter 會補全並送出。回合進行中仍然可以打 `/stop`。`/new`、`/title`、`/branch`、`/model`、`/stop` 由 overlay 自己處理；其他指令原文送出，由 plugin 改寫。串流回應嘅 `X-Hermes-Command` 會變成氣泡上嘅小標籤（例如 `plan`、`skill:arxiv`）。歷史入面第一行 `<!-- overlay-slash: {"display":"/plan add dark mode","command":"plan"} -->` 會顯示 `display` 同 chip；`command` 係指令名或 skill slug（疊加係 `arxiv+pdf`），唔帶 `skill:`。如果 overlay 開得比 gateway 早，會以 1 秒、2 秒、4 秒退避到 30 秒，之後每 30 秒再試健康同對話紀錄，成功就清走「連唔到 Hermes gateway」並載入歷史。
 7. 「測試已儲存連線」打 `GET /health`，再對每個已存金鑰打 `GET /api/sessions?limit=1`。
 
 ## 外觀

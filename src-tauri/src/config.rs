@@ -16,6 +16,9 @@ pub struct BotConfig {
     pub base_url: String,
     #[serde(default)]
     pub detail: String,
+    /// Active Hermes session for this profile. Empty falls back to the `Bot Chat` title.
+    #[serde(default)]
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -126,6 +129,30 @@ impl AppConfig {
     pub fn bot(&self, profile: &str) -> Option<&BotConfig> {
         self.bots.iter().find(|b| b.profile == profile)
     }
+
+    pub fn bot_mut(&mut self, profile: &str) -> Option<&mut BotConfig> {
+        self.bots.iter_mut().find(|b| b.profile == profile)
+    }
+}
+
+/// Memory wins when it names a session. Otherwise use the id stored in config.
+pub fn preferred_session<'a>(memory: Option<&'a str>, stored: &'a str) -> Option<&'a str> {
+    let memory = memory.map(str::trim).filter(|id| !id.is_empty());
+    if let Some(id) = memory {
+        return Some(id);
+    }
+    let stored = stored.trim();
+    if stored.is_empty() {
+        None
+    } else {
+        Some(stored)
+    }
+}
+
+pub fn session_to_keep(memory: Option<&str>, previous: &str) -> String {
+    preferred_session(memory, previous)
+        .unwrap_or("")
+        .to_string()
 }
 
 pub fn load(path: &Path) -> Result<AppConfig, String> {
@@ -245,6 +272,7 @@ mod tests {
                 color: "#5b6cff".into(),
                 base_url: String::new(),
                 detail: String::new(),
+                session_id: String::new(),
             }],
             ..AppConfig::default()
         };
@@ -263,5 +291,28 @@ mod tests {
         assert_eq!(normalize_modifier("ALT"), "alt");
         assert_eq!(normalize_fade_distance(8.0), 24.0);
         assert_eq!(normalize_min_opacity(0.9), 0.6);
+    }
+
+    #[test]
+    fn session_id_survives_restart_and_falls_back_when_blank() {
+        let cfg: AppConfig =
+            serde_json::from_str(r#"{"bots":[{"profile":"alice","display_name":"Alice"}]}"#)
+                .unwrap();
+        assert_eq!(cfg.bots[0].session_id, "");
+        assert_eq!(preferred_session(None, ""), None);
+        assert_eq!(preferred_session(Some("  "), "stored"), Some("stored"));
+        assert_eq!(preferred_session(Some("memory"), "stored"), Some("memory"));
+        assert_eq!(session_to_keep(None, "stored"), "stored");
+        assert_eq!(session_to_keep(Some(""), "stored"), "stored");
+
+        let mut cfg = cfg;
+        cfg.bot_mut("alice").unwrap().session_id = "sess_9".into();
+        let text = serde_json::to_string(&cfg).unwrap();
+        let again: AppConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(again.bot("alice").unwrap().session_id, "sess_9");
+        assert_eq!(
+            session_to_keep(Some("sess_live"), &again.bot("alice").unwrap().session_id),
+            "sess_live"
+        );
     }
 }

@@ -10,11 +10,17 @@ import {
   completionText,
   filterCommands,
   gatewayDown,
+  groupByCategory,
+  inlineArgsHint,
   modelFields,
   moveSlashIndex,
+  orderSlashCommands,
   parseSlashMarker,
   reconnectDelayMs,
   resolveClient,
+  sendBlockedWhileBusy,
+  shouldRefreshCatalog,
+  slashEnterSubmits,
   slashFilterQuery,
 } from "./slash.js";
 import {
@@ -235,6 +241,7 @@ const state = {
   catalogHint: "",
   catalogProfile: "",
   slashIndex: 0,
+  slashArgsHint: "",
   reconnectToken: 0,
   reconnectTimer: 0,
 };
@@ -660,10 +667,13 @@ async function sendActive() {
   const input = $("#chat-input");
   const text = input.value.trim();
   if (!text || !state.activeId) return;
-  if (state.mode === "hermes" && state.busy.has(state.activeId)) return;
+  const busy = state.mode === "hermes" && state.busy.has(state.activeId);
+  if (sendBlockedWhileBusy(text, state.catalog || [], busy)) return;
   closeSlash();
   input.value = "";
   input.placeholder = "輸入訊息給呢個 Bot…";
+  state.slashArgsHint = "";
+  syncSlashGhost();
   const action = resolveClient(text, state.catalog || []);
   if (action) {
     await sendClientCommand(state.activeId, text, action);
@@ -707,12 +717,11 @@ function botsFromSettings(settings) {
 async function sendClientCommand(id, text, action) {
   appendMessage(id, { role: "user", text, command: action.command });
   if (action.command === "stop") {
-    if (state.mode === "hermes" && inTauri()) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("stop_chat", { profile: id });
+    await stopActive(id);
+    if (!state.busy.has(id)) {
+      appendMessage(id, { role: "commentary", text: "已停止呢次回覆。" });
+      setBotStatus(id, "已停止", "idle");
     }
-    appendMessage(id, { role: "commentary", text: "已停止呢次回覆。" });
-    setBotStatus(id, "已停止", "idle");
     return;
   }
   if (state.mode !== "hermes" || !inTauri()) {
@@ -1066,16 +1075,52 @@ function closeSlash() {
 function activeSlashItems() {
   const query = slashFilterQuery($("#chat-input")?.value || "");
   if (query == null) return [];
-  return filterCommands(state.catalog || [], query);
+  return orderSlashCommands(filterCommands(state.catalog || [], query));
+}
+
+async function stopActive(id) {
+  const profile = id || state.activeId;
+  if (!profile || state.mode !== "hermes" || !inTauri()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("stop_chat", { profile });
+}
+
+function measureInputText(text, style) {
+  const canvas = measureInputText.canvas || (measureInputText.canvas = document.createElement("canvas"));
+  const ctx = canvas.getContext("2d");
+  ctx.font = style.font;
+  return ctx.measureText(text).width;
+}
+
+function syncSlashGhost() {
+  const input = $("#chat-input");
+  const ghost = $("#slash-ghost");
+  if (!input || !ghost) return;
+  const hint = inlineArgsHint(input.value, state.slashArgsHint);
+  if (!hint) {
+    ghost.hidden = true;
+    ghost.textContent = "";
+    return;
+  }
+  ghost.hidden = false;
+  ghost.textContent = hint;
+  const style = getComputedStyle(input);
+  const caret = input.selectionStart ?? input.value.length;
+  const width = measureInputText(input.value.slice(0, caret), style);
+  const pad = Number.parseFloat(style.paddingLeft) || 0;
+  ghost.style.left = `${input.offsetLeft + pad + width - input.scrollLeft}px`;
+  ghost.style.top = `${input.offsetTop}px`;
+  ghost.style.height = `${input.offsetHeight}px`;
+  ghost.style.font = style.font;
 }
 
 async function ensureCatalog() {
   if (!inTauri() || state.mode !== "hermes" || !state.activeId) {
     state.catalog = PREVIEW_COMMANDS;
     state.catalogHint = "";
+    state.catalogProfile = state.activeId || "";
     return;
   }
-  if (state.catalog && state.catalogProfile === state.activeId) return;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const result = await invoke("list_commands", { profile: state.activeId });
@@ -1098,7 +1143,7 @@ function renderSlashPopup() {
     closeSlash();
     return;
   }
-  const items = filterCommands(state.catalog || [], query);
+  const items = activeSlashItems();
   if (!items.length && !(state.catalogHint && !(state.catalog || []).length)) {
     closeSlash();
     return;
@@ -1111,15 +1156,13 @@ function renderSlashPopup() {
     hint.textContent = state.catalogHint || "未裝 overlay-slash，/ 選單唔會出現。";
     popup.appendChild(hint);
   }
-  let category = "";
-  items.forEach((command, index) => {
-    if (command.category !== category) {
-      category = command.category || "其他";
-      const label = document.createElement("div");
-      label.className = "slash-cat";
-      label.textContent = category;
-      popup.appendChild(label);
-    }
+  let index = 0;
+  groupByCategory(items).forEach((group) => {
+    const label = document.createElement("div");
+    label.className = "slash-cat";
+    label.textContent = group.category;
+    popup.appendChild(label);
+    group.items.forEach((command) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `slash-item${index === state.slashIndex ? " active" : ""}${command.enabled === false ? " disabled" : ""}`;
@@ -1134,6 +1177,8 @@ function renderSlashPopup() {
     button.append(name, desc);
     button.addEventListener("click", () => completeSlash(command));
     popup.appendChild(button);
+    index += 1;
+    });
   });
   popup.hidden = false;
   const active = popup.querySelector(".slash-item.active");
@@ -1146,9 +1191,13 @@ function completeSlash(command) {
   if (!command || command.enabled === false) return;
   const input = $("#chat-input");
   input.value = completionText(command);
-  input.placeholder = command.args_hint || "輸入訊息給呢個 Bot…";
+  input.placeholder = "輸入訊息給呢個 Bot…";
+  state.slashArgsHint = String(command.args_hint || "");
   input.focus();
+  const end = input.value.length;
+  input.setSelectionRange(end, end);
   closeSlash();
+  syncSlashGhost();
 }
 
 async function refreshSlash() {
@@ -1157,7 +1206,9 @@ async function refreshSlash() {
     closeSlash();
     return;
   }
-  await ensureCatalog();
+  const alreadyOpen = slashPopupOpen();
+  const sameProfile = state.catalog != null && state.catalogProfile === state.activeId;
+  if (shouldRefreshCatalog(alreadyOpen, sameProfile)) await ensureCatalog();
   if (slashFilterQuery($("#chat-input")?.value || "") == null) return;
   renderSlashPopup();
 }
@@ -1176,8 +1227,11 @@ function setupComposer() {
   const chatInput = $("#chat-input");
   chatInput.addEventListener("input", () => {
     state.slashIndex = 0;
+    syncSlashGhost();
     refreshSlash();
   });
+  chatInput.addEventListener("keyup", syncSlashGhost);
+  chatInput.addEventListener("click", syncSlashGhost);
   chatInput.addEventListener("keydown", (event) => {
     if (slashPopupOpen()) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -1192,7 +1246,9 @@ function setupComposer() {
         const picked = items[state.slashIndex];
         if (picked && picked.enabled !== false) {
           event.preventDefault();
+          const submit = event.key === "Enter" && slashEnterSubmits(picked);
           completeSlash(picked);
+          if (submit) sendActive();
           return;
         }
       }
@@ -1205,11 +1261,7 @@ function setupComposer() {
     }
     if (event.key === "Enter") sendActive();
   });
-  $("#btn-stop").addEventListener("click", async () => {
-    if (!state.activeId || !inTauri()) return;
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("stop_chat", { profile: state.activeId });
-  });
+  $("#btn-stop").addEventListener("click", () => stopActive(state.activeId));
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     if (state.dropdownOpen) {
