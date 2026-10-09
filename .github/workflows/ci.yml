@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config \
+            build-essential \
+            libssl-dev \
+            libgtk-3-dev \
+            libdbus-1-dev \
+            libx11-dev
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Node tests
+        run: npm test
+
+      - name: Cargo tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+  linux-build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config \
+            build-essential \
+            libssl-dev \
+            libgtk-3-dev \
+            libdbus-1-dev \
+            libx11-dev \
+            file
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Linux bundle check
+        run: npm run tauri build -- --bundles deb
+
+      - name: Check deb metadata
+        run: |
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb)
+          recommends=$(dpkg-deb -f "$deb" Recommends)
+          echo "$recommends" | grep -q gnome-keyring
+          echo "$recommends" | grep -q xdg-utils
+          description=$(dpkg-deb -f "$deb" Description)
+          echo "$description" | grep -q "Hermes gateway"
+          if echo "$description" | grep -q '(none)'; then
+            echo "Debian description is still (none)" >&2
+            exit 1
+          fi
+          depends=$(dpkg-deb -f "$deb" Depends)
+          echo "$depends" | grep -q libwebkit2gtk-4.1-0
+          echo "$depends" | grep -q libayatana-appindicator3-1
+          echo "$depends" | grep -q libgtk-3-0
+          count=$(printf '%s\n' "$depends" | tr ',' '\n' | grep -c libwebkit2gtk-4.1-0)
+          test "$count" -eq 1
+          tmp=$(mktemp -d)
+          dpkg-deb -x "$deb" "$tmp"
+          desktop=$(find "$tmp" -name '*.desktop' -print)
+          grep -q '^Categories=Utility' "$desktop"
+          grep -q '^Comment=Always-on-top overlay for a Hermes gateway' "$desktop"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error

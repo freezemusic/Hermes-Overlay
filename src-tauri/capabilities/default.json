@@ -11,6 +11,22 @@
     "core:window:allow-close",
     "core:window:allow-minimize",
     "core:window:allow-set-fullscreen",
-    "opener:default"
+    "opener:default",
+    "global-shortcut:default",
+    "allow-get-settings",
+    "allow-save-settings",
+    "allow-probe-gateway",
+    "allow-discover-profiles",
+    "allow-open-bot",
+    "allow-send-chat",
+    "allow-stop-chat",
+    "allow-list-commands",
+    "allow-client-command",
+    "allow-set-hit-rects",
+    "allow-set-interaction-latch",
+    "allow-focus-owner",
+    "core:window:allow-set-focus",
+    "allow-arm-pin-close-guard",
+    "allow-quit-app"
   ]
 }

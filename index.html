@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hermes Overlay</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500&family=Schibsted+Grotesk:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
@@ -11,20 +17,24 @@
       <!-- Transparent hit layer: empty regions stay see-through -->
       <div id="bot-rail" class="bot-rail" aria-label="Bot 列表"></div>
 
-      <aside id="center-panel" class="center-panel" data-interactive>
+      <aside id="center-panel" class="center-panel" data-interactive data-hit-id="center">
         <header class="panel-header" data-tauri-drag-region>
           <div class="bot-identity">
             <div id="active-avatar" class="active-avatar" aria-hidden="true"></div>
             <div class="bot-meta">
               <h1 id="bot-name">載入中…</h1>
               <p id="bot-status" class="bot-status">準備就緒</p>
+              <p id="interact-hint" class="interact-hint">按住 Ctrl：游標下面嗰個元素先會實色同可點擊。</p>
             </div>
           </div>
           <div class="panel-actions">
+            <button type="button" id="btn-settings" class="icon-btn" title="Gateway 同 Bot 名單">設定</button>
             <button type="button" id="btn-pin" class="icon-btn" title="保持置頂" aria-pressed="true">置頂</button>
-            <button type="button" id="btn-close" class="icon-btn danger" title="關閉 Overlay">關閉</button>
+            <button type="button" id="btn-close" class="icon-btn danger" title="收起中間面板">關閉</button>
           </div>
         </header>
+
+        <p id="conn-banner" class="conn-banner" hidden></p>
 
         <section class="detail-block" aria-label="Bot 詳情">
           <h2 class="section-label">詳情</h2>
@@ -37,17 +47,94 @@
         </section>
 
         <footer class="composer">
+          <div id="slash-popup" class="slash-popup" data-hit-id="slash" hidden role="listbox" aria-label="斜線指令"></div>
           <input
             id="chat-input"
             type="text"
             placeholder="輸入訊息給呢個 Bot…"
             autocomplete="off"
           />
+          <span id="slash-ghost" class="slash-ghost" hidden></span>
+          <button type="button" id="btn-stop" class="icon-btn" hidden>停止</button>
           <button type="button" id="btn-send" class="send-btn">傳送</button>
         </footer>
       </aside>
 
-      <div id="float-bubble" class="float-bubble" data-interactive hidden>
+      <div id="settings" class="settings-layer" data-interactive hidden>
+        <form id="settings-form" class="settings-card" data-hit-id="settings">
+          <header class="settings-head">
+            <h2>設定</h2>
+            <button type="button" id="btn-settings-close" class="icon-btn">關閉</button>
+          </header>
+          <p class="hint">金鑰只會寫入系統鑰匙圈，唔會放喺設定檔或者網頁。</p>
+          <p id="setup-hint" class="hint setup-hint" hidden>第一次用：Gateway 位址填 <code>http://127.0.0.1:8642</code>，每個 Bot 填 API 金鑰，然後儲存。</p>
+          <label class="field">
+            <span>Gateway 位址</span>
+            <input id="gateway-url" type="url" placeholder="http://127.0.0.1:8642" autocomplete="off" />
+          </label>
+          <p class="hint">留空就用離線示範。有位址就連自架 Hermes API server（預設埠 8642，Bearer API_SERVER_KEY）。具名 profile 走 <code>/p/&lt;profile&gt;/</code>；<code>default</code> 用唔帶前綴嘅路徑。每個 profile 自己一埠嘅話，喺該 Bot 填專用位址。</p>
+
+          <div class="roster-head">
+            <h3>Bot 名單</h3>
+            <button type="button" id="btn-add-bot" class="icon-btn">加入</button>
+          </div>
+          <div id="bot-editor" class="bot-editor"></div>
+
+          <fieldset class="experimental">
+            <legend>實驗：由 dashboard 匯入名單</legend>
+            <p class="hint">用 Hermes dashboard 嘅 <code>GET /api/profiles</code>（預設 <code>http://127.0.0.1:9119</code>）。公開 API server 冇穩定嘅 profile 列表。匯入只填名稱同描述，<strong>唔會</strong>帶 API 金鑰。Hermes 0.21.6 嘅 dashboard <strong>即使係 localhost</strong> 都要 session token，否則 401。Token 係 dashboard 頁面嘅 <code>window.__HERMES_SESSION_TOKEN__</code>，唔係 <code>API_SERVER_KEY</code>，存喺鑰匙圈。</p>
+            <label class="field">
+              <span>Dashboard 位址</span>
+              <input id="dashboard-url" type="url" placeholder="http://127.0.0.1:9119" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Dashboard session token（可留空）</span>
+              <input id="dashboard-token" type="password" placeholder="已儲存就留空" autocomplete="off" />
+            </label>
+            <button type="button" id="btn-discover" class="icon-btn">匯入名單</button>
+          </fieldset>
+
+          <fieldset class="experimental">
+            <legend>游標同穿透</legend>
+            <p class="hint">預設成個視窗穿透，游標越近元素越淡。按住修飾鍵時，只係游標下面嗰一個元素（加少少邊距）回復實色同可點擊；其他元素繼續按距離淡出。游標唔喺任何元素附近就冇變化。輸入框聚焦會保持中間面板可互動；設定頁打開會保持設定面板可互動。Esc、點空白，或者視窗失焦就離開。</p>
+            <label class="field">
+              <span>修飾鍵</span>
+              <select id="interaction-modifier">
+                <option value="ctrl">Ctrl</option>
+                <option value="shift">Shift</option>
+                <option value="alt">Alt</option>
+              </select>
+            </label>
+            <p id="interaction-alt-warning" class="hint alt-warning" hidden>
+              Linux 視窗管理員常用 Alt 拖移視窗（xfwm4 預設，GNOME／KDE 都常見）。揀 Alt 之後，Alt+click 可能去唔到呢個程式，設定就開唔返。可以用快捷鍵 Ctrl+Shift+Alt+H，或者系統匣選單「設定」。
+            </p>
+            <label class="field field-inline">
+              <input id="interaction-fade" type="checkbox" checked />
+              <span>游標靠近時淡出</span>
+            </label>
+            <label class="field">
+              <span>淡出距離（px）</span>
+              <input id="interaction-distance" type="number" min="24" max="480" step="1" value="120" />
+            </label>
+            <label class="field">
+              <span>最近時透明度（%）</span>
+              <input id="interaction-min-opacity" type="number" min="5" max="60" step="1" value="18" />
+            </label>
+            <p id="interaction-support" class="hint"></p>
+          </fieldset>
+
+          <p id="settings-status" class="settings-status" role="status"></p>
+          <div class="settings-actions">
+            <button type="button" id="btn-quit" class="icon-btn danger" title="結束程式">結束</button>
+            <div class="settings-actions-main">
+              <button type="button" id="btn-probe" class="icon-btn">測試已儲存連線</button>
+              <button type="submit" class="send-btn">儲存</button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div id="float-bubble" class="float-bubble" data-interactive data-hit-id="float" hidden>
         <div class="float-avatar" id="float-avatar"></div>
         <div class="float-text" id="float-text"></div>
       </div>

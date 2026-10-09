@@ -6,14 +6,19 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test src/markdown.test.js src/slash.test.js src/styles.test.js src/proximity.test.js src/setup.test.js src/icons.test.js",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "node scripts/tauri.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "jsdom": "^29.1.1",
     "vite": "^6.0.0"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2"
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2.7.0",
+    "dompurify": "^3.4.16",
+    "marked": "^18.1.0"
   }
 }

@@ -1,0 +1,69 @@
+[[permission]]
+identifier = "allow-get-settings"
+description = "Read overlay settings without secrets."
+commands.allow = ["get_settings"]
+
+[[permission]]
+identifier = "allow-save-settings"
+description = "Save gateway settings and keychain entries."
+commands.allow = ["save_settings"]
+
+[[permission]]
+identifier = "allow-probe-gateway"
+description = "Probe the Hermes gateway and saved bot keys."
+commands.allow = ["probe_gateway"]
+
+[[permission]]
+identifier = "allow-discover-profiles"
+description = "Experimentally list dashboard profiles."
+commands.allow = ["discover_profiles"]
+
+[[permission]]
+identifier = "allow-open-bot"
+description = "Load a bot chat transcript."
+commands.allow = ["open_bot"]
+
+[[permission]]
+identifier = "allow-send-chat"
+description = "Stream a chat turn."
+commands.allow = ["send_chat"]
+
+[[permission]]
+identifier = "allow-stop-chat"
+description = "Stop the local chat stream."
+commands.allow = ["stop_chat"]
+
+[[permission]]
+identifier = "allow-list-commands"
+description = "List overlay slash commands for one bot."
+commands.allow = ["list_commands"]
+
+[[permission]]
+identifier = "allow-client-command"
+description = "Run a client slash command against the Hermes session API."
+commands.allow = ["client_command"]
+
+[[permission]]
+identifier = "allow-set-hit-rects"
+description = "Report overlay element rectangles for proximity fade."
+commands.allow = ["set_hit_rects"]
+
+[[permission]]
+identifier = "allow-set-interaction-latch"
+description = "Keep the overlay interactive while a field or settings is in use."
+commands.allow = ["set_interaction_latch"]
+
+[[permission]]
+identifier = "allow-focus-owner"
+description = "Read whether the focused OS window belongs to this process."
+commands.allow = ["focus_owner"]
+
+[[permission]]
+identifier = "allow-arm-pin-close-guard"
+description = "Briefly refuse the window-manager close that a keep-above toggle can cause."
+commands.allow = ["arm_pin_close_guard"]
+
+[[permission]]
+identifier = "allow-quit-app"
+description = "Quit the overlay from the Settings 結束 button."
+commands.allow = ["quit_app"]
