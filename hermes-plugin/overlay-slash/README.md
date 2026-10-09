@@ -10,12 +10,16 @@ Do not set `plugins.isolation: host`. That mode cannot register platform handler
 
 ## 安裝
 
-裝入 **預設** Hermes home（multiplex gateway 係用啟動時嗰個 home 搵 plugin），然後重啟 gateway。HTTP route 喺 process 啟動時先接上，中途 enable 唔會熱更。
+裝入 **預設** Hermes home（multiplex gateway 係用啟動時嗰個 home 搵 plugin）。**安裝同 enable 之後一定要重啟 gateway。** Middleware 係喺 process 啟動、router freeze 之前先 append。Gateway 已經行緊嗰陣再 attach，aiohttp 會拋 `Cannot modify frozen list`，plugin 只係 log 呢句然後 no-op，唔會接上 route。`hermes plugins enable` 中途打開都係一樣，要重啟先生效。
 
-Install into the **default** Hermes home (the multiplexed gateway discovers plugins from the home it was started with), then restart the gateway. Routes are wired at process start.
+Install into the **default** Hermes home (the multiplexed gateway discovers plugins from the home it was started with). **Restart the gateway after install and after enable.** The middleware is appended before the router freezes. Attaching while the gateway is already running raises `Cannot modify frozen list`; the plugin logs that and no-ops. A mid-run `hermes plugins enable` does not wire HTTP until restart.
+
+無 TTY（script、CI）要加 `--yes-deps`，否則安裝會停喺 dependency consent。
+
+Non-interactive installs must pass `--yes-deps`, or Hermes stops at the dependency prompt.
 
 ```bash
-hermes plugins install https://github.com/freezemusic/Hermes-Overlay.git#hermes-plugin/overlay-slash --ref <sha> --enable
+hermes plugins install https://github.com/freezemusic/Hermes-Overlay.git#hermes-plugin/overlay-slash --ref <sha> --enable --yes-deps
 ```
 
 `<sha>` 用 40 位 commit。subpath install 會忽略 URL 入面嘅 branch 段，所以一定要 `--ref`。
@@ -114,6 +118,8 @@ Catalog **唔會**列出 CLI-only（`/clear`、`/quit`…）、messaging-only（
 
 Skill 清單唔經會 500 嘅 `GET /v1/skills`（佢傳 `include_editorial=True`，但 `_find_all_skills` 未收呢個參數）。plugin 直接叫 `_find_all_skills(skip_disabled=False)` 同 `_sort_skills`。只有函式簽名接受 `include_editorial` 先會傳。`enabled` 用 `get_disabled_skill_names(platform="api_server")`。
 
+Gateway 行緊先裝嘅 skill，filesystem scan 會見到，但 Hermes 嘅 slash map 係 process cache。Catalog 如果見到一個 enabled skill 唔喺 map 入面，會呼叫 `reload_skills()` 一次再列。`/expand` 同 chat 改寫喺 `resolve_skill_command_key` miss 時同樣 reload 一次再試。Reload 之後仍然 resolve 唔到嘅 enabled skill 唔會留喺 catalog。
+
 ### `POST .../v1/overlay/expand`
 
 Request: `{"text": "/plan add dark mode"}`。可選 `session_id`（skill loader 嘅 task id）。
@@ -178,8 +184,16 @@ Plugin command 用 `"kind": "plugin"`，同樣有 `text`。Client：
 
 Reply、plugin、client **唔會**開 agent turn：
 
-- `/chat/stream`，或者 body `stream: true`：短 SSE，event 順序係 `run.started`、`assistant.delta`、`assistant.completed`、`run.completed`、`done`。唔寫入 session。
+- `/chat/stream`，或者 body `stream: true`：短 SSE，唔寫入 session。順序同 Hermes session stream 一樣：`run.started`、`message.started`、`assistant.delta`、`assistant.completed`、`run.completed`、`done`。每個 event 都有 `session_id`、`run_id`、`seq`（由 1 起）、`ts`。`message.started` 嘅 `message.id` 同後面嘅 `message_id` 相同。`assistant.completed` 同 `run.completed` 帶 `completed: true`、`partial: false`、`interrupted: false`。
 - 其他：JSON。session chat 係 `{"object":"hermes.session.chat.completion","message":{"role":"assistant","content":"…"},"usage":{}}`。completions 係 OpenAI `chat.completion`。responses 係 `output[].content[].text`。
+
+寫入 history 嘅係展開後嘅正文，第一行係機器可讀 marker（一行，放最前，模型當 HTML comment 即可）：
+
+```text
+<!-- overlay-slash: {"display":"/plan add dark mode","command":"plan"} -->
+```
+
+`display` 係使用者打嘅字，`command` 係 command 名（skill 係 slug，例如 `arxiv`；疊加係 `arxiv+pdf`）。JSON 冇多餘空白（`separators=(",", ":")`）。換行會變成空格，`-->` 會剝走，避免 comment 提前結束。下一行先係展開 prompt。`POST /v1/overlay/expand` 嘅 `message` **唔包含**呢行；只有 chat 改寫（會入 history 嗰份）先有。Overlay 重新載入 history 時讀第一行，氣泡顯示 `display`。
 
 未知 `/foo` 同 `//escaped` **原樣通過**。`_check_auth` 唔係成功（包括冇呢個方法）時，chat 都原樣通過，等 Hermes 自己回 401。
 
@@ -198,8 +212,9 @@ Auth 失敗就交給原本嘅 handler。組裝失敗都係交返俾原本 handle
 ## 已知限制
 
 - 依賴 Hermes 內部符號（`_check_auth`、aiohttp `request._read_bytes`、`build_plan_prompt` / `build_learn_prompt` / `build_skill_invocation_message` 同 skill catalog 嘅 module path）。符號唔見就降級，唔會拆 gateway。Hermes 升級之後要再對一次。
-- 展開後嘅 prompt 會寫入 session history（同 messaging gateway 一樣）。Overlay 重新載入 history 時要顯示使用者打嘅字（`display`），唔好顯示展開正文。可以認 `[/plan — plan mode]` 同 skill scaffold 前綴，或者自己記一張表。
-- 冇 un-wire。改 plugin 或設定之後要重啟 gateway。
+- 展開後嘅 prompt 會寫入 session history（同 messaging gateway 一樣），第一行係 `<!-- overlay-slash: {"display":"…","command":"…"} -->`。Overlay 用呢行還原使用者打嘅字。
+- 安裝、enable、改設定之後要重啟 gateway。行緊嘅 process 會 log `Cannot modify frozen list` 然後唔接 middleware。
+- 無 TTY 安裝要 `--yes-deps`。
 - 必須 in-process。要裝喺預設 home，一個 API server 先服務到全部 `/p/<profile>`。
 - `/queue`、`/steer` 喺 API 路徑只係剝前綴再送一 turn。Queue 管理子指令唔會改 Hermes 嘅 queue。
 - `/init` 用 gateway 嘅 cwd，唔係 overlay 視窗嘅 workspace。

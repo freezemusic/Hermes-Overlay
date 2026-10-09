@@ -137,7 +137,8 @@ async def _sse_reply(request: web.Request, expansion: commands.Expansion) -> web
     if token:
         response.headers["X-Hermes-Command"] = token
     await response.prepare(request)
-    for event, data in commands.sse_events(expansion):
+    session_id = commands.session_id_from_path(getattr(request, "path", "") or "")
+    for event, data in commands.sse_events(expansion, session_id=session_id):
         frame = f"event: {event}\ndata: {commands.json_bytes(data).decode('utf-8')}\n\n"
         await response.write(frame.encode("utf-8"))
     await response.write_eof()
@@ -336,7 +337,14 @@ def attach(app: Any, adapter: Any, settings: Settings | None = None) -> None:
     try:
         app.middlewares.append(make_middleware(adapter, settings))
     except Exception as exc:
-        commands.warn_once("wire-mw", f"overlay-slash: could not append middleware ({exc})")
+        if "Cannot modify frozen list" in str(exc):
+            commands.warn_once(
+                "wire-mw",
+                "overlay-slash: Cannot modify frozen list. The gateway is already running; "
+                "install/enable does nothing until the gateway is restarted.",
+            )
+        else:
+            commands.warn_once("wire-mw", f"overlay-slash: could not append middleware ({exc})")
         return
     try:
         signal = getattr(app, "on_response_prepare", None)

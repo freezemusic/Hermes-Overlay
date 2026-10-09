@@ -120,6 +120,21 @@ def _by_name(payload: dict) -> dict[str, dict]:
     return {row["name"]: row for row in payload["data"]}
 
 
+def _parse_sse(raw: str) -> list[tuple[str, dict]]:
+    events = []
+    for block in raw.split("\n\n"):
+        if not block.strip():
+            continue
+        name, data = "", {}
+        for line in block.split("\n"):
+            if line.startswith("event: "):
+                name = line[len("event: "):]
+            elif line.startswith("data: "):
+                data = json.loads(line[len("data: "):])
+        events.append((name, data))
+    return events
+
+
 async def _catalog(server: Server, path: str = "/v1/overlay/commands", auth: bool = True):
     assert server.session is not None
     async with server.session.get(server.base + path, headers=server.headers(auth)) as resp:
@@ -243,7 +258,9 @@ def test_plan_rewrite_and_header():
                 assert resp.status == 200
                 assert resp.headers.get("X-Hermes-Command") == "plan"
                 seen = json.loads((await resp.text()).split("data: ", 1)[1])
-            assert seen["seen_input"].startswith("[/plan — plan mode]")
+            plan_marker = '<!-- overlay-slash: {"display":"/plan add dark mode","command":"plan"} -->'
+            assert seen["seen_input"].startswith(plan_marker + "\n")
+            assert seen["seen_input"].split("\n", 1)[1].startswith("[/plan — plan mode]")
             assert "add dark mode" in seen["seen_input"]
             assert state["calls"] == 1
             async with server.session.post(
@@ -252,7 +269,7 @@ def test_plan_rewrite_and_header():
                 json={"messages": [{"role": "user", "content": "/plan add dark mode"}]},
             ) as resp:
                 payload = await resp.json()
-            assert payload["seen_input"].startswith("[/plan — plan mode]")
+            assert payload["seen_input"].startswith(plan_marker + "\n[/plan — plan mode]")
             async with server.session.post(
                 server.base + "/v1/responses",
                 headers=server.headers(),
@@ -260,7 +277,8 @@ def test_plan_rewrite_and_header():
             ) as resp:
                 payload = await resp.json()
                 assert resp.headers.get("X-Hermes-Command") == "learn"
-            assert payload["seen_input"].startswith("[/learn]")
+            learn_marker = '<!-- overlay-slash: {"display":"/learn a skill","command":"learn"} -->'
+            assert payload["seen_input"].startswith(learn_marker + "\n[/learn]")
 
     _run(inner())
 
@@ -314,8 +332,28 @@ def test_reply_kind_sse_does_not_call_the_agent():
                 assert resp.status == 200
                 assert resp.headers.get("X-Hermes-Command") == "version"
                 raw = await resp.text()
-            for event in ("run.started", "assistant.delta", "assistant.completed", "run.completed", "done"):
-                assert f"event: {event}\n" in raw
+            events = _parse_sse(raw)
+            names = [name for name, _data in events]
+            assert names == [
+                "run.started", "message.started", "assistant.delta",
+                "assistant.completed", "run.completed", "done",
+            ]
+            message_id = events[1][1]["message"]["id"]
+            assert message_id.startswith("msg_")
+            run_id = events[0][1]["run_id"]
+            assert run_id.startswith("run_")
+            for index, (_name, data) in enumerate(events, start=1):
+                assert data["session_id"] == "s"
+                assert data["run_id"] == run_id
+                assert data["seq"] == index
+                assert isinstance(data["ts"], (int, float))
+            assert events[2][1]["message_id"] == message_id
+            assert events[2][1]["delta"]
+            for terminal in (events[3][1], events[4][1]):
+                assert terminal["message_id"] == message_id
+                assert terminal["completed"] is True
+                assert terminal["partial"] is False
+                assert terminal["interrupted"] is False
             assert "version" in raw.lower() or "Hermes" in raw
             async with server.session.post(
                 server.base + "/api/sessions/s/chat",
@@ -434,7 +472,8 @@ def test_skill_rewrite_disabled_and_load_failure(monkeypatch):
             ) as resp:
                 assert resp.headers.get("X-Hermes-Command") == "skill:arxiv"
                 seen = json.loads((await resp.text()).split("data: ", 1)[1])
-            assert seen["seen_input"] == "SKILL /arxiv :: quantum"
+            marker = '<!-- overlay-slash: {"display":"/arxiv quantum","command":"arxiv"} -->'
+            assert seen["seen_input"] == marker + "\nSKILL /arxiv :: quantum"
             async with server.session.post(
                 server.base + "/v1/overlay/expand",
                 headers=server.headers(),
@@ -664,3 +703,136 @@ def test_plugin_command_catalog_and_direct_reply(monkeypatch):
         assert state["calls"] == 0
 
     _run(inner())
+
+
+def test_history_marker_is_one_line_and_expand_omits_it():
+    marker = commands.history_marker("/plan add dark mode", "plan")
+    assert marker == '<!-- overlay-slash: {"display":"/plan add dark mode","command":"plan"} -->'
+    assert "\n" not in marker
+    messy = commands.history_marker("/plan line\nbreak --> stay", "plan")
+    assert "\n" not in messy
+    assert "-->" not in messy[len("<!-- overlay-slash: "):-3]
+    assert messy.endswith("-->")
+    app, _state = _app()
+
+    async def inner():
+        async with Server(app) as server:
+            assert server.session is not None
+            async with server.session.post(
+                server.base + "/v1/overlay/expand",
+                headers=server.headers(),
+                json={"text": "/plan add dark mode"},
+            ) as resp:
+                body = await resp.json()
+            assert body["message"].startswith("[/plan — plan mode]")
+            assert "overlay-slash:" not in body["message"]
+
+    _run(inner())
+
+
+def test_stale_skill_map_reloads_once_and_catalog_matches(monkeypatch):
+    state = {"reloads": 0, "ready": False}
+
+    def resolve(command: str, interactive: bool = False):
+        if state["ready"] and command == "fresh":
+            return "/fresh"
+        return None
+
+    def reload_skills():
+        state["reloads"] += 1
+        state["ready"] = True
+        return {"added": [{"name": "fresh"}]}
+
+    def interactive():
+        if not state["ready"]:
+            return {}
+        return {"/fresh": {"name": "fresh", "description": "just installed", "category": "research"}}
+
+    def find(*, skip_disabled: bool = False):
+        return [
+            {"name": "fresh", "description": "just installed", "category": "research"},
+            {"name": "ghost", "description": "scanner will not register this", "category": "other"},
+        ]
+
+    def build(key: str, instruction: str = "", task_id: str | None = None):
+        return f"SKILL {key} :: {instruction}"
+
+    def load_symbol(module: str, name: str):
+        table = {
+            ("agent.skill_commands", "resolve_skill_command_key"): resolve,
+            ("agent.skill_commands", "reload_skills"): reload_skills,
+            ("agent.skill_commands", "get_interactive_skill_commands"): interactive,
+            ("agent.skill_commands", "build_skill_invocation_message"): build,
+            ("agent.skill_commands", "split_stacked_skill_commands"): lambda rest, interactive=False: ([], rest),
+            ("tools.skills_tool", "_find_all_skills"): find,
+            ("tools.skills_tool", "_sort_skills"): lambda skills: skills,
+            ("agent.skill_commands", "slugify_skill_name"): lambda name: name.lower(),
+        }
+        return table.get((module, name))
+
+    monkeypatch.setattr(commands, "load_symbol", load_symbol)
+    app, chat = _app()
+
+    async def inner():
+        async with Server(app) as server:
+            assert server.session is not None
+            async with server.session.post(
+                server.base + "/v1/overlay/expand",
+                headers=server.headers(),
+                json={"text": "/fresh please"},
+            ) as resp:
+                assert resp.status == 200
+                body = await resp.json()
+            assert body["kind"] == "skill"
+            assert body["command"] == "fresh"
+            assert body["message"] == "SKILL /fresh :: please"
+            assert "overlay-slash:" not in body["message"]
+            assert state["reloads"] == 1
+            async with server.session.post(
+                server.base + "/api/sessions/s/chat",
+                headers=server.headers(),
+                json={"input": "/fresh please"},
+            ) as resp:
+                seen = await resp.json()
+            assert seen["seen_input"].startswith(
+                '<!-- overlay-slash: {"display":"/fresh please","command":"fresh"} -->\nSKILL /fresh :: please'
+            )
+            # Map is warm: a second expand must not rescan.
+            async with server.session.post(
+                server.base + "/v1/overlay/expand",
+                headers=server.headers(),
+                json={"text": "/fresh again"},
+            ) as resp:
+                assert resp.status == 200
+            assert state["reloads"] == 1
+            async with server.session.post(
+                server.base + "/v1/overlay/expand",
+                headers=server.headers(),
+                json={"text": "/ghost"},
+            ) as resp:
+                assert resp.status == 404
+            # One retry for the miss, still not registered.
+            assert state["reloads"] == 2
+            _status, _headers, catalog = await _catalog(server)
+            rows = _by_name(catalog)
+            assert rows["/fresh"]["kind"] == "skill"
+            assert rows["/fresh"]["enabled"] is True
+            assert "/ghost" not in rows
+
+    _run(inner())
+    assert chat["calls"] == 1
+
+
+def test_attach_after_freeze_logs_and_leaves_routes_working(caplog):
+    commands.reset_warnings()
+    app, _state = _app()
+
+    async def inner():
+        async with Server(app) as server:
+            overlay_slash.attach(app, Adapter(), Settings())
+            status, _headers, body = await _catalog(server)
+            assert status == 200
+            assert body["object"] == "list"
+
+    _run(inner())
+    assert "Cannot modify frozen list" in caplog.text

@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import re
+import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -475,21 +477,84 @@ def _disabled_names() -> set[str]:
     return {str(n) for n in (names or ())}
 
 
+def _interactive_skill_map() -> dict[str, Any]:
+    fn = load_symbol("agent.skill_commands", "get_interactive_skill_commands")
+    if fn is None:
+        return {}
+    try:
+        found = fn() or {}
+    except Exception as exc:
+        warn_once("skills-interactive", f"overlay-slash: get_interactive_skill_commands failed ({exc})")
+        raise
+    return found if isinstance(found, dict) else {}
+
+
+def _reload_skill_commands() -> bool:
+    """Rescan Hermes' slash-skill map once. False when the symbol is missing or the rescan fails."""
+    reload = load_symbol("agent.skill_commands", "reload_skills")
+    if reload is None:
+        scan = load_symbol("agent.skill_commands", "scan_skill_commands")
+        if scan is None:
+            return False
+        reload = scan
+    try:
+        reload()
+        return True
+    except Exception as exc:
+        warn_once("reload-skills", f"overlay-slash: reload_skills failed ({exc})")
+        return False
+
+
+def _skill_slash(name: str, slugify: Callable | None) -> str:
+    return _slug(name, slugify)
+
+
+def _disk_skill_missing(found: list[dict[str, Any]], interactive: Mapping[str, Any], *,
+                        slugify: Callable | None, collision: Callable | None,
+                        disabled: set[str], claimed: set[str]) -> bool:
+    """True when the filesystem lists an enabled skill the cached slash map cannot expand."""
+    keys = {str(key).lstrip("/").lower() for key in interactive}
+    names = {str((info or {}).get("name") or "").lower() for info in interactive.values() if isinstance(info, dict)}
+    for skill in found:
+        name = str(skill.get("name") or "").strip()
+        if not name or name in disabled or name.lower() in names:
+            continue
+        slug = _skill_slash(name, slugify)
+        if not slug or slug in claimed or slug in keys or slug in disabled:
+            continue
+        if collision is not None:
+            try:
+                if collision(name):
+                    continue
+            except Exception:
+                pass
+        return True
+    return False
+
+
 def skill_rows(claimed: set[str]) -> tuple[list[dict[str, Any]], str]:
     warning = ""
     try:
         disabled = _disabled_names()
         slugify = load_symbol("agent.skill_commands", "slugify_skill_name")
         collision = load_symbol("agent.skill_commands", "skill_command_collision_note")
-        interactive_fn = load_symbol("agent.skill_commands", "get_interactive_skill_commands")
         found = _find_skills()
         interactive: dict[str, Any] = {}
-        if interactive_fn is not None:
-            try:
-                interactive = interactive_fn() or {}
-            except Exception as exc:
-                warning = f"skill command scan unavailable: {exc}"
-                warn_once("skills-interactive", f"overlay-slash: {warning}")
+        try:
+            interactive = _interactive_skill_map()
+        except Exception as exc:
+            warning = f"skill command scan unavailable: {exc}"
+        # Filesystem scan is fresh; the slash map is not. Rescan once so a skill
+        # that shows up here is one expand/rewrite can actually resolve.
+        reloaded = False
+        if _disk_skill_missing(found, interactive, slugify=slugify, collision=collision,
+                               disabled=disabled, claimed=claimed):
+            reloaded = _reload_skill_commands()
+            if reloaded:
+                try:
+                    interactive = _interactive_skill_map()
+                except Exception as exc:
+                    warning = warning or f"skill command scan unavailable: {exc}"
         by_name = {}
         for key, info in interactive.items():
             if isinstance(info, dict):
@@ -512,6 +577,10 @@ def skill_rows(claimed: set[str]) -> tuple[list[dict[str, Any]], str]:
                     pass
             seen.add(slug)
             enabled = name not in disabled and slug not in disabled
+            # After a rescan, an enabled skill still absent from the slash map
+            # cannot be expanded. Leave it out so the catalog matches expand.
+            if reloaded and mapped is None and enabled:
+                continue
             rows.append(_entry(
                 f"/{slug}", "skill", str(skill.get("category") or ""),
                 str(skill.get("description") or f"Invoke the {name} skill"),
@@ -750,6 +819,12 @@ def _disabled_skill_token(token: str) -> str | None:
     return None
 
 
+def _resolve_skill_key(resolve: Callable, token: str) -> Any:
+    if accepts_param(resolve, "interactive"):
+        return resolve(token, interactive=True)
+    return resolve(token)
+
+
 def _expand_skill(token: str, args: str, task_id: str | None) -> Expansion:
     display = f"/{token}" + (f" {args}" if args else "")
     disabled = _disabled_skill_token(token)
@@ -759,10 +834,18 @@ def _expand_skill(token: str, args: str, task_id: str | None) -> Expansion:
     if resolve is None:
         return Expansion("none")
     try:
-        key = resolve(token, interactive=True) if accepts_param(resolve, "interactive") else resolve(token)
+        key = _resolve_skill_key(resolve, token)
     except Exception as exc:
         warn_once("skill-resolve", f"overlay-slash: resolve_skill_command_key failed ({exc})")
         raise
+    # get_interactive_skill_commands() keeps a process cache. A skill installed
+    # while the gateway is up is on disk (catalog) but missing here until reload.
+    if not key and _reload_skill_commands():
+        try:
+            key = _resolve_skill_key(resolve, token)
+        except Exception as exc:
+            warn_once("skill-resolve", f"overlay-slash: resolve_skill_command_key failed ({exc})")
+            raise
     if not key:
         return Expansion("none")
     interactive = load_symbol("agent.skill_commands", "get_interactive_skill_commands")
@@ -1025,13 +1108,36 @@ def extract_command_text(stripped_path: str, body: Mapping[str, Any]) -> str | N
     return text
 
 
+def _marker_text(value: str) -> str:
+    """One line, and no ``-->`` that would close the HTML comment early."""
+    return str(value or "").replace("\r", " ").replace("\n", " ").replace("-->", "")
+
+
+def history_marker(display: str, command: str) -> str:
+    """Single-line prefix stored ahead of an expanded prompt so the overlay can restore the typed text.
+
+    Format (no spaces inside the JSON)::
+
+        <!-- overlay-slash: {"display":"/plan add dark mode","command":"plan"} -->
+    """
+    payload = {"display": _marker_text(display), "command": _marker_text(command)}
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"<!-- overlay-slash: {encoded} -->"
+
+
+def with_history_marker(expansion: Expansion) -> str:
+    """Marker line, then the expanded prompt. The marker is not part of the expand API ``message``."""
+    return history_marker(expansion.display, expansion.command) + "\n" + (expansion.message or "")
+
+
 def rewrite_body(stripped_path: str, body: dict[str, Any], expansion: Expansion) -> bool:
     if expansion.kind not in {"prompt", "skill", "bundle"} or not expansion.message:
         return False
     display = expansion.display or ""
+    stored = with_history_marker(expansion)
 
     def put(container: dict, key: str) -> bool:
-        replaced = _replace_text(container.get(key), display, expansion.message)
+        replaced = _replace_text(container.get(key), display, stored)
         if replaced is None:
             return False
         container[key] = replaced
@@ -1040,10 +1146,10 @@ def rewrite_body(stripped_path: str, body: dict[str, Any], expansion: Expansion)
     if stripped_path.startswith("/api/sessions/"):
         changed = put(body, "message") or put(body, "input")
         if isinstance(body.get("message"), str) and body["message"].strip() == display.strip():
-            body["message"] = expansion.message
+            body["message"] = stored
             changed = True
         if isinstance(body.get("input"), str) and body["input"].strip() == display.strip():
-            body["input"] = expansion.message
+            body["input"] = stored
             changed = True
         return changed
     if stripped_path == "/v1/chat/completions":
@@ -1057,12 +1163,12 @@ def rewrite_body(stripped_path: str, body: dict[str, Any], expansion: Expansion)
     if stripped_path == "/v1/responses":
         raw = body.get("input")
         if isinstance(raw, str) and raw.strip() == display.strip():
-            body["input"] = expansion.message
+            body["input"] = stored
             return True
         if isinstance(raw, list) and raw:
             last = raw[-1]
             if isinstance(last, str) and last.strip() == display.strip():
-                raw[-1] = expansion.message
+                raw[-1] = stored
                 return True
             if isinstance(last, dict):
                 return put(last, "content")
@@ -1114,14 +1220,50 @@ def direct_reply_body(stripped_path: str, expansion: Expansion) -> dict[str, Any
     }
 
 
-def sse_events(expansion: Expansion) -> list[tuple[str, dict[str, Any]]]:
+def sse_events(expansion: Expansion, *, session_id: str | None = None) -> list[tuple[str, dict[str, Any]]]:
+    """Hermes ``/api/sessions/{id}/chat/stream`` shapes (``_SessionEventQueue.payload``).
+
+    Every event carries ``session_id``, ``run_id``, ``seq`` and ``ts``. Terminal
+    events also carry ``message_id`` and ``completed: true``. ``message.started``
+    sits between ``run.started`` and the assistant text, matching api_server.
+    """
     text = expansion.text or expansion.notice or ""
+    session = session_id or "overlay-slash"
+    run_id = f"run_{uuid.uuid4().hex}"
+    message_id = f"msg_{uuid.uuid4().hex}"
+    seq = 0
+
+    def stamp(payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal seq
+        seq += 1
+        payload.setdefault("session_id", session)
+        payload.setdefault("run_id", run_id)
+        payload.setdefault("seq", seq)
+        payload.setdefault("ts", time.time())
+        return payload
+
+    terminal = {"completed": True, "partial": False, "interrupted": False}
     return [
-        ("run.started", {"user_message": {"role": "user", "content": expansion.display}}),
-        ("assistant.delta", {"delta": text}),
-        ("assistant.completed", {"content": text}),
-        ("run.completed", {"content": text}),
-        ("done", {}),
+        ("run.started", stamp({
+            "user_message": {"role": "user", "content": expansion.display},
+            "runtime": {},
+        })),
+        ("message.started", stamp({"message": {"id": message_id, "role": "assistant"}})),
+        ("assistant.delta", stamp({"message_id": message_id, "delta": text})),
+        ("assistant.completed", stamp({
+            "message_id": message_id,
+            "content": text,
+            **terminal,
+            "runtime": {},
+        })),
+        ("run.completed", stamp({
+            "message_id": message_id,
+            **terminal,
+            "messages": [],
+            "usage": {},
+            "runtime": {},
+        })),
+        ("done", stamp({})),
     ]
 
 
@@ -1154,6 +1296,7 @@ __all__ = [
     "load_symbol",
     "request_profile",
     "reset_warnings",
+    "history_marker",
     "rewrite_body",
     "skills_list_payload",
     "sse_events",
