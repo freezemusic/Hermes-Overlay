@@ -452,6 +452,132 @@ html.platform-linux {
   background: var(--bubble-bot);
   color: var(--bubble-bot-text);
   border: 1px solid var(--hairline);
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
+  line-break: strict;
+}
+
+.bubble.bot > :first-child {
+  margin-top: 0;
+}
+
+.bubble.bot > :last-child {
+  margin-bottom: 0;
+}
+
+.bubble.bot h1,
+.bubble.bot h2,
+.bubble.bot h3,
+.bubble.bot h4,
+.bubble.bot h5,
+.bubble.bot h6 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+  margin: 0.7em 0 0.3em;
+  color: var(--paper);
+}
+
+.bubble.bot h1 { font-size: 1.2rem; }
+.bubble.bot h2 { font-size: 1.08rem; }
+.bubble.bot h3,
+.bubble.bot h4,
+.bubble.bot h5,
+.bubble.bot h6 { font-size: 1rem; }
+
+.bubble.bot p,
+.bubble.bot ul,
+.bubble.bot ol,
+.bubble.bot blockquote,
+.bubble.bot pre,
+.bubble.bot table {
+  margin: 0.45em 0;
+}
+
+.bubble.bot ul,
+.bubble.bot ol {
+  padding-left: 1.35em;
+}
+
+.bubble.bot a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.bubble.bot code {
+  font-family: var(--font-mono);
+  font-size: 0.84em;
+  background: rgba(0, 0, 0, 0.38);
+  padding: 0.08em 0.35em;
+  border-radius: var(--radius-xs);
+}
+
+.bubble.bot pre {
+  position: relative;
+  padding: 28px 10px 10px;
+  overflow-x: auto;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.bubble.bot pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.78rem;
+  white-space: pre;
+}
+
+.bubble.bot .code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xs);
+  background: rgba(8, 8, 20, 0.72);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.bubble.bot blockquote {
+  padding-left: 10px;
+  border-left: 2px solid var(--accent);
+  color: var(--paper);
+}
+
+.bubble.bot table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.bubble.bot th,
+.bubble.bot td {
+  border: 1px solid var(--hairline);
+  padding: 4px 8px;
+  text-align: start;
+}
+
+.bubble.bot th {
+  color: var(--paper);
+  font-weight: 600;
+}
+
+.bubble.bot hr {
+  border: 0;
+  border-top: 1px solid var(--hairline);
 }
 
 .bubble.user {

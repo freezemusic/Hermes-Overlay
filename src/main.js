@@ -4,6 +4,7 @@
  * Gateway keys stay in the Rust process; this file only sees has_key.
  */
 
+import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 import {
   PALETTE,
   applyDropdownDismiss,
@@ -364,9 +365,43 @@ function renderChat() {
 function bubbleEl(m) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${m.role === "user" ? "user" : m.role === "bot" ? "bot" : m.role}`;
-  bubble.textContent = m.text;
+  if (m.role === "bot") paintBotBubble(bubble, m.text);
+  else bubble.textContent = m.text;
   if (m.live) bubble.dataset.live = "1";
   return bubble;
+}
+
+function paintBotBubble(el, text) {
+  const html = renderAssistantMarkdown(text);
+  if (el.dataset.md === html) return;
+  el.dataset.md = html;
+  el.innerHTML = html;
+  decorateCodeBlocks(el);
+}
+
+const livePainters = new Map();
+
+function painterFor(id) {
+  let painter = livePainters.get(id);
+  if (painter) return painter;
+  painter = createLivePainter({
+    delay: 50,
+    paint() {
+      paintLiveNow(id);
+    },
+  });
+  livePainters.set(id, painter);
+  return painter;
+}
+
+async function openExternal(url) {
+  if (!isSafeLink(url)) return;
+  if (inTauri()) {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function appendMessage(id, message) {
@@ -442,14 +477,21 @@ function ensureLiveBubble(id) {
   return live;
 }
 
-function patchLive(id) {
+function paintLiveNow(id) {
   if (id !== state.activeId) return;
   const thread = threadFor(id);
   const live = [...thread.messages].reverse().find((m) => m.live);
   const nodes = $("#chat-messages").querySelectorAll("[data-live]");
   const node = nodes[nodes.length - 1];
-  if (live && node) node.textContent = live.text;
-  $("#chat-messages").scrollTop = $("#chat-messages").scrollHeight;
+  if (live && node) paintBotBubble(node, live.text);
+  const chat = $("#chat-messages");
+  const gap = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+  if (gap < 80) chat.scrollTop = chat.scrollHeight;
+}
+
+function patchLive(id) {
+  if (id !== state.activeId) return;
+  painterFor(id).schedule();
 }
 
 function handleHermes(payload) {
@@ -485,6 +527,7 @@ function handleHermes(payload) {
     const thread = threadFor(id);
     thread.float = null;
     const live = [...thread.messages].reverse().find((m) => m.live);
+    painterFor(id).flush();
     if (live) live.live = false;
     if (payload.outcome === "completed") clearConnectionBanner();
     if (payload.outcome === "failed" && payload.detail) {
@@ -840,6 +883,15 @@ function setCenterOpen(open) {
 }
 
 function setupComposer() {
+  $("#chat-messages").addEventListener("click", (event) => {
+    const anchor = event.target.closest?.("a");
+    const chat = $("#chat-messages");
+    if (!anchor || !chat.contains(anchor)) return;
+    event.preventDefault();
+    const href = anchor.getAttribute("href") || "";
+    if (!isSafeLink(href)) return;
+    openExternal(href);
+  });
   $("#btn-send").addEventListener("click", sendActive);
   $("#chat-input").addEventListener("keydown", (event) => {
     if (event.key === "Enter") sendActive();
