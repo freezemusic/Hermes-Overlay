@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="bloom" cx="50%" cy="46%" r="46%">
+      <stop offset="0%" stop-color="#fffefb" stop-opacity="0.98"/>
+      <stop offset="16%" stop-color="#fff6e2" stop-opacity="0.62"/>
+      <stop offset="34%" stop-color="#f0e6cc" stop-opacity="0.22"/>
+      <stop offset="62%" stop-color="#cfc6e4" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#07081c" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="core" cx="50%" cy="46%" r="15%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="48%" stop-color="#fffaf2" stop-opacity="0.96"/>
+      <stop offset="100%" stop-color="#fffaf2" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="tile">
+      <rect width="1024" height="1024" rx="226" ry="226"/>
+    </clipPath>
+  </defs>
+  <rect width="1024" height="1024" rx="226" fill="#07081c"/>
+  <g clip-path="url(#tile)">
+    <circle cx="512" cy="468" r="540" fill="url(#bloom)"/>
+    <circle cx="512" cy="468" r="188" fill="url(#core)"/>
+    <g fill="#1a120c" fill-opacity="0.22">
+      <rect x="458" y="424" width="34" height="140" rx="8"/>
+      <rect x="532" y="424" width="34" height="140" rx="8"/>
+      <rect x="458" y="478" width="108" height="30" rx="8"/>
+    </g>
+  </g>
+</svg>

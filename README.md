@@ -37,7 +37,9 @@ chmod +x "Hermes Overlay_0.1.0_amd64.AppImage"
 sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1
 ```
 
-金鑰用 Secret Service（gnome-keyring 或 KWallet）。純 Wayland 讀唔到全域游標同修飾鍵，overlay 會保持可點擊、唔會穿透。用 X11 或開咗 `DISPLAY` 嘅 XWayland 先有穿透。
+金鑰用 Secret Service。`.deb` **建議**安裝 `gnome-keyring`（冇 Secret Service 時，儲存金鑰會話「鑰匙圈不可用」）同 `xdg-utils`（連結用系統瀏覽器打開）。KWallet 都可以提供 Secret Service。純 Wayland 讀唔到全域游標同修飾鍵，overlay 會保持可點擊、唔會穿透。用 X11 或開咗 `DISPLAY` 嘅 XWayland 先有穿透。
+
+桌面檔名跟 `productName`，係 `Hermes Overlay.desktop`。Tauri 冇獨立檔名設定。`Exec` 同 `Icon` 係 `hermes-overlay`。
 
 ### First launch of an unsigned build
 
@@ -45,7 +47,7 @@ sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1
 
 **Windows:** on SmartScreen, choose **More info → Run anyway**. Keys go to Credential Manager. WebView2 Runtime is required.
 
-**Linux:** `chmod +x` the AppImage, then install `libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `libayatana-appindicator3-1` (the `.deb` depends on these). Keys use Secret Service. On pure Wayland the overlay stays clickable because the global cursor and modifier cannot be read; click-through needs X11 or XWayland with `DISPLAY` set.
+**Linux:** `chmod +x` the AppImage, then install `libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `libayatana-appindicator3-1` (the `.deb` depends on these). The `.deb` also recommends `gnome-keyring` (API keys need a Secret Service; without it, saving a key reports 鑰匙圈不可用) and `xdg-utils` (opens links). KWallet can provide Secret Service too. On pure Wayland the overlay stays clickable because the global cursor and modifier cannot be read; click-through needs X11 or XWayland with `DISPLAY` set. The desktop file is named `Hermes Overlay.desktop` from `productName`; Tauri has no separate filename setting. `Exec` and `Icon` are `hermes-overlay`.
 
 ### 設定 gateway
 
@@ -161,6 +163,8 @@ npm install
 npm run tauri dev
 ```
 
+`npm run tauri dev` 會合併 `src-tauri/tauri.dev.conf.json`，identifier 係 `com.freezemusic.hermes-overlay.dev`。設定目錄同鑰匙圈 service 都跟呢個 id，唔會覆蓋已安裝版（`com.freezemusic.hermes-overlay`）嘅設定同金鑰。`npm run tauri build` 唔會用呢個檔。
+
 只起前端（無透明窗、無鑰匙圈，強制示範模式）：
 
 ```bash
@@ -209,7 +213,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 實作用 Rust 大約每 16ms 讀全域游標同修飾鍵（`device_query`），前端報上元素矩形。`set_ignore_cursor_events` 只喺游標進入「修飾鍵對準嘅元素」或者「鎖定緊嘅面板」時先關閉。Windows、macOS、Linux X11（包括開咗 `DISPLAY` 嘅 XWayland）先支援。純 Wayland 讀唔到全域游標／修飾鍵，overlay 會保持可點擊，唔會穿透。macOS 要喺「私隱與保安 → 輔助使用」允許呢個 app，否則修飾鍵可能讀唔到。全域快捷鍵同樣要輔助使用權限。
 
-設定檔（位址、名稱、顏色、詳情）喺 app config 目錄嘅 `config.json`。金鑰同 dashboard token 喺 OS keychain，service 名 `com.freezemusic.hermes-overlay`。網頁層只知道 `has_key`，唔會再攞到明文。
+設定檔（位址、名稱、顏色、詳情）喺 app config 目錄嘅 `config.json`，目錄名係 bundle identifier。金鑰同 dashboard token 喺 OS keychain，service 名同 identifier 一樣（已安裝版 `com.freezemusic.hermes-overlay`，`tauri dev` 係 `com.freezemusic.hermes-overlay.dev`）。網頁層只知道 `has_key`，唔會再攞到明文。未有設定檔時會自動打開設定，示範橫額亦可以撳開設定。
 
 ## 設定重點
 

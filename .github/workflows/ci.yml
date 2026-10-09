@@ -87,6 +87,30 @@ jobs:
       - name: Linux bundle check
         run: npm run tauri build -- --bundles deb
 
+      - name: Check deb metadata
+        run: |
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb)
+          recommends=$(dpkg-deb -f "$deb" Recommends)
+          echo "$recommends" | grep -q gnome-keyring
+          echo "$recommends" | grep -q xdg-utils
+          description=$(dpkg-deb -f "$deb" Description)
+          echo "$description" | grep -q "Hermes gateway"
+          if echo "$description" | grep -q '(none)'; then
+            echo "Debian description is still (none)" >&2
+            exit 1
+          fi
+          depends=$(dpkg-deb -f "$deb" Depends)
+          echo "$depends" | grep -q libwebkit2gtk-4.1-0
+          echo "$depends" | grep -q libayatana-appindicator3-1
+          echo "$depends" | grep -q libgtk-3-0
+          count=$(printf '%s\n' "$depends" | tr ',' '\n' | grep -c libwebkit2gtk-4.1-0)
+          test "$count" -eq 1
+          tmp=$(mktemp -d)
+          dpkg-deb -x "$deb" "$tmp"
+          desktop=$(find "$tmp" -name '*.desktop' -print)
+          grep -q '^Categories=Utility' "$desktop"
+          grep -q '^Comment=Always-on-top overlay for a Hermes gateway' "$desktop"
+
       - uses: actions/upload-artifact@v4
         with:
           name: linux-deb

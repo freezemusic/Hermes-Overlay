@@ -5,6 +5,7 @@
  */
 
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
+import { SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
 import {
   PREVIEW_COMMANDS,
   completionText,
@@ -260,18 +261,29 @@ function showActionError(message) {
   if (status && settingsOpen()) status.textContent = message;
 }
 
-function setBanner(text, kind = "error", sticky = "") {
+function setBanner(text, kind = "error", sticky = "", action = "") {
   const banner = $("#conn-banner");
   banner.classList.remove("ok", "info");
   banner.dataset.sticky = sticky || "";
+  banner.replaceChildren();
+  delete banner.dataset.hitId;
   if (!text) {
     banner.hidden = true;
-    banner.textContent = "";
     return;
   }
   banner.hidden = false;
-  banner.textContent = text;
   if (kind === "ok" || kind === "info") banner.classList.add(kind);
+  if (action === "settings") {
+    banner.dataset.hitId = "banner";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "banner-action";
+    button.dataset.action = "settings";
+    button.textContent = text;
+    banner.appendChild(button);
+    return;
+  }
+  banner.textContent = text;
 }
 
 function clearConnectionBanner() {
@@ -760,7 +772,7 @@ async function sendClientCommand(id, text, action) {
   }
 }
 
-function useMock(reason) {
+function useMock(reason, bannerAction = "") {
   cancelReconnect();
   state.mode = "mock";
   state.bots = MOCK_BOTS.map((bot) => ({
@@ -774,7 +786,7 @@ function useMock(reason) {
     threadFor(bot.id).loaded = true;
   });
   state.activeId = state.bots[0]?.id || null;
-  setBanner(reason, "info");
+  setBanner(reason, "info", "", bannerAction);
   renderBots();
   renderChat();
 }
@@ -898,6 +910,8 @@ function fillSettings(settings) {
     const platform = `${navigator.platform || ""} ${navigator.userAgent || ""}`;
     altWarning.hidden = !linuxAltWarning(platform);
   }
+  const setupHint = $("#setup-hint");
+  if (setupHint) setupHint.hidden = !setupHintVisible($("#gateway-url").value);
 }
 
 function openSettings() {
@@ -908,9 +922,13 @@ function openSettings() {
   $("#settings").hidden = false;
   syncLatch();
   scheduleHitSync();
-  $("#settings-status").textContent = inTauri()
-    ? "儲存之後先會用新設定。測試連線讀已儲存嘅金鑰。"
-    : "瀏覽器預覽改唔到鑰匙圈。請用 npm run tauri dev。";
+  const firstRun = shouldAutoOpenSettings(state.settings);
+  $("#settings-status").textContent = firstRun
+    ? "填上面嘅 Gateway 位址同 API 金鑰，然後儲存。"
+    : inTauri()
+      ? "儲存之後先會用新設定。測試連線讀已儲存嘅金鑰。"
+      : "瀏覽器預覽改唔到鑰匙圈。請用 npm run tauri dev。";
+  if (setupHintVisible($("#gateway-url").value)) $("#gateway-url").focus();
   if (!inTauri()) return;
   import("@tauri-apps/api/window")
     .then(({ getCurrentWindow }) => getCurrentWindow().setFocus())
@@ -946,7 +964,7 @@ async function saveSettings(event) {
     state.settings = settings;
     $("#settings-status").textContent = "已儲存。";
     $("#dashboard-token").value = "";
-    if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。");
+    if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。", "settings");
     else useHermes(settings);
     closeSettings();
   } catch (err) {
@@ -1280,6 +1298,9 @@ function setupComposer() {
     $("#btn-close")?.click();
   });
   $("#btn-settings").addEventListener("click", openSettings);
+  $("#conn-banner")?.addEventListener("click", (event) => {
+    if (event.target.closest?.("[data-action='settings']")) openSettings();
+  });
   const modifierSelect = $("#interaction-modifier");
   modifierSelect?.addEventListener("pointerdown", () => {
     state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "pointerdown");
@@ -1376,6 +1397,8 @@ function collectHits() {
   push("center", $("#center-panel"), 0);
   push("slash", $("#slash-popup"), 20);
   push("settings", document.querySelector(".settings-card"), 30);
+  const banner = $("#conn-banner");
+  if (banner?.dataset.hitId === "banner") push("banner", banner, 5);
   push("float", $("#float-bubble"), 10);
   document.querySelectorAll(".bot-btn").forEach((el) => {
     if (el.dataset.hitId) push(el.dataset.hitId, el, 0, true);
@@ -1586,7 +1609,11 @@ async function boot() {
   setupProximity();
   applyInteraction(state.interaction);
   if (!inTauri()) {
-    useMock("瀏覽器預覽：離線示範。Gateway 同金鑰只喺桌面版可用。");
+    useMock("瀏覽器預覽：離線示範。Gateway 同金鑰只喺桌面版可用。", "settings");
+    if (new URLSearchParams(location.search).has("setup")) {
+      state.settings = { needs_setup: true, mode: "mock", gateway_base_url: "" };
+      openSettings();
+    }
     return;
   }
   try {
@@ -1599,7 +1626,10 @@ async function boot() {
     const settings = await invoke("get_settings");
     state.settings = settings;
     applyInteraction(settings.interaction);
-    if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。");
+    if (settings.needs_setup) {
+      useMock(SETUP_BANNER, "settings");
+      openSettings();
+    } else if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。", "settings");
     else useHermes(settings);
     if (settings.keyring_error) {
       setBanner(`鑰匙圈：${settings.keyring_error}`, "error", "keyring");

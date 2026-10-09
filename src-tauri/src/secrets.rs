@@ -1,8 +1,33 @@
 //! Profile API keys and the optional dashboard session token live in the OS keychain.
 //! The JSON config never stores them.
 
-const SERVICE: &str = "com.freezemusic.hermes-overlay";
+use std::sync::OnceLock;
+
+const DEFAULT_SERVICE: &str = "com.freezemusic.hermes-overlay";
 const DASHBOARD_ACCOUNT: &str = "dashboard-session-token";
+
+static SERVICE_NAME: OnceLock<String> = OnceLock::new();
+
+/// Keychain service follows the bundle identifier, so a `.dev` build cannot overwrite installed keys.
+pub fn service_for(identifier: &str) -> String {
+    let name = identifier.trim();
+    if name.is_empty() {
+        DEFAULT_SERVICE.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+pub fn set_service(identifier: &str) {
+    let _ = SERVICE_NAME.set(service_for(identifier));
+}
+
+fn service() -> &'static str {
+    SERVICE_NAME
+        .get()
+        .map(String::as_str)
+        .unwrap_or(DEFAULT_SERVICE)
+}
 
 pub enum Lookup {
     Value(String),
@@ -14,7 +39,7 @@ fn account_for_profile(profile: &str) -> String {
 }
 
 fn entry(account: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(SERVICE, account).map_err(|e| format!("鑰匙圈不可用：{e}"))
+    keyring::Entry::new(service(), account).map_err(|e| format!("鑰匙圈不可用：{e}"))
 }
 
 fn classify(err: keyring::Error) -> Result<Lookup, String> {
@@ -94,6 +119,20 @@ fn delete_account(account: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyring_service_follows_the_bundle_identifier() {
+        assert_eq!(service_for(""), super::DEFAULT_SERVICE);
+        assert_eq!(service_for("   "), super::DEFAULT_SERVICE);
+        assert_eq!(
+            service_for("com.freezemusic.hermes-overlay"),
+            "com.freezemusic.hermes-overlay"
+        );
+        assert_eq!(
+            service_for("com.freezemusic.hermes-overlay.dev"),
+            "com.freezemusic.hermes-overlay.dev"
+        );
+    }
 
     #[test]
     fn platform_backend_is_not_the_mock_store() {

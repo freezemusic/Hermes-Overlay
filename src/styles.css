@@ -856,6 +856,26 @@ html.platform-linux {
   color: var(--banner-info-text);
 }
 
+.conn-banner .banner-action {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.setup-hint {
+  color: var(--paper);
+}
+
 .bot-btn.busy::after {
   animation: orb-busy 1.8s ease-in-out infinite;
 }

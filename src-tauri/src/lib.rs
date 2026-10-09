@@ -51,6 +51,19 @@ fn install_unix_signal_exit(app: AppHandle) {
         .ok();
 }
 
+fn tray_icon(app: &AppHandle) -> Result<tauri::image::Image<'static>, String> {
+    match tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png")) {
+        Ok(icon) => Ok(icon),
+        Err(err) => {
+            eprintln!("系統匣圖示：{err}");
+            app.default_window_icon()
+                .cloned()
+                .map(tauri::image::Image::to_owned)
+                .ok_or_else(|| "缺少視窗圖示，系統匣開唔到".to_string())
+        }
+    }
+}
+
 fn install_escape_hatches(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::TrayIconBuilder;
@@ -59,12 +72,10 @@ fn install_escape_hatches(app: &AppHandle) -> Result<(), Box<dyn std::error::Err
     let settings = MenuItem::with_id(app, "settings", SETTINGS_TRAY_LABEL, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "結束", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&settings, &quit])?;
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .ok_or("缺少視窗圖示，系統匣開唔到")?;
+    let icon = tray_icon(app)?;
     TrayIconBuilder::new()
         .icon(icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Hermes Overlay")
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -149,6 +160,7 @@ struct PublicSettings {
     keyring_error: Option<String>,
     interaction: PublicInteraction,
     bots: Vec<PublicBot>,
+    needs_setup: bool,
 }
 
 #[derive(Deserialize)]
@@ -322,7 +334,9 @@ fn emit_status(app: &AppHandle, profile: &str, state_name: &str, detail: &str) {
 
 #[tauri::command]
 fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
-    let cfg = load_config(&app)?;
+    let path = config_path(&app)?;
+    let needs_setup = !path.exists();
+    let cfg = config::load(&path)?;
     let mut keyring_error = match secrets::store_is_mock() {
         Ok(true) => Some(
             "鑰匙圈係記憶體模擬，金鑰唔會保存。呢個版本應該用系統鑰匙圈（Windows Credential Manager、macOS Keychain、Linux Secret Service）。"
@@ -376,6 +390,7 @@ fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
             supported,
         },
         bots,
+        needs_setup,
     })
 }
 
@@ -1129,6 +1144,7 @@ pub fn run() {
             interaction: Arc::new(interaction::InteractionHub::new()),
         })
         .setup(|app| {
+            secrets::set_service(&app.config().identifier);
             if let Ok(cfg) = load_config(app.handle()) {
                 let state = app.state::<AppState>();
                 *state
@@ -1252,5 +1268,20 @@ mod tests {
             ),
             "keyring features must stay split by target_os"
         );
+    }
+
+    #[test]
+    fn dev_identifier_is_separate_and_the_tray_icon_is_a_template() {
+        let dev: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.dev.conf.json")).expect("dev config");
+        let prod: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf");
+        assert_eq!(dev["identifier"], "com.freezemusic.hermes-overlay.dev");
+        assert_eq!(prod["identifier"], "com.freezemusic.hermes-overlay");
+        assert_eq!(prod["bundle"]["category"], "Utility");
+        let src = include_str!("lib.rs");
+        assert!(src.contains("icons/tray.png"));
+        assert!(src.contains("icon_as_template"));
+        assert!(src.contains("set_service"));
     }
 }
