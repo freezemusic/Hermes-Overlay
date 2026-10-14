@@ -97,6 +97,7 @@ Auth is the gateway `Authorization: Bearer <API_SERVER_KEY>`. The plugin calls t
       "enabled": true
     }
   ],
+  "capabilities": {"kanban": false},
   "warning": ""
 }
 ```
@@ -208,6 +209,55 @@ Reply、plugin、client **唔會**開 agent turn：
 ```
 
 Auth 失敗就交給原本嘅 handler。組裝失敗都係交返俾原本 handler。
+
+`capabilities.kanban` 係 `true` 代表呢個 process import 到 `hermes_cli.kanban_db`，下面嘅 proxy 可以用。`false` 時嗰啲 route 回 `404 {"error":"kanban unavailable"}`。
+
+`capabilities.kanban` is `true` when this process can import `hermes_cli.kanban_db`. Otherwise the proxy routes return `404 {"error":"kanban unavailable"}`.
+
+## Kanban proxy
+
+同 `/v1/overlay/commands` 一樣要 `Authorization: Bearer <API_SERVER_KEY>`。`/p/<profile>/...` 同樣適用。實作直接叫 `hermes_cli.kanban_db`（同 `plugins/kanban/dashboard/plugin_api.py`），冇 shell-out。可選 query `board=<slug>`；唔傳就用而家嘅 board。
+
+Same Bearer auth as `/v1/overlay/commands`. `/p/<profile>/...` works too. Handlers call `hermes_cli.kanban_db` (the same module as `plugins/kanban/dashboard/plugin_api.py`). No shell-out. Optional query `board=<slug>`; omit it for the active board.
+
+| method | path | response |
+|---|---|---|
+| GET | `/v1/overlay/kanban/boards` | `{"boards":[{"slug","is_current",…}],"current"}` |
+| GET | `/v1/overlay/kanban/board?board=<slug>&include_archived=0` | `{"board","columns":[{"name","tasks":[{id,title,assignee,status,priority,updated_at,parents,children}]}]}` |
+| GET | `/v1/overlay/kanban/tasks/{id}` | `{"task","comments","events"}`。`events` 最多最近 50 條 |
+| PATCH | `/v1/overlay/kanban/tasks/{id}` | body `{status?, assignee?, priority?, title?}` → `{"task":…}` |
+
+欄位固定有 `triage`、`todo`、`ready`、`running`、`blocked`、`done`。有卡先至附加 `scheduled`、`review`；`include_archived=1` 先至附加 `archived`。`updated_at` 係建立／開始／完成時間同最新 event 入面最大嗰個 unix 秒。`parents`／`children` 係 task id。
+
+PATCH 會驗證 `status`。`running` 唔可以人手設（dispatcher 先至 claim）。`archived` 同刪除唔喺呢個 API。未知 id 係 `404 {"error":"task not found"}`。遷移被 kanban 拒絕係 `409 {"error":"status transition refused"}`。
+
+### 點解 chat agent 改到卡
+
+`kanban_*` tools（`kanban_complete`、`kanban_block`、`kanban_comment`…）**唔會**因為開咗呢個 proxy 就出現。Hermes 只係喺下面其中一個情況註冊佢哋：
+
+1. Dispatcher 起嘅 worker：環境變數 `HERMES_KANBAN_TASK` 有值（而且唔係 delegated child）。
+2. Profile 嘅 `toolsets` 包含 `kanban`。
+3. `platform_toolsets.<platform>` 包含 `kanban`。API server 嘅 platform 名係 `api_server`。explicit list 會取代預設 composite，所以要留低原本嘅 toolset：
+
+```yaml
+platform_toolsets:
+  api_server:
+    - hermes-api-server
+    - kanban
+```
+
+呢個 plugin **唔會**改你嘅 `config.yaml`。改完要重啟 gateway，agent 先睇到新 toolset。
+
+The `kanban_*` tools are not registered just because this proxy is installed. Hermes registers them only for a dispatcher worker (`HERMES_KANBAN_TASK` set, and not a delegated child), or when the profile lists `kanban` in `toolsets`, or in `platform_toolsets.<platform>`. For the API server that platform key is `api_server`. An explicit list replaces the default composite, so keep the existing toolset:
+
+```yaml
+platform_toolsets:
+  api_server:
+    - hermes-api-server
+    - kanban
+```
+
+This plugin does not edit your config. Restart the gateway after changing it.
 
 ## 已知限制
 

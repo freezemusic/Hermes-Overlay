@@ -193,6 +193,7 @@ def test_catalog_shape_and_whitelist():
             assert rows["/stop"]["kind"] == "client"
             assert rows["/stop"]["description"] == "Stop the current reply"
             assert rows["/stop"]["maps_to"] == "overlay stop"
+            assert body["capabilities"] == {"kanban": False}
             assert "/init" not in rows
             for excluded in ("/clear", "/approve", "/compress", "/yolo", "/undo", "/retry", "/quit", "/platform"):
                 assert excluded not in rows
@@ -977,3 +978,346 @@ def test_attach_after_freeze_logs_and_leaves_routes_working(caplog):
 
     _run(inner())
     assert "Cannot modify frozen list" in caplog.text
+
+
+def test_kanban_proxy_unavailable_without_hermes():
+    app, _state = _app()
+
+    async def inner():
+        async with Server(app) as server:
+            assert server.session is not None
+            async with server.session.get(server.base + "/v1/overlay/kanban/board", headers=server.headers()) as resp:
+                assert resp.status == 404
+                assert await resp.json() == {"error": "kanban unavailable"}
+            async with server.session.get(server.base + "/v1/overlay/kanban/board") as resp:
+                assert resp.status == 401
+
+    _run(inner())
+
+
+def test_kanban_proxy_reads_and_patches_temp_db(monkeypatch, tmp_path):
+    import sqlite3
+
+    root = tmp_path / "kanban"
+    schema = """
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS task_links (parent_id TEXT NOT NULL, child_id TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS task_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            author TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        );
+    """
+
+    def _connect(slug: str) -> sqlite3.Connection:
+        path = root / slug / "kanban.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(schema)
+        return conn
+
+    def _seed() -> None:
+        conn = _connect("default")
+        conn.executemany(
+            "INSERT INTO tasks (id, title, body, assignee, status, priority, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("p1", "parent", "body-p", None, "todo", 1, 100),
+                ("c1", "child", "body-c", "ada", "todo", 0, 110),
+                ("run1", "running card", None, None, "running", 2, 120),
+                ("arch1", "old", None, None, "archived", 0, 130),
+                ("sched1", "later", None, None, "scheduled", 0, 140),
+                ("ready1", "ship", None, None, "ready", 3, 150),
+            ],
+        )
+        conn.execute("INSERT INTO task_links (parent_id, child_id) VALUES ('p1', 'c1')")
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) VALUES ('c1', 'ada', 'note', 500)"
+        )
+        conn.executemany(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES ('c1', 'tick', NULL, ?)",
+            [(1000 + i,) for i in range(1, 61)],
+        )
+        conn.commit()
+        conn.close()
+        other = _connect("ops")
+        other.execute(
+            "INSERT INTO tasks (id, title, body, assignee, status, priority, created_at) VALUES ('o1', 'ops card', NULL, NULL, 'todo', 0, 10)"
+        )
+        other.commit()
+        other.close()
+
+    _seed()
+
+    class Task:
+        def __init__(self, row: sqlite3.Row) -> None:
+            self.id = row["id"]
+            self.title = row["title"]
+            self.body = row["body"]
+            self.assignee = row["assignee"]
+            self.status = row["status"]
+            self.priority = row["priority"]
+            self.created_at = row["created_at"]
+            self.started_at = row["started_at"]
+            self.completed_at = row["completed_at"]
+
+    class Note:
+        def __init__(self, row: sqlite3.Row) -> None:
+            self.id = row["id"]
+            self.task_id = row["task_id"]
+            self.author = row["author"]
+            self.body = row["body"]
+            self.created_at = row["created_at"]
+
+    class Event:
+        def __init__(self, row: sqlite3.Row) -> None:
+            self.id = row["id"]
+            self.task_id = row["task_id"]
+            self.kind = row["kind"]
+            self.payload = None
+            self.created_at = row["created_at"]
+            self.run_id = None
+
+    def connect(board: str | None = None) -> sqlite3.Connection:
+        return _connect(board or "default")
+
+    def init_db(board: str | None = None) -> None:
+        conn = connect(board)
+        conn.close()
+
+    def get_current_board() -> str:
+        return "default"
+
+    def list_boards(*, include_archived: bool = False) -> list[dict]:
+        return [{"slug": "default", "name": "Default"}, {"slug": "ops", "name": "Ops"}]
+
+    def _tasks(conn: sqlite3.Connection, *, include_archived: bool) -> list[Task]:
+        query = "SELECT * FROM tasks"
+        if not include_archived:
+            query += " WHERE status != 'archived'"
+        query += " ORDER BY priority DESC, created_at ASC"
+        return [Task(row) for row in conn.execute(query)]
+
+    def list_tasks(conn: sqlite3.Connection, *, include_archived: bool = False, **_kwargs: Any) -> list[Task]:
+        return _tasks(conn, include_archived=include_archived)
+
+    def get_task(conn: sqlite3.Connection, task_id: str) -> Task | None:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return Task(row) if row else None
+
+    def parent_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+        return [row["parent_id"] for row in conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id", (task_id,),
+        )]
+
+    def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+        return [row["child_id"] for row in conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id", (task_id,),
+        )]
+
+    def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Note]:
+        return [Note(row) for row in conn.execute(
+            "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC", (task_id,),
+        )]
+
+    def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
+        return [Event(row) for row in conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at ASC, id ASC", (task_id,),
+        )]
+
+    def assign_task(conn: sqlite3.Connection, task_id: str, profile: str | None) -> bool:
+        cur = conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
+        conn.commit()
+        return cur.rowcount == 1
+
+    def edit_task(conn: sqlite3.Connection, task_id: str, *, title: str | None = None,
+                  priority: int | None = None, board: str | None = None) -> bool:
+        sets, vals = [], []
+        if title is not None:
+            sets.append("title = ?")
+            vals.append(title)
+        if priority is not None:
+            sets.append("priority = ?")
+            vals.append(priority)
+        if not sets:
+            return False
+        cur = conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", (*vals, task_id))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'edited', NULL, 2000)",
+            (task_id,),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+    def complete_task(conn: sqlite3.Connection, task_id: str, *, force: bool = False) -> bool:
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'done', completed_at = 1800 WHERE id = ?", (task_id,),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+    def block_task(conn: sqlite3.Connection, task_id: str) -> bool:
+        cur = conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (task_id,))
+        conn.commit()
+        return cur.rowcount == 1
+
+    def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+        cur = conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (task_id,))
+        conn.commit()
+        return cur.rowcount == 1
+
+    symbols = {
+        "connect": connect,
+        "init_db": init_db,
+        "get_current_board": get_current_board,
+        "list_boards": list_boards,
+        "list_tasks": list_tasks,
+        "get_task": get_task,
+        "parent_ids": parent_ids,
+        "child_ids": child_ids,
+        "list_comments": list_comments,
+        "list_events": list_events,
+        "assign_task": assign_task,
+        "edit_task": edit_task,
+        "complete_task": complete_task,
+        "block_task": block_task,
+        "unblock_task": unblock_task,
+    }
+
+    def load_symbol(module: str, name: str):
+        if module == "hermes_cli.kanban_db":
+            return symbols.get(name)
+        return None
+
+    monkeypatch.setattr(commands, "load_symbol", load_symbol)
+    app, _state = _app()
+
+    async def inner():
+        async with Server(app) as server:
+            assert server.session is not None
+            _status, _headers, catalog = await _catalog(server)
+            assert catalog["capabilities"] == {"kanban": True}
+            async with server.session.get(
+                server.base + "/v1/overlay/kanban/board?include_archived=0",
+                headers=server.headers(),
+            ) as resp:
+                assert resp.status == 200
+                board = await resp.json()
+            assert board["board"] == "default"
+            names = [column["name"] for column in board["columns"]]
+            assert names[:6] == ["triage", "todo", "ready", "running", "blocked", "done"]
+            assert "scheduled" in names
+            assert "archived" not in names
+            by_col = {column["name"]: column["tasks"] for column in board["columns"]}
+            assert [task["id"] for task in by_col["todo"]] == ["p1", "c1"]
+            assert by_col["running"][0]["id"] == "run1"
+            assert by_col["ready"][0]["id"] == "ready1"
+            assert by_col["scheduled"][0]["id"] == "sched1"
+            child = next(task for task in by_col["todo"] if task["id"] == "c1")
+            parent = next(task for task in by_col["todo"] if task["id"] == "p1")
+            assert child["parents"] == ["p1"]
+            assert parent["children"] == ["c1"]
+            assert child["updated_at"] == 1060
+            assert child["assignee"] == "ada"
+            async with server.session.get(
+                server.base + "/v1/overlay/kanban/board?include_archived=1",
+                headers=server.headers(),
+            ) as resp:
+                archived = await resp.json()
+            archived_ids = [
+                task["id"]
+                for column in archived["columns"] if column["name"] == "archived"
+                for task in column["tasks"]
+            ]
+            assert archived_ids == ["arch1"]
+            async with server.session.get(
+                server.base + "/p/lab/v1/overlay/kanban/tasks/c1",
+                headers=server.headers(),
+            ) as resp:
+                assert resp.status == 200
+                detail = await resp.json()
+            assert detail["task"]["body"] == "body-c"
+            assert detail["comments"][0]["body"] == "note"
+            assert len(detail["events"]) == 50
+            assert detail["events"][0]["created_at"] == 1011
+            assert detail["events"][-1]["created_at"] == 1060
+            async with server.session.patch(
+                server.base + "/v1/overlay/kanban/tasks/ready1",
+                headers=server.headers(),
+                json={"status": "done", "assignee": "ada", "priority": 7, "title": "shipped"},
+            ) as resp:
+                assert resp.status == 200
+                patched = await resp.json()
+            assert patched["task"]["status"] == "done"
+            assert patched["task"]["assignee"] == "ada"
+            assert patched["task"]["priority"] == 7
+            assert patched["task"]["title"] == "shipped"
+            assert patched["task"]["updated_at"] == 2000
+            async with server.session.patch(
+                server.base + "/v1/overlay/kanban/tasks/c1",
+                headers=server.headers(),
+                json={"status": "ready"},
+            ) as resp:
+                assert resp.status == 409
+                assert (await resp.json())["error"] == "status transition refused"
+            async with server.session.patch(
+                server.base + "/v1/overlay/kanban/tasks/missing",
+                headers=server.headers(),
+                json={"title": "nope"},
+            ) as resp:
+                assert resp.status == 404
+                assert (await resp.json())["error"] == "task not found"
+            for bad in ("running", "archived", "nope"):
+                async with server.session.patch(
+                    server.base + "/v1/overlay/kanban/tasks/c1",
+                    headers=server.headers(),
+                    json={"status": bad},
+                ) as resp:
+                    assert resp.status == 400
+            async with server.session.patch(
+                server.base + "/v1/overlay/kanban/tasks/c1",
+                headers=server.headers(),
+                data=b"not-json",
+            ) as resp:
+                assert resp.status == 400
+                assert (await resp.json())["error"] == "invalid json"
+            async with server.session.get(
+                server.base + "/v1/overlay/kanban/board?board=ops",
+                headers=server.headers(),
+            ) as resp:
+                ops = await resp.json()
+            assert ops["board"] == "ops"
+            assert [task["id"] for column in ops["columns"] for task in column["tasks"]] == ["o1"]
+            async with server.session.get(
+                server.base + "/v1/overlay/kanban/boards",
+                headers=server.headers(),
+            ) as resp:
+                boards = await resp.json()
+            assert boards["current"] == "default"
+            assert [row["slug"] for row in boards["boards"]] == ["default", "ops"]
+            assert boards["boards"][0]["is_current"] is True
+
+    _run(inner())
+    saved = sqlite3.connect(root / "default" / "kanban.db")
+    row = saved.execute("SELECT title, assignee, status, priority FROM tasks WHERE id = 'ready1'").fetchone()
+    saved.close()
+    assert tuple(row) == ("shipped", "ada", "done", 7)

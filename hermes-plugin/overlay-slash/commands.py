@@ -695,6 +695,18 @@ def plugin_rows(claimed: set[str]) -> tuple[list[dict[str, Any]], str]:
     return rows, ""
 
 
+def _kanban_enabled() -> bool:
+    try:
+        try:
+            from . import kanban
+        except ImportError:
+            import kanban
+        return bool(kanban.available())
+    except Exception as exc:
+        warn_once("kanban-cap", f"overlay-slash: kanban capability check failed ({exc})")
+        return False
+
+
 def build_catalog(profile: str, home: str | None, settings: Settings) -> dict[str, Any]:
     def _build() -> dict[str, Any]:
         warnings: list[str] = []
@@ -718,6 +730,7 @@ def build_catalog(profile: str, home: str | None, settings: Settings) -> dict[st
             "object": "list",
             "profile": profile or "default",
             "version": CATALOG_VERSION,
+            "capabilities": {"kanban": _kanban_enabled()},
             "data": prompts + replies + clients + skills + bundles + plugins,
             "warning": "; ".join(w for w in warnings if w),
         }

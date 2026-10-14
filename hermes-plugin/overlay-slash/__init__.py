@@ -20,10 +20,11 @@ from typing import Any
 from aiohttp import web
 
 try:
-    from . import commands
+    from . import commands, kanban
     from .commands import ExpandError, Settings
 except ImportError:  # loaded as a top-level module (plugin dir on sys.path)
     import commands
+    import kanban
     from commands import ExpandError, Settings
 
 logger = logging.getLogger("overlay_slash")
@@ -272,6 +273,36 @@ async def _rewrite_chat(request: web.Request, handler, settings: Settings, path:
     return await handler(request)
 
 
+async def _handle_kanban(request: web.Request, matched: tuple[str, str]) -> web.Response:
+    kind, task_id = matched
+    board = request.query.get("board") or None
+    include_archived = kanban._flag(request.query.get("include_archived"))
+    home = commands.current_home()
+    try:
+        if kind == "board":
+            payload = await asyncio.to_thread(
+                commands.call_in_home, home, kanban.board_payload, board, include_archived,
+            )
+        elif kind == "boards":
+            payload = await asyncio.to_thread(
+                commands.call_in_home, home, kanban.boards_payload, include_archived,
+            )
+        elif kind == "task":
+            payload = await asyncio.to_thread(
+                commands.call_in_home, home, kanban.task_payload, board, task_id,
+            )
+        else:
+            body = await _read_json(request)
+            if body is None:
+                return _json({"error": "invalid json"}, status=400)
+            payload = await asyncio.to_thread(
+                commands.call_in_home, home, kanban.patch_payload, board, task_id, body,
+            )
+    except kanban.KanbanHTTP as err:
+        return _json({"error": err.message}, status=err.status)
+    return _json(payload)
+
+
 def make_middleware(adapter: Any, settings: Settings):
     @web.middleware
     async def overlay_mw(request: web.Request, handler):
@@ -280,9 +311,11 @@ def make_middleware(adapter: Any, settings: Settings):
         try:
             path = commands.strip_profile(getattr(request, "path", "") or "")
             method = getattr(request, "method", "GET").upper()
+            kanban_match = kanban.match(method, path)
             handled = (
                 (method == "GET" and path in _OVERLAY_GET)
                 or (method == "POST" and path in _OVERLAY_POST)
+                or kanban_match is not None
                 or (method == "GET" and path == "/v1/skills" and settings.fix_v1_skills)
                 or (method == "POST" and settings.rewrite_chat and _is_chat(path))
             )
@@ -297,7 +330,7 @@ def make_middleware(adapter: Any, settings: Settings):
         if not handled:
             return await handler(request)
         if state != "ok":
-            if path in _OVERLAY_GET or path in _OVERLAY_POST:
+            if path in _OVERLAY_GET or path in _OVERLAY_POST or kanban_match is not None:
                 if auth_response is not None:
                     return auth_response
                 return _json(
@@ -311,6 +344,8 @@ def make_middleware(adapter: Any, settings: Settings):
                 return await _handle_commands(request, settings)
             if method == "POST" and path in _OVERLAY_POST:
                 return await _handle_expand(request, settings)
+            if kanban_match is not None:
+                return await _handle_kanban(request, kanban_match)
             if method == "GET" and path == "/v1/skills":
                 try:
                     return await _handle_skills(request)
@@ -319,7 +354,7 @@ def make_middleware(adapter: Any, settings: Settings):
                     return await handler(request)
             return await _rewrite_chat(request, handler, settings, path)
         except Exception as exc:
-            if path in _OVERLAY_GET or path in _OVERLAY_POST:
+            if path in _OVERLAY_GET or path in _OVERLAY_POST or kanban.match(method, path) is not None:
                 commands.warn_once("endpoint", f"overlay-slash: endpoint failed ({exc})")
                 return _json(
                     {"error": {"message": "overlay-slash failed", "type": "server_error",
