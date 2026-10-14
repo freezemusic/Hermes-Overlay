@@ -319,12 +319,17 @@ html, body {
   border-radius: 2px;
   transform: rotate(45deg) scale(0.62);
   background: #fff;
-  border: 1.5px solid var(--bot);
-  box-shadow: 0 0 0 2px #fff, 0 0 10px rgb(var(--bot-rgb) / .55);
+  border: 3px solid #0e0e24;
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 5px rgb(0 0 0 / .72);
 }
 
 .orb--kanban.active .orb-core {
-  box-shadow: 0 0 0 2px #fff, 0 0 0 3px var(--bot-40), var(--glow-md);
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 5px rgb(0 0 0 / .72),
+    var(--glow-md);
 }
 
 .orb--kanban.orb-enter .orb-core { animation: none; }
@@ -357,6 +362,13 @@ html, body {
 .is-thinking .spinner {
   display: block;
   animation: spin 900ms linear infinite;
+}
+
+/* Watchdog: the run is still busy, but the ring must not spin forever. */
+.bot-btn.is-waiting .spinner {
+  display: block;
+  animation: none;
+  opacity: 0.85;
 }
 
 .bot-btn.is-thinking::before { opacity: 1; }
@@ -1172,7 +1184,7 @@ html.overlay-passthrough .overlay-root * { pointer-events: none !important; }
 html.overlay-passthrough .overlay-root [data-hit-capture],
 html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: auto !important; }
 
-@keyframes panel-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
+@keyframes panel-in { from { transform: translateY(8px) scale(0.98); } }
 @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes ping { from { transform: scale(1); opacity: 0.6; } to { transform: scale(2.2); opacity: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }

@@ -6,6 +6,7 @@ import {
   emptyActivity,
   pushToast,
   reduceActivity,
+  orbMotion,
   statusAfterWatchdog,
   toastAnchor,
   toastSide,
@@ -61,6 +62,12 @@ test("thinking follows send, tools, tokens, and terminal events", () => {
   assert.equal(reasoning.unread, false);
   assert.equal(statusAfterWatchdog("思考中…"), "等候中");
   assert.equal(statusAfterWatchdog("閒置"), "閒置");
+
+  assert.equal(orbMotion(reduceActivity(emptyActivity(), { type: "send" }, 0).state, "busy"), "spin");
+  assert.equal(orbMotion(reduceActivity(emptyActivity(), { type: "delta" }, 0).state, "busy"), "spin");
+  assert.equal(orbMotion(reduceActivity({ thinking: true, streaming: false, deadline: 1 }, { type: "watchdog" }, 90_000).state, "busy"), "wait");
+  assert.equal(orbMotion(emptyActivity(), "idle"), "idle");
+  assert.equal(orbMotion(emptyActivity(), "error"), "idle");
 });
 
 test("toasts stack to three and sit away from the screen edge", () => {

@@ -4,7 +4,7 @@
  * Gateway keys stay in the Rust process; this file only sees has_key.
  */
 
-import { reduceActivity, statusAfterWatchdog, toastAnchor, TOAST_MS } from "./activity.js";
+import { orbMotion, reduceActivity, statusAfterWatchdog, toastAnchor, TOAST_MS } from "./activity.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_BOARD,
@@ -350,7 +350,9 @@ function renderBots() {
     const keepEnter = btn.classList.contains("orb-enter") && bot.id === state.activeId;
     const classes = ["bot-btn"];
     if (bot.id === state.activeId && !state.kanbanOpen) classes.push("active");
-    if (orbIsThinking(thread)) classes.push("is-thinking");
+    const motion = orbMotion(thread.activity, thread.statusState);
+    if (motion === "spin") classes.push("is-thinking");
+    if (motion === "wait") classes.push("is-waiting");
     if (thread.unread) classes.push("has-unread");
     if (thread.statusState === "error") classes.push("error");
     if (bot.id === pulseId || keepEnter) classes.push("orb-enter");
@@ -1690,8 +1692,10 @@ function cssEscape(value) {
   return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
 
-function orbIsThinking(thread) {
-  return !!(thread?.activity?.thinking || thread?.statusState === "busy");
+function applyOrbMotion(btn, thread) {
+  const motion = orbMotion(thread?.activity, thread?.statusState);
+  btn?.classList.toggle("is-thinking", motion === "spin");
+  btn?.classList.toggle("is-waiting", motion === "wait");
 }
 
 function syncActivityChrome() {
@@ -1703,7 +1707,7 @@ function syncActivityChrome() {
 function paintActivity(id) {
   const thread = threadFor(id);
   const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
-  btn?.classList.toggle("is-thinking", orbIsThinking(thread));
+  applyOrbMotion(btn, thread);
   btn?.classList.toggle("has-unread", !!thread.unread);
   if (id === state.activeId) syncActivityChrome();
 }
@@ -2048,12 +2052,25 @@ function moveKanbanPointer(event) {
   col?.classList.add("is-drop-target");
 }
 
+function resyncKanbanHover(point) {
+  if (point) {
+    cursorPoint.x = point.x;
+    cursorPoint.y = point.y;
+  }
+  // The board is rebuilt after the pointer grab lets go. Publish rects again
+  // and, in the browser preview, paint fade from this pointer immediately.
+  scheduleHitSync();
+  if (!inTauri()) paintLocalProximity();
+}
+
 function endKanbanPointer(event) {
   const drag = kanbanDrag;
   if (!drag || event.pointerId !== drag.pointerId) return;
   const drop = event.type !== "pointercancel" && drag.moved;
   const col = drop ? columnAt(event.clientX, event.clientY) : null;
   const status = col?.dataset.status || "";
+  const taskId = drag.id;
+  const point = { x: event.clientX, y: event.clientY };
   kanbanDrag = null;
   state.kanban.dragging = false;
   drag.card.classList.remove("is-dragging");
@@ -2064,7 +2081,16 @@ function endKanbanPointer(event) {
   } catch {
     /* capture already released */
   }
-  if (status) dropKanban(drag.id, status);
+  // Replacing the capture target inside pointerup leaves the GTK grab held,
+  // so the board stays at the near-cursor fade until the next Ctrl hover.
+  if (status) {
+    requestAnimationFrame(() => {
+      dropKanban(taskId, status);
+      resyncKanbanHover(point);
+    });
+  } else {
+    resyncKanbanHover(point);
+  }
 }
 
 async function dropKanban(taskId, status) {
@@ -2089,6 +2115,7 @@ async function dropKanban(taskId, status) {
     setKanbanError(kanbanErrorText(err));
   } finally {
     state.kanban.saving = false;
+    resyncKanbanHover();
   }
 }
 

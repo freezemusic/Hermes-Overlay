@@ -597,7 +597,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .clone();
-            let cursor = cursor_in_view(&window);
+            let cursor = cursor_in_view(&window, &device);
             let frames = interaction_frame(held, &latched_ids, cursor, &rects, HIT_MARGIN_PX, &cfg);
             let ignore = !frames.iter().any(|item| item.capture);
             if ignoring != Some(ignore) {
@@ -661,16 +661,43 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
     });
 }
 
-fn cursor_in_view(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
-    let cursor = window.cursor_position().ok()?;
+/// Screen pixels to CSS pixels inside the window.
+pub fn css_point_from_screen(
+    x: f64,
+    y: f64,
+    origin_x: f64,
+    origin_y: f64,
+    scale: f64,
+) -> (f64, f64) {
+    ((x - origin_x) / scale, (y - origin_y) / scale)
+}
+
+fn cursor_in_view(window: &tauri::WebviewWindow, device: &DeviceState) -> Option<(f64, f64)> {
     let origin = window.inner_position().ok()?;
     let scale = window.scale_factor().ok()?;
     if scale <= 0.0 {
         return None;
     }
-    Some((
-        (cursor.x - f64::from(origin.x)) / scale,
-        (cursor.y - f64::from(origin.y)) / scale,
+    // GTK's seat position stays on the last grabbed point after a pointer-capture
+    // drag, so a rejected kanban drop leaves the board faded until the next
+    // modifier hover. XQueryPointer on our own display follows the pointer.
+    #[cfg(target_os = "linux")]
+    let (x, y) = {
+        let mouse = device.get_mouse();
+        (f64::from(mouse.coords.0), f64::from(mouse.coords.1))
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (x, y) = {
+        let _ = device;
+        let cursor = window.cursor_position().ok()?;
+        (cursor.x, cursor.y)
+    };
+    Some(css_point_from_screen(
+        x,
+        y,
+        f64::from(origin.x),
+        f64::from(origin.y),
+        scale,
     ))
 }
 
@@ -1105,6 +1132,18 @@ mod tests {
 
     fn frame_of<'a>(frames: &'a [ElementFrame], id: &str) -> &'a ElementFrame {
         frames.iter().find(|item| item.id == id).unwrap()
+    }
+
+    #[test]
+    fn screen_pointer_maps_into_css_pixels() {
+        assert_eq!(
+            css_point_from_screen(10.0, 20.0, 0.0, 0.0, 1.0),
+            (10.0, 20.0)
+        );
+        assert_eq!(
+            css_point_from_screen(300.0, 250.0, 100.0, 50.0, 2.0),
+            (100.0, 100.0)
+        );
     }
 
     #[test]

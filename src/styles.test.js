@@ -64,8 +64,10 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.toast \{[^}]*max-width:\s*280px/s);
   assert.match(css, /\.kanban-panel \{[^}]*width:\s*min\(960px, 80vw\)/s);
   assert.match(css, /\.orb--kanban \.orb-core \{[^}]*rotate\(45deg\)/s);
-  assert.match(css, /\.orb--kanban \.orb-core \{[^}]*border:\s*1\.5px solid var\(--bot\)/s);
+  assert.match(css, /\.orb--kanban \.orb-core \{[^}]*border:\s*3px solid #0e0e24/s);
   assert.match(css, /\.orb--kanban \.orb-core \{[^}]*background:\s*#fff/s);
+  assert.match(css, /\.orb--kanban \.orb-core \{[^}]*0 0 0 5px rgb\(0 0 0 \/ \.72\)/s);
+  assert.match(css, /\.bot-btn\.is-waiting \.spinner \{[^}]*animation:\s*none/s);
   assert.match(css, /\.kanban-col-head:lang\(en\)/);
   assert.match(css, /\.bot-btn \.spinner \{[^}]*border-top-color:\s*var\(--bot\)/s);
   assert.match(css, /\.is-thinking \.spinner \{[^}]*animation:\s*spin 900ms linear infinite/s);

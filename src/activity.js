@@ -14,6 +14,8 @@ export function emptyActivity() {
  * Names starting with "_" (and "reasoning") stay internal: spinner only.
  * assistant delta -> streaming (spinner off).
  * completed / failed / cancelled / watchdog clear both.
+ * The orb spins only while thinking or streaming, so the watchdog
+ * stops that ring. A run that is still busy then waits without motion.
  * Any live event resets the 90s deadline.
  */
 export function isInternalProgress(event) {
@@ -29,6 +31,16 @@ export function statusAfterWatchdog(current) {
   const text = String(current || "");
   if (text.includes("思考中")) return "等候中";
   return text;
+}
+
+/**
+ * Orb ring: spin while a run is producing events, static wait after the
+ * watchdog, idle otherwise. Waiting must not start an infinite animation.
+ */
+export function orbMotion(activity, statusState = "idle") {
+  if (activity?.thinking || activity?.streaming) return "spin";
+  if (statusState === "busy") return "wait";
+  return "idle";
 }
 
 export function reduceActivity(state, event, now = 0) {
