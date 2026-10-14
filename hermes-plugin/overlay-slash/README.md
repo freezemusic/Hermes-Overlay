@@ -225,11 +225,15 @@ Same Bearer auth as `/v1/overlay/commands`. `/p/<profile>/...` works too. Handle
 | GET | `/v1/overlay/kanban/boards` | `{"boards":[{"slug","is_current",…}],"current"}` |
 | GET | `/v1/overlay/kanban/board?board=<slug>&include_archived=0` | `{"board","columns":[{"name","tasks":[{id,title,assignee,status,priority,updated_at,parents,children}]}]}` |
 | GET | `/v1/overlay/kanban/tasks/{id}` | `{"task","comments","events"}`。`events` 最多最近 50 條 |
-| PATCH | `/v1/overlay/kanban/tasks/{id}` | body `{status?, assignee?, priority?, title?}` → `{"task":…}` |
+| PATCH | `/v1/overlay/kanban/tasks/{id}` | body `{status?, assignee?, priority?, title?, result?}` → `{"task":…}` |
 
 欄位固定有 `triage`、`todo`、`ready`、`running`、`blocked`、`done`。有卡先至附加 `scheduled`、`review`；`include_archived=1` 先至附加 `archived`。`updated_at` 係建立／開始／完成時間同最新 event 入面最大嗰個 unix 秒。`parents`／`children` 係 task id。
 
-PATCH 會驗證 `status`。`running` 唔可以人手設（dispatcher 先至 claim）。`archived` 同刪除唔喺呢個 API。未知 id 係 `404 {"error":"task not found"}`。遷移被 kanban 拒絕係 `409 {"error":"status transition refused"}`。
+PATCH 會驗證 `status`。`running` 唔可以人手設（dispatcher 先至 claim）。`archived` 同刪除唔喺呢個 API。未知 id 係 `404 {"error":"task not found"}`。遷移被拒（回傳 false）係 `409`。Hermes 拋錯（例如完成卡冇證據）係 `422`，body 係 `{"error":"<reason>"}`，唔會變 500。`status:"done"` 會叫 `complete_task`，並傳 `result`（body 冇就用 `Moved to done from overlay`）同同樣嘅 `summary`。
+
+`connect` 喺 Hermes v0.21.6 係 `hermes_cli.kanban_db_connect.connect`，`kanban_db` 冇 re-export。Proxy 兩個模組都會搵 `connect`／`init_db`／`write_txn`。
+
+A refused transition that returns false is `409`. A Hermes exception (for example completion with no evidence) is `422 {"error":"<reason>"}`, not 500. `status:"done"` calls `complete_task` with `result` (default `Moved to done from overlay`) and the same `summary`. On v0.21.6 `connect` lives in `hermes_cli.kanban_db_connect` and is not re-exported from `kanban_db`; the proxy checks both modules.
 
 ### 點解 chat agent 改到卡
 

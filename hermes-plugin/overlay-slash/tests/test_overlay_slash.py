@@ -1009,7 +1009,8 @@ def test_kanban_proxy_reads_and_patches_temp_db(monkeypatch, tmp_path):
             priority INTEGER NOT NULL,
             created_at INTEGER NOT NULL,
             started_at INTEGER,
-            completed_at INTEGER
+            completed_at INTEGER,
+            result TEXT
         );
         CREATE TABLE IF NOT EXISTS task_links (parent_id TEXT NOT NULL, child_id TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS task_comments (
@@ -1168,9 +1169,13 @@ def test_kanban_proxy_reads_and_patches_temp_db(monkeypatch, tmp_path):
         conn.commit()
         return cur.rowcount == 1
 
-    def complete_task(conn: sqlite3.Connection, task_id: str, *, force: bool = False) -> bool:
+    def complete_task(conn: sqlite3.Connection, task_id: str, *, result: str | None = None,
+                      summary: str | None = None, force: bool = False) -> bool:
+        if not str(result or "").strip() and not str(summary or "").strip():
+            raise ValueError(f"completion blocked: {task_id} has no result or summary evidence")
         cur = conn.execute(
-            "UPDATE tasks SET status = 'done', completed_at = 1800 WHERE id = ?", (task_id,),
+            "UPDATE tasks SET status = 'done', completed_at = 1800, result = ? WHERE id = ?",
+            (result or summary, task_id),
         )
         conn.commit()
         return cur.rowcount == 1
@@ -1318,6 +1323,153 @@ def test_kanban_proxy_reads_and_patches_temp_db(monkeypatch, tmp_path):
 
     _run(inner())
     saved = sqlite3.connect(root / "default" / "kanban.db")
-    row = saved.execute("SELECT title, assignee, status, priority FROM tasks WHERE id = 'ready1'").fetchone()
+    row = saved.execute("SELECT title, assignee, status, priority, result FROM tasks WHERE id = 'ready1'").fetchone()
     saved.close()
-    assert tuple(row) == ("shipped", "ada", "done", 7)
+    assert tuple(row) == ("shipped", "ada", "done", 7, "Moved to done from overlay")
+
+
+def test_kanban_connect_follows_v0216_module_split(tmp_path, caplog):
+    """``connect`` is resolved through importlib, matching Hermes v0.21.6.
+
+    ``hermes_cli.kanban_db`` does not define ``connect``. The function lives in
+    ``hermes_cli.kanban_db_connect``. This does not stub ``load_symbol``.
+    """
+    import ast
+    import sys
+    from pathlib import Path
+
+    import overlay_slash.kanban as kanban
+
+    real = Path("/tmp/hermes-src/hermes_cli")
+    db_file = real / "kanban_db.py"
+    connect_file = real / "kanban_db_connect.py"
+    if db_file.is_file() and connect_file.is_file():
+        exported: set[str] = set()
+        tree = ast.parse(db_file.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "connect":
+                exported.add("connect")
+            if isinstance(node, ast.ImportFrom) and node.module == "hermes_cli.kanban_db_connect":
+                exported.update(alias.name for alias in node.names)
+        assert "def connect(" in connect_file.read_text(encoding="utf-8")
+        assert "connect" not in exported
+
+    pkg = tmp_path / "layout"
+    cli = pkg / "hermes_cli"
+    cli.mkdir(parents=True)
+    db_path = tmp_path / "kanban.db"
+    (cli / "__init__.py").write_text("", encoding="utf-8")
+    (cli / "kanban_db_connect.py").write_text(
+        "import sqlite3\n"
+        "from pathlib import Path\n"
+        f"DB = Path({str(db_path)!r})\n"
+        "def connect(board=None):\n"
+        "    conn = sqlite3.connect(DB)\n"
+        "    conn.row_factory = sqlite3.Row\n"
+        "    return conn\n",
+        encoding="utf-8",
+    )
+    (cli / "kanban_db.py").write_text(
+        "class Task:\n"
+        "    def __init__(self, row):\n"
+        "        self.id = row['id']\n"
+        "        self.title = row['title']\n"
+        "        self.assignee = row['assignee']\n"
+        "        self.status = row['status']\n"
+        "        self.priority = row['priority']\n"
+        "        self.created_at = row['created_at']\n"
+        "        self.started_at = row['started_at']\n"
+        "        self.completed_at = row['completed_at']\n"
+        "        self.body = row['body']\n"
+        "        self.result = row['result']\n"
+        "def list_tasks(conn, *, include_archived=False):\n"
+        "    return [Task(row) for row in conn.execute('SELECT * FROM tasks ORDER BY id')]\n"
+        "def get_task(conn, task_id):\n"
+        "    row = conn.execute('SELECT * FROM tasks WHERE id = ?', (task_id,)).fetchone()\n"
+        "    return Task(row) if row else None\n"
+        "def complete_task(conn, task_id, *, result=None, summary=None, force=False):\n"
+        "    if not str(result or '').strip() and not str(summary or '').strip():\n"
+        "        raise ValueError(f'completion blocked: {task_id} has no result or summary evidence')\n"
+        "    cur = conn.execute(\"UPDATE tasks SET status = 'done', result = ? WHERE id = ?\", (result, task_id))\n"
+        "    conn.commit()\n"
+        "    return cur.rowcount == 1\n",
+        encoding="utf-8",
+    )
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, assignee TEXT, status TEXT, "
+        "priority INTEGER, created_at INTEGER, started_at INTEGER, completed_at INTEGER, body TEXT, result TEXT);"
+        "CREATE TABLE task_links (parent_id TEXT, child_id TEXT);"
+        "CREATE TABLE task_events (task_id TEXT, created_at INTEGER);"
+        "INSERT INTO tasks (id, title, status, priority, created_at) VALUES "
+        "('ready1', 'Ship', 'ready', 1, 10), ('ready2', 'Other', 'ready', 1, 11);"
+    )
+    conn.commit()
+    conn.close()
+
+    sys.path.insert(0, str(pkg))
+    saved = {name: sys.modules.pop(name) for name in list(sys.modules) if name == "hermes_cli" or name.startswith("hermes_cli.")}
+    commands.reset_warnings()
+    try:
+        assert commands.load_symbol("hermes_cli.kanban_db", "connect", quiet=True) is None
+        connect = commands.load_symbol("hermes_cli.kanban_db_connect", "connect")
+        assert connect is not None and connect.__module__ == "hermes_cli.kanban_db_connect"
+        assert kanban._symbol("connect") is connect
+        assert kanban._symbol("list_tasks").__module__ == "hermes_cli.kanban_db"
+        assert kanban.available() is True
+        assert "kanban_db.connect is missing" not in caplog.text
+        app, _state = _app()
+
+        async def inner():
+            async with Server(app) as server:
+                assert server.session is not None
+                async with server.session.get(
+                    server.base + "/v1/overlay/kanban/board", headers=server.headers(),
+                ) as resp:
+                    assert resp.status == 200
+                    body = await resp.json()
+                ids = [task["id"] for column in body["columns"] for task in column["tasks"]]
+                assert ids == ["ready1", "ready2"]
+                async with server.session.patch(
+                    server.base + "/v1/overlay/kanban/tasks/ready1",
+                    headers=server.headers(),
+                    json={"status": "done"},
+                ) as resp:
+                    assert resp.status == 200
+                    patched = await resp.json()
+                assert patched["task"]["status"] == "done"
+                async with server.session.patch(
+                    server.base + "/v1/overlay/kanban/tasks/ready2",
+                    headers=server.headers(),
+                    json={"status": "done", "result": "custom evidence"},
+                ) as resp:
+                    assert resp.status == 200
+                import hermes_cli.kanban_db as kb
+
+                def refuse(conn, task_id, *, result=None, summary=None, force=False):
+                    raise ValueError(f"completion blocked: {task_id} has no result or summary evidence")
+
+                kb.complete_task = refuse
+                async with server.session.patch(
+                    server.base + "/v1/overlay/kanban/tasks/ready2",
+                    headers=server.headers(),
+                    json={"status": "done"},
+                ) as resp:
+                    assert resp.status == 422
+                    err = await resp.json()
+                assert err["error"].startswith("completion blocked:")
+                assert "overlay_slash_failed" not in err["error"]
+
+        _run(inner())
+        saved_db = sqlite3.connect(db_path)
+        rows = dict(saved_db.execute("SELECT id, result FROM tasks"))
+        saved_db.close()
+        assert rows["ready1"] == "Moved to done from overlay"
+        assert rows["ready2"] == "custom evidence"
+    finally:
+        sys.path.remove(str(pkg))
+        for name in list(sys.modules):
+            if name == "hermes_cli" or name.startswith("hermes_cli."):
+                sys.modules.pop(name, None)
+        sys.modules.update(saved)

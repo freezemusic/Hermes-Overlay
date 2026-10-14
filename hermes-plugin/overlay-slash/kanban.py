@@ -25,6 +25,14 @@ EXTRA_COLUMNS = ("scheduled", "review")
 # are not this API.
 PATCH_STATUSES = frozenset({"triage", "todo", "ready", "blocked", "done", "scheduled", "review"})
 RECENT_EVENTS = 50
+# Hermes refuses ``complete_task`` with no result/summary evidence.
+DEFAULT_DONE_RESULT = "Moved to done from overlay"
+# v0.21.6 defines ``connect`` in ``kanban_db_connect`` and does not re-export it
+# from ``kanban_db``. ``init_db`` / ``write_txn`` are re-exported, but the same
+# split module is the fallback for all three.
+_PRIMARY_MODULE = "hermes_cli.kanban_db"
+_CONNECT_MODULE = "hermes_cli.kanban_db_connect"
+_SPLIT_NAMES = frozenset({"connect", "init_db", "write_txn"})
 
 _KB_NAMES = (
     "connect", "init_db", "get_current_board", "list_boards", "list_tasks", "get_task",
@@ -62,8 +70,23 @@ def available() -> bool:
     return all(_symbol(name) is not None for name in needed)
 
 
+def _load(module: str, name: str, *, quiet: bool) -> Any:
+    """Call ``load_symbol``. Tests replace it with a two-argument function."""
+    fn = commands.load_symbol
+    try:
+        return fn(module, name, quiet=quiet)
+    except TypeError:
+        return fn(module, name)
+
+
 def _symbol(name: str) -> Callable | None:
-    return commands.load_symbol("hermes_cli.kanban_db", name)
+    """Resolve a kanban helper from ``kanban_db``, then the v0.21.6 split module."""
+    if name in _SPLIT_NAMES:
+        found = _load(_PRIMARY_MODULE, name, quiet=True)
+        if found is not None:
+            return found
+        return _load(_CONNECT_MODULE, name, quiet=False)
+    return _load(_PRIMARY_MODULE, name, quiet=False)
 
 
 def _kb() -> dict[str, Any]:
@@ -310,11 +333,32 @@ def _direct_status(conn: Any, kb: dict[str, Any], task_id: str, status: str) -> 
         return _update()
 
 
-def _apply_status(conn: Any, kb: dict[str, Any], task: Any, status: str) -> bool:
+def _done_result(result: str | None) -> str:
+    text = result.strip() if isinstance(result, str) else ""
+    return text or DEFAULT_DONE_RESULT
+
+
+def _apply_status(conn: Any, kb: dict[str, Any], task: Any, status: str, result: str | None = None) -> bool:
+    try:
+        return _apply_status_call(conn, kb, task, status, result)
+    except KanbanHTTP:
+        raise
+    except RuntimeError as exc:
+        raise KanbanHTTP(409, str(exc)) from exc
+    except Exception as exc:
+        # EmptyCompletionError and other domain failures are ValueError on
+        # v0.21.6. Surface the reason; do not let it become a generic 500.
+        raise KanbanHTTP(422, str(exc)) from exc
+
+
+def _apply_status_call(conn: Any, kb: dict[str, Any], task: Any, status: str, result: str | None) -> bool:
     task_id = str(_field(task, "id") or "")
     current = str(_field(task, "status") or "")
     if status == "done" and kb.get("complete_task") is not None:
-        return _truthy(_call(kb["complete_task"], conn, task_id, force=True))
+        evidence = _done_result(result)
+        return _truthy(_call(
+            kb["complete_task"], conn, task_id, result=evidence, summary=evidence, force=True,
+        ))
     if status == "blocked" and kb.get("block_task") is not None:
         return _truthy(_call(kb["block_task"], conn, task_id))
     if status == "scheduled" and kb.get("schedule_task") is not None:
@@ -339,7 +383,7 @@ def _apply_patch(conn: Any, kb: dict[str, Any], board: str | None, task: Any, pa
         if not ok:
             raise KanbanHTTP(404, "task not found")
     if "status" in patch and patch.get("status") is not None:
-        if not _apply_status(conn, kb, task, str(patch["status"])):
+        if not _apply_status(conn, kb, task, str(patch["status"]), patch.get("result") if isinstance(patch.get("result"), str) else None):
             raise KanbanHTTP(409, "status transition refused")
     edits: dict[str, Any] = {}
     if "priority" in patch and patch.get("priority") is not None:
@@ -396,6 +440,8 @@ def _validate_patch(patch: Mapping[str, Any]) -> None:
             raise KanbanHTTP(400, "title cannot be empty")
     if "assignee" in patch and patch["assignee"] is not None and not isinstance(patch["assignee"], str):
         raise KanbanHTTP(400, "assignee must be a string")
+    if "result" in patch and patch["result"] is not None and not isinstance(patch["result"], str):
+        raise KanbanHTTP(400, "result must be a string")
 
 
 def boards_payload(include_archived: bool) -> dict[str, Any]:

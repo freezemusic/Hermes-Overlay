@@ -59,19 +59,24 @@ def reset_warnings() -> None:
     _warned.clear()
 
 
-def load_symbol(module: str, name: str) -> Any:
-    """Import ``module.name``. Return None and warn once on any failure."""
+def load_symbol(module: str, name: str, *, quiet: bool = False) -> Any:
+    """Import ``module.name``. Return None and warn once on any failure.
+
+    ``quiet`` skips the warning. The kanban lookup uses it for the v0.21.6
+    miss on ``kanban_db.connect`` before falling back to ``kanban_db_connect``.
+    """
     try:
         import importlib
         mod = importlib.import_module(module)
         value = getattr(mod, name, None)
     except Exception as exc:
-        warn_once(
-            f"import:{module}.{name}",
-            f"overlay-slash: {module}.{name} unavailable ({type(exc).__name__}: {exc})",
-        )
+        if not quiet:
+            warn_once(
+                f"import:{module}.{name}",
+                f"overlay-slash: {module}.{name} unavailable ({type(exc).__name__}: {exc})",
+            )
         return None
-    if value is None:
+    if value is None and not quiet:
         warn_once(
             f"import:{module}.{name}",
             f"overlay-slash: {module}.{name} is missing; that feature will be skipped",
