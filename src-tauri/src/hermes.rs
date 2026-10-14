@@ -87,6 +87,7 @@ pub const PLUGIN_HINT: &str = "未裝 overlay-slash，/ 選單唔會出現。";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnEvent {
+    Started,
     Delta(String),
     Commentary(String),
     Command(String),
@@ -548,6 +549,218 @@ pub async fn fetch_overlay_commands(
     })
 }
 
+pub const KANBAN_EMPTY: &str = "未裝 overlay-slash kanban，看板唔會出現。";
+pub const KANBAN_STATUSES: [&str; 6] = ["triage", "todo", "ready", "running", "blocked", "done"];
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct KanbanTask {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub assignee: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub priority: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct KanbanColumn {
+    pub name: String,
+    pub tasks: Vec<KanbanTask>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct KanbanBoard {
+    pub board: String,
+    pub columns: Vec<KanbanColumn>,
+    pub unavailable: bool,
+    pub message: String,
+}
+
+fn query_escape(raw: &str) -> String {
+    let mut out = String::new();
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => out.push(byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn json_string(value: &Value, key: &str) -> String {
+    match value.get(key) {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Number(number)) => number.to_string(),
+        Some(Value::Bool(flag)) => flag.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn task_from(value: &Value, fallback_status: &str) -> Option<KanbanTask> {
+    let id = json_string(value, "id");
+    if id.is_empty() {
+        return None;
+    }
+    let mut status = json_string(value, "status");
+    if status.is_empty() {
+        status = fallback_status.to_string();
+    }
+    if status == "archived" {
+        return None;
+    }
+    Some(KanbanTask {
+        id,
+        title: json_string(value, "title"),
+        assignee: json_string(value, "assignee"),
+        status,
+        priority: json_string(value, "priority"),
+        updated_at: json_string(value, "updated_at"),
+    })
+}
+
+pub fn parse_kanban_board(value: &Value, board: &str) -> KanbanBoard {
+    let source = value.get("data").unwrap_or(value);
+    let board_name = json_string(source, "board");
+    let board_name = if board_name.is_empty() {
+        board.to_string()
+    } else {
+        board_name
+    };
+    let mut tasks = Vec::new();
+    if let Some(columns) = source.get("columns").and_then(Value::as_array) {
+        for column in columns {
+            let name = json_string(column, "name");
+            let items = column
+                .get("tasks")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for item in items {
+                if let Some(task) = task_from(&item, &name) {
+                    tasks.push(task);
+                }
+            }
+        }
+    }
+    let mut names: Vec<String> = KANBAN_STATUSES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    for task in &tasks {
+        if !task.status.is_empty() && !names.iter().any(|name| name == &task.status) {
+            names.push(task.status.clone());
+        }
+    }
+    let columns = names
+        .into_iter()
+        .map(|name| KanbanColumn {
+            tasks: tasks
+                .iter()
+                .filter(|task| task.status == name)
+                .cloned()
+                .collect(),
+            name,
+        })
+        .collect();
+    KanbanBoard {
+        board: board_name,
+        columns,
+        unavailable: false,
+        message: String::new(),
+    }
+}
+
+pub fn kanban_patch_body(status: &str, assignee: &str, priority: &str, title: &str) -> Value {
+    let mut body = serde_json::Map::new();
+    if !status.trim().is_empty() {
+        body.insert("status".into(), Value::String(status.trim().to_string()));
+    }
+    if !assignee.trim().is_empty() {
+        body.insert(
+            "assignee".into(),
+            Value::String(assignee.trim().to_string()),
+        );
+    }
+    if !priority.trim().is_empty() {
+        body.insert(
+            "priority".into(),
+            Value::String(priority.trim().to_string()),
+        );
+    }
+    if !title.trim().is_empty() {
+        body.insert("title".into(), Value::String(title.trim().to_string()));
+    }
+    Value::Object(body)
+}
+
+pub async fn fetch_kanban_board(
+    http: &Client,
+    root: &str,
+    key: &str,
+    board: &str,
+) -> Result<KanbanBoard, HermesError> {
+    let url = format!(
+        "{}/v1/overlay/kanban/board?board={}",
+        root.trim_end_matches('/'),
+        query_escape(board)
+    );
+    let resp = authed(http.get(url).timeout(Duration::from_secs(8)), key)
+        .send()
+        .await
+        .map_err(map_reqwest)?;
+    let status = resp.status().as_u16();
+    if status == 404 {
+        return Ok(KanbanBoard {
+            board: board.to_string(),
+            columns: Vec::new(),
+            unavailable: true,
+            message: KANBAN_EMPTY.to_string(),
+        });
+    }
+    if !(200..300).contains(&status) {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(HermesError::Http {
+            status,
+            body: clip(&body, 200),
+        });
+    }
+    let value: Value = resp
+        .json()
+        .await
+        .map_err(|err| HermesError::Protocol(format!("kanban 回應唔係 JSON：{err}")))?;
+    Ok(parse_kanban_board(&value, board))
+}
+
+pub async fn patch_kanban_task(
+    http: &Client,
+    root: &str,
+    key: &str,
+    id: &str,
+    body: &Value,
+) -> Result<KanbanTask, HermesError> {
+    let url = format!(
+        "{}/v1/overlay/kanban/tasks/{}",
+        root.trim_end_matches('/'),
+        query_escape(id)
+    );
+    let resp = send(
+        http.patch(url).timeout(Duration::from_secs(8)).json(body),
+        key,
+    )
+    .await?;
+    let value: Value = resp
+        .json()
+        .await
+        .map_err(|err| HermesError::Protocol(format!("kanban 更新唔係 JSON：{err}")))?;
+    let task_value = value.get("task").unwrap_or(&value);
+    task_from(task_value, "").ok_or_else(|| HermesError::Protocol("kanban 更新回應冇 id".into()))
+}
+
 pub async fn create_session(
     http: &Client,
     root: &str,
@@ -885,6 +1098,10 @@ where
 {
     let payload: Value = serde_json::from_str(&event.data).unwrap_or(Value::Null);
     match event.event.as_str() {
+        "run.started" => {
+            on_event(TurnEvent::Started);
+            false
+        }
         "assistant.delta" => {
             let text = payload
                 .get("delta")
@@ -925,7 +1142,7 @@ where
             }
             false
         }
-        "tool.started" | "tool.completed" | "tool.failed" => {
+        "tool.started" | "tool.completed" | "tool.failed" | "tool.progress" => {
             let phase = event
                 .event
                 .strip_prefix("tool.")
@@ -1392,5 +1609,90 @@ data: {}\n\
         assert!(!msg.contains("http://"));
         assert!(!msg.contains("127.0.0.1"));
         assert!(msg.contains("8642"));
+    }
+
+    #[test]
+    fn kanban_board_orders_columns_and_hides_archived() {
+        let value = json!({
+            "board": "default",
+            "columns": [
+                {"name": "done", "tasks": [
+                    {"id": "a", "title": "完成", "assignee": "計劃", "status": "done", "priority": "low", "updated_at": "1"},
+                    {"id": 9, "title": "封存", "status": "archived"}
+                ]},
+                {"name": "todo", "tasks": [
+                    {"id": "b", "title": "未做", "status": "todo", "priority": "high"}
+                ]}
+            ]
+        });
+        let board = parse_kanban_board(&value, "default");
+        assert!(!board.unavailable);
+        assert_eq!(
+            board
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            KANBAN_STATUSES.to_vec()
+        );
+        assert_eq!(
+            board
+                .columns
+                .iter()
+                .flat_map(|column| &column.tasks)
+                .count(),
+            2
+        );
+        let body = kanban_patch_body("running", "", "", "");
+        assert_eq!(body, json!({"status": "running"}));
+    }
+
+    #[tokio::test]
+    async fn kanban_404_is_an_empty_board() {
+        let base = oneshot(
+            "404 Not Found",
+            "application/json",
+            r#"{"error":"missing"}"#,
+        );
+        let http = Client::new();
+        let board = fetch_kanban_board(&http, &base, "key", "default")
+            .await
+            .unwrap();
+        assert!(board.unavailable);
+        assert_eq!(board.message, KANBAN_EMPTY);
+        assert!(board.columns.is_empty());
+    }
+
+    #[tokio::test]
+    async fn thinking_events_include_run_started_and_tool_progress() {
+        let body = "\
+event: run.started\n\
+data: {}\n\
+\n\
+event: tool.progress\n\
+data: {\"tool_name\":\"terminal\",\"preview\":\"讀緊\"}\n\
+\n\
+event: assistant.delta\n\
+data: {\"delta\":\"好\"}\n\
+\n\
+event: run.completed\n\
+data: {\"completed\":true}\n\
+\n";
+        let base = oneshot("200 OK", "text/event-stream", body);
+        let http = Client::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let stop = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hi", &stop, |ev| {
+            seen2.lock().unwrap().push(ev);
+        })
+        .await
+        .unwrap();
+        let seen = seen.lock().unwrap();
+        assert!(matches!(seen[0], TurnEvent::Started));
+        assert!(
+            matches!(seen[1], TurnEvent::Tool { ref phase, ref preview, .. } if phase == "progress" && preview == "讀緊")
+        );
+        assert!(matches!(seen[2], TurnEvent::Delta(ref text) if text == "好"));
     }
 }

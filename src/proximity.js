@@ -1,18 +1,9 @@
 /** Distance fade shared by the browser preview and unit tests. */
 
-/** Chart colours sampled from the public Hermes / Nous UI, not their logos. */
-export const PALETTE = [
-  "#0000f2",
-  "#edff45",
-  "#0847c4",
-  "#ff8442",
-  "#6effd6",
-  "#6e6eff",
-  "#f0949e",
-  "#ffcd42",
-  "#8cc4a7",
-  "#6eddff",
-];
+import { PALETTE as NOUS_PALETTE } from "./botcolor.js";
+
+/** Nous f2 swatches. Yellow is a bot colour, not the button accent. */
+export const PALETTE = NOUS_PALETTE;
 
 /** Dark ink on light swatches so avatar letters stay readable. */
 export function inkFor(hex) {

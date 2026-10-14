@@ -4,6 +4,17 @@
  * Gateway keys stay in the Rust process; this file only sees has_key.
  */
 
+import { reduceActivity, toastAnchor, TOAST_MS } from "./activity.js";
+import { applyBotColor, NOUS } from "./botcolor.js";
+import {
+  KANBAN_BOARD,
+  KANBAN_EMPTY,
+  KANBAN_POLL_MS,
+  boardFingerprint,
+  moveTask,
+  normalizeBoard,
+  ownerColor,
+} from "./kanban.js";
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 import { SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
 import {
@@ -245,11 +256,20 @@ const state = {
   slashArgsHint: "",
   reconnectToken: 0,
   reconnectTimer: 0,
+  kanbanOpen: false,
+  kanban: { board: null, fingerprint: "", unread: false, saving: false },
+  kanbanTimer: 0,
+  toastSeq: 0,
 };
 
 function threadFor(id) {
   if (!state.threads.has(id)) {
-    state.threads.set(id, { messages: [], status: "閒置", float: null });
+    state.threads.set(id, {
+      messages: [],
+      status: "閒置",
+      activity: { thinking: false, streaming: false, deadline: null },
+      unread: false,
+    });
   }
   return state.threads.get(id);
 }
@@ -263,7 +283,7 @@ function showActionError(message) {
 
 function setBanner(text, kind = "error", sticky = "", action = "") {
   const banner = $("#conn-banner");
-  banner.classList.remove("ok", "info");
+  banner.classList.remove("ok", "info", "danger");
   banner.dataset.sticky = sticky || "";
   banner.replaceChildren();
   delete banner.dataset.hitId;
@@ -273,6 +293,7 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
   }
   banner.hidden = false;
   if (kind === "ok" || kind === "info") banner.classList.add(kind);
+  else banner.classList.add("danger");
   if (action === "settings") {
     banner.dataset.hitId = "banner";
     const button = document.createElement("button");
@@ -303,7 +324,7 @@ function renderBots() {
   const pulseId = pulse.pulseId;
   const keep = new Set(state.bots.map((bot) => bot.id));
   const existing = new Map();
-  rail.querySelectorAll(".bot-btn").forEach((el) => {
+  rail.querySelectorAll(".bot-btn:not(.orb--kanban)").forEach((el) => {
     if (!keep.has(el.dataset.botId)) el.remove();
     else existing.set(el.dataset.botId, el);
   });
@@ -317,20 +338,20 @@ function renderBots() {
       btn.addEventListener("click", () => selectBot(bot.id));
       btn.addEventListener("animationend", (event) => {
         if (event.animationName === "orb-pulse") btn.classList.remove("orb-enter");
+        if (event.animationName === "ping") event.target.remove();
       });
-      const hit = document.createElement("span");
-      hit.className = "bot-hit";
-      hit.setAttribute("aria-hidden", "true");
-      btn.appendChild(hit);
+      fillOrb(btn);
       const label = document.createElement("span");
       label.className = "bot-label";
       btn.appendChild(label);
     }
+    const thread = threadFor(bot.id);
     const keepEnter = btn.classList.contains("orb-enter") && bot.id === state.activeId;
     const classes = ["bot-btn"];
-    if (bot.id === state.activeId) classes.push("active");
-    if (state.busy.has(bot.id)) classes.push("busy");
-    if (threadFor(bot.id).statusState === "error") classes.push("error");
+    if (bot.id === state.activeId && !state.kanbanOpen) classes.push("active");
+    if (thread.activity?.thinking) classes.push("is-thinking");
+    if (thread.unread) classes.push("has-unread");
+    if (thread.statusState === "error") classes.push("error");
     if (bot.id === pulseId || keepEnter) classes.push("orb-enter");
     btn.className = classes.join(" ");
     btn.style.background = "";
@@ -339,21 +360,65 @@ function renderBots() {
     btn.style.bottom = "";
     btn.style.left = "";
     btn.style.transform = "";
-    btn.style.setProperty("--bot-color", bot.color);
+    applyBotColor(btn, bot.color);
     Object.assign(btn.style, positions[i].style);
     btn.setAttribute("aria-label", bot.name);
     btn.title = bot.name;
-    setBotLetter(btn, bot.short);
+    btn.querySelector(".orb-glyph").textContent = bot.short || "";
     btn.querySelector(".bot-label").textContent = bot.name;
     rail.appendChild(btn);
   });
+  renderKanbanOrb();
   scheduleHitSync();
 }
 
-function setBotLetter(btn, letter) {
-  const text = [...btn.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);
-  if (text) text.nodeValue = letter;
-  else btn.insertBefore(document.createTextNode(letter || ""), btn.firstChild);
+function fillOrb(btn) {
+  const hit = document.createElement("span");
+  hit.className = "bot-hit";
+  hit.setAttribute("aria-hidden", "true");
+  const core = document.createElement("span");
+  core.className = "orb-core";
+  const glyph = document.createElement("span");
+  glyph.className = "orb-glyph";
+  const spinner = document.createElement("span");
+  spinner.className = "spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  const unread = document.createElement("span");
+  unread.className = "unread-dot";
+  btn.append(hit, core, glyph, spinner, unread);
+}
+
+function renderKanbanOrb() {
+  const rail = $("#bot-rail");
+  let btn = rail.querySelector(".orb--kanban");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.botId = "kanban";
+    btn.dataset.hitId = "bot:kanban";
+    btn.addEventListener("click", () => toggleKanban());
+    btn.addEventListener("animationend", (event) => {
+      if (event.animationName === "ping") event.target.remove();
+    });
+    fillOrb(btn);
+    const label = document.createElement("span");
+    label.className = "bot-label";
+    label.textContent = "看板";
+    btn.appendChild(label);
+    btn.querySelector(".orb-glyph").textContent = "▥";
+    rail.appendChild(btn);
+  }
+  btn.className = ["bot-btn", "orb--kanban", state.kanbanOpen ? "active" : "", state.kanban.unread ? "has-unread" : ""]
+    .filter(Boolean)
+    .join(" ");
+  applyBotColor(btn, NOUS.neutral);
+  btn.style.top = "auto";
+  btn.style.right = "calc(var(--edge-pad) + 76px)";
+  btn.style.bottom = "var(--edge-pad)";
+  btn.style.left = "auto";
+  btn.style.transform = "none";
+  btn.setAttribute("aria-label", "看板");
+  btn.title = "看板";
 }
 
 function renderChat() {
@@ -362,41 +427,36 @@ function renderChat() {
   chat.innerHTML = "";
   if (!bot) {
     $("#bot-name").textContent = "未有 Bot";
-    $("#bot-status").textContent = state.mode === "mock" ? "示範模式" : "請喺設定加入 Bot";
+    setStatusText(state.mode === "mock" ? "示範模式" : "請喺設定加入 Bot");
     $("#bot-detail").textContent =
       state.mode === "mock"
         ? "離線示範。"
         : "Gateway 已設定，但名單係空。打開設定加入 profile、顯示名稱同 API 金鑰。";
-    paintOrb($("#active-avatar"), "var(--neutral)", "");
-    paintOrb($("#float-avatar"), "var(--neutral)", "");
-    $("#float-bubble").hidden = true;
+    paintOrb($("#active-avatar"), NOUS.neutral, "");
+    applyBotColor($("#center-panel"), NOUS.blue);
     $("#btn-stop").hidden = true;
+    syncActivityChrome();
     return;
   }
   const thread = threadFor(bot.id);
   $("#bot-name").textContent = bot.name;
   const statusEl = $("#bot-status");
-  statusEl.textContent = thread.status || bot.status || "閒置";
+  setStatusText(thread.status || bot.status || "閒置");
   statusEl.dataset.state = thread.statusState || "idle";
   $("#bot-detail").textContent = bot.detail || "";
   paintOrb($("#active-avatar"), bot.color, bot.short || "");
+  applyBotColor($("#center-panel"), bot.color);
   thread.messages.forEach((m) => chat.appendChild(bubbleEl(m)));
   chat.scrollTop = chat.scrollHeight;
-  const float = $("#float-bubble");
-  if (thread.float) {
-    float.hidden = false;
-    $("#float-text").textContent = thread.float;
-    paintOrb($("#float-avatar"), bot.color, bot.short || "");
-  } else if (bot.float) {
-    float.hidden = false;
-    $("#float-text").textContent = bot.float;
-    paintOrb($("#float-avatar"), bot.color, bot.short || "");
-  } else {
-    float.hidden = true;
-  }
   $("#btn-stop").hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
   $("#btn-send").disabled = state.mode === "hermes" && state.busy.has(bot.id);
+  syncActivityChrome();
   scheduleHitSync();
+}
+
+function setStatusText(text) {
+  const node = $("#bot-status-text");
+  if (node) node.textContent = text;
 }
 
 function bubbleEl(m) {
@@ -529,6 +589,8 @@ async function retryHistory(id, attempt, token) {
 }
 
 async function selectBot(id) {
+  clearUnread(id);
+  if (state.kanbanOpen) closeKanban();
   state.activeId = id;
   state.catalog = null;
   state.catalogProfile = "";
@@ -617,7 +679,12 @@ function patchLive(id) {
 function handleHermes(payload) {
   if (!payload || !payload.profile) return;
   const id = payload.profile;
+  if (payload.type === "run.started") {
+    noteActivity(id, { type: "run.started" });
+    return;
+  }
   if (payload.type === "delta") {
+    noteActivity(id, { type: "delta" });
     const live = ensureLiveBubble(id);
     live.text += payload.text || "";
     patchLive(id);
@@ -633,16 +700,19 @@ function handleHermes(payload) {
   }
   if (payload.type === "commentary") {
     appendMessage(id, { role: "commentary", text: `過程：${payload.text || ""}` });
-    threadFor(id).float = payload.text || null;
     if (id === state.activeId) renderChat();
     return;
   }
   if (payload.type === "tool") {
-    const phase = payload.phase === "completed" ? "完成" : payload.phase === "failed" ? "失敗" : "開始";
     const preview = payload.preview ? ` — ${payload.preview}` : "";
-    const text = `${phase} ${payload.name || "tool"}${preview}`;
-    appendMessage(id, { role: "tool", text });
-    threadFor(id).float = text;
+    const text = `${payload.name || "tool"}${preview}`;
+    if (payload.phase === "progress") {
+      noteActivity(id, { type: "tool.progress", text });
+      return;
+    }
+    noteActivity(id, { type: "tool" });
+    const phase = payload.phase === "completed" ? "完成" : payload.phase === "failed" ? "失敗" : "開始";
+    appendMessage(id, { role: "tool", text: `${phase} ${text}` });
     if (id === state.activeId) renderChat();
     return;
   }
@@ -653,10 +723,11 @@ function handleHermes(payload) {
   }
   if (payload.type === "done") {
     const thread = threadFor(id);
-    thread.float = null;
     const live = [...thread.messages].reverse().find((m) => m.live);
     painterFor(id).flush();
     if (live) live.live = false;
+    const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
+    noteActivity(id, { type: outcome, text: outcome === "completed" ? live?.text || "" : payload.detail || "" });
     if (payload.outcome === "completed") clearConnectionBanner();
     if (payload.outcome === "failed" && payload.detail) {
       appendMessage(id, { role: "failure", text: payload.detail });
@@ -669,6 +740,7 @@ function handleHermes(payload) {
     return;
   }
   if (payload.type === "error") {
+    noteActivity(id, { type: "failed", text: payload.message || "未知錯誤" });
     appendMessage(id, { role: "commentary", text: payload.message || "未知錯誤" });
     setBotStatus(id, "連線錯誤", "error");
     setBanner(payload.message || "連線錯誤", "error");
@@ -692,23 +764,25 @@ async function sendActive() {
     return;
   }
   appendMessage(state.activeId, { role: "user", text });
+  const sentId = state.activeId;
+  noteActivity(sentId, { type: "send" });
   if (state.mode !== "hermes" || !inTauri()) {
     setTimeout(() => {
-      appendMessage(state.activeId, {
-        role: "bot",
-        text: `（示範回覆）收到：「${text}」。未設定 Hermes gateway。`,
-      });
+      const reply = `（示範回覆）收到：「${text}」。未設定 Hermes gateway。`;
+      appendMessage(sentId, { role: "bot", text: reply });
+      noteActivity(sentId, { type: "completed", text: reply });
     }, 350);
     return;
   }
-  setBotStatus(state.activeId, "思考中…", "busy");
+  setBotStatus(sentId, "思考中…", "busy");
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("send_chat", { profile: state.activeId, text });
+    await invoke("send_chat", { profile: sentId, text });
   } catch (err) {
     const message = String(err);
-    appendMessage(state.activeId, { role: "commentary", text: message });
-    setBotStatus(state.activeId, "連線錯誤", "error");
+    noteActivity(sentId, { type: "failed", text: message });
+    appendMessage(sentId, { role: "commentary", text: message });
+    setBotStatus(sentId, "連線錯誤", "error");
     setBanner(message, "error");
   }
 }
@@ -1179,6 +1253,7 @@ function renderSlashPopup() {
     const label = document.createElement("div");
     label.className = "slash-cat";
     label.textContent = group.category;
+    if (/^[\x00-\x7F]+$/.test(group.category || "")) label.lang = "en";
     popup.appendChild(label);
     group.items.forEach((command) => {
     const button = document.createElement("button");
@@ -1188,6 +1263,7 @@ function renderSlashPopup() {
     button.setAttribute("role", "option");
     const name = document.createElement("span");
     name.className = "slash-name";
+    name.lang = "en";
     name.textContent = command.name;
     const desc = document.createElement("span");
     desc.className = "slash-desc";
@@ -1348,8 +1424,10 @@ function setupComposer() {
 function paintOrb(el, color, letter) {
   if (!el) return;
   el.style.background = "";
-  el.style.setProperty("--bot-color", color || "var(--neutral)");
-  if (letter !== undefined) el.textContent = letter;
+  applyBotColor(el, color || NOUS.neutral);
+  const glyph = el.querySelector?.(".orb-glyph");
+  if (glyph && letter !== undefined) glyph.textContent = letter;
+  else if (letter !== undefined && !glyph) el.textContent = letter;
 }
 
 function isTextField(el) {
@@ -1395,11 +1473,12 @@ function collectHits() {
     rects.push({ id, x: box.x, y: box.y, w: box.width, h: box.height, z, round });
   };
   push("center", $("#center-panel"), 0);
+  push("kanban", $("#kanban-panel"), 1);
   push("slash", $("#slash-popup"), 20);
   push("settings", document.querySelector(".settings-card"), 30);
   const banner = $("#conn-banner");
   if (banner?.dataset.hitId === "banner") push("banner", banner, 5);
-  push("float", $("#float-bubble"), 10);
+  document.querySelectorAll(".toast").forEach((el) => push(el.dataset.hitId, el, 40));
   document.querySelectorAll(".bot-btn").forEach((el) => {
     if (el.dataset.hitId) push(el.dataset.hitId, el, 0, true);
   });
@@ -1603,10 +1682,339 @@ function setupProximity() {
   paintLocalProximity();
 }
 
+const watchdogs = new Map();
+
+function cssEscape(value) {
+  if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(value);
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function syncActivityChrome() {
+  const activity = state.activeId ? threadFor(state.activeId).activity : null;
+  $("#center-panel")?.classList.toggle("is-thinking", !!activity?.thinking);
+  $("#chat-messages")?.classList.toggle("streaming", !!activity?.streaming);
+}
+
+function paintActivity(id) {
+  const thread = threadFor(id);
+  const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
+  btn?.classList.toggle("is-thinking", !!thread.activity?.thinking);
+  btn?.classList.toggle("has-unread", !!thread.unread);
+  if (id === state.activeId) syncActivityChrome();
+}
+
+function clearUnread(id) {
+  const thread = threadFor(id);
+  if (!thread.unread) return;
+  thread.unread = false;
+  paintActivity(id);
+}
+
+function noteActivity(id, event) {
+  const thread = threadFor(id);
+  const step = reduceActivity(thread.activity, event, Date.now());
+  thread.activity = step.state;
+  if (step.unread) thread.unread = true;
+  paintActivity(id);
+  if (step.state.deadline) armWatchdog(id, step.state.deadline);
+  else clearWatchdog(id);
+  if (step.toast) showToast(id, step.toast);
+  if (step.unread) pingOrb(id);
+}
+
+function armWatchdog(id, deadline) {
+  clearWatchdog(id);
+  const delay = Math.max(0, deadline - Date.now());
+  const timer = window.setTimeout(() => noteActivity(id, { type: "watchdog" }), delay);
+  watchdogs.set(id, timer);
+}
+
+function clearWatchdog(id) {
+  const timer = watchdogs.get(id);
+  if (timer) window.clearTimeout(timer);
+  watchdogs.delete(id);
+}
+
+function pingOrb(id) {
+  const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
+  if (!btn) return;
+  btn.querySelector(".orb-ping")?.remove();
+  const ping = document.createElement("span");
+  ping.className = "orb-ping";
+  btn.appendChild(ping);
+}
+
+function showToast(id, toast) {
+  const stack = $("#toast-stack");
+  if (!stack) return;
+  const existing = [...stack.querySelectorAll(".toast")];
+  while (existing.length >= 3) {
+    existing.shift().remove();
+  }
+  const bot = state.bots.find((item) => item.id === id);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `toast${toast.kind === "error" ? " toast-error" : ""}`;
+  button.dataset.botId = id;
+  button.dataset.hitId = `toast:${++state.toastSeq}`;
+  button.dataset.side = "right";
+  const kicker = document.createElement("span");
+  kicker.className = "toast-kicker";
+  const name = document.createElement("span");
+  name.className = "toast-name";
+  name.textContent = bot?.name || (id === "kanban" ? "看板" : id);
+  if (bot?.name && /^[\x00-\x7F]+$/.test(bot.name)) name.lang = "en";
+  const time = document.createElement("time");
+  time.dateTime = new Date().toISOString();
+  time.textContent = new Date().toLocaleTimeString("zh-HK", { hour: "2-digit", minute: "2-digit" });
+  kicker.append(name, time);
+  const body = document.createElement("span");
+  body.className = "toast-body";
+  body.textContent = toast.text || "";
+  button.append(kicker, body);
+  applyBotColor(button, bot?.color || NOUS.blue);
+  button.addEventListener("mouseenter", () => {
+    button.remaining = Math.max(0, (button.deadline || Date.now()) - Date.now());
+    window.clearTimeout(button.timer);
+  });
+  button.addEventListener("mouseleave", () => scheduleToastDismiss(button, button.remaining ?? TOAST_MS));
+  button.addEventListener("click", () => {
+    dismissToast(button);
+    if (id === "kanban") openKanban();
+    else selectBot(id);
+  });
+  stack.appendChild(button);
+  layoutToasts();
+  scheduleToastDismiss(button, TOAST_MS);
+  scheduleHitSync();
+}
+
+function scheduleToastDismiss(button, delay) {
+  button.deadline = Date.now() + delay;
+  window.clearTimeout(button.timer);
+  button.timer = window.setTimeout(() => dismissToast(button), delay);
+}
+
+function dismissToast(button) {
+  if (!button?.isConnected || button.classList.contains("is-leaving")) return;
+  window.clearTimeout(button.timer);
+  button.classList.add("is-leaving");
+  window.setTimeout(() => {
+    button.remove();
+    scheduleHitSync();
+  }, 200);
+}
+
+function layoutToasts() {
+  const groups = new Map();
+  document.querySelectorAll(".toast").forEach((toast) => {
+    const list = groups.get(toast.dataset.botId) || [];
+    list.push(toast);
+    groups.set(toast.dataset.botId, list);
+  });
+  groups.forEach((list, id) => {
+    const orb = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
+    const box = orb ? orb.getBoundingClientRect() : { x: 24, y: 24, width: 52, height: 52 };
+    const rect = { x: box.x, y: box.y, w: box.width, h: box.height };
+    list.forEach((toast, index) => {
+      const place = toastAnchor(rect, { width: window.innerWidth, height: window.innerHeight }, index);
+      toast.dataset.side = place.side;
+      toast.style.left = `${place.x}px`;
+      toast.style.top = `${place.y}px`;
+    });
+  });
+}
+
+function toggleKanban() {
+  if (state.kanbanOpen) closeKanban();
+  else openKanban();
+}
+
+function openKanban() {
+  state.kanbanOpen = true;
+  state.kanban.unread = false;
+  const panel = $("#kanban-panel");
+  if (panel) {
+    panel.hidden = false;
+    applyBotColor(panel, NOUS.neutral);
+  }
+  setCenterOpen(false);
+  renderBots();
+  refreshKanban();
+  startKanbanPoll();
+}
+
+function closeKanban() {
+  state.kanbanOpen = false;
+  stopKanbanPoll();
+  const panel = $("#kanban-panel");
+  if (panel) panel.hidden = true;
+  renderBots();
+  scheduleHitSync();
+}
+
+function startKanbanPoll() {
+  stopKanbanPoll();
+  state.kanbanTimer = window.setInterval(() => {
+    if (!state.kanbanOpen || document.hidden) return;
+    refreshKanban();
+  }, KANBAN_POLL_MS);
+}
+
+function stopKanbanPoll() {
+  window.clearInterval(state.kanbanTimer);
+  state.kanbanTimer = 0;
+}
+
+async function refreshKanban() {
+  if (state.kanban.saving) return;
+  let payload;
+  if (state.mode !== "hermes" || !inTauri()) {
+    payload = state.kanban.board || mockKanban();
+  } else {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      payload = await invoke("get_kanban_board", { board: KANBAN_BOARD });
+    } catch (err) {
+      payload = { unavailable: true, message: String(err) };
+    }
+  }
+  const board = normalizeBoard(payload);
+  const fingerprint = boardFingerprint(board);
+  if (state.kanban.fingerprint && fingerprint !== state.kanban.fingerprint) {
+    state.kanban.unread = true;
+    pingOrb("kanban");
+    renderKanbanOrb();
+  }
+  state.kanban.fingerprint = fingerprint;
+  state.kanban.board = board;
+  paintKanban(board);
+}
+
+function mockKanban() {
+  return {
+    board: KANBAN_BOARD,
+    columns: [
+      { name: "triage", tasks: [{ id: "demo-1", title: "整理今日待辦", assignee: "計劃助手", status: "triage", priority: "high", updated_at: "" }] },
+      { name: "ready", tasks: [{ id: "demo-2", title: "對一下看板欄位", assignee: "程式夥伴", status: "ready", priority: "normal", updated_at: "" }] },
+    ],
+  };
+}
+
+function paintKanban(board) {
+  const empty = $("#kanban-empty");
+  const root = $("#kanban-board");
+  const title = $("#kanban-title");
+  if (title) title.textContent = board.board || "Board";
+  if (!root || !empty) return;
+  if (board.unavailable) {
+    empty.hidden = false;
+    empty.textContent = board.message || KANBAN_EMPTY;
+    root.replaceChildren();
+    scheduleHitSync();
+    return;
+  }
+  empty.hidden = true;
+  root.replaceChildren();
+  board.columns.forEach((column) => {
+    const col = document.createElement("section");
+    col.className = "kanban-col";
+    col.dataset.status = column.name;
+    const head = document.createElement("header");
+    head.className = "kanban-col-head";
+    head.lang = "en";
+    const name = document.createElement("span");
+    name.textContent = column.name;
+    const count = document.createElement("small");
+    count.textContent = String(column.tasks.length);
+    head.append(name, count);
+    const list = document.createElement("div");
+    column.tasks.forEach((task) => list.appendChild(kanbanCard(task)));
+    col.append(head, list);
+    col.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      col.classList.add("is-drop-target");
+    });
+    col.addEventListener("dragleave", () => col.classList.remove("is-drop-target"));
+    col.addEventListener("drop", (event) => {
+      event.preventDefault();
+      col.classList.remove("is-drop-target");
+      const taskId = event.dataTransfer?.getData("text/plain");
+      if (taskId) dropKanban(taskId, column.name);
+    });
+    root.appendChild(col);
+  });
+  scheduleHitSync();
+}
+
+function kanbanCard(task) {
+  const card = document.createElement("article");
+  card.className = "kanban-card";
+  card.draggable = true;
+  card.dataset.taskId = task.id;
+  card.style.setProperty("--owner", ownerColor(task.assignee, state.bots));
+  const title = document.createElement("p");
+  title.className = "kanban-title";
+  title.textContent = task.title || task.id;
+  const meta = document.createElement("div");
+  meta.className = "kanban-meta";
+  if (task.assignee) {
+    const who = document.createElement("span");
+    who.textContent = task.assignee;
+    meta.appendChild(who);
+  }
+  if (task.priority) {
+    const chip = document.createElement("span");
+    chip.className = "kanban-priority";
+    chip.textContent = task.priority;
+    chip.lang = "en";
+    meta.appendChild(chip);
+  }
+  card.append(title, meta);
+  card.addEventListener("dragstart", (event) => {
+    card.classList.add("is-dragging");
+    event.dataTransfer?.setData("text/plain", task.id);
+    event.dataTransfer.effectAllowed = "move";
+  });
+  card.addEventListener("dragend", () => card.classList.remove("is-dragging"));
+  return card;
+}
+
+async function dropKanban(taskId, status) {
+  const previous = state.kanban.board;
+  if (!previous || previous.unavailable) return;
+  const next = moveTask(previous, taskId, status);
+  state.kanban.board = next;
+  state.kanban.fingerprint = boardFingerprint(next);
+  paintKanban(next);
+  if (state.mode !== "hermes" || !inTauri()) return;
+  state.kanban.saving = true;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("patch_kanban_task", { id: taskId, patch: { status } });
+  } catch (err) {
+    state.kanban.board = previous;
+    state.kanban.fingerprint = boardFingerprint(previous);
+    paintKanban(previous);
+    setBanner(String(err), "error");
+  } finally {
+    state.kanban.saving = false;
+  }
+}
+
 async function boot() {
   setupComposer();
   setupWindowChrome();
   setupProximity();
+  $("#btn-kanban-close")?.addEventListener("click", () => closeKanban());
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopKanbanPoll();
+    else if (state.kanbanOpen) {
+      refreshKanban();
+      startKanbanPoll();
+    }
+  });
+  window.addEventListener("resize", layoutToasts);
   applyInteraction(state.interaction);
   if (!inTauri()) {
     useMock("瀏覽器預覽：離線示範。Gateway 同金鑰只喺桌面版可用。", "settings");

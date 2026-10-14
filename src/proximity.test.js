@@ -119,7 +119,7 @@ test("round avatar ignores bounding-box corners", () => {
 });
 
 test("light swatches use dark ink", () => {
-  assert.equal(inkFor("#edff45"), "#1a1a1a");
+  assert.equal(inkFor("#f2f200"), "#1a1a1a");
   assert.equal(inkFor("#0000f2"), "#f5f5f5");
 });
 

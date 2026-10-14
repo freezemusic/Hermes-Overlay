@@ -4,12 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hermes Overlay</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500&family=Schibsted+Grotesk:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
@@ -18,12 +12,16 @@
       <div id="bot-rail" class="bot-rail" aria-label="Bot 列表"></div>
 
       <aside id="center-panel" class="center-panel" data-interactive data-hit-id="center">
+        <span class="hud-corner tl" aria-hidden="true"></span>
+        <span class="hud-corner tr" aria-hidden="true"></span>
+        <span class="hud-corner bl" aria-hidden="true"></span>
+        <span class="hud-corner br" aria-hidden="true"></span>
         <header class="panel-header" data-tauri-drag-region>
           <div class="bot-identity">
-            <div id="active-avatar" class="active-avatar" aria-hidden="true"></div>
+            <div id="active-avatar" class="active-avatar" aria-hidden="true"><span class="orb-core"></span><span class="orb-glyph"></span></div>
             <div class="bot-meta">
-              <h1 id="bot-name">載入中…</h1>
-              <p id="bot-status" class="bot-status">準備就緒</p>
+              <h1 id="bot-name" class="panel-title">載入中…</h1>
+              <p id="bot-status" class="bot-status"><span class="spinner" aria-hidden="true"></span><span id="bot-status-text">準備就緒</span></p>
               <p id="interact-hint" class="interact-hint">按住 Ctrl：游標下面嗰個元素先會實色同可點擊。</p>
             </div>
           </div>
@@ -62,6 +60,10 @@
 
       <div id="settings" class="settings-layer" data-interactive hidden>
         <form id="settings-form" class="settings-card" data-hit-id="settings">
+          <span class="hud-corner tl" aria-hidden="true"></span>
+          <span class="hud-corner tr" aria-hidden="true"></span>
+          <span class="hud-corner bl" aria-hidden="true"></span>
+          <span class="hud-corner br" aria-hidden="true"></span>
           <header class="settings-head">
             <h2>設定</h2>
             <button type="button" id="btn-settings-close" class="icon-btn">關閉</button>
@@ -134,10 +136,20 @@
         </form>
       </div>
 
-      <div id="float-bubble" class="float-bubble" data-interactive data-hit-id="float" hidden>
-        <div class="float-avatar" id="float-avatar"></div>
-        <div class="float-text" id="float-text"></div>
-      </div>
+      <aside id="kanban-panel" class="center-panel kanban-panel" data-interactive data-hit-id="kanban" hidden>
+        <span class="hud-corner tl" aria-hidden="true"></span>
+        <span class="hud-corner tr" aria-hidden="true"></span>
+        <span class="hud-corner bl" aria-hidden="true"></span>
+        <span class="hud-corner br" aria-hidden="true"></span>
+        <header class="panel-header" data-tauri-drag-region>
+          <h1 id="kanban-title" class="panel-title" lang="en">Board</h1>
+          <button type="button" id="btn-kanban-close" class="icon-btn">關閉</button>
+        </header>
+        <p id="kanban-empty" class="kanban-empty" hidden></p>
+        <div id="kanban-board" class="kanban"></div>
+      </aside>
+
+      <div id="toast-stack" class="toast-stack"></div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>

@@ -732,6 +732,10 @@ async fn send_chat(
 
 fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
     match event {
+        TurnEvent::Started => emit(
+            app,
+            serde_json::json!({"type": "run.started", "profile": profile}),
+        ),
         TurnEvent::Delta(text) => emit(
             app,
             serde_json::json!({"type": "delta", "profile": profile, "text": text}),
@@ -898,6 +902,92 @@ async fn list_commands(
         }
     };
     Ok(CommandList { commands, hint })
+}
+
+fn kanban_auth(cfg: &AppConfig) -> Result<(String, String), String> {
+    require_hermes(cfg)?;
+    let root = cfg
+        .gateway_base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let mut profiles = Vec::new();
+    if cfg.bots.iter().any(|bot| bot.profile == "default") {
+        profiles.push("default".to_string());
+    }
+    for bot in &cfg.bots {
+        if bot.profile != "default" {
+            profiles.push(bot.profile.clone());
+        }
+    }
+    for profile in &profiles {
+        if let Ok(key) = profile_key(profile) {
+            return Ok((root, key));
+        }
+    }
+    Err("未有 API 金鑰，看板開唔到。".into())
+}
+
+#[tauri::command]
+async fn get_kanban_board(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    board: Option<String>,
+) -> Result<hermes::KanbanBoard, String> {
+    let cfg = load_config(&app)?;
+    let slug = board.unwrap_or_else(|| "default".into());
+    let slug = if slug.trim().is_empty() {
+        "default".to_string()
+    } else {
+        slug
+    };
+    if cfg.mode() == "mock" {
+        return Ok(hermes::KanbanBoard {
+            board: slug,
+            columns: Vec::new(),
+            unavailable: true,
+            message: "未設定 gateway，而家係離線示範模式。".into(),
+        });
+    }
+    let (root, key) = kanban_auth(&cfg)?;
+    hermes::fetch_kanban_board(&state.http, &root, &key, &slug)
+        .await
+        .map_err(|err| explain(&err))
+}
+
+#[derive(Deserialize)]
+struct KanbanPatch {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    assignee: String,
+    #[serde(default)]
+    priority: String,
+    #[serde(default)]
+    title: String,
+}
+
+#[tauri::command]
+async fn patch_kanban_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    patch: KanbanPatch,
+) -> Result<hermes::KanbanTask, String> {
+    let cfg = load_config(&app)?;
+    let (root, key) = kanban_auth(&cfg)?;
+    let body = hermes::kanban_patch_body(
+        &patch.status,
+        &patch.assignee,
+        &patch.priority,
+        &patch.title,
+    );
+    if body.as_object().is_some_and(|fields| fields.is_empty()) {
+        return Err("看板更新係空".into());
+    }
+    hermes::patch_kanban_task(&state.http, &root, &key, id.trim(), &body)
+        .await
+        .map_err(|err| explain(&err))
 }
 
 #[derive(Deserialize)]
@@ -1183,6 +1273,8 @@ pub fn run() {
             stop_chat,
             list_commands,
             client_command,
+            get_kanban_board,
+            patch_kanban_task,
             set_hit_rects,
             set_interaction_latch,
             focus_owner,
@@ -1283,5 +1375,9 @@ mod tests {
         assert!(src.contains("icons/tray.png"));
         assert!(src.contains("icon_as_template"));
         assert!(src.contains("set_service"));
+        let csp = prod["app"]["security"]["csp"].as_str().unwrap_or("");
+        assert!(csp.contains("font-src 'self'"));
+        assert!(!csp.contains("fonts.googleapis.com"));
+        assert!(!csp.contains("fonts.gstatic.com"));
     }
 }

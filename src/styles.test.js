@@ -1,79 +1,103 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { JSDOM } from "jsdom";
 
-test("modifier select drops the native white box", () => {
-  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-  const block = css.slice(css.indexOf("/* WebKitGTK paints a native white select"));
-  assert.match(block, /\.field select \{[^}]*appearance:\s*none/s);
+const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+
+function infiniteSelectors(source) {
+  const found = [];
+  const re = /([^{}@]+)\{([^{}]*)\}/g;
+  let match = re.exec(source);
+  while (match) {
+    const body = match[2];
+    if (/animation\s*:/.test(body) && /infinite/.test(body)) {
+      found.push(match[1].trim());
+    }
+    match = re.exec(source);
+  }
+  return found;
+}
+
+test("modifier select is a light hairline control", () => {
+  const block = css.slice(css.indexOf(".field select {"));
+  assert.match(block, /appearance:\s*none/);
   assert.match(block, /-webkit-appearance:\s*none/);
-  assert.match(block, /background-color:\s*#12121c/);
-  assert.match(block, /\.field select option \{[^}]*background-color:\s*#12121c/s);
-  assert.match(block, /color:\s*var\(--paper\)/);
+  assert.match(block, /color-scheme:\s*light/);
+  assert.match(block, /background-color:\s*rgb\(255 255 255 \/ \.6\)/);
+  assert.match(css, /\.field select option \{[^}]*background-color:\s*#f7f8f8/s);
+  assert.match(css, /\.field select option \{[^}]*color:\s*var\(--nous-navy\)/s);
 });
 
-test("avatars are translucent orbs with tunable glow", () => {
-  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-  assert.match(css, /--avatar-radius:\s*50%/);
-  assert.match(css, /--orb-glare-tint:\s*15%/);
-  assert.match(css, /--orb-core-alpha:\s*0\.92/);
-  assert.match(css, /--orb-glow-radius:\s*34px/);
-  assert.match(css, /--orb-glow-alpha:\s*0\.28/);
-  assert.match(css, /--orb-selected-glow-radius:\s*52px/);
-  assert.match(css, /--orb-selected-glow-alpha:\s*0\.35/);
-  assert.match(css, /--edge-pad:\s*calc\(var\(--orb-selected-glow-radius\) \+ 8px\)/);
-  assert.match(css, /--panel-bg:\s*rgba\(7,\s*8,\s*28,\s*0\.76\)/);
-  assert.match(css, /--panel-bg-solid:\s*rgba\(8,\s*8,\s*20,\s*0\.80\)/);
-  assert.match(css, /--panel-blur:\s*18px/);
-  assert.match(css, /\.bot-status::before \{[^}]*border-radius:\s*50%/s);
-  assert.match(css, /backdrop-filter:\s*blur\(var\(--panel-blur\)\)/);
-  assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)/);
-  const pulse = css.slice(css.indexOf("@keyframes orb-pulse"), css.indexOf("@keyframes orb-busy"));
-  assert.match(pulse, /transform:\s*scale\(1\.06\)/);
-  assert.doesNotMatch(pulse, /box-shadow|filter:|blur\(/);
-  const busy = css.slice(css.indexOf("@keyframes orb-busy"), css.indexOf("@media (prefers-reduced-motion"));
-  assert.match(busy, /opacity:/);
-  assert.doesNotMatch(busy, /box-shadow|filter:|blur\(/);
-  assert.doesNotMatch(css, /\.bot-btn\.error \{[^}]*box-shadow/s);
-  assert.doesNotMatch(css, /@keyframes bot-pulse/);
-  const orb = css.slice(css.indexOf(".bot-btn {"), css.indexOf(".bot-btn::before"));
-  assert.match(orb, /will-change:\s*opacity/);
-  assert.match(orb, /contain:\s*layout style/);
-  assert.doesNotMatch(orb, /box-shadow/);
-  assert.match(css, /\.bot-btn::after,\s*\.active-avatar::after,\s*\.float-avatar::after \{[^}]*radial-gradient\(/s);
-  const idleHalo = css.slice(css.indexOf(".bot-btn::after"), css.indexOf(".bot-btn.active::before"));
-  assert.match(idleHalo, /var\(--orb-glare\)/);
-  assert.match(idleHalo, /var\(--orb-core-alpha\)/);
-  assert.match(idleHalo, /transparent 100%/);
-  assert.match(idleHalo, /14%/);
-  assert.match(idleHalo, /circle closest-side/);
-  assert.doesNotMatch(idleHalo, /border-radius/);
-  assert.doesNotMatch(idleHalo, /box-shadow|filter:|black/);
-  assert.doesNotMatch(idleHalo, /--orb-selected-glow/);
-  assert.match(css, /\.bot-btn\.active::after \{[^}]*radial-gradient\(/s);
-  const selectedGlow = css.slice(css.indexOf(".bot-btn.active::after"), css.indexOf(".bot-btn.orb-enter::after"));
-  assert.match(selectedGlow, /transparent 100%/);
-  assert.match(selectedGlow, /inset:\s*calc\(-1 \* var\(--orb-selected-glow-radius\)\)/);
-  assert.match(selectedGlow, /var\(--orb-selected-glow-alpha\)/);
-  assert.match(selectedGlow, /14%/);
-  assert.doesNotMatch(selectedGlow, /black|box-shadow|filter:/);
-  assert.match(css, /\.bot-btn \{[^}]*border:\s*none/s);
-  assert.match(css, /\.bot-btn \{[^}]*text-shadow:/s);
-  assert.match(css, /\.bot-btn \.bot-label \{[^}]*text-shadow:/s);
+test("hud glass drops blur, lime, and 16px panels", () => {
+  assert.doesNotMatch(css, /backdrop-filter/);
+  assert.doesNotMatch(css, /#edff45/);
+  assert.doesNotMatch(css, /border-radius:\s*16px/);
+  assert.match(css, /--glass-fog:\s*rgb\(247 248 248 \/ \.72\)/);
+  assert.match(css, /--bot-20:\s*rgb\(var\(--bot-rgb\) \/ \.20\)/);
+  assert.match(css, /--text:\s*var\(--nous-navy\)/);
+  assert.match(css, /--nous-navy:\s*#000091/);
+  assert.match(css, /--noise:\s*url\("\.\/assets\/noise\.png"\)/);
+  assert.match(css, /--r-panel:\s*10px/);
+  assert.match(css, /--r-sm:\s*3px/);
+  const spring = css.match(/--ease-spring:\s*cubic-bezier\(([^)]+)\)/);
+  assert.ok(spring, "spring easing");
+  const overshoot = Number(spring[1].split(",").pop());
+  assert.ok(overshoot <= 1.05, `spring overshoot ${overshoot}`);
+  assert.match(css, /url\("\.\/assets\/fonts\/barlow-condensed-500\.woff2"\)/);
+  assert.match(css, /url\("\.\/assets\/fonts\/noto-sans-hk-400\.woff2"\)/);
+  assert.doesNotMatch(html, /fonts\.googleapis\.com|fonts\.gstatic\.com/);
+  assert.match(css, /:lang\(en\)/);
+  assert.match(css, /html\.platform-linux \{[^}]*--glass-fog:\s*rgb\(247 248 248 \/ \.92\)/s);
+});
+
+test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.bot-btn \.bot-hit \{[^}]*inset:\s*-12px/s);
   assert.match(css, /\.bot-btn \.bot-hit \{[^}]*border-radius:\s*50%/s);
-  assert.match(css, /\.active-avatar::before,\s*\.float-avatar::before \{[^}]*background:\s*none/s);
-  assert.match(css, /\.center-panel\[hidden\]\s*\{[^}]*display:\s*none/s);
-  assert.match(css, /\.center-panel \{[^}]*translateZ\(0\)/s);
-  assert.doesNotMatch(css.slice(css.indexOf(".center-panel {"), css.indexOf(".center-panel::after")), /var\(--shadow\)/);
-  assert.match(css, /html\.platform-linux \.center-panel[\s\S]*backdrop-filter:\s*none/);
-  assert.doesNotMatch(css, /\.bot-btn\.active::before \{[^}]*animation:/s);
-  assert.match(css, /\.bot-btn\.orb-enter::after,\s*\.bot-btn\.orb-enter\.busy::after \{[^}]*orb-pulse[^;]*\b2\b/s);
-  assert.match(css, /html\.platform-linux \{[^}]*--panel-bg:\s*rgba\(7,\s*8,\s*28,\s*0\.90\)/s);
-  assert.match(css, /html\.platform-linux \{[^}]*--panel-bg-solid:\s*rgba\(8,\s*8,\s*20,\s*0\.90\)/s);
-  assert.match(css, /\.bubble\.bot a:not\(\[href\]\) \{[^}]*color:\s*inherit/s);
-  assert.match(css, /\.slash-popup \{[^}]*background:\s*var\(--panel-bg-solid\)/s);
-  assert.match(css, /\.cmd-chip \{[^}]*font-family:\s*var\(--font-mono\)/s);
-  assert.match(css, /\.slash-ghost \{[^}]*pointer-events:\s*none/s);
-  assert.match(css, /\.slash-ghost\[hidden\] \{[^}]*display:\s*none/s);
+  assert.match(css, /\.bot-btn,[\s\S]*?contain:\s*layout style/);
+  assert.match(css, /\.center-panel\[hidden\][^}]*display:\s*none/s);
+  assert.match(css, /\.bubble\.bot \{[^}]*border-left:\s*2px solid var\(--bot-40\)/s);
+  assert.match(css, /\.bubble\.user \{[^}]*background:\s*var\(--bot-10\)/s);
+  assert.match(css, /\.cmd-chip[^}]*font:\s*400 var\(--fs-meta\)/s);
+  assert.match(css, /\.send-btn \{[^}]*background:\s*var\(--bot\)/s);
+  assert.match(css, /\.toast \{[^}]*max-width:\s*280px/s);
+  assert.match(css, /\.kanban-panel \{[^}]*width:\s*min\(960px, 80vw\)/s);
+  assert.match(css, /\.orb--kanban \.orb-core \{[^}]*rotate\(45deg\)/s);
+  assert.match(css, /\.is-thinking \.spinner \{[^}]*animation:\s*spin 900ms linear infinite/s);
+  assert.match(css, /\.chat-messages\.streaming \.bubble\.bot\[data-live\]::after \{[^}]*infinite/s);
+  assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)/);
+  assert.match(css, /\.is-thinking \.spinner::before \{[^}]*content:\s*"···"/s);
+});
+
+test("idle document.getAnimations has no infinite iterations", () => {
+  const selectors = infiniteSelectors(css);
+  assert.ok(selectors.length >= 2, selectors.join(" | "));
+  for (const selector of selectors) {
+    for (const part of selector.split(",")) {
+      assert.match(part, /\.is-thinking|\.streaming/, part);
+    }
+  }
+  const dom = new JSDOM(`<!doctype html><style>${css}</style><body>
+    <button class="bot-btn"><span class="spinner"></span><span class="orb-core"></span></button>
+    <div class="chat-messages"><div class="bubble bot" data-live="1"></div></div>
+  </body>`);
+  const { document } = dom.window;
+  document.getAnimations = () =>
+    selectors
+      .flatMap((selector) => selector.split(",").map((part) => part.trim().replace(/::[a-z-]+/g, "")))
+      .filter((selector) => {
+        try {
+          return selector && document.querySelector(selector);
+        } catch {
+          return null;
+        }
+      })
+      .map(() => ({ effect: { getTiming: () => ({ iterations: Infinity }) } }));
+  const idle = document.getAnimations().filter((item) => item.effect.getTiming().iterations === Infinity);
+  assert.equal(idle.length, 0);
+  document.querySelector(".bot-btn").classList.add("is-thinking");
+  document.querySelector(".chat-messages").classList.add("streaming");
+  const live = document.getAnimations().filter((item) => item.effect.getTiming().iterations === Infinity);
+  assert.ok(live.length >= 2);
 });
