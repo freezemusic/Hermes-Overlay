@@ -316,8 +316,15 @@ html, body {
 .orb--kanban { --bot: var(--nous-neutral); --bot-rgb: 97 97 145; }
 
 .orb--kanban .orb-core {
-  border-radius: var(--r-xs);
-  transform: rotate(45deg) scale(0.72);
+  border-radius: 2px;
+  transform: rotate(45deg) scale(0.62);
+  background: #fff;
+  border: 1.5px solid var(--bot);
+  box-shadow: 0 0 0 2px #fff, 0 0 10px rgb(var(--bot-rgb) / .55);
+}
+
+.orb--kanban.active .orb-core {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 3px var(--bot-40), var(--glow-md);
 }
 
 .orb--kanban.orb-enter .orb-core { animation: none; }
@@ -334,9 +341,17 @@ html, body {
 
 .bot-btn .spinner {
   position: absolute;
-  top: -2px;
-  right: -2px;
-  z-index: 3;
+  inset: -3px;
+  width: auto;
+  height: auto;
+  z-index: 4;
+  pointer-events: none;
+  background: none;
+  -webkit-mask: none;
+  mask: none;
+  border-radius: 50%;
+  border: 2px solid rgb(var(--bot-rgb) / .28);
+  border-top-color: var(--bot);
 }
 
 .is-thinking .spinner {
@@ -446,7 +461,16 @@ html, body {
   color: var(--text-muted);
 }
 
-.bot-status .spinner { position: static; flex: none; }
+.bot-status .spinner {
+  position: static;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: conic-gradient(var(--bot), rgb(var(--bot-rgb) / .45) 40%, transparent 70%);
+  -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px);
+  mask: radial-gradient(circle, transparent 5px, #000 5.5px);
+}
 
 .interact-hint,
 .hint {
@@ -1009,6 +1033,7 @@ html, body {
   border-left: 2px solid var(--owner, var(--bot));
   border-radius: var(--r-sm);
   cursor: grab;
+  touch-action: none;
   transition: transform var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-out);
 }
 
@@ -1044,6 +1069,14 @@ html, body {
   color: var(--bot);
 }
 
+.kanban-error {
+  margin: 0 var(--sp-3) var(--sp-2);
+  padding: 6px 8px;
+  border-left: 2px solid var(--nous-red);
+  color: var(--nous-red);
+  font: 400 var(--fs-meta)/1.4 var(--font-body);
+}
+
 :lang(en) .panel-title,
 :lang(en) .bot-meta h1,
 :lang(en) .section-label,
@@ -1053,14 +1086,16 @@ html, body {
 :lang(en) .bot-label,
 :lang(en) .slash-cat,
 :lang(en) .toast-name,
-:lang(en) .kanban-col-head {
+:lang(en) .kanban-col-head,
+.kanban-col-head:lang(en) {
   letter-spacing: var(--track-label);
   text-transform: uppercase;
 }
 
 :lang(en) .panel-title,
 :lang(en) .bot-meta h1,
-:lang(en) .kanban-col-head { letter-spacing: var(--track-display); }
+:lang(en) .kanban-col-head,
+.kanban-col-head:lang(en) { letter-spacing: var(--track-display); }
 
 [data-hit-id] {
   opacity: var(--hit-opacity, 1);
@@ -1158,6 +1193,9 @@ html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: au
   .is-thinking .spinner {
     animation: none;
     opacity: 0.6;
+  }
+  .center-panel.is-thinking .spinner,
+  .is-thinking .bot-status .spinner {
     background: none;
     -webkit-mask: none;
     mask: none;
@@ -1165,7 +1203,8 @@ html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: au
     height: auto;
     border-radius: 0;
   }
-  .is-thinking .spinner::before {
+  .center-panel.is-thinking .spinner::before,
+  .is-thinking .bot-status .spinner::before {
     content: "···";
     color: var(--bot);
     font: 400 var(--fs-meta)/1 var(--font-mono);

@@ -1253,6 +1253,72 @@ fn failure_detail(payload: &Value, prior: Option<&str>) -> String {
     clip(&parts.join("\n\n"), 2000)
 }
 
+fn json_error_reason(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            return String::new();
+        }
+        return clip(trimmed, 180);
+    };
+    reason_from_json(&value)
+}
+
+fn reason_from_json(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        let text = text.trim();
+        if text.is_empty() || text == "null" {
+            return String::new();
+        }
+        return clip(text, 180);
+    }
+    let Some(obj) = value.as_object() else {
+        return String::new();
+    };
+    for key in ["error", "message", "reason", "detail"] {
+        if let Some(found) = obj.get(key) {
+            let text = reason_from_json(found);
+            if !text.is_empty() {
+                return text;
+            }
+        }
+    }
+    String::new()
+}
+
+/// Copy for a rejected kanban move. 409/422 keep the plugin reason and drop raw JSON.
+pub fn kanban_move_error(err: &HermesError) -> String {
+    match err {
+        HermesError::Http { status, body } => {
+            let reason = json_error_reason(body);
+            let rejected = matches!(*status, 400 | 409 | 422);
+            if reason.is_empty() {
+                if rejected {
+                    format!("看板拒絕呢次移動（{status}）。")
+                } else {
+                    "看板更新失敗。".into()
+                }
+            } else if rejected {
+                format!("看板拒絕呢次移動：{reason}")
+            } else {
+                format!("看板更新失敗：{reason}")
+            }
+        }
+        HermesError::Protocol(msg) => format!("看板更新失敗：{msg}"),
+        other => {
+            let text = explain(other);
+            if text.contains('{') {
+                "看板更新失敗。".into()
+            } else {
+                text
+            }
+        }
+    }
+}
+
 pub fn explain(err: &HermesError) -> String {
     match err {
         HermesError::Http { status: 401, .. } => {
@@ -1694,5 +1760,31 @@ data: {\"completed\":true}\n\
             matches!(seen[1], TurnEvent::Tool { ref phase, ref preview, .. } if phase == "progress" && preview == "讀緊")
         );
         assert!(matches!(seen[2], TurnEvent::Delta(ref text) if text == "好"));
+    }
+
+    #[test]
+    fn kanban_move_error_surfaces_409_and_422_reasons() {
+        let conflict = HermesError::Http {
+            status: 409,
+            body: r#"{"error":"completion blocked: no result"}"#.into(),
+        };
+        let text = kanban_move_error(&conflict);
+        assert_eq!(text, "看板拒絕呢次移動：completion blocked: no result");
+        assert!(!text.contains('{'));
+        let unprocessable = HermesError::Http {
+            status: 422,
+            body: r#"{"error":{"message":"needs a summary","code":"kanban_conflict"}}"#.into(),
+        };
+        assert_eq!(
+            kanban_move_error(&unprocessable),
+            "看板拒絕呢次移動：needs a summary"
+        );
+        let crashed = HermesError::Http {
+            status: 500,
+            body: r#"{"error":{"message":"overlay-slash failed","type":"server_error"}}"#.into(),
+        };
+        let crashed_text = kanban_move_error(&crashed);
+        assert_eq!(crashed_text, "看板更新失敗：overlay-slash failed");
+        assert!(!crashed_text.contains('{'));
     }
 }

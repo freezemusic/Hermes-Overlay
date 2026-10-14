@@ -6,6 +6,7 @@ import {
   emptyActivity,
   pushToast,
   reduceActivity,
+  statusAfterWatchdog,
   toastAnchor,
   toastSide,
 } from "./activity.js";
@@ -49,6 +50,17 @@ test("thinking follows send, tools, tokens, and terminal events", () => {
 
   step = reduceActivity({ thinking: true, streaming: true, deadline: 1 }, { type: "watchdog" }, 90_000);
   assert.deepEqual(step.state, emptyActivity());
+
+  const quiet = reduceActivity(emptyActivity(), { type: "tool.progress", name: "_thinking", text: "_thinking" }, 5000);
+  assert.equal(quiet.state.thinking, true);
+  assert.equal(quiet.toast, null);
+  assert.equal(quiet.unread, false);
+  assert.equal(quiet.state.deadline, 5000 + THINKING_WATCHDOG_MS);
+  const reasoning = reduceActivity(emptyActivity(), { type: "tool.progress", name: "reasoning", text: "reasoning" }, 1);
+  assert.equal(reasoning.toast, null);
+  assert.equal(reasoning.unread, false);
+  assert.equal(statusAfterWatchdog("思考中…"), "等候中");
+  assert.equal(statusAfterWatchdog("閒置"), "閒置");
 });
 
 test("toasts stack to three and sit away from the screen edge", () => {

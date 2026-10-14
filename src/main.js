@@ -4,13 +4,14 @@
  * Gateway keys stay in the Rust process; this file only sees has_key.
  */
 
-import { reduceActivity, toastAnchor, TOAST_MS } from "./activity.js";
+import { reduceActivity, statusAfterWatchdog, toastAnchor, TOAST_MS } from "./activity.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_BOARD,
   KANBAN_EMPTY,
   KANBAN_POLL_MS,
   boardFingerprint,
+  kanbanErrorText,
   moveTask,
   normalizeBoard,
   ownerColor,
@@ -257,7 +258,7 @@ const state = {
   reconnectToken: 0,
   reconnectTimer: 0,
   kanbanOpen: false,
-  kanban: { board: null, fingerprint: "", unread: false, saving: false },
+  kanban: { board: null, fingerprint: "", unread: false, saving: false, dragging: false },
   kanbanTimer: 0,
   toastSeq: 0,
 };
@@ -349,7 +350,7 @@ function renderBots() {
     const keepEnter = btn.classList.contains("orb-enter") && bot.id === state.activeId;
     const classes = ["bot-btn"];
     if (bot.id === state.activeId && !state.kanbanOpen) classes.push("active");
-    if (thread.activity?.thinking) classes.push("is-thinking");
+    if (orbIsThinking(thread)) classes.push("is-thinking");
     if (thread.unread) classes.push("has-unread");
     if (thread.statusState === "error") classes.push("error");
     if (bot.id === pulseId || keepEnter) classes.push("orb-enter");
@@ -707,7 +708,7 @@ function handleHermes(payload) {
     const preview = payload.preview ? ` — ${payload.preview}` : "";
     const text = `${payload.name || "tool"}${preview}`;
     if (payload.phase === "progress") {
-      noteActivity(id, { type: "tool.progress", text });
+      noteActivity(id, { type: "tool.progress", name: payload.name || "", text });
       return;
     }
     noteActivity(id, { type: "tool" });
@@ -1689,6 +1690,10 @@ function cssEscape(value) {
   return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
 
+function orbIsThinking(thread) {
+  return !!(thread?.activity?.thinking || thread?.statusState === "busy");
+}
+
 function syncActivityChrome() {
   const activity = state.activeId ? threadFor(state.activeId).activity : null;
   $("#center-panel")?.classList.toggle("is-thinking", !!activity?.thinking);
@@ -1698,7 +1703,7 @@ function syncActivityChrome() {
 function paintActivity(id) {
   const thread = threadFor(id);
   const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
-  btn?.classList.toggle("is-thinking", !!thread.activity?.thinking);
+  btn?.classList.toggle("is-thinking", orbIsThinking(thread));
   btn?.classList.toggle("has-unread", !!thread.unread);
   if (id === state.activeId) syncActivityChrome();
 }
@@ -1714,6 +1719,13 @@ function noteActivity(id, event) {
   const thread = threadFor(id);
   const step = reduceActivity(thread.activity, event, Date.now());
   thread.activity = step.state;
+  if (event.type === "watchdog") {
+    const next = statusAfterWatchdog(thread.status);
+    if (next !== thread.status) {
+      thread.status = next;
+      if (id === state.activeId) setStatusText(next);
+    }
+  }
   if (step.unread) thread.unread = true;
   paintActivity(id);
   if (step.state.deadline) armWatchdog(id, step.state.deadline);
@@ -1847,6 +1859,13 @@ function openKanban() {
 function closeKanban() {
   state.kanbanOpen = false;
   stopKanbanPoll();
+  if (kanbanDrag) {
+    kanbanDrag.ghost?.remove();
+    kanbanDrag.card?.classList.remove("is-dragging");
+    kanbanDrag = null;
+    state.kanban.dragging = false;
+  }
+  setKanbanError("");
   const panel = $("#kanban-panel");
   if (panel) panel.hidden = true;
   renderBots();
@@ -1867,7 +1886,7 @@ function stopKanbanPoll() {
 }
 
 async function refreshKanban() {
-  if (state.kanban.saving) return;
+  if (state.kanban.saving || state.kanban.dragging) return;
   let payload;
   if (state.mode !== "hermes" || !inTauri()) {
     payload = state.kanban.board || mockKanban();
@@ -1924,6 +1943,7 @@ function paintKanban(board) {
     head.className = "kanban-col-head";
     head.lang = "en";
     const name = document.createElement("span");
+    name.lang = "en";
     name.textContent = column.name;
     const count = document.createElement("small");
     count.textContent = String(column.tasks.length);
@@ -1931,17 +1951,6 @@ function paintKanban(board) {
     const list = document.createElement("div");
     column.tasks.forEach((task) => list.appendChild(kanbanCard(task)));
     col.append(head, list);
-    col.addEventListener("dragover", (event) => {
-      event.preventDefault();
-      col.classList.add("is-drop-target");
-    });
-    col.addEventListener("dragleave", () => col.classList.remove("is-drop-target"));
-    col.addEventListener("drop", (event) => {
-      event.preventDefault();
-      col.classList.remove("is-drop-target");
-      const taskId = event.dataTransfer?.getData("text/plain");
-      if (taskId) dropKanban(taskId, column.name);
-    });
     root.appendChild(col);
   });
   scheduleHitSync();
@@ -1950,7 +1959,6 @@ function paintKanban(board) {
 function kanbanCard(task) {
   const card = document.createElement("article");
   card.className = "kanban-card";
-  card.draggable = true;
   card.dataset.taskId = task.id;
   card.style.setProperty("--owner", ownerColor(task.assignee, state.bots));
   const title = document.createElement("p");
@@ -1971,21 +1979,103 @@ function kanbanCard(task) {
     meta.appendChild(chip);
   }
   card.append(title, meta);
-  card.addEventListener("dragstart", (event) => {
-    card.classList.add("is-dragging");
-    event.dataTransfer?.setData("text/plain", task.id);
-    event.dataTransfer.effectAllowed = "move";
-  });
-  card.addEventListener("dragend", () => card.classList.remove("is-dragging"));
+  card.addEventListener("pointerdown", (event) => startKanbanPointer(event, card, task.id));
   return card;
+}
+
+function setKanbanError(text) {
+  const node = $("#kanban-error");
+  if (!node) return;
+  const message = String(text || "").trim();
+  node.hidden = !message;
+  node.textContent = message;
+}
+
+let kanbanDrag = null;
+
+function columnAt(x, y) {
+  const stack = document.elementsFromPoint?.(x, y) || [];
+  for (const el of stack) {
+    const col = el.closest?.(".kanban-col");
+    if (col) return col;
+  }
+  return null;
+}
+
+function clearKanbanTargets() {
+  document.querySelectorAll(".kanban-col.is-drop-target").forEach((el) => el.classList.remove("is-drop-target"));
+}
+
+function startKanbanPointer(event, card, taskId) {
+  if (event.button !== 0 || kanbanDrag) return;
+  kanbanDrag = {
+    id: taskId,
+    pointerId: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    moved: false,
+    card,
+    ghost: null,
+  };
+  card.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+}
+
+function moveKanbanPointer(event) {
+  const drag = kanbanDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const dx = event.clientX - drag.x;
+  const dy = event.clientY - drag.y;
+  if (!drag.moved && Math.hypot(dx, dy) < 6) return;
+  if (!drag.moved) {
+    drag.moved = true;
+    state.kanban.dragging = true;
+    drag.card.classList.add("is-dragging");
+    const ghost = drag.card.cloneNode(true);
+    ghost.classList.add("kanban-ghost");
+    ghost.style.position = "fixed";
+    ghost.style.width = `${drag.card.offsetWidth}px`;
+    ghost.style.pointerEvents = "none";
+    ghost.style.zIndex = "50";
+    ghost.style.margin = "0";
+    document.body.appendChild(ghost);
+    drag.ghost = ghost;
+  }
+  drag.ghost.style.left = `${event.clientX + 8}px`;
+  drag.ghost.style.top = `${event.clientY + 8}px`;
+  const col = columnAt(event.clientX, event.clientY);
+  clearKanbanTargets();
+  col?.classList.add("is-drop-target");
+}
+
+function endKanbanPointer(event) {
+  const drag = kanbanDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const drop = event.type !== "pointercancel" && drag.moved;
+  const col = drop ? columnAt(event.clientX, event.clientY) : null;
+  const status = col?.dataset.status || "";
+  kanbanDrag = null;
+  state.kanban.dragging = false;
+  drag.card.classList.remove("is-dragging");
+  drag.ghost?.remove();
+  clearKanbanTargets();
+  try {
+    drag.card.releasePointerCapture?.(event.pointerId);
+  } catch {
+    /* capture already released */
+  }
+  if (status) dropKanban(drag.id, status);
 }
 
 async function dropKanban(taskId, status) {
   const previous = state.kanban.board;
   if (!previous || previous.unavailable) return;
+  const current = (previous.columns || []).flatMap((column) => column.tasks || []).find((task) => task.id === taskId);
+  if (current && current.status === status) return;
   const next = moveTask(previous, taskId, status);
   state.kanban.board = next;
   state.kanban.fingerprint = boardFingerprint(next);
+  setKanbanError("");
   paintKanban(next);
   if (state.mode !== "hermes" || !inTauri()) return;
   state.kanban.saving = true;
@@ -1996,7 +2086,7 @@ async function dropKanban(taskId, status) {
     state.kanban.board = previous;
     state.kanban.fingerprint = boardFingerprint(previous);
     paintKanban(previous);
-    setBanner(String(err), "error");
+    setKanbanError(kanbanErrorText(err));
   } finally {
     state.kanban.saving = false;
   }
@@ -2007,6 +2097,9 @@ async function boot() {
   setupWindowChrome();
   setupProximity();
   $("#btn-kanban-close")?.addEventListener("click", () => closeKanban());
+  window.addEventListener("pointermove", moveKanbanPointer);
+  window.addEventListener("pointerup", endKanbanPointer);
+  window.addEventListener("pointercancel", endKanbanPointer);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stopKanbanPoll();
     else if (state.kanbanOpen) {

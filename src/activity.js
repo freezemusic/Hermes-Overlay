@@ -11,10 +11,26 @@ export function emptyActivity() {
 /**
  * send / run.started -> thinking.
  * tool.progress keeps the spinner and raises a toast.
+ * Names starting with "_" (and "reasoning") stay internal: spinner only.
  * assistant delta -> streaming (spinner off).
  * completed / failed / cancelled / watchdog clear both.
  * Any live event resets the 90s deadline.
  */
+export function isInternalProgress(event) {
+  const name = String(event?.name || "").trim();
+  const text = String(event?.text || "").trim();
+  const head = name || text.split(/\s|—/)[0] || "";
+  if (!head) return false;
+  return head.startsWith("_") || /^reasoning$/i.test(head);
+}
+
+/** After the watchdog, replace a 思考中 label. The run may still be busy. */
+export function statusAfterWatchdog(current) {
+  const text = String(current || "");
+  if (text.includes("思考中")) return "等候中";
+  return text;
+}
+
 export function reduceActivity(state, event, now = 0) {
   const current = state || emptyActivity();
   const live = (patch) => ({
@@ -26,12 +42,14 @@ export function reduceActivity(state, event, now = 0) {
     case "send":
     case "run.started":
       return { state: live({ thinking: true, streaming: false }), toast: null, unread: false };
-    case "tool.progress":
+    case "tool.progress": {
+      const quiet = isInternalProgress(event);
       return {
         state: live({ thinking: true, streaming: false }),
-        toast: { kind: "tool", text: event.text || "工具" },
-        unread: true,
+        toast: quiet ? null : { kind: "tool", text: event.text || "工具" },
+        unread: !quiet,
       };
+    }
     case "tool":
       return {
         state: live({

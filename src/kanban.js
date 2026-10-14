@@ -73,6 +73,35 @@ export function moveTask(board, taskId, status) {
   return { ...board, columns: columnsFromTasks(tasks), unavailable: false, message: "" };
 }
 
+function reasonFromJson(value) {
+  if (typeof value === "string") return value.trim();
+  if (!value || typeof value !== "object") return "";
+  for (const key of ["error", "message", "reason", "detail"]) {
+    if (value[key] == null) continue;
+    const found = reasonFromJson(value[key]);
+    if (found && found !== "null") return found;
+  }
+  return "";
+}
+
+/** Board copy for a failed move. 409/422 reasons stay; raw JSON does not. */
+export function kanbanErrorText(err) {
+  const raw = String(err && err.message ? err.message : err || "").trim();
+  const start = raw.indexOf("{");
+  let reason = "";
+  if (start >= 0) {
+    try {
+      reason = reasonFromJson(JSON.parse(raw.slice(start)));
+    } catch {
+      reason = "";
+    }
+  }
+  const rejected = /\b(409|422)\b/.test(raw);
+  if (reason) return rejected ? `看板拒絕呢次移動：${reason}` : `看板更新失敗：${reason}`;
+  if (raw.includes("{")) return rejected ? "看板拒絕呢次移動。" : "看板更新失敗。";
+  return raw || "看板更新失敗。";
+}
+
 export function ownerColor(assignee, bots, fallback = "#616191") {
   const name = String(assignee || "").trim().toLowerCase();
   if (!name) return fallback;

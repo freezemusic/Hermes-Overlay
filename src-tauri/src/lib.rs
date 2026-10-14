@@ -987,7 +987,7 @@ async fn patch_kanban_task(
     }
     hermes::patch_kanban_task(&state.http, &root, &key, id.trim(), &body)
         .await
-        .map_err(|err| explain(&err))
+        .map_err(|err| hermes::kanban_move_error(&err))
 }
 
 #[derive(Deserialize)]

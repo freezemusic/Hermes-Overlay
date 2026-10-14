@@ -7,6 +7,7 @@ import {
   columnsFromTasks,
   moveTask,
   normalizeBoard,
+  kanbanErrorText,
   ownerColor,
 } from "./kanban.js";
 
@@ -48,4 +49,14 @@ test("404 is an empty state and owner colour follows the bot", () => {
   assert.equal(ownerColor("計劃助手", [{ name: "計劃助手", color: "#0000f2" }]), "#0000f2");
   assert.equal(ownerColor("coder", [{ id: "coder", color: "#00f2f2" }]), "#00f2f2");
   assert.equal(ownerColor("", []), "#616191");
+  assert.equal(
+    kanbanErrorText('Gateway 回應 409。{"error":"completion blocked: no result"}'),
+    "看板拒絕呢次移動：completion blocked: no result",
+  );
+  assert.equal(
+    kanbanErrorText('{"error":{"message":"needs a summary","code":"kanban_conflict"}}'),
+    "看板更新失敗：needs a summary",
+  );
+  assert.equal(kanbanErrorText("看板拒絕呢次移動：已有人做"), "看板拒絕呢次移動：已有人做");
+  assert.equal(kanbanErrorText("{not json"), "看板更新失敗。");
 });
