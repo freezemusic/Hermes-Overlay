@@ -4,7 +4,7 @@
  * Gateway keys stay in the Rust process; this file only sees has_key.
  */
 
-import { orbMotion, reduceActivity, statusAfterWatchdog, toastAnchor, TOAST_MS } from "./activity.js";
+import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, toastAnchor, TOAST_MS } from "./activity.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_BOARD,
@@ -1782,7 +1782,7 @@ function showToast(id, toast) {
   if (bot?.name && /^[\x00-\x7F]+$/.test(bot.name)) name.lang = "en";
   const time = document.createElement("time");
   time.dateTime = new Date().toISOString();
-  time.textContent = new Date().toLocaleTimeString("zh-HK", { hour: "2-digit", minute: "2-digit" });
+  time.textContent = formatToastClock(new Date());
   kicker.append(name, time);
   const body = document.createElement("span");
   body.className = "toast-body";

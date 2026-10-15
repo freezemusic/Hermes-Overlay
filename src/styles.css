@@ -1,5 +1,10 @@
 /* HUD glass. OFL faces live in ./assets/fonts (offline). Rules and Aeonik are not bundled.
-   Tones are rgb(var(--bot-rgb) / a) so older WebKitGTK can paint them. */
+   Tones are rgb(var(--bot-rgb) / a) so older WebKitGTK can paint them.
+   v20 rulings: fog rgb(247 248 248 / .88) or denser; ink #000091 / #1a1a1a;
+   panels 1px #0000f2 hairline + HUD corners, radius ≤ 3px;
+   popout shadow only (0 4px 40px rgb(0 0 145 / .6));
+   hover/press 120–200ms, panel/toast entrance .48s ease-out, no spring and no scale;
+   CJK stays untracked — uppercase and letter-spacing only under :lang(en). */
 
 @font-face {
   font-family: "Big Shoulders Display";
@@ -87,16 +92,17 @@
   --bot-80: rgb(var(--bot-rgb) / .80);
   --bot-color: var(--bot);
 
-  --glass-fog: rgb(247 248 248 / .72);
-  --glass-fog-soft: rgb(247 248 248 / .55);
+  --glass-fog: rgb(247 248 248 / .88);
+  --glass-fog-soft: rgb(247 248 248 / .88);
   --glass-sheen: linear-gradient(180deg, rgb(255 255 255 / .70) 0%, rgb(255 255 255 / 0) 38%);
   --glass-tint: linear-gradient(160deg, var(--bot-5), transparent 60%);
   --glass-edge: 1px solid var(--bot-20);
   --glass-inner: inset 0 0 0 1px rgb(255 255 255 / .55), inset 0 0 24px var(--bot-5);
   --glass-glow: 0 0 0 1px var(--bot-10), 0 8px 32px -8px var(--bot-20);
   --noise: url("./assets/noise.png");
-  --text: var(--nous-navy);
-  --text-muted: rgb(0 0 145 / .58);
+  --text: #000091;
+  --text-body: #1a1a1a;
+  --text-muted: #616191;
   --text-ink: var(--bot);
 
   --font-display: "Big Shoulders Display", "Antonio", "Noto Sans HK", sans-serif;
@@ -130,23 +136,22 @@
 
   --r-xs: 2px;
   --r-sm: 3px;
-  --r-lg: 6px;
-  --r-panel: 10px;
+  --r-lg: 6px; /* large popout only; panels and controls stay ≤ 3px */
+  --r-panel: 3px;
   --radius-xs: var(--r-xs);
   --radius-sm: var(--r-sm);
   --hair: 1px solid var(--bot-20);
   --hairline: var(--bot-20);
 
   --glow-sm: 0 0 8px var(--bot-40);
-  --glow-md: 0 0 18px var(--bot-40), 0 0 2px var(--bot-60);
-  --shadow-float: 0 12px 40px -12px rgb(20 20 122 / .25);
+  --shadow-pop: 0 4px 40px rgb(0 0 145 / .6);
 
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-  --ease-spring: cubic-bezier(0.2, 0.8, 0.2, 1.05);
   --dur-1: 120ms;
   --dur-2: 200ms;
   --dur-3: 320ms;
+  --dur-enter: 0.48s;
   --dur-4: 600ms;
 
   --brand: var(--nous-blue);
@@ -167,10 +172,10 @@
   line-height: var(--lh-body);
 }
 
-/* Linux uses a denser paper fog. The panels stay flat, with no blur layer. */
+/* Linux WebKitGTK does not paint a blur layer, so the paper fog is denser. */
 html.platform-linux {
   --glass-fog: rgb(247 248 248 / .92);
-  --glass-fog-soft: rgb(247 248 248 / .86);
+  --glass-fog-soft: rgb(247 248 248 / .92);
 }
 
 * { box-sizing: border-box; }
@@ -235,8 +240,8 @@ html, body {
   z-index: -1;
   border-radius: 50%;
   pointer-events: none;
-  background: radial-gradient(circle, var(--bot-40) 0%, var(--bot-10) 40%, transparent 70%);
-  opacity: 0.6;
+  background: radial-gradient(circle, rgb(var(--bot-rgb) / .14) 0%, rgb(var(--bot-rgb) / .04) 48%, transparent 74%);
+  opacity: 0.85;
   transition: opacity var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 
@@ -245,7 +250,8 @@ html, body {
   inset: 0;
   border-radius: 50%;
   pointer-events: none;
-  background: radial-gradient(circle, #fff 0 30%, rgb(255 255 255 / .9) 38%, var(--bot-20) 55%, transparent 72%);
+  background: radial-gradient(circle, #fff 0 36%, rgb(255 255 255 / .92) 50%, rgb(255 255 255 / .2) 68%, transparent 80%);
+  box-shadow: none;
 }
 
 .orb-glyph {
@@ -269,11 +275,15 @@ html, body {
   margin-top: 6px;
   left: 50%;
   transform: translateX(-50%);
+  padding: 1px 4px;
+  border: 1px solid rgb(0 0 242 / .35);
+  border-radius: 2px;
+  background: rgb(247 248 248 / .92);
   font: 500 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   text-transform: none;
   white-space: nowrap;
-  color: var(--text-muted);
+  color: #000091;
   text-shadow: 0 0 4px #fff, 0 0 2px #fff;
   pointer-events: none;
 }
@@ -282,7 +292,7 @@ html, body {
 .bot-btn:hover .bot-label { color: var(--bot); }
 
 .bot-btn.active .orb-core {
-  box-shadow: 0 0 0 1px var(--bot-40), var(--glow-md);
+  box-shadow: none;
 }
 
 .bot-btn.orb-enter .orb-core {
@@ -316,20 +326,22 @@ html, body {
 .orb--kanban { --bot: var(--nous-neutral); --bot-rgb: 97 97 145; }
 
 .orb--kanban .orb-core {
+  inset: 11px;
   border-radius: 2px;
-  transform: rotate(45deg) scale(0.62);
+  transform: rotate(45deg);
   background: #fff;
-  border: 3px solid #0e0e24;
-  box-shadow:
-    0 0 0 2px #fff,
-    0 0 0 5px rgb(0 0 0 / .72);
+  border: 1px solid #616191;
+  box-shadow: none;
+}
+
+.orb--kanban .orb-glyph {
+  color: #616191;
+  text-shadow: none;
 }
 
 .orb--kanban.active .orb-core {
-  box-shadow:
-    0 0 0 2px #fff,
-    0 0 0 5px rgb(0 0 0 / .72),
-    var(--glow-md);
+  border-color: #616191;
+  box-shadow: none;
 }
 
 .orb--kanban.orb-enter .orb-core { animation: none; }
@@ -339,14 +351,14 @@ html, body {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: conic-gradient(var(--bot), rgb(var(--bot-rgb) / .45) 40%, transparent 70%);
-  -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px);
-  mask: radial-gradient(circle, transparent 5px, #000 5.5px);
+  background: conic-gradient(var(--bot-60), transparent 70%);
+  -webkit-mask: radial-gradient(circle, transparent 6px, #000 6.5px);
+  mask: radial-gradient(circle, transparent 6px, #000 6.5px);
 }
 
 .bot-btn .spinner {
   position: absolute;
-  inset: -3px;
+  inset: -2px;
   width: auto;
   height: auto;
   z-index: 4;
@@ -355,8 +367,10 @@ html, body {
   -webkit-mask: none;
   mask: none;
   border-radius: 50%;
-  border: 2px solid rgb(var(--bot-rgb) / .28);
-  border-top-color: var(--bot);
+  border: 1px solid transparent;
+  border-top-color: var(--bot-60);
+  border-left-color: var(--bot-60);
+  box-shadow: none;
 }
 
 .is-thinking .spinner {
@@ -376,7 +390,7 @@ html, body {
 .center-panel,
 .settings-card {
   position: relative;
-  border: var(--hair);
+  border: 1px solid var(--nous-blue);
   border-radius: var(--r-panel);
   background:
     var(--glass-sheen),
@@ -385,10 +399,10 @@ html, body {
     linear-gradient(90deg, var(--grid-line) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
     var(--noise),
     var(--glass-fog);
-  box-shadow: var(--glass-inner), var(--shadow-float);
+  box-shadow: var(--glass-inner);
   color: var(--text);
   font: 400 var(--fs-body)/var(--lh-body) var(--font-body);
-  animation: panel-in var(--dur-3) var(--ease-spring) 1 both;
+  animation: panel-in var(--dur-enter) var(--ease-out) 1 both;
 }
 
 .center-panel {
@@ -411,7 +425,7 @@ html, body {
   left: max(16px, calc((100% - min(960px, 80vw)) / 2));
   width: min(960px, 80vw);
   height: min(80vh, 760px);
-  --grid-line: var(--bot-10);
+  --grid-line: var(--bot-5);
 }
 
 .hud-corner {
@@ -419,7 +433,7 @@ html, body {
   width: 8px;
   height: 8px;
   pointer-events: none;
-  border: 1px solid var(--bot-40);
+  border: 1px solid var(--nous-blue);
   z-index: 2;
 }
 
@@ -479,9 +493,9 @@ html, body {
   width: 14px;
   height: 14px;
   border: none;
-  background: conic-gradient(var(--bot), rgb(var(--bot-rgb) / .45) 40%, transparent 70%);
-  -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px);
-  mask: radial-gradient(circle, transparent 5px, #000 5.5px);
+  background: conic-gradient(var(--bot-60), transparent 70%);
+  -webkit-mask: radial-gradient(circle, transparent 6px, #000 6.5px);
+  mask: radial-gradient(circle, transparent 6px, #000 6.5px);
 }
 
 .interact-hint,
@@ -511,14 +525,14 @@ html, body {
   height: 28px;
   padding: 0 var(--sp-3);
   border-radius: var(--r-sm);
-  border: var(--hair);
-  background: transparent;
-  color: var(--bot);
+  border: 1px solid var(--nous-blue);
+  background: rgb(255 255 255 / .94);
+  color: #000091;
   font: 500 var(--fs-ui)/1 var(--font-label);
   letter-spacing: 0;
   text-transform: none;
   cursor: pointer;
-  transition: background-color var(--dur-1) var(--ease-out);
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-2) var(--ease-out);
 }
 
 .icon-btn:hover { background: var(--bot-10); }
@@ -546,7 +560,7 @@ html, body {
   font: 500 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   text-transform: none;
-  color: var(--bot-80);
+  color: var(--nous-blue);
 }
 
 .section-label::before,
@@ -611,15 +625,16 @@ html, body {
   font-size: var(--fs-body);
   line-height: var(--lh-body);
   word-break: break-word;
-  color: var(--text);
+  color: #1a1a1a;
   animation: msg-in var(--dur-2) var(--ease-out) 1 both;
 }
 
 .bubble.bot {
   align-self: flex-start;
-  background: rgb(255 255 255 / .45);
+  background: rgb(255 255 255 / .94);
   border: none;
   border-left: 2px solid var(--bot-40);
+  color: #1a1a1a;
   white-space: normal;
   overflow-wrap: break-word;
 }
@@ -730,9 +745,9 @@ html, body {
   align-self: flex-end;
   margin-left: auto;
   max-width: 85%;
-  background: var(--bot-10);
-  border: var(--hair);
-  color: var(--bot);
+  background: rgb(var(--bot-rgb) / .22);
+  border: 1px solid var(--bot-60);
+  color: #000091;
 }
 
 .user-line { white-space: pre-wrap; }
@@ -796,11 +811,11 @@ html, body {
 .bot-row input {
   height: 36px;
   padding: 0 var(--sp-3);
-  background: rgb(255 255 255 / .6);
-  border: var(--hair);
+  background: rgb(255 255 255 / .96);
+  border: 1px solid var(--bot-60);
   border-radius: var(--r-sm);
   font: 400 var(--fs-body) var(--font-body);
-  color: var(--text);
+  color: #1a1a1a;
   outline: none;
   transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
 }
@@ -823,8 +838,8 @@ html, body {
   appearance: none;
   -webkit-appearance: none;
   color-scheme: light;
-  background-color: rgb(255 255 255 / .6);
-  color: var(--text);
+  background-color: rgb(255 255 255 / .96);
+  color: #1a1a1a;
   padding-right: 28px;
   background-image: linear-gradient(45deg, transparent 50%, var(--bot) 50%),
     linear-gradient(135deg, var(--bot) 50%, transparent 50%);
@@ -864,7 +879,7 @@ html, body {
   border-radius: var(--r-sm);
   background: var(--glass-sheen), var(--noise), var(--glass-fog);
   color: var(--text);
-  box-shadow: var(--glass-inner), var(--shadow-float);
+  box-shadow: var(--glass-inner), var(--shadow-pop);
 }
 
 .slash-cat,
@@ -966,12 +981,12 @@ html, body {
   border-left: 2px solid var(--bot);
   border-radius: var(--r-sm);
   background: var(--glass-sheen), var(--noise), var(--glass-fog-soft);
-  box-shadow: var(--glass-inner), var(--shadow-float);
-  color: var(--text);
+  box-shadow: var(--glass-inner), var(--shadow-pop);
+  color: #000091;
   text-align: left;
   cursor: pointer;
   pointer-events: auto;
-  animation: toast-in var(--dur-3) var(--ease-spring) 1 both;
+  animation: toast-in var(--dur-enter) var(--ease-out) 1 both;
 }
 
 .toast[data-side="left"] { --tx: -12px; }
@@ -1023,7 +1038,7 @@ html, body {
   font: 500 var(--fs-hero)/1 var(--font-display);
   letter-spacing: 0;
   text-transform: none;
-  color: var(--bot);
+  color: var(--nous-blue);
   padding: var(--sp-3) var(--sp-2);
   border-bottom: var(--hair);
   display: flex;
@@ -1040,7 +1055,7 @@ html, body {
 .kanban-card {
   margin: var(--sp-2);
   padding: var(--sp-3);
-  background: rgb(255 255 255 / .55);
+  background: rgb(255 255 255 / .94);
   border: var(--hair);
   border-left: 2px solid var(--owner, var(--bot));
   border-radius: var(--r-sm);
@@ -1064,7 +1079,7 @@ html, body {
 .kanban-title {
   margin: 0 0 6px;
   font-size: var(--fs-body);
-  color: var(--text);
+  color: #1a1a1a;
 }
 
 .kanban-meta {
@@ -1078,7 +1093,7 @@ html, body {
 .kanban-empty {
   margin: var(--sp-6) var(--sp-2);
   font: 500 var(--fs-hero)/1 var(--font-display);
-  color: var(--bot);
+  color: var(--nous-blue);
 }
 
 .kanban-error {
@@ -1144,6 +1159,7 @@ html, body {
   max-height: 86vh;
   overflow: auto;
   padding: var(--sp-4);
+  box-shadow: var(--glass-inner), var(--shadow-pop);
 }
 
 .bot-editor {
@@ -1184,7 +1200,7 @@ html.overlay-passthrough .overlay-root * { pointer-events: none !important; }
 html.overlay-passthrough .overlay-root [data-hit-capture],
 html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: auto !important; }
 
-@keyframes panel-in { from { transform: translateY(8px) scale(0.98); } }
+@keyframes panel-in { from { opacity: 0; transform: translateY(8px); } }
 @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes ping { from { transform: scale(1); opacity: 0.6; } to { transform: scale(2.2); opacity: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1192,8 +1208,8 @@ html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: au
 @keyframes toast-in { from { opacity: 0; transform: translateX(var(--tx, 12px)); } }
 @keyframes toast-out { to { opacity: 0; } }
 @keyframes orb-pulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.06); }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
 }
 
 @media (prefers-reduced-motion: reduce) {
