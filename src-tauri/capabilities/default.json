@@ -29,6 +29,9 @@
     "allow-focus-owner",
     "core:window:allow-set-focus",
     "allow-arm-pin-close-guard",
-    "allow-quit-app"
+    "allow-quit-app",
+    "allow-read-soul",
+    "allow-write-soul",
+    "allow-save-bot-meta"
   ]
 }

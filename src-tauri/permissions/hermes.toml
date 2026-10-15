@@ -77,3 +77,18 @@ commands.allow = ["arm_pin_close_guard"]
 identifier = "allow-quit-app"
 description = "Quit the overlay from the Settings 結束 button."
 commands.allow = ["quit_app"]
+
+[[permission]]
+identifier = "allow-read-soul"
+description = "Read one bot profile SOUL.md."
+commands.allow = ["read_soul"]
+
+[[permission]]
+identifier = "allow-write-soul"
+description = "Write one bot profile SOUL.md."
+commands.allow = ["write_soul"]
+
+[[permission]]
+identifier = "allow-save-bot-meta"
+description = "Save one bot display name and detail."
+commands.allow = ["save_bot_meta"]

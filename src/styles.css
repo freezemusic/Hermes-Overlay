@@ -3,7 +3,8 @@
    v20 rulings: fog rgb(247 248 248 / .88) or denser; ink #000091 / #1a1a1a;
    panels 1px #0000f2 hairline + HUD corners, radius ≤ 3px;
    popout shadow only (0 4px 40px rgb(0 0 145 / .6));
-   hover/press 120–200ms, panel/toast entrance .48s ease-out, no spring and no scale;
+   hover/press 120–200ms, no scale bounce;
+   panels expand from their orb and collapse back, .48s ease-out, no spring;
    CJK stays untracked — uppercase and letter-spacing only under :lang(en). */
 
 @font-face {
@@ -402,7 +403,6 @@ html, body {
   box-shadow: var(--glass-inner);
   color: var(--text);
   font: 400 var(--fs-body)/var(--lh-body) var(--font-body);
-  animation: panel-in var(--dur-enter) var(--ease-out) 1 both;
 }
 
 .center-panel {
@@ -415,6 +415,7 @@ html, body {
   flex-direction: column;
   gap: var(--sp-3);
   padding: var(--sp-4);
+  overflow: hidden;
   isolation: isolate;
 }
 
@@ -452,7 +453,11 @@ html, body {
   gap: var(--sp-2);
 }
 
-.panel-header { cursor: grab; }
+.panel-header,
+.settings-head { cursor: grab; }
+
+.panel-header:active,
+.settings-head:active { cursor: grabbing; }
 
 .bot-identity {
   display: flex;
@@ -567,11 +572,45 @@ html, body {
 .roster-head h3::before,
 .experimental legend::before { content: "▪ "; }
 
-.detail-block {
+.detail-block,
+.soul-block {
   padding: var(--sp-3);
   border-radius: var(--r-sm);
   background: var(--bot-2);
   border: var(--hair);
+}
+
+.soul-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.soul-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.soul-actions .hint { margin: 0; }
+
+.field textarea,
+.soul-input {
+  width: 100%;
+  min-height: 64px;
+  max-height: 140px;
+  resize: vertical;
+  padding: 8px var(--sp-3);
+  background: rgb(255 255 255 / .96);
+  border: 1px solid var(--bot-60);
+  border-radius: var(--r-sm);
+  font: 400 var(--fs-meta)/1.45 var(--font-body);
+  color: #1a1a1a;
+}
+
+.soul-input {
+  min-height: 88px;
+  font-family: var(--font-mono);
 }
 
 .bot-detail { margin: 0; color: var(--text); }
@@ -926,6 +965,22 @@ html, body {
   color: var(--text-muted);
 }
 
+#panel-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#conn-banner {
+  position: absolute;
+  z-index: 45;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(560px, 86vw);
+}
+
 .conn-banner {
   margin: 0;
   padding: var(--sp-2) var(--sp-3);
@@ -1141,25 +1196,32 @@ html, body {
 
 .field-inline { flex-direction: row; align-items: center; }
 
-.settings-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 30;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--scrim);
-  pointer-events: auto;
+.settings-panel.settings-card {
+  left: auto;
+  right: 8%;
+  width: min(680px, 92vw);
+  height: min(86vh, 760px);
+  padding: 0;
+  overflow: hidden;
+  box-shadow: var(--glass-inner), var(--shadow-pop);
 }
 
-.settings-layer[hidden] { display: none !important; }
-
-.settings-card {
-  width: min(680px, 92vw);
-  max-height: 86vh;
+#settings-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: var(--sp-4);
-  box-shadow: var(--glass-inner), var(--shadow-pop);
+}
+
+.panel-motion.is-opening {
+  animation: panel-from-orb var(--dur-enter) var(--ease-out) both;
+}
+
+.panel-motion.is-closing {
+  animation: panel-to-orb var(--dur-enter) var(--ease-out) both;
+  pointer-events: none;
 }
 
 .bot-editor {
@@ -1200,7 +1262,13 @@ html.overlay-passthrough .overlay-root * { pointer-events: none !important; }
 html.overlay-passthrough .overlay-root [data-hit-capture],
 html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: auto !important; }
 
-@keyframes panel-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes panel-from-orb {
+  from { opacity: 0; transform: translate(var(--from-x, 0px), var(--from-y, 0px)) scale(0.92); }
+  to { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+@keyframes panel-to-orb {
+  to { opacity: 0; transform: translate(var(--from-x, 0px), var(--from-y, 0px)) scale(0.92); }
+}
 @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes ping { from { transform: scale(1); opacity: 0.6; } to { transform: scale(2.2); opacity: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }

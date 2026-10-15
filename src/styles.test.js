@@ -51,10 +51,12 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /--dur-enter:\s*0?\.48s/);
   assert.match(css, /--shadow-pop:\s*0 4px 40px rgb\(0 0 145 \/ \.6\)/);
   assert.doesNotMatch(css, /0 12px 40px/);
-  assert.match(css, /animation:\s*panel-in var\(--dur-enter\) var\(--ease-out\)/);
+  assert.match(css, /animation:\s*panel-from-orb var\(--dur-enter\) var\(--ease-out\)/);
+  assert.match(css, /animation:\s*panel-to-orb var\(--dur-enter\) var\(--ease-out\)/);
   assert.match(css, /animation:\s*toast-in var\(--dur-enter\) var\(--ease-out\)/);
-  assert.match(css, /@keyframes panel-in \{[^}]*opacity:\s*0/s);
-  assert.doesNotMatch(css, /@keyframes panel-in \{[^}]*scale\(/s);
+  assert.match(css, /@keyframes panel-from-orb \{[^}]*scale\(0\.92\)/s);
+  assert.match(css, /@keyframes panel-to-orb \{[^}]*scale\(0\.92\)/s);
+  assert.doesNotMatch(css, /@keyframes panel-in/);
   assert.match(css, /url\("\.\/assets\/fonts\/barlow-condensed-500\.woff2"\)/);
   assert.match(css, /url\("\.\/assets\/fonts\/noto-sans-hk-400\.woff2"\)/);
   assert.doesNotMatch(html, /fonts\.googleapis\.com|fonts\.gstatic\.com/);
@@ -68,6 +70,17 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.hud-corner \{[^}]*border:\s*1px solid var\(--nous-blue\)/s);
   assert.match(html, /class="hud-corner tl"/);
   assert.match(html, /class="hud-corner br"/);
+});
+
+test("bot panels own SOUL and the settings orb owns the gateway", () => {
+  const template = html.slice(html.indexOf('id="bot-panel-template"'), html.indexOf("</template>"));
+  assert.match(template, /SOUL\.md/);
+  assert.match(template, /data-role="soul"/);
+  assert.doesNotMatch(template, /Gateway/);
+  assert.match(html, /Gateway 位址/);
+  assert.match(html, /id="settings"/);
+  assert.doesNotMatch(html, /data-tauri-drag-region/);
+  assert.doesNotMatch(html, /游標靠近時淡出/);
 });
 
 test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {

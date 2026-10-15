@@ -45,10 +45,18 @@ export function opacityForDistance(distance, fadeDistance, minOpacity, enabled) 
   return minOpacity + (1 - minOpacity) * (distance / fadeDistance);
 }
 
-/** An element marked solid (modifier target or latched panel) is full opacity at any distance. */
+/** Distance fade helper. Hover no longer calls this; modifier transparency uses minOpacity directly. */
 export function elementOpacity({ solid, distance, fadeDistance, minOpacity, fadeEnabled }) {
   if (solid) return 1;
   return opacityForDistance(distance, fadeDistance, minOpacity, fadeEnabled);
+}
+
+/** Panels wash out while the modifier is held. Orbs and toasts stay visually solid. */
+export function isPanelHit(rect) {
+  if (!rect || rect.round) return false;
+  const id = String(rect.id || "");
+  if (id.startsWith("bot:") || id.startsWith("toast:")) return false;
+  return true;
 }
 
 /** CSS pixels around a hit rect that still count as under the cursor. */
@@ -82,8 +90,9 @@ function preferHit(candidate, current) {
 }
 
 /**
- * Modifier solids only the element under the cursor.
- * Latched ids stay solid and capture only while the cursor is over them.
+ * Panels stay opaque. The cursor captures whatever it is over.
+ * Holding the modifier makes every panel transparent and the window click-through.
+ * Distance does not change opacity. Orbs and toasts stay visually opaque while held.
  */
 export function elementStates({
   held = false,
@@ -91,29 +100,17 @@ export function elementStates({
   cursor = null,
   rects = [],
   margin = HIT_MARGIN_PX,
-  fadeDistance = 120,
   minOpacity = 0.18,
-  fadeEnabled = true,
 } = {}) {
   const under = elementUnderCursor(cursor, rects, margin, latchedIds);
+  const floor = Number.isFinite(minOpacity) ? minOpacity : 0.18;
   return rects.map((rect) => {
-    const latched = latchedIds.includes(rect.id);
-    const targeted = held && under === rect.id;
-    const distance = cursor ? distanceToHit(cursor.x, cursor.y, rect) : fadeDistance;
-    const opacity =
-      cursor == null
-        ? 1
-        : elementOpacity({
-            solid: latched || targeted,
-            distance,
-            fadeDistance,
-            minOpacity,
-            fadeEnabled,
-          });
+    const panel = isPanelHit(rect);
+    const opacity = cursor && held && panel ? floor : 1;
     return {
       id: rect.id,
       opacity,
-      capture: under === rect.id && (held || latched),
+      capture: !!cursor && under === rect.id && !held,
     };
   });
 }

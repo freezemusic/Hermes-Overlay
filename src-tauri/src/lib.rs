@@ -164,6 +164,15 @@ struct PublicSettings {
 }
 
 #[derive(Deserialize)]
+struct SaveBotMeta {
+    profile: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    detail: String,
+}
+
+#[derive(Deserialize)]
 struct SaveBot {
     profile: String,
     #[serde(default)]
@@ -330,6 +339,74 @@ fn emit_status(app: &AppHandle, profile: &str, state_name: &str, detail: &str) {
             "detail": detail,
         }),
     );
+}
+
+fn hermes_home_dir() -> std::path::PathBuf {
+    if let Ok(value) = std::env::var("HERMES_HOME") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return std::path::PathBuf::from(trimmed);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home).join(".hermes")
+}
+
+#[tauri::command]
+fn read_soul(profile: String) -> Result<String, String> {
+    let path = config::soul_path(profile.trim(), &hermes_home_dir())?;
+    if !path.is_file() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(&path).map_err(|err| format!("讀唔到 SOUL.md：{err}"))
+}
+
+#[tauri::command]
+fn write_soul(profile: String, text: String) -> Result<(), String> {
+    let path = config::soul_path(profile.trim(), &hermes_home_dir())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("開唔到 SOUL 目錄：{err}"))?;
+    }
+    std::fs::write(&path, text).map_err(|err| format!("寫唔到 SOUL.md：{err}"))
+}
+
+#[tauri::command]
+fn save_bot_meta(app: AppHandle, input: SaveBotMeta) -> Result<PublicBot, String> {
+    let profile = input.profile.trim().to_string();
+    config::validate_profile(&profile)?;
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    let mut cfg = config::load(&path)?;
+    let bot = cfg
+        .bot_mut(&profile)
+        .ok_or_else(|| format!("名單冇 profile「{profile}」"))?;
+    let name = input.display_name.trim();
+    bot.display_name = if name.is_empty() {
+        profile.clone()
+    } else {
+        name.to_string()
+    };
+    bot.detail = input.detail.trim().to_string();
+    let has_key = match secrets::get_profile_key(&profile) {
+        Ok(Lookup::Value(key)) => !key.trim().is_empty(),
+        _ => false,
+    };
+    let saved = PublicBot {
+        profile: bot.profile.clone(),
+        display_name: bot.display_name.clone(),
+        color: bot.color.clone(),
+        base_url: bot.base_url.clone(),
+        detail: bot.detail.clone(),
+        has_key,
+    };
+    config::save(&path, &cfg)?;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -1279,7 +1356,10 @@ pub fn run() {
             set_interaction_latch,
             focus_owner,
             arm_pin_close_guard,
-            quit_app
+            quit_app,
+            read_soul,
+            write_soul,
+            save_bot_meta
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

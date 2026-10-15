@@ -8,66 +8,80 @@
   </head>
   <body>
     <div id="app" class="overlay-root">
-      <!-- Transparent hit layer: empty regions stay see-through -->
       <div id="bot-rail" class="bot-rail" aria-label="Bot 列表"></div>
+      <div id="panel-host"></div>
+      <p id="conn-banner" class="conn-banner" hidden></p>
 
-      <aside id="center-panel" class="center-panel" data-interactive data-hit-id="center">
-        <span class="hud-corner tl" aria-hidden="true"></span>
-        <span class="hud-corner tr" aria-hidden="true"></span>
-        <span class="hud-corner bl" aria-hidden="true"></span>
-        <span class="hud-corner br" aria-hidden="true"></span>
-        <header class="panel-header" data-tauri-drag-region>
-          <div class="bot-identity">
-            <div id="active-avatar" class="active-avatar" aria-hidden="true"><span class="orb-core"></span><span class="orb-glyph"></span></div>
-            <div class="bot-meta">
-              <h1 id="bot-name" class="panel-title">載入中…</h1>
-              <p id="bot-status" class="bot-status"><span class="spinner" aria-hidden="true"></span><span id="bot-status-text">準備就緒</span></p>
-              <p id="interact-hint" class="interact-hint">按住 Ctrl：游標下面嗰個元素先會實色同可點擊。</p>
-            </div>
-          </div>
-          <div class="panel-actions">
-            <button type="button" id="btn-settings" class="icon-btn" title="Gateway 同 Bot 名單">設定</button>
-            <button type="button" id="btn-pin" class="icon-btn" title="保持置頂" aria-pressed="true">置頂</button>
-            <button type="button" id="btn-close" class="icon-btn danger" title="收起中間面板">關閉</button>
-          </div>
-        </header>
-
-        <p id="conn-banner" class="conn-banner" hidden></p>
-
-        <section class="detail-block" aria-label="Bot 詳情">
-          <h2 class="section-label">詳情</h2>
-          <p id="bot-detail" class="bot-detail"></p>
-        </section>
-
-        <section class="chat-block" aria-label="對話">
-          <h2 class="section-label">對話</h2>
-          <div id="chat-messages" class="chat-messages"></div>
-        </section>
-
-        <footer class="composer">
-          <div id="slash-popup" class="slash-popup" data-hit-id="slash" hidden role="listbox" aria-label="斜線指令"></div>
-          <input
-            id="chat-input"
-            type="text"
-            placeholder="輸入訊息給呢個 Bot…"
-            autocomplete="off"
-          />
-          <span id="slash-ghost" class="slash-ghost" hidden></span>
-          <button type="button" id="btn-stop" class="icon-btn" hidden>停止</button>
-          <button type="button" id="btn-send" class="send-btn">傳送</button>
-        </footer>
-      </aside>
-
-      <div id="settings" class="settings-layer" data-interactive hidden>
-        <form id="settings-form" class="settings-card" data-hit-id="settings">
+      <template id="bot-panel-template">
+        <aside class="center-panel bot-panel panel-motion" data-interactive>
           <span class="hud-corner tl" aria-hidden="true"></span>
           <span class="hud-corner tr" aria-hidden="true"></span>
           <span class="hud-corner bl" aria-hidden="true"></span>
           <span class="hud-corner br" aria-hidden="true"></span>
-          <header class="settings-head">
-            <h2>設定</h2>
-            <button type="button" id="btn-settings-close" class="icon-btn">關閉</button>
+          <header class="panel-header">
+            <div class="bot-identity">
+              <div class="active-avatar" data-role="avatar" aria-hidden="true"><span class="orb-core"></span><span class="orb-glyph"></span></div>
+              <div class="bot-meta">
+                <h1 class="panel-title" data-role="name">載入中…</h1>
+                <p class="bot-status" data-role="status"><span class="spinner" aria-hidden="true"></span><span data-role="status-text">準備就緒</span></p>
+                <p class="interact-hint" data-role="hint"></p>
+              </div>
+            </div>
+            <div class="panel-actions">
+              <button type="button" class="icon-btn danger" data-role="close" title="收起呢個面板">關閉</button>
+            </div>
           </header>
+
+          <section class="detail-block" aria-label="呢個 Bot">
+            <h2 class="section-label">呢個 Bot</h2>
+            <label class="field">
+              <span>顯示名稱</span>
+              <input data-role="display-name" type="text" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>詳情</span>
+              <textarea data-role="detail" rows="2"></textarea>
+            </label>
+          </section>
+
+          <section class="soul-block" aria-label="SOUL.md">
+            <h2 class="section-label">SOUL.md</h2>
+            <textarea data-role="soul" class="soul-input" rows="5" placeholder="呢個 Bot 嘅 SOUL.md"></textarea>
+            <div class="soul-actions">
+              <button type="button" class="send-btn" data-role="save">儲存呢個 Bot</button>
+              <p class="hint" data-role="save-status"></p>
+            </div>
+          </section>
+
+          <section class="chat-block" aria-label="對話">
+            <h2 class="section-label">對話</h2>
+            <div class="chat-messages" data-role="chat"></div>
+          </section>
+
+          <footer class="composer">
+            <div class="slash-popup" data-role="slash" hidden role="listbox" aria-label="斜線指令"></div>
+            <input data-role="input" type="text" placeholder="輸入訊息給呢個 Bot…" autocomplete="off" />
+            <span class="slash-ghost" data-role="ghost" hidden></span>
+            <button type="button" class="icon-btn" data-role="stop" hidden>停止</button>
+            <button type="button" class="send-btn" data-role="send">傳送</button>
+          </footer>
+        </aside>
+      </template>
+
+      <aside id="settings" class="center-panel settings-panel settings-card panel-motion" data-interactive data-hit-id="settings" data-panel-key="settings" hidden>
+        <span class="hud-corner tl" aria-hidden="true"></span>
+        <span class="hud-corner tr" aria-hidden="true"></span>
+        <span class="hud-corner bl" aria-hidden="true"></span>
+        <span class="hud-corner br" aria-hidden="true"></span>
+        <form id="settings-form">
+          <header class="settings-head">
+            <h2>Hermes</h2>
+            <div class="panel-actions">
+              <button type="button" id="btn-pin" class="icon-btn" title="保持置頂" aria-pressed="true">置頂</button>
+              <button type="button" id="btn-settings-close" class="icon-btn">關閉</button>
+            </div>
+          </header>
+          <p class="hint">呢度先係 Hermes Overlay 同連線設定。每個 Bot 嘅 SOUL.md 喺佢自己嘅面板。</p>
           <p class="hint">金鑰只會寫入系統鑰匙圈，唔會放喺設定檔或者網頁。</p>
           <p id="setup-hint" class="hint setup-hint" hidden>第一次用：Gateway 位址填 <code>http://127.0.0.1:8642</code>，每個 Bot 填 API 金鑰，然後儲存。</p>
           <label class="field">
@@ -98,7 +112,7 @@
 
           <fieldset class="experimental">
             <legend>游標同穿透</legend>
-            <p class="hint">預設成個視窗穿透，游標越近元素越淡。按住修飾鍵時，只係游標下面嗰一個元素（加少少邊距）回復實色同可點擊；其他元素繼續按距離淡出。游標唔喺任何元素附近就冇變化。輸入框聚焦會保持中間面板可互動；設定頁打開會保持設定面板可互動。Esc、點空白，或者視窗失焦就離開。</p>
+            <p class="hint">面板預設實色。游標喺面板上面就可以拖同點。按住修飾鍵時，面板變透明，成個視窗穿透，方便你撳下面嘅程式。修飾鍵放開就回復實色。輸入框聚焦唔使按住修飾鍵。</p>
             <label class="field">
               <span>修飾鍵</span>
               <select id="interaction-modifier">
@@ -110,16 +124,8 @@
             <p id="interaction-alt-warning" class="hint alt-warning" hidden>
               Linux 視窗管理員常用 Alt 拖移視窗（xfwm4 預設，GNOME／KDE 都常見）。揀 Alt 之後，Alt+click 可能去唔到呢個程式，設定就開唔返。可以用快捷鍵 Ctrl+Shift+Alt+H，或者系統匣選單「設定」。
             </p>
-            <label class="field field-inline">
-              <input id="interaction-fade" type="checkbox" checked />
-              <span>游標靠近時淡出</span>
-            </label>
             <label class="field">
-              <span>淡出距離（px）</span>
-              <input id="interaction-distance" type="number" min="24" max="480" step="1" value="120" />
-            </label>
-            <label class="field">
-              <span>最近時透明度（%）</span>
+              <span>按住修飾鍵時面板透明度（%）</span>
               <input id="interaction-min-opacity" type="number" min="5" max="60" step="1" value="18" />
             </label>
             <p id="interaction-support" class="hint"></p>
@@ -134,14 +140,14 @@
             </div>
           </div>
         </form>
-      </div>
+      </aside>
 
-      <aside id="kanban-panel" class="center-panel kanban-panel" data-interactive data-hit-id="kanban" hidden>
+      <aside id="kanban-panel" class="center-panel kanban-panel panel-motion" data-interactive data-hit-id="kanban" data-panel-key="kanban" hidden>
         <span class="hud-corner tl" aria-hidden="true"></span>
         <span class="hud-corner tr" aria-hidden="true"></span>
         <span class="hud-corner bl" aria-hidden="true"></span>
         <span class="hud-corner br" aria-hidden="true"></span>
-        <header class="panel-header" data-tauri-drag-region>
+        <header class="panel-header">
           <h1 id="kanban-title" class="panel-title" lang="en">Board</h1>
           <button type="button" id="btn-kanban-close" class="icon-btn">關閉</button>
         </header>

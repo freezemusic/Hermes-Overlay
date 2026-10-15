@@ -174,6 +174,17 @@ pub fn save(path: &Path, cfg: &AppConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// Hermes `default` profile stores SOUL.md at the home root.
+/// Every other profile stores it at `profiles/<profile>/SOUL.md`.
+pub fn soul_path(profile: &str, hermes_home: &Path) -> Result<std::path::PathBuf, String> {
+    validate_profile(profile)?;
+    if profile == "default" {
+        Ok(hermes_home.join("SOUL.md"))
+    } else {
+        Ok(hermes_home.join("profiles").join(profile).join("SOUL.md"))
+    }
+}
+
 pub fn validate_profile(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 64 {
         return Err("profile 名稱要有 1–64 個字".into());
@@ -291,6 +302,18 @@ mod tests {
         assert_eq!(normalize_modifier("ALT"), "alt");
         assert_eq!(normalize_fade_distance(8.0), 24.0);
         assert_eq!(normalize_min_opacity(0.9), 0.6);
+    }
+
+    #[test]
+    fn soul_file_follows_the_hermes_profile_layout() {
+        let root = Path::new("/tmp/hermes-home");
+        assert_eq!(soul_path("default", root).unwrap(), root.join("SOUL.md"));
+        assert_eq!(
+            soul_path("planner", root).unwrap(),
+            root.join("profiles").join("planner").join("SOUL.md")
+        );
+        assert!(soul_path("../x", root).is_err());
+        assert!(soul_path("has space", root).is_err());
     }
 
     #[test]

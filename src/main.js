@@ -5,6 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, toastAnchor, TOAST_MS } from "./activity.js";
+import { closePanel, fromOrbDelta, openPanel, panelStackOffset } from "./panels.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_BOARD,
@@ -221,6 +222,167 @@ function $(sel) {
   return document.querySelector(sel);
 }
 
+function panelFor(id) {
+  if (!id) return null;
+  return document.querySelector(`.bot-panel[data-bot-id="${cssEscape(id)}"]`);
+}
+
+function role(panel, name) {
+  return panel?.querySelector(`[data-role="${name}"]`) || null;
+}
+
+function chatOf(id) {
+  return role(panelFor(id), "chat");
+}
+
+function hintText() {
+  const name = modifierLabel(state.interaction.modifier);
+  return state.interaction.supported
+    ? `按住 ${name}：面板變透明，滑鼠穿透。放開就實色，可以拖同點。`
+    : "呢個環境讀唔到全域游標或修飾鍵，所以保持可點擊，唔會穿透。";
+}
+
+const panelMotion = new WeakMap();
+
+function beginMotion(panel) {
+  const token = (panelMotion.get(panel) || 0) + 1;
+  panelMotion.set(panel, token);
+  return token;
+}
+
+function orbForPanel(panel) {
+  if (!panel) return null;
+  if (panel.id === "settings") return document.querySelector(".orb--settings");
+  if (panel.id === "kanban-panel") return document.querySelector(".orb--kanban");
+  return document.querySelector(`.bot-btn[data-bot-id="${cssEscape(panel.dataset.botId || "")}"]`);
+}
+
+function runMotion(panel, mode) {
+  const token = beginMotion(panel);
+  panel.classList.remove("is-opening", "is-closing");
+  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  const orbEl = orbForPanel(panel);
+  if (orbEl && !reduce) {
+    const orb = orbEl.getBoundingClientRect();
+    const box = panel.getBoundingClientRect();
+    const delta = fromOrbDelta(
+      { x: orb.x, y: orb.y, w: orb.width, h: orb.height },
+      { x: box.x, y: box.y, w: box.width, h: box.height },
+    );
+    panel.style.setProperty("--from-x", `${Math.round(delta.x)}px`);
+    panel.style.setProperty("--from-y", `${Math.round(delta.y)}px`);
+  } else {
+    panel.style.setProperty("--from-x", "0px");
+    panel.style.setProperty("--from-y", "0px");
+  }
+  const cls = mode === "close" ? "is-closing" : "is-opening";
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = 0;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      panel.removeEventListener("animationend", onEnd);
+      window.clearTimeout(timer);
+      if (panelMotion.get(panel) !== token) {
+        resolve(false);
+        return;
+      }
+      panel.classList.remove(cls);
+      resolve(true);
+    };
+    const onEnd = (event) => {
+      if (event.target !== panel) return;
+      finish();
+    };
+    panel.addEventListener("animationend", onEnd);
+    void panel.offsetWidth;
+    panel.classList.add(cls);
+    timer = window.setTimeout(finish, reduce ? 30 : 700);
+  });
+}
+
+function rememberPanel(panel) {
+  const key = panel?.dataset.panelKey || panel?.dataset.hitId;
+  if (!key) return;
+  const box = panel.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return;
+  state.panelPos[key] = { left: box.left, top: box.top };
+}
+
+function placePanel(panel, key, fallback = {}) {
+  panel.style.right = "auto";
+  panel.style.bottom = "auto";
+  const saved = state.panelPos[key];
+  if (saved) {
+    panel.style.left = `${saved.left}px`;
+    panel.style.top = `${saved.top}px`;
+    return;
+  }
+  const index = state.openIds.indexOf(key);
+  const shift = panelStackOffset(index < 0 ? state.openIds.length : index);
+  const vw = window.innerWidth || 1280;
+  const vh = window.innerHeight || 800;
+  panel.style.left = `${Math.round(vw * (fallback.leftRatio ?? 0.12) + shift.x)}px`;
+  panel.style.top = `${Math.round(vh * (fallback.topRatio ?? 0.1) + shift.y)}px`;
+}
+
+function raisePanel(panel) {
+  if (!panel) return;
+  state.panelZ += 1;
+  panel.style.zIndex = String(state.panelZ);
+  scheduleHitSync();
+}
+
+function bindPanelDrag(panel) {
+  const header = panel.querySelector(".panel-header, .settings-head");
+  if (!header || header.dataset.dragBound) return;
+  header.dataset.dragBound = "1";
+  header.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest("button, input, textarea, select, a, label")) return;
+    event.preventDefault();
+    state.dragHitId = panel.dataset.hitId || "";
+    raisePanel(panel);
+    flushHits();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const origin = panel.getBoundingClientRect();
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+    panel.style.left = `${origin.left}px`;
+    panel.style.top = `${origin.top}px`;
+    const move = (ev) => {
+      if (ev.pointerId !== event.pointerId) return;
+      panel.style.left = `${origin.left + ev.clientX - startX}px`;
+      panel.style.top = `${origin.top + ev.clientY - startY}px`;
+      scheduleHitSync();
+    };
+    const up = (ev) => {
+      if (ev.pointerId !== event.pointerId) return;
+      header.removeEventListener("pointermove", move);
+      header.removeEventListener("pointerup", up);
+      header.removeEventListener("pointercancel", up);
+      state.dragHitId = "";
+      rememberPanel(panel);
+      flushHits();
+    };
+    header.addEventListener("pointermove", move);
+    header.addEventListener("pointerup", up);
+    header.addEventListener("pointercancel", up);
+    try {
+      header.setPointerCapture(event.pointerId);
+    } catch {
+      /* The drag listeners stay on the header when the pointer id is synthetic. */
+    }
+  });
+}
+
+function removeBotPanels() {
+  document.querySelectorAll(".bot-panel").forEach((panel) => panel.remove());
+  state.openIds = [];
+}
+
 function inTauri() {
   return "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
 }
@@ -257,6 +419,12 @@ const state = {
   slashArgsHint: "",
   reconnectToken: 0,
   reconnectTimer: 0,
+  openIds: [],
+  panelPos: {},
+  panelZ: 4,
+  slashPanelId: "",
+  dragHitId: "",
+  souls: new Map(),
   kanbanOpen: false,
   kanban: { board: null, fingerprint: "", unread: false, saving: false, dragging: false },
   kanbanTimer: 0,
@@ -325,9 +493,14 @@ function renderBots() {
   const pulseId = pulse.pulseId;
   const keep = new Set(state.bots.map((bot) => bot.id));
   const existing = new Map();
-  rail.querySelectorAll(".bot-btn:not(.orb--kanban)").forEach((el) => {
+  rail.querySelectorAll(".bot-btn:not(.orb--kanban):not(.orb--settings)").forEach((el) => {
     if (!keep.has(el.dataset.botId)) el.remove();
     else existing.set(el.dataset.botId, el);
+  });
+  document.querySelectorAll(".bot-panel").forEach((panel) => {
+    if (keep.has(panel.dataset.botId)) return;
+    state.openIds = closePanel(state.openIds, panel.dataset.botId);
+    panel.remove();
   });
   state.bots.forEach((bot, i) => {
     let btn = existing.get(bot.id);
@@ -349,7 +522,7 @@ function renderBots() {
     const thread = threadFor(bot.id);
     const keepEnter = btn.classList.contains("orb-enter") && bot.id === state.activeId;
     const classes = ["bot-btn"];
-    if (bot.id === state.activeId && !state.kanbanOpen) classes.push("active");
+    if (state.openIds.includes(bot.id)) classes.push("active");
     const motion = orbMotion(thread.activity, thread.statusState);
     if (motion === "spin") classes.push("is-thinking");
     if (motion === "wait") classes.push("is-waiting");
@@ -372,7 +545,36 @@ function renderBots() {
     rail.appendChild(btn);
   });
   renderKanbanOrb();
+  renderSettingsOrb();
   scheduleHitSync();
+}
+
+function renderSettingsOrb() {
+  const rail = $("#bot-rail");
+  let btn = rail.querySelector(".orb--settings");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.botId = "settings";
+    btn.dataset.hitId = "bot:settings";
+    btn.addEventListener("click", () => focusSettings());
+    fillOrb(btn);
+    const label = document.createElement("span");
+    label.className = "bot-label";
+    label.textContent = "設定";
+    btn.appendChild(label);
+    btn.querySelector(".orb-glyph").textContent = "設";
+    rail.appendChild(btn);
+  }
+  btn.className = ["bot-btn", "orb--settings", settingsOpen() ? "active" : ""].filter(Boolean).join(" ");
+  applyBotColor(btn, NOUS.blue);
+  btn.style.top = "auto";
+  btn.style.right = "calc(var(--edge-pad) + 152px)";
+  btn.style.bottom = "var(--edge-pad)";
+  btn.style.left = "auto";
+  btn.style.transform = "none";
+  btn.setAttribute("aria-label", "Hermes 設定");
+  btn.title = "Hermes 設定";
 }
 
 function fillOrb(btn) {
@@ -424,41 +626,43 @@ function renderKanbanOrb() {
   btn.title = "看板";
 }
 
-function renderChat() {
-  const bot = state.bots.find((b) => b.id === state.activeId);
-  const chat = $("#chat-messages");
+function renderChat(id = state.activeId) {
+  const panel = panelFor(id);
+  if (!panel) return;
+  const bot = state.bots.find((b) => b.id === id);
+  const chat = role(panel, "chat");
+  if (!bot || !chat) return;
   chat.innerHTML = "";
-  if (!bot) {
-    $("#bot-name").textContent = "未有 Bot";
-    setStatusText(state.mode === "mock" ? "示範模式" : "請喺設定加入 Bot");
-    $("#bot-detail").textContent =
-      state.mode === "mock"
-        ? "離線示範。"
-        : "Gateway 已設定，但名單係空。打開設定加入 profile、顯示名稱同 API 金鑰。";
-    paintOrb($("#active-avatar"), NOUS.neutral, "");
-    applyBotColor($("#center-panel"), NOUS.blue);
-    $("#btn-stop").hidden = true;
-    syncActivityChrome();
-    return;
-  }
   const thread = threadFor(bot.id);
-  $("#bot-name").textContent = bot.name;
-  const statusEl = $("#bot-status");
-  setStatusText(thread.status || bot.status || "閒置");
-  statusEl.dataset.state = thread.statusState || "idle";
-  $("#bot-detail").textContent = bot.detail || "";
-  paintOrb($("#active-avatar"), bot.color, bot.short || "");
-  applyBotColor($("#center-panel"), bot.color);
+  const title = role(panel, "name");
+  if (title) title.textContent = bot.name;
+  const statusEl = role(panel, "status");
+  setStatusText(id, thread.status || bot.status || "閒置");
+  if (statusEl) statusEl.dataset.state = thread.statusState || "idle";
+  const nameInput = role(panel, "display-name");
+  if (nameInput && nameInput.dataset.dirty !== "1" && document.activeElement !== nameInput) {
+    nameInput.value = bot.name || "";
+  }
+  const detailInput = role(panel, "detail");
+  if (detailInput && detailInput.dataset.dirty !== "1" && document.activeElement !== detailInput) {
+    detailInput.value = bot.detail || "";
+  }
+  const hint = role(panel, "hint");
+  if (hint) hint.textContent = hintText();
+  paintOrb(role(panel, "avatar"), bot.color, bot.short || "");
+  applyBotColor(panel, bot.color);
   thread.messages.forEach((m) => chat.appendChild(bubbleEl(m)));
   chat.scrollTop = chat.scrollHeight;
-  $("#btn-stop").hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
-  $("#btn-send").disabled = state.mode === "hermes" && state.busy.has(bot.id);
-  syncActivityChrome();
+  const stop = role(panel, "stop");
+  const send = role(panel, "send");
+  if (stop) stop.hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
+  if (send) send.disabled = state.mode === "hermes" && state.busy.has(bot.id);
+  syncActivityChrome(id);
   scheduleHitSync();
 }
 
-function setStatusText(text) {
-  const node = $("#bot-status-text");
+function setStatusText(id, text) {
+  const node = role(panelFor(id), "status-text");
   if (node) node.textContent = text;
 }
 
@@ -536,11 +740,10 @@ async function openExternal(url) {
 function appendMessage(id, message) {
   const thread = threadFor(id);
   thread.messages.push(message);
-  if (id === state.activeId) {
-    const chat = $("#chat-messages");
-    chat.appendChild(bubbleEl(message));
-    chat.scrollTop = chat.scrollHeight;
-  }
+  const chat = chatOf(id);
+  if (!chat) return;
+  chat.appendChild(bubbleEl(message));
+  chat.scrollTop = chat.scrollHeight;
 }
 
 function setBotStatus(id, text, statusState) {
@@ -549,7 +752,7 @@ function setBotStatus(id, text, statusState) {
   thread.statusState = statusState;
   if (statusState === "busy") state.busy.add(id);
   else state.busy.delete(id);
-  if (id === state.activeId) renderChat();
+  if (panelFor(id)) renderChat(id);
   renderBots();
 }
 
@@ -562,7 +765,7 @@ function cancelReconnect() {
 async function loadBotHistory(id, token) {
   const { invoke } = await import("@tauri-apps/api/core");
   const opened = await invoke("open_bot", { profile: id });
-  if (token !== state.reconnectToken || state.activeId !== id || state.mode !== "hermes") return false;
+  if (token !== state.reconnectToken || state.mode !== "hermes") return false;
   const thread = threadFor(id);
   thread.messages = (opened.messages || []).map(presentMessage);
   thread.loaded = true;
@@ -582,24 +785,36 @@ function armReconnect(id, attempt, token) {
 }
 
 async function retryHistory(id, attempt, token) {
-  if (token !== state.reconnectToken || state.activeId !== id || state.mode !== "hermes") return;
+  if (token !== state.reconnectToken || state.mode !== "hermes") return;
   try {
     await loadBotHistory(id, token);
   } catch (err) {
-    if (token !== state.reconnectToken || state.activeId !== id) return;
+    if (token !== state.reconnectToken) return;
     if (gatewayDown(String(err))) armReconnect(id, attempt + 1, token);
   }
 }
 
 async function selectBot(id) {
   clearUnread(id);
-  if (state.kanbanOpen) closeKanban();
+  if (state.catalogProfile && state.catalogProfile !== id) {
+    state.catalog = null;
+    state.catalogProfile = "";
+  }
   state.activeId = id;
-  state.catalog = null;
-  state.catalogProfile = "";
-  setCenterOpen(true);
+  state.slashPanelId = id;
+  const existing = panelFor(id);
+  if (existing) {
+    existing.hidden = false;
+    beginMotion(existing);
+    existing.classList.remove("is-closing");
+    if (!state.openIds.includes(id)) state.openIds = openPanel(state.openIds, id);
+    raisePanel(existing);
+    renderBots();
+    return;
+  }
+  openBotPanel(id);
   renderBots();
-  renderChat();
+  renderChat(id);
   if (state.mode !== "hermes" || !inTauri()) return;
   const thread = threadFor(id);
   if (thread.loaded || thread.loading) return;
@@ -623,6 +838,178 @@ async function selectBot(id) {
     }
   } finally {
     thread.loading = false;
+  }
+}
+
+function openBotPanel(id) {
+  const tpl = document.getElementById("bot-panel-template");
+  const panel = tpl.content.firstElementChild.cloneNode(true);
+  panel.dataset.botId = id;
+  panel.dataset.hitId = `panel:${id}`;
+  panel.dataset.panelKey = id;
+  const slash = role(panel, "slash");
+  if (slash) slash.dataset.hitId = `slash:${id}`;
+  state.openIds = openPanel(state.openIds, id);
+  $("#panel-host").appendChild(panel);
+  placePanel(panel, id, { leftRatio: 0.12, topRatio: 0.1 });
+  raisePanel(panel);
+  bindPanelDrag(panel);
+  wireBotPanel(panel, id);
+  void runMotion(panel, "open");
+  void loadSoul(id);
+  scheduleHitSync();
+  return panel;
+}
+
+function closeBotPanel(id) {
+  const panel = panelFor(id);
+  state.openIds = closePanel(state.openIds, id);
+  if (state.activeId === id) state.activeId = state.openIds.at(-1) || null;
+  if (state.slashPanelId === id) state.slashPanelId = state.activeId || "";
+  if (state.pointerHitId === `panel:${id}`) state.pointerHitId = "";
+  if (panel) {
+    rememberPanel(panel);
+    const active = document.activeElement;
+    if (active && panel.contains(active)) active.blur();
+    void finishClose(panel);
+  }
+  renderBots();
+}
+
+async function finishClose(panel) {
+  const closed = await runMotion(panel, "close");
+  if (!closed || !panel.isConnected) return;
+  panel.remove();
+  syncLatch();
+  scheduleHitSync();
+}
+
+function wireBotPanel(panel, id) {
+  role(panel, "close")?.addEventListener("click", () => closeBotPanel(id));
+  role(panel, "send")?.addEventListener("click", () => sendActive(id));
+  role(panel, "stop")?.addEventListener("click", () => stopActive(id));
+  role(panel, "save")?.addEventListener("click", () => saveBotPanel(id));
+  role(panel, "chat")?.addEventListener("click", (event) => {
+    const anchor = event.target.closest?.("a");
+    const chat = role(panel, "chat");
+    if (!anchor || !chat?.contains(anchor)) return;
+    event.preventDefault();
+    const href = anchor.getAttribute("href") || "";
+    if (!isSafeLink(href)) return;
+    openExternal(href);
+  });
+  for (const field of ["display-name", "detail", "soul"]) {
+    role(panel, field)?.addEventListener("input", (event) => {
+      event.target.dataset.dirty = "1";
+    });
+  }
+  const input = role(panel, "input");
+  input?.addEventListener("focus", () => {
+    state.activeId = id;
+    state.slashPanelId = id;
+    closeSlashExcept(id);
+  });
+  input?.addEventListener("input", () => {
+    state.activeId = id;
+    state.slashPanelId = id;
+    state.slashIndex = 0;
+    syncSlashGhost();
+    refreshSlash();
+  });
+  input?.addEventListener("keyup", syncSlashGhost);
+  input?.addEventListener("click", syncSlashGhost);
+  input?.addEventListener("keydown", (event) => {
+    state.activeId = id;
+    state.slashPanelId = id;
+    if (slashPopupOpen()) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const items = activeSlashItems();
+        state.slashIndex = moveSlashIndex(items, state.slashIndex, event.key);
+        renderSlashPopup();
+        return;
+      }
+      if (event.key === "Tab" || event.key === "Enter") {
+        const items = activeSlashItems();
+        const picked = items[state.slashIndex];
+        if (picked && picked.enabled !== false) {
+          event.preventDefault();
+          const submit = event.key === "Enter" && slashEnterSubmits(picked);
+          completeSlash(picked);
+          if (submit) sendActive(id);
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeSlash();
+        return;
+      }
+    }
+    if (event.key === "Enter") sendActive(id);
+  });
+}
+
+async function loadSoul(id) {
+  const panel = panelFor(id);
+  const field = role(panel, "soul");
+  if (!field || field.dataset.dirty === "1") return;
+  if (!inTauri()) {
+    field.value = state.souls.get(id) || "";
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const text = await invoke("read_soul", { profile: id });
+    const current = role(panelFor(id), "soul");
+    if (!current || current.dataset.dirty === "1") return;
+    current.value = text || "";
+  } catch (err) {
+    const status = role(panelFor(id), "save-status");
+    if (status) status.textContent = String(err);
+  }
+}
+
+async function saveBotPanel(id) {
+  const panel = panelFor(id);
+  if (!panel) return;
+  const name = role(panel, "display-name")?.value.trim() || "";
+  const detail = role(panel, "detail")?.value.trim() || "";
+  const soul = role(panel, "soul")?.value ?? "";
+  const status = role(panel, "save-status");
+  const bot = state.bots.find((item) => item.id === id);
+  if (bot) {
+    if (name) bot.name = name;
+    bot.detail = detail;
+    bot.short = shortLabel(bot.name);
+  }
+  state.souls.set(id, soul);
+  role(panel, "display-name").dataset.dirty = "";
+  role(panel, "detail").dataset.dirty = "";
+  role(panel, "soul").dataset.dirty = "";
+  renderBots();
+  renderChat(id);
+  if (!inTauri()) {
+    if (status) status.textContent = "示範模式：已記喺呢個視窗。";
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("write_soul", { profile: id, text: soul });
+    if (state.mode === "hermes") {
+      const saved = await invoke("save_bot_meta", {
+        input: { profile: id, display_name: name, detail },
+      });
+      const row = state.settings?.bots?.find((item) => item.profile === id);
+      if (row && saved) {
+        row.display_name = saved.display_name;
+        row.detail = saved.detail;
+      }
+    }
+    if (status) status.textContent = "已儲存呢個 Bot。";
+  } catch (err) {
+    if (status) status.textContent = String(err);
   }
 }
 
@@ -652,8 +1039,8 @@ function ensureLiveBubble(id) {
   if (!live || live.role !== "bot" || !live.live) {
     live = { role: "bot", text: "", live: true };
     thread.messages.push(live);
-    if (id === state.activeId) {
-      const chat = $("#chat-messages");
+    const chat = chatOf(id);
+    if (chat) {
       const el = bubbleEl(live);
       el.dataset.live = "1";
       chat.appendChild(el);
@@ -663,19 +1050,19 @@ function ensureLiveBubble(id) {
 }
 
 function paintLiveNow(id) {
-  if (id !== state.activeId) return;
+  const chat = chatOf(id);
+  if (!chat) return;
   const thread = threadFor(id);
   const live = [...thread.messages].reverse().find((m) => m.live);
-  const nodes = $("#chat-messages").querySelectorAll("[data-live]");
+  const nodes = chat.querySelectorAll("[data-live]");
   const node = nodes[nodes.length - 1];
   if (live && node) paintBotBubble(node, live.text);
-  const chat = $("#chat-messages");
   const gap = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
   if (gap < 80) chat.scrollTop = chat.scrollHeight;
 }
 
 function patchLive(id) {
-  if (id !== state.activeId) return;
+  if (!panelFor(id)) return;
   painterFor(id).schedule();
 }
 
@@ -697,13 +1084,13 @@ function handleHermes(payload) {
     const user = [...threadFor(id).messages].reverse().find((item) => item.role === "user");
     if (user && payload.command) {
       user.command = payload.command;
-      if (id === state.activeId) renderChat();
+      if (panelFor(id)) renderChat(id);
     }
     return;
   }
   if (payload.type === "commentary") {
     appendMessage(id, { role: "commentary", text: `過程：${payload.text || ""}` });
-    if (id === state.activeId) renderChat();
+    if (panelFor(id)) renderChat(id);
     return;
   }
   if (payload.type === "tool") {
@@ -716,7 +1103,7 @@ function handleHermes(payload) {
     noteActivity(id, { type: "tool" });
     const phase = payload.phase === "completed" ? "完成" : payload.phase === "failed" ? "失敗" : "開始";
     appendMessage(id, { role: "tool", text: `${phase} ${text}` });
-    if (id === state.activeId) renderChat();
+    if (panelFor(id)) renderChat(id);
     return;
   }
   if (payload.type === "status") {
@@ -750,11 +1137,14 @@ function handleHermes(payload) {
   }
 }
 
-async function sendActive() {
-  const input = $("#chat-input");
-  const text = input.value.trim();
-  if (!text || !state.activeId) return;
-  const busy = state.mode === "hermes" && state.busy.has(state.activeId);
+async function sendActive(id = state.activeId) {
+  const panel = panelFor(id);
+  const input = role(panel, "input");
+  const text = input?.value.trim() || "";
+  if (!text || !id) return;
+  state.activeId = id;
+  state.slashPanelId = id;
+  const busy = state.mode === "hermes" && state.busy.has(id);
   if (sendBlockedWhileBusy(text, state.catalog || [], busy)) return;
   closeSlash();
   input.value = "";
@@ -763,11 +1153,11 @@ async function sendActive() {
   syncSlashGhost();
   const action = resolveClient(text, state.catalog || []);
   if (action) {
-    await sendClientCommand(state.activeId, text, action);
+    await sendClientCommand(id, text, action);
     return;
   }
-  appendMessage(state.activeId, { role: "user", text });
-  const sentId = state.activeId;
+  appendMessage(id, { role: "user", text });
+  const sentId = id;
   noteActivity(sentId, { type: "send" });
   if (state.mode !== "hermes" || !inTauri()) {
     setTimeout(() => {
@@ -834,7 +1224,7 @@ async function sendClientCommand(id, text, action) {
     if (action.command === "new" || action.command === "branch") {
       thread.messages = [{ role: "user", text, command: action.command }];
       if (result.notice) thread.messages.push({ role: "commentary", text: result.notice });
-      renderChat();
+      renderChat(id);
       return;
     }
     if (result.options?.length) {
@@ -862,10 +1252,12 @@ function useMock(reason, bannerAction = "") {
     threadFor(bot.id).status = bot.status;
     threadFor(bot.id).loaded = true;
   });
+  removeBotPanels();
   state.activeId = state.bots[0]?.id || null;
+  state.slashPanelId = state.activeId || "";
   setBanner(reason, "info", "", bannerAction);
   renderBots();
-  renderChat();
+  if (state.activeId) void selectBot(state.activeId);
 }
 
 function useHermes(settings) {
@@ -877,7 +1269,9 @@ function useHermes(settings) {
   state.bots = botsFromSettings(settings);
   state.threads = new Map();
   state.busy.clear();
+  removeBotPanels();
   state.activeId = state.bots[0]?.id || null;
+  state.slashPanelId = state.activeId || "";
   if (settings.keyring_error) {
     setBanner(`鑰匙圈：${settings.keyring_error}`, "error", "keyring");
   } else if (state.bots.length === 0) {
@@ -886,8 +1280,7 @@ function useHermes(settings) {
     setBanner("已連接設定。點頭像載入該 Bot 嘅 Bot Chat。", "ok");
   }
   renderBots();
-  renderChat();
-  if (state.activeId) selectBot(state.activeId);
+  if (state.activeId) void selectBot(state.activeId);
 }
 
 function rowFromBot(bot = {}) {
@@ -941,20 +1334,16 @@ function applyInteraction(raw) {
     minOpacity: Number(interaction.min_opacity ?? interaction.minOpacity ?? 0.18),
     supported: interaction.supported !== false,
   };
-  const hint = $("#interact-hint");
-  if (hint) {
-    const name = modifierLabel(state.interaction.modifier);
-    hint.textContent = state.interaction.supported
-      ? `按住 ${name}：游標下面嗰個元素先會實色同可點擊。`
-      : "呢個環境讀唔到全域游標或修飾鍵，所以保持可點擊，唔會穿透。";
-  }
+  document.querySelectorAll(".interact-hint").forEach((hint) => {
+    hint.textContent = hintText();
+  });
 }
 
 function readInteractionForm() {
   return {
     modifier: $("#interaction-modifier").value,
-    fade_enabled: $("#interaction-fade").checked,
-    fade_distance: Number($("#interaction-distance").value),
+    fade_enabled: false,
+    fade_distance: 120,
     min_opacity: Number($("#interaction-min-opacity").value) / 100,
   };
 }
@@ -973,8 +1362,6 @@ function fillSettings(settings) {
   bots.forEach((bot) => editor.appendChild(rowFromBot(bot)));
   const interaction = settings?.interaction || state.interaction;
   $("#interaction-modifier").value = interaction.modifier || "ctrl";
-  $("#interaction-fade").checked = interaction.fade_enabled !== false && interaction.fadeEnabled !== false;
-  $("#interaction-distance").value = String(interaction.fade_distance ?? interaction.fadeDistance ?? 120);
   const min = interaction.min_opacity ?? interaction.minOpacity ?? 0.18;
   $("#interaction-min-opacity").value = String(Math.round(Number(min) * 100));
   const support = $("#interaction-support");
@@ -991,12 +1378,35 @@ function fillSettings(settings) {
   if (setupHint) setupHint.hidden = !setupHintVisible($("#gateway-url").value);
 }
 
+function focusSettings() {
+  const panel = $("#settings");
+  if (settingsOpen() && panel && !panel.classList.contains("is-closing")) {
+    raisePanel(panel);
+    renderSettingsOrb();
+    return;
+  }
+  openSettings();
+}
+
 function openSettings() {
   window.clearTimeout(blurReleaseTimer);
   blurReleaseTimer = 0;
   state.windowFocused = true;
   fillSettings(state.settings);
-  $("#settings").hidden = false;
+  const panel = $("#settings");
+  if (!panel) return;
+  const opening = panel.hidden || panel.classList.contains("is-closing");
+  panel.hidden = false;
+  panel.classList.remove("is-closing");
+  if (opening) {
+    placePanel(panel, "settings", { leftRatio: 0.46, topRatio: 0.08 });
+    raisePanel(panel);
+    bindPanelDrag(panel);
+    void runMotion(panel, "open");
+  } else {
+    raisePanel(panel);
+  }
+  renderSettingsOrb();
   syncLatch();
   scheduleHitSync();
   const firstRun = shouldAutoOpenSettings(state.settings);
@@ -1013,9 +1423,21 @@ function openSettings() {
 }
 
 function closeSettings() {
-  $("#settings").hidden = true;
-  syncLatch();
-  scheduleHitSync();
+  const panel = $("#settings");
+  if (!panel || panel.hidden || panel.classList.contains("is-closing")) return;
+  rememberPanel(panel);
+  const active = document.activeElement;
+  if (active && panel.contains(active)) active.blur();
+  if (state.pointerHitId === "settings") state.pointerHitId = "";
+  void (async () => {
+    const closed = await runMotion(panel, "close");
+    if (!closed) return;
+    panel.hidden = true;
+    renderSettingsOrb();
+    syncLatch();
+    scheduleHitSync();
+  })();
+  renderSettingsOrb();
 }
 
 async function saveSettings(event) {
@@ -1135,31 +1557,39 @@ async function setupWindowChrome() {
       }
     }
   });
-  $("#btn-close")?.addEventListener("click", () => {
-    setCenterOpen(false);
+  bindPanelDrag($("#settings"));
+  bindPanelDrag($("#kanban-panel"));
+}
+
+function slashPanel() {
+  return panelFor(state.slashPanelId || state.activeId);
+}
+
+function slashInput() {
+  return role(slashPanel(), "input");
+}
+
+function slashPopup() {
+  return role(slashPanel(), "slash");
+}
+
+function closeSlashExcept(id) {
+  document.querySelectorAll(".bot-panel").forEach((panel) => {
+    if (panel.dataset.botId === id) return;
+    const popup = role(panel, "slash");
+    if (!popup || popup.hidden) return;
+    popup.hidden = true;
+    popup.replaceChildren();
   });
 }
 
-function setCenterOpen(open) {
-  const panel = $("#center-panel");
-  if (!panel) return;
-  if (!open) {
-    const active = document.activeElement;
-    if (active && panel.contains(active)) active.blur();
-    if (state.pointerHitId === "center") state.pointerHitId = "";
-  }
-  panel.hidden = !open;
-  syncLatch();
-  scheduleHitSync();
-}
-
 function slashPopupOpen() {
-  const popup = $("#slash-popup");
+  const popup = slashPopup();
   return !!popup && !popup.hidden;
 }
 
 function closeSlash() {
-  const popup = $("#slash-popup");
+  const popup = slashPopup();
   if (!popup) return;
   popup.hidden = true;
   popup.replaceChildren();
@@ -1168,7 +1598,7 @@ function closeSlash() {
 }
 
 function activeSlashItems() {
-  const query = slashFilterQuery($("#chat-input")?.value || "");
+  const query = slashFilterQuery(slashInput()?.value || "");
   if (query == null) return [];
   return orderSlashCommands(filterCommands(state.catalog || [], query));
 }
@@ -1188,8 +1618,8 @@ function measureInputText(text, style) {
 }
 
 function syncSlashGhost() {
-  const input = $("#chat-input");
-  const ghost = $("#slash-ghost");
+  const input = slashInput();
+  const ghost = role(slashPanel(), "ghost");
   if (!input || !ghost) return;
   const hint = inlineArgsHint(input.value, state.slashArgsHint);
   if (!hint) {
@@ -1230,8 +1660,8 @@ async function ensureCatalog() {
 }
 
 function renderSlashPopup() {
-  const popup = $("#slash-popup");
-  const input = $("#chat-input");
+  const popup = slashPopup();
+  const input = slashInput();
   if (!popup || !input) return;
   const query = slashFilterQuery(input.value);
   if (query == null) {
@@ -1286,7 +1716,8 @@ function renderSlashPopup() {
 
 function completeSlash(command) {
   if (!command || command.enabled === false) return;
-  const input = $("#chat-input");
+  const input = slashInput();
+  if (!input) return;
   input.value = completionText(command);
   input.placeholder = "輸入訊息給呢個 Bot…";
   state.slashArgsHint = String(command.args_hint || "");
@@ -1298,7 +1729,7 @@ function completeSlash(command) {
 }
 
 async function refreshSlash() {
-  const query = slashFilterQuery($("#chat-input")?.value || "");
+  const query = slashFilterQuery(slashInput()?.value || "");
   if (query == null) {
     closeSlash();
     return;
@@ -1306,67 +1737,27 @@ async function refreshSlash() {
   const alreadyOpen = slashPopupOpen();
   const sameProfile = state.catalog != null && state.catalogProfile === state.activeId;
   if (shouldRefreshCatalog(alreadyOpen, sameProfile)) await ensureCatalog();
-  if (slashFilterQuery($("#chat-input")?.value || "") == null) return;
+  if (slashFilterQuery(slashInput()?.value || "") == null) return;
   renderSlashPopup();
 }
 
+function topOpenPanel() {
+  const panels = [...document.querySelectorAll(".center-panel")].filter(
+    (el) => !el.hidden && !el.classList.contains("is-closing"),
+  );
+  panels.sort((a, b) => (Number(b.style.zIndex) || 0) - (Number(a.style.zIndex) || 0));
+  return panels[0] || null;
+}
+
 function setupComposer() {
-  $("#chat-messages").addEventListener("click", (event) => {
-    const anchor = event.target.closest?.("a");
-    const chat = $("#chat-messages");
-    if (!anchor || !chat.contains(anchor)) return;
-    event.preventDefault();
-    const href = anchor.getAttribute("href") || "";
-    if (!isSafeLink(href)) return;
-    openExternal(href);
-  });
-  $("#btn-send").addEventListener("click", sendActive);
-  const chatInput = $("#chat-input");
-  chatInput.addEventListener("input", () => {
-    state.slashIndex = 0;
-    syncSlashGhost();
-    refreshSlash();
-  });
-  chatInput.addEventListener("keyup", syncSlashGhost);
-  chatInput.addEventListener("click", syncSlashGhost);
-  chatInput.addEventListener("keydown", (event) => {
-    if (slashPopupOpen()) {
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        const items = activeSlashItems();
-        state.slashIndex = moveSlashIndex(items, state.slashIndex, event.key);
-        renderSlashPopup();
-        return;
-      }
-      if (event.key === "Tab" || event.key === "Enter") {
-        const items = activeSlashItems();
-        const picked = items[state.slashIndex];
-        if (picked && picked.enabled !== false) {
-          event.preventDefault();
-          const submit = event.key === "Enter" && slashEnterSubmits(picked);
-          completeSlash(picked);
-          if (submit) sendActive();
-          return;
-        }
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        closeSlash();
-        return;
-      }
-    }
-    if (event.key === "Enter") sendActive();
-  });
-  $("#btn-stop").addEventListener("click", () => stopActive(state.activeId));
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     if (state.dropdownOpen) {
       state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "escape");
       return;
     }
-    if (!$("#settings").hidden) {
-      closeSettings();
+    if (slashPopupOpen()) {
+      closeSlash();
       return;
     }
     if (isTextField(document.activeElement)) {
@@ -1374,9 +1765,12 @@ function setupComposer() {
       syncLatch();
       return;
     }
-    $("#btn-close")?.click();
+    const top = topOpenPanel();
+    if (!top) return;
+    if (top.id === "settings") closeSettings();
+    else if (top.id === "kanban-panel") closeKanban();
+    else if (top.dataset.botId) closeBotPanel(top.dataset.botId);
   });
-  $("#btn-settings").addEventListener("click", openSettings);
   $("#conn-banner")?.addEventListener("click", (event) => {
     if (event.target.closest?.("[data-action='settings']")) openSettings();
   });
@@ -1439,7 +1833,7 @@ function isTextField(el) {
 
 function settingsOpen() {
   const layer = $("#settings");
-  return !!layer && !layer.hidden;
+  return !!layer && !layer.hidden && !layer.classList.contains("is-closing");
 }
 
 function currentLatchedIds() {
@@ -1471,14 +1865,30 @@ function collectHits() {
   const push = (id, el, z = 0, round = false) => {
     // [hidden] drops the rect even before layout. display:none makes the box empty too.
     if (!el || el.hidden || el.closest("[hidden]")) return;
+    if (id && id === state.dragHitId) {
+      rects.push({
+        id,
+        x: 0,
+        y: 0,
+        w: window.innerWidth,
+        h: window.innerHeight,
+        z: 1000,
+        round: false,
+      });
+      return;
+    }
     const box = el.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
     rects.push({ id, x: box.x, y: box.y, w: box.width, h: box.height, z, round });
   };
-  push("center", $("#center-panel"), 0);
-  push("kanban", $("#kanban-panel"), 1);
-  push("slash", $("#slash-popup"), 20);
-  push("settings", document.querySelector(".settings-card"), 30);
+  document.querySelectorAll(".bot-panel, #settings, #kanban-panel").forEach((el) => {
+    if (el.classList.contains("is-closing")) return;
+    const z = Number.parseInt(el.style.zIndex, 10);
+    const level = Number.isFinite(z) ? z : 1;
+    push(el.dataset.hitId, el, level);
+    const slash = role(el, "slash");
+    if (slash?.dataset.hitId) push(slash.dataset.hitId, slash, level + 20);
+  });
   const banner = $("#conn-banner");
   if (banner?.dataset.hitId === "banner") push("banner", banner, 5);
   document.querySelectorAll(".toast").forEach((el) => push(el.dataset.hitId, el, 40));
@@ -1491,38 +1901,46 @@ function collectHits() {
 let hitFrame = 0;
 let lastHits = "";
 
+function publishHits() {
+  const rects = collectHits();
+  const key = JSON.stringify(
+    rects.map((rect) => ({
+      id: rect.id,
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      w: Math.round(rect.w),
+      h: Math.round(rect.h),
+      z: rect.z || 0,
+      round: !!rect.round,
+    })),
+  );
+  if (key !== lastHits) {
+    lastHits = key;
+    if (inTauri()) {
+      import("@tauri-apps/api/core")
+        .then(({ invoke }) => invoke("set_hit_rects", { rects }))
+        .catch(() => {});
+    }
+  }
+  if (!inTauri()) paintLocalProximity(rects);
+}
+
 function scheduleHitSync() {
   cancelAnimationFrame(hitFrame);
-  hitFrame = requestAnimationFrame(() => {
-    const rects = collectHits();
-    const key = JSON.stringify(
-      rects.map((rect) => ({
-        id: rect.id,
-        x: Math.round(rect.x),
-        y: Math.round(rect.y),
-        w: Math.round(rect.w),
-        h: Math.round(rect.h),
-        z: rect.z || 0,
-        round: !!rect.round,
-      })),
-    );
-    if (key !== lastHits) {
-      lastHits = key;
-      if (inTauri()) {
-        import("@tauri-apps/api/core")
-          .then(({ invoke }) => invoke("set_hit_rects", { rects }))
-          .catch(() => {});
-      }
-    }
-    if (!inTauri()) paintLocalProximity(rects);
-  });
+  hitFrame = requestAnimationFrame(publishHits);
+}
+
+function flushHits() {
+  cancelAnimationFrame(hitFrame);
+  publishHits();
 }
 
 function applyFrames(frames, interactiveAll = false) {
   const map = new Map((frames || []).map((item) => [item.id, item]));
   document.querySelectorAll("[data-hit-id]").forEach((el) => {
     const known = map.get(el.dataset.hitId);
-    const value = known == null ? 1 : known.opacity;
+    const nested = !!el.parentElement?.closest?.("[data-hit-id]");
+    const value = known == null || nested ? 1 : known.opacity;
     el.style.setProperty("--hit-opacity", String(value));
     if (interactiveAll || known?.capture) el.dataset.hitCapture = "1";
     else delete el.dataset.hitCapture;
@@ -1624,6 +2042,8 @@ function paintLocalProximity(rects) {
 
 function setupProximity() {
   document.addEventListener("pointerdown", (event) => {
+    const panel = event.target.closest?.(".center-panel");
+    if (panel && !panel.classList.contains("is-closing")) raisePanel(panel);
     const hit = event.target.closest?.("[data-hit-id]");
     if (hit) state.pointerHitId = hit.dataset.hitId || "";
     else {
@@ -1698,10 +2118,12 @@ function applyOrbMotion(btn, thread) {
   btn?.classList.toggle("is-waiting", motion === "wait");
 }
 
-function syncActivityChrome() {
-  const activity = state.activeId ? threadFor(state.activeId).activity : null;
-  $("#center-panel")?.classList.toggle("is-thinking", !!activity?.thinking);
-  $("#chat-messages")?.classList.toggle("streaming", !!activity?.streaming);
+function syncActivityChrome(id = state.activeId) {
+  const panel = panelFor(id);
+  if (!panel) return;
+  const activity = threadFor(id).activity;
+  panel.classList.toggle("is-thinking", !!activity?.thinking);
+  role(panel, "chat")?.classList.toggle("streaming", !!activity?.streaming);
 }
 
 function paintActivity(id) {
@@ -1709,7 +2131,7 @@ function paintActivity(id) {
   const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
   applyOrbMotion(btn, thread);
   btn?.classList.toggle("has-unread", !!thread.unread);
-  if (id === state.activeId) syncActivityChrome();
+  if (panelFor(id)) syncActivityChrome(id);
 }
 
 function clearUnread(id) {
@@ -1727,7 +2149,7 @@ function noteActivity(id, event) {
     const next = statusAfterWatchdog(thread.status);
     if (next !== thread.status) {
       thread.status = next;
-      if (id === state.activeId) setStatusText(next);
+      if (panelFor(id)) setStatusText(id, next);
     }
   }
   if (step.unread) thread.unread = true;
@@ -1842,8 +2264,12 @@ function layoutToasts() {
 }
 
 function toggleKanban() {
-  if (state.kanbanOpen) closeKanban();
-  else openKanban();
+  const panel = $("#kanban-panel");
+  if (state.kanbanOpen && panel && !panel.classList.contains("is-closing")) {
+    raisePanel(panel);
+    return;
+  }
+  openKanban();
 }
 
 function openKanban() {
@@ -1851,10 +2277,19 @@ function openKanban() {
   state.kanban.unread = false;
   const panel = $("#kanban-panel");
   if (panel) {
+    const opening = panel.hidden || panel.classList.contains("is-closing");
     panel.hidden = false;
+    panel.classList.remove("is-closing");
     applyBotColor(panel, NOUS.neutral);
+    if (opening) {
+      placePanel(panel, "kanban", { leftRatio: 0.08, topRatio: 0.08 });
+      raisePanel(panel);
+      bindPanelDrag(panel);
+      void runMotion(panel, "open");
+    } else {
+      raisePanel(panel);
+    }
   }
-  setCenterOpen(false);
   renderBots();
   refreshKanban();
   startKanbanPoll();
@@ -1871,7 +2306,16 @@ function closeKanban() {
   }
   setKanbanError("");
   const panel = $("#kanban-panel");
-  if (panel) panel.hidden = true;
+  if (panel && !panel.hidden && !panel.classList.contains("is-closing")) {
+    rememberPanel(panel);
+    void (async () => {
+      const closed = await runMotion(panel, "close");
+      if (!closed) return;
+      panel.hidden = true;
+      syncLatch();
+      scheduleHitSync();
+    })();
+  }
   renderBots();
   scheduleHitSync();
 }

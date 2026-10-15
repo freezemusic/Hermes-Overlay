@@ -1,5 +1,5 @@
-//! Rainmeter-style hit testing: click-through by default, proximity fade, and a
-//! held modifier that solids only the element under the cursor.
+//! Hit testing: the cursor captures the element under it, and panels stay opaque.
+//! Holding the modifier makes panels transparent and the window click-through.
 
 use crate::config::InteractionConfig;
 use device_query::{DeviceQuery, DeviceState, Keycode};
@@ -97,6 +97,7 @@ pub fn distance_to_rect(px: f64, py: f64, rect: &HitRect) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn opacity_for_distance(
     distance: f64,
     fade_distance: f64,
@@ -189,10 +190,19 @@ fn id_listed(ids: &[String], id: &str) -> bool {
     ids.iter().any(|item| item == id)
 }
 
-/// Per-element Rainmeter frame.
-/// Holding the modifier solids and captures only the element under the cursor.
-/// Latched ids stay solid; they capture only while the cursor is over that element.
-/// A missing cursor does not capture and does not change fade.
+/// Round avatars and toasts stay visually opaque. Everything else is a panel.
+pub fn is_panel_hit(rect: &HitRect) -> bool {
+    if rect.round {
+        return false;
+    }
+    let id = rect.id.as_str();
+    !id.starts_with("bot:") && !id.starts_with("toast:")
+}
+
+/// Per-element frame.
+/// Without the modifier, the element under the cursor is opaque and captured.
+/// Holding the modifier drops every panel to `min_opacity` and captures nothing.
+/// Distance does not change opacity. A missing cursor does not capture.
 pub fn interaction_frame(
     held: bool,
     latched_ids: &[String],
@@ -206,14 +216,12 @@ pub fn interaction_frame(
     rects
         .iter()
         .map(|rect| {
-            let latched = id_listed(latched_ids, &rect.id);
-            let targeted = held && under.as_deref() == Some(rect.id.as_str());
-            let forced = latched || targeted;
-            let opacity = match cursor {
-                Some((x, y)) => element_opacity(forced, distance_to_hit(x, y, rect), cfg),
-                None => 1.0,
+            let opacity = if cursor.is_some() && held && is_panel_hit(rect) {
+                cfg.min_opacity
+            } else {
+                1.0
             };
-            let capture = under.as_deref() == Some(rect.id.as_str()) && (held || latched);
+            let capture = cursor.is_some() && under.as_deref() == Some(rect.id.as_str()) && !held;
             ElementFrame {
                 id: rect.id.clone(),
                 opacity: round_opacity(opacity),
@@ -524,7 +532,8 @@ mod native_popup {
     }
 }
 
-/// A forced element (modifier target or latched panel) is full opacity at any distance.
+/// Distance fade kept for the unit test. Live frames do not call it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn element_opacity(solid: bool, distance: f64, cfg: &InteractionConfig) -> f64 {
     if solid {
         return 1.0;
@@ -1107,7 +1116,7 @@ mod tests {
                 w: 40.0,
                 h: 40.0,
                 z: 0,
-                round: false,
+                round: true,
             },
             HitRect {
                 id: "b".into(),
@@ -1116,7 +1125,7 @@ mod tests {
                 w: 40.0,
                 h: 40.0,
                 z: 0,
-                round: false,
+                round: true,
             },
             HitRect {
                 id: "center".into(),
@@ -1159,46 +1168,45 @@ mod tests {
     }
 
     #[test]
-    fn modifier_far_from_elements_changes_nothing_and_does_not_capture() {
+    fn modifier_far_from_elements_does_not_capture_or_fade() {
         let rects = bots();
         let cfg = fade_cfg();
         let far = Some((1000.0, 1000.0));
         let held = interaction_frame(true, &[], far, &rects, HIT_MARGIN_PX, &cfg);
         let idle = interaction_frame(false, &[], far, &rects, HIT_MARGIN_PX, &cfg);
-        assert_eq!(held, idle);
         assert!(held.iter().all(|item| !item.capture));
-        assert!(held.iter().all(|item| (item.opacity - 1.0).abs() < 0.001));
+        assert!(idle.iter().all(|item| !item.capture));
+        assert!((frame_of(&held, "a").opacity - 1.0).abs() < 0.001);
+        assert!((frame_of(&held, "center").opacity - 0.18).abs() < 0.001);
+        assert!(idle.iter().all(|item| (item.opacity - 1.0).abs() < 0.001));
 
         let outside_margin = Some((70.0, 20.0));
-        let near = interaction_frame(true, &[], outside_margin, &rects, HIT_MARGIN_PX, &cfg);
-        let faded = interaction_frame(false, &[], outside_margin, &rects, HIT_MARGIN_PX, &cfg);
-        assert_eq!(near, faded);
-        assert!(frame_of(&near, "a").opacity < 1.0);
+        let near = interaction_frame(false, &[], outside_margin, &rects, HIT_MARGIN_PX, &cfg);
+        assert!((frame_of(&near, "a").opacity - 1.0).abs() < 0.001);
         assert!(!frame_of(&near, "a").capture);
+        assert!((frame_of(&near, "center").opacity - 1.0).abs() < 0.001);
     }
 
     #[test]
-    fn modifier_solids_only_the_element_under_the_cursor() {
+    fn unheld_captures_the_element_under_the_cursor_and_modifier_washes_panels() {
         let rects = bots();
         let cfg = fade_cfg();
-        let over_a = interaction_frame(true, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        let over_a = interaction_frame(false, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
         assert_eq!(frame_of(&over_a, "a").opacity, 1.0);
         assert!(frame_of(&over_a, "a").capture);
-        assert!(frame_of(&over_a, "b").opacity < 1.0);
+        assert_eq!(frame_of(&over_a, "b").opacity, 1.0);
         assert!(!frame_of(&over_a, "b").capture);
-        assert!(frame_of(&over_a, "center").opacity < 1.0);
+        assert_eq!(frame_of(&over_a, "center").opacity, 1.0);
         assert!(!frame_of(&over_a, "center").capture);
         assert_eq!(over_a.iter().filter(|item| item.capture).count(), 1);
 
-        let over_b = interaction_frame(true, &[], Some((120.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
-        assert!(frame_of(&over_b, "a").opacity < 1.0);
-        assert!(!frame_of(&over_b, "a").capture);
-        assert_eq!(frame_of(&over_b, "b").opacity, 1.0);
-        assert!(frame_of(&over_b, "b").capture);
-        assert_eq!(over_b.iter().filter(|item| item.capture).count(), 1);
+        let held = interaction_frame(true, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(held.iter().all(|item| !item.capture));
+        assert_eq!(frame_of(&held, "a").opacity, 1.0);
+        assert!((frame_of(&held, "center").opacity - 0.18).abs() < 0.001);
 
         let over_center =
-            interaction_frame(true, &[], Some((40.0, 100.0)), &rects, HIT_MARGIN_PX, &cfg);
+            interaction_frame(false, &[], Some((40.0, 100.0)), &rects, HIT_MARGIN_PX, &cfg);
         assert_eq!(frame_of(&over_center, "center").opacity, 1.0);
         assert!(frame_of(&over_center, "center").capture);
         assert!(!frame_of(&over_center, "a").capture);
@@ -1206,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn latched_panel_stays_solid_and_captures_only_itself() {
+    fn panel_stays_opaque_when_the_cursor_is_on_another_element() {
         let rects = bots();
         let cfg = fade_cfg();
         let latched = vec!["center".to_string()];
@@ -1214,8 +1222,8 @@ mod tests {
         let away = interaction_frame(false, &latched, cursor_on_a, &rects, HIT_MARGIN_PX, &cfg);
         assert_eq!(frame_of(&away, "center").opacity, 1.0);
         assert!(!frame_of(&away, "center").capture);
-        assert!(frame_of(&away, "a").opacity < 1.0);
-        assert!(away.iter().all(|item| !item.capture));
+        assert_eq!(frame_of(&away, "a").opacity, 1.0);
+        assert!(frame_of(&away, "a").capture);
 
         let over_center = interaction_frame(
             false,
@@ -1228,32 +1236,26 @@ mod tests {
         assert!(frame_of(&over_center, "center").capture);
         assert!(!frame_of(&over_center, "a").capture);
         assert!(!frame_of(&over_center, "b").capture);
+        assert_eq!(frame_of(&over_center, "center").opacity, 1.0);
     }
 
     #[test]
-    fn capture_follows_the_padded_rect_only_while_held() {
+    fn capture_follows_the_padded_rect_until_the_modifier_is_held() {
         let rects = [rect()];
         let cfg = fade_cfg();
         let inside =
-            interaction_frame(true, &[], Some((110.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
+            interaction_frame(false, &[], Some((110.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
         let padded =
-            interaction_frame(true, &[], Some((152.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
+            interaction_frame(false, &[], Some((152.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
         let outside =
-            interaction_frame(true, &[], Some((170.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
-        let unheld = interaction_frame(
-            false,
-            &[],
-            Some((110.0, 110.0)),
-            &rects,
-            HIT_MARGIN_PX,
-            &cfg,
-        );
-        let missing = interaction_frame(true, &[], None, &rects, HIT_MARGIN_PX, &cfg);
+            interaction_frame(false, &[], Some((170.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
+        let held = interaction_frame(true, &[], Some((110.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
+        let missing = interaction_frame(false, &[], None, &rects, HIT_MARGIN_PX, &cfg);
         assert!(inside[0].capture && inside[0].opacity == 1.0);
         assert!(padded[0].capture && padded[0].opacity == 1.0);
-        assert!(!outside[0].capture && outside[0].opacity < 1.0);
-        assert!(!unheld[0].capture && unheld[0].opacity < 1.0);
-        assert!(!missing[0].capture);
+        assert!(!outside[0].capture && (outside[0].opacity - 1.0).abs() < 0.001);
+        assert!(!held[0].capture && (held[0].opacity - 0.18).abs() < 0.001);
+        assert!(!missing[0].capture && missing[0].opacity == 1.0);
     }
 
     fn overlap_panels() -> Vec<HitRect> {
@@ -1301,9 +1303,14 @@ mod tests {
         assert!(frame_of(&only_settings, "settings").capture);
         assert!(!frame_of(&only_settings, "center").capture);
 
-        let by_z = interaction_frame(true, &[], strip, &rects, HIT_MARGIN_PX, &cfg);
+        let by_z = interaction_frame(false, &[], strip, &rects, HIT_MARGIN_PX, &cfg);
         assert!(frame_of(&by_z, "settings").capture);
         assert!(!frame_of(&by_z, "center").capture);
+        assert_eq!(frame_of(&by_z, "center").opacity, 1.0);
+
+        let passed = interaction_frame(true, &[], strip, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(passed.iter().all(|item| !item.capture));
+        assert!(passed.iter().all(|item| item.opacity < 1.0));
 
         let latched_center = interaction_frame(
             false,
@@ -1336,7 +1343,7 @@ mod tests {
         assert!(corner > HIT_MARGIN_PX);
 
         let inside = interaction_frame(
-            true,
+            false,
             &[],
             Some((50.0, 50.0)),
             &[orb.clone()],
@@ -1344,7 +1351,7 @@ mod tests {
             &cfg,
         );
         let padded = interaction_frame(
-            true,
+            false,
             &[],
             Some((110.0, 50.0)),
             &[orb.clone()],
@@ -1352,7 +1359,7 @@ mod tests {
             &cfg,
         );
         let bbox_corner = interaction_frame(
-            true,
+            false,
             &[],
             Some((100.0, 100.0)),
             &[orb.clone()],
@@ -1362,19 +1369,29 @@ mod tests {
         assert!(inside[0].capture);
         assert!(padded[0].capture && padded[0].opacity == 1.0);
         assert!(!bbox_corner[0].capture);
-        assert!(bbox_corner[0].opacity < 1.0);
+        assert!((bbox_corner[0].opacity - 1.0).abs() < 0.001);
 
         let mut square = orb;
         square.round = false;
         let square_corner = interaction_frame(
-            true,
+            false,
             &[],
             Some((100.0, 100.0)),
+            &[square.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(square_corner[0].capture && square_corner[0].opacity == 1.0);
+        let held_panel = interaction_frame(
+            true,
+            &[],
+            Some((50.0, 50.0)),
             &[square],
             HIT_MARGIN_PX,
             &cfg,
         );
-        assert!(square_corner[0].capture);
+        assert!(!held_panel[0].capture);
+        assert!((held_panel[0].opacity - 0.18).abs() < 0.001);
     }
 
     #[test]
