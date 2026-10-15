@@ -800,18 +800,12 @@ async fn sync_profiles(
     if initial.mode() != "hermes" {
         return get_settings(app);
     }
-    let guard = state
-        .config_write
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
-    let path = config_path(&app)?;
-    let mut cfg = config::load(&path)?;
-    if cfg.mode() != "hermes" {
-        drop(guard);
-        return get_settings(app);
-    }
+    let gateway = initial.gateway_base_url.clone();
+    let dashboard = initial.dashboard_base_url.clone();
+    // Discover outside the write lock. std::sync::MutexGuard is not Send,
+    // so holding it across these awaits makes the command future unsendable.
     let mut hints = Vec::new();
-    for item in hermes::profiles_from_gateway_health(&state.http, &cfg.gateway_base_url).await {
+    for item in hermes::profiles_from_gateway_health(&state.http, &gateway).await {
         hints.push(config::ProfileHint {
             profile: item.profile,
             display_name: item.display_name,
@@ -826,7 +820,7 @@ async fn sync_profiles(
     if let Some(token) = token.as_deref() {
         if let Ok(found) = hermes::list_dashboard_profiles_timeout(
             &state.http,
-            &cfg.dashboard_base_url,
+            &dashboard,
             Some(token),
             std::time::Duration::from_secs(4),
         )
@@ -843,10 +837,19 @@ async fn sync_profiles(
         }
     }
     hints.extend(config::local_hermes_profiles(&hermes_home_dir()));
-    let before = cfg.bots.clone();
-    config::merge_discovered_profiles(&mut cfg.bots, &hints);
-    if cfg.bots != before {
-        config::save(&path, &cfg)?;
+
+    let guard = state
+        .config_write
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let path = config_path(&app)?;
+    let mut cfg = config::load(&path)?;
+    if cfg.mode() == "hermes" {
+        let before = cfg.bots.clone();
+        config::merge_discovered_profiles(&mut cfg.bots, &hints);
+        if cfg.bots != before {
+            config::save(&path, &cfg)?;
+        }
     }
     drop(guard);
     get_settings(app)
