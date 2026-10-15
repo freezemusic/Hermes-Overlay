@@ -35,6 +35,8 @@ pub struct ProfileHint {
     pub profile: String,
     pub display_name: String,
     pub detail: String,
+    /// Raw Hermes color (`#rgb`, `#rrggbb`, `hsl(...)`, `rgb(...)`) or empty.
+    pub color: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -259,6 +261,7 @@ pub fn local_hermes_profiles(home: &Path) -> Vec<ProfileHint> {
             profile: "default".into(),
             display_name: "default".into(),
             detail: String::new(),
+            color: profile_yaml_color(&home.join("profile.yaml")),
         });
     }
     let mut names = Vec::new();
@@ -284,15 +287,17 @@ pub fn local_hermes_profiles(home: &Path) -> Vec<ProfileHint> {
         }
         out.push(ProfileHint {
             profile: name.clone(),
-            display_name: name,
+            display_name: name.clone(),
             detail: String::new(),
+            color: profile_yaml_color(&home.join("profiles").join(&name).join("profile.yaml")),
         });
     }
     out
 }
 
-/// Adds unknown profiles. Existing rows keep enabled, color, base URL, session,
-/// and a custom display name or detail. Does not drop rows that were not rediscovered.
+/// Adds unknown profiles. A parsed Hermes color replaces the stored swatch.
+/// Otherwise existing rows keep enabled, color, base URL, session, and a custom
+/// display name or detail. Does not drop rows that were not rediscovered.
 pub fn merge_discovered_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint]) {
     for hint in found {
         if validate_profile(&hint.profile).is_err() {
@@ -308,6 +313,9 @@ pub fn merge_discovered_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint
             if existing.detail.trim().is_empty() {
                 existing.detail = hint.detail.trim().to_string();
             }
+            if let Some(color) = parse_hermes_color(&hint.color) {
+                existing.color = color;
+            }
             continue;
         }
         let display_name = {
@@ -321,7 +329,7 @@ pub fn merge_discovered_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint
         bots.push(BotConfig {
             profile: hint.profile.clone(),
             display_name,
-            color: color_for(&hint.profile),
+            color: parse_hermes_color(&hint.color).unwrap_or_else(|| color_for(&hint.profile)),
             base_url: String::new(),
             detail: hint.detail.trim().to_string(),
             session_id: String::new(),
@@ -360,6 +368,184 @@ pub fn normalize_color(raw: &str, fallback_name: &str) -> String {
         return raw.to_ascii_lowercase();
     }
     color_for(fallback_name)
+}
+
+pub fn profile_yaml_color(path: &Path) -> String {
+    let Ok(text) = fs::read_to_string(path) else {
+        return String::new();
+    };
+    hermes_bot_color_from_yaml(&text).unwrap_or_default()
+}
+
+/// `ui_meta.hermes-bots.color` from a profile.yaml body. A `color` outside that block is ignored.
+pub fn hermes_bot_color_from_yaml(text: &str) -> Option<String> {
+    let mut ui_indent: Option<usize> = None;
+    let mut bots_indent: Option<usize> = None;
+    for raw in text.lines() {
+        let Some(indent) = raw.find(|c: char| !c.is_whitespace()) else {
+            continue;
+        };
+        let line = raw[indent..].trim_end();
+        if line.starts_with('#') {
+            continue;
+        }
+        if ui_indent.is_some_and(|level| indent <= level) && !line.starts_with("ui_meta:") {
+            ui_indent = None;
+            bots_indent = None;
+        } else if bots_indent.is_some_and(|level| indent <= level)
+            && !line.starts_with("hermes-bots:")
+        {
+            bots_indent = None;
+        }
+        if line.starts_with("ui_meta:") {
+            ui_indent = Some(indent);
+            bots_indent = None;
+            continue;
+        }
+        if ui_indent.is_some_and(|level| indent > level) && line.starts_with("hermes-bots:") {
+            bots_indent = Some(indent);
+            continue;
+        }
+        if bots_indent.is_some_and(|level| indent > level) && line.starts_with("color:") {
+            let value = strip_yaml_scalar(&line["color:".len()..]);
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn strip_yaml_scalar(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.starts_with('|') || raw.starts_with('>') {
+        return String::new();
+    }
+    let (quote, rest) = if let Some(stripped) = raw.strip_prefix('"') {
+        ('"', stripped)
+    } else if let Some(stripped) = raw.strip_prefix('\'') {
+        ('\'', stripped)
+    } else {
+        return raw.split(" #").next().unwrap_or(raw).trim().to_string();
+    };
+    match rest.find(quote) {
+        Some(end) => rest[..end].to_string(),
+        None => rest.to_string(),
+    }
+}
+
+/// Hermes profile color as `#rrggbb`. Unrecognized values are `None` (caller falls back).
+pub fn parse_hermes_color(raw: &str) -> Option<String> {
+    let raw = raw.trim().trim_matches(|c| c == '"' || c == '\'');
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(hex) = parse_hex_color(raw) {
+        return Some(hex);
+    }
+    let lower = raw.to_ascii_lowercase();
+    if let Some(hex) = parse_hsl_color(&lower) {
+        return Some(hex);
+    }
+    parse_rgb_color(&lower)
+}
+
+fn parse_hex_color(raw: &str) -> Option<String> {
+    let body = raw.strip_prefix('#')?;
+    let expanded = if body.len() == 3 && body.chars().all(|c| c.is_ascii_hexdigit()) {
+        body.chars().flat_map(|c| [c, c]).collect::<String>()
+    } else if body.len() == 6 && body.chars().all(|c| c.is_ascii_hexdigit()) {
+        body.to_string()
+    } else {
+        return None;
+    };
+    Some(format!("#{}", expanded.to_ascii_lowercase()))
+}
+
+fn parse_hsl_color(raw: &str) -> Option<String> {
+    let inner = raw.strip_prefix("hsl(")?.strip_suffix(')')?.trim();
+    let parts = split_color_args(inner);
+    if parts.len() != 3 {
+        return None;
+    }
+    let h: f64 = parts[0].trim_end_matches("deg").trim().parse().ok()?;
+    let s = color_number(parts[1])?;
+    let l = color_number(parts[2])?;
+    if !h.is_finite() {
+        return None;
+    }
+    Some(hsl_to_hex(h, s, l))
+}
+
+fn parse_rgb_color(raw: &str) -> Option<String> {
+    let inner = raw.strip_prefix("rgb(")?.strip_suffix(')')?.trim();
+    let parts = split_color_args(inner);
+    if parts.len() != 3 {
+        return None;
+    }
+    let mut channels = [0u8; 3];
+    for (index, part) in parts.iter().enumerate() {
+        channels[index] = rgb_channel(part)?;
+    }
+    Some(format!(
+        "#{:02x}{:02x}{:02x}",
+        channels[0], channels[1], channels[2]
+    ))
+}
+
+fn split_color_args(inner: &str) -> Vec<&str> {
+    if inner.contains(',') {
+        inner
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect()
+    } else {
+        inner.split_whitespace().collect()
+    }
+}
+
+fn color_number(part: &str) -> Option<f64> {
+    let n: f64 = part.trim().trim_end_matches('%').trim().parse().ok()?;
+    n.is_finite().then_some(n)
+}
+
+fn rgb_channel(part: &str) -> Option<u8> {
+    let part = part.trim();
+    if let Some(pct) = part.strip_suffix('%') {
+        let n = color_number(pct)?;
+        return Some(((n / 100.0).clamp(0.0, 1.0) * 255.0).round() as u8);
+    }
+    let n = color_number(part)?;
+    if !(0.0..=255.0).contains(&n) {
+        return None;
+    }
+    Some(n.round() as u8)
+}
+
+fn hsl_to_hex(h: f64, s: f64, l: f64) -> String {
+    let h = h.rem_euclid(360.0);
+    let s = (s / 100.0).clamp(0.0, 1.0);
+    let l = (l / 100.0).clamp(0.0, 1.0);
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h_prime = h / 60.0;
+    let x = c * (1.0 - ((h_prime % 2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r1, g1, b1) = match h_prime as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let channel = |value: f64| ((value * 255.0).round() as i32).clamp(0, 255) as u8;
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        channel(r1 + m),
+        channel(g1 + m),
+        channel(b1 + m)
+    )
 }
 
 #[cfg(test)]
@@ -463,10 +649,22 @@ mod tests {
         fs::create_dir_all(root.join("profiles").join("planner")).unwrap();
         fs::create_dir_all(root.join("profiles").join("bad name")).unwrap();
         fs::write(root.join("config.yaml"), "model: x").unwrap();
+        fs::write(
+            root.join("profile.yaml"),
+            "color: \"#112233\"\nui_meta:\n  hermes-bots:\n    color: \"hsl(326 68% 58%)\"\n",
+        )
+        .unwrap();
         fs::write(root.join("profiles").join("notes.txt"), "x").unwrap();
+        fs::write(
+            root.join("profiles").join("planner").join("profile.yaml"),
+            "ui_meta:\n  other:\n    color: \"#abcdef\"\n  hermes-bots:\n    title: Planner\n",
+        )
+        .unwrap();
         let found = local_hermes_profiles(&root);
         let names: Vec<_> = found.iter().map(|hint| hint.profile.as_str()).collect();
         assert_eq!(names, vec!["default", "planner"]);
+        assert_eq!(found[0].color, "hsl(326 68% 58%)");
+        assert_eq!(found[1].color, "");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -503,16 +701,19 @@ mod tests {
                     profile: "planner".into(),
                     display_name: "Planner".into(),
                     detail: "新".into(),
+                    color: String::new(),
                 },
                 ProfileHint {
                     profile: "coder".into(),
                     display_name: "碼".into(),
                     detail: String::new(),
+                    color: String::new(),
                 },
                 ProfileHint {
                     profile: "bad name".into(),
                     display_name: "nope".into(),
                     detail: String::new(),
+                    color: "#ff00aa".into(),
                 },
             ],
         );
@@ -526,11 +727,90 @@ mod tests {
         assert_eq!(bots[2].profile, "coder");
         assert!(bots[2].enabled);
         assert_eq!(bots[2].display_name, "碼");
+        assert_eq!(bots[2].color, color_for("coder"));
         assert!(bots[2].base_url.is_empty());
         let text = serde_json::to_string(&bots[2]).unwrap();
         assert!(!text.contains("key"));
         set_bot_enabled(&mut bots, "coder", false).unwrap();
         assert!(!bots[2].enabled);
         assert!(set_bot_enabled(&mut bots, "missing", false).is_err());
+    }
+
+    #[test]
+    fn hermes_color_replaces_the_stored_swatch_and_falls_back_when_absent() {
+        let yaml = "\
+color: \"#112233\"
+ui_meta:
+  theme:
+    color: red
+  hermes-bots:
+    title: Planner
+    color: hsl(326 68% 58%) # bot mode
+other:
+  color: \"#abcdef\"
+";
+        assert_eq!(
+            hermes_bot_color_from_yaml(yaml).as_deref(),
+            Some("hsl(326 68% 58%)")
+        );
+        assert_eq!(hermes_bot_color_from_yaml("color: \"#112233\"\n"), None);
+        assert_eq!(
+            parse_hermes_color("hsl(326 68% 58%)").as_deref(),
+            Some("#dd4b9e")
+        );
+        assert_eq!(
+            parse_hermes_color("hsl(200, 50%, 40%)").as_deref(),
+            Some("#337799")
+        );
+        assert_eq!(parse_hermes_color("#ABC").as_deref(), Some("#aabbcc"));
+        assert_eq!(parse_hermes_color("#00f2f2").as_deref(), Some("#00f2f2"));
+        assert_eq!(
+            parse_hermes_color("rgb(10, 20, 30)").as_deref(),
+            Some("#0a141e")
+        );
+        assert_eq!(parse_hermes_color("not-a-color"), None);
+        assert_eq!(parse_hermes_color(""), None);
+
+        let mut bots = vec![BotConfig {
+            profile: "planner".into(),
+            display_name: "我的計劃".into(),
+            color: "#00f2f2".into(),
+            base_url: String::new(),
+            detail: String::new(),
+            session_id: String::new(),
+            session_explicit: false,
+            session_anchor: 0.0,
+            enabled: true,
+        }];
+        merge_discovered_profiles(
+            &mut bots,
+            &[ProfileHint {
+                profile: "planner".into(),
+                display_name: "Planner".into(),
+                detail: String::new(),
+                color: "hsl(326 68% 58%)".into(),
+            }],
+        );
+        assert_eq!(bots[0].color, "#dd4b9e");
+        assert_eq!(bots[0].display_name, "我的計劃");
+        merge_discovered_profiles(
+            &mut bots,
+            &[
+                ProfileHint {
+                    profile: "planner".into(),
+                    display_name: "Planner".into(),
+                    detail: String::new(),
+                    color: String::new(),
+                },
+                ProfileHint {
+                    profile: "ops".into(),
+                    display_name: "ops".into(),
+                    detail: String::new(),
+                    color: "#ABC".into(),
+                },
+            ],
+        );
+        assert_eq!(bots[0].color, "#dd4b9e");
+        assert_eq!(bots[1].color, "#aabbcc");
     }
 }

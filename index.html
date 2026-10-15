@@ -53,6 +53,14 @@
             </div>
           </section>
 
+          <section class="plan-preview" data-role="plan" hidden>
+            <div class="plan-head">
+              <h2 class="plan-title" data-role="plan-title">計劃</h2>
+              <button type="button" class="plan-toggle" data-role="plan-toggle">收起</button>
+            </div>
+            <div class="plan-body" data-role="plan-body"></div>
+          </section>
+
           <section class="chat-block" aria-label="對話">
             <div class="chat-head">
               <h2 class="section-label">對話</h2>
@@ -102,7 +110,7 @@
 
           <fieldset class="experimental">
             <legend>實驗：由 dashboard 匯入名單</legend>
-            <p class="hint">連上 Gateway 時會自動發現 profile 並寫入設定：本機 Hermes 目錄（<code>HERMES_HOME</code> 或 <code>~/.hermes</code>）、已存嘅 dashboard session token 對 <code>GET /api/profiles</code>、以及 <code>/health</code> 如果本身列出 profiles。新 profile 會出圓球，金鑰留空，要你填，唔會自動產生。下面個掣只係再匯入到呢個表，仍然要儲存。</p>
+            <p class="hint">連上 Gateway 時會自動發現 profile 並寫入設定：本機 Hermes 目錄（<code>HERMES_HOME</code> 或 <code>~/.hermes</code>）、已存嘅 dashboard session token 對 <code>GET /api/profiles</code>、以及 <code>/health</code> 如果本身列出 profiles。新 profile 會出圓球，金鑰留空，要你填，唔會自動產生。圓球顏色讀 profile.yaml 嘅 <code>ui_meta.hermes-bots.color</code>（或 dashboard 同欄位）；冇顏色先用預設色。下面個掣只係再匯入到呢個表，仍然要儲存。</p>
             <p class="hint">手動匯入用 Hermes dashboard 嘅 <code>GET /api/profiles</code>（預設 <code>http://127.0.0.1:9119</code>）。公開 API server（8642）冇 profile 列表。匯入只填名稱同描述，<strong>唔會</strong>帶 API 金鑰。Dashboard 即使係 localhost 都要 session token，否則 401。Token 係 dashboard 頁面嘅 <code>window.__HERMES_SESSION_TOKEN__</code>，唔係 <code>API_SERVER_KEY</code>，存喺鑰匙圈。</p>
             <label class="field">
               <span>Dashboard 位址</span>

@@ -58,6 +58,8 @@ pub struct DiscoveredProfile {
     pub profile: String,
     pub display_name: String,
     pub detail: String,
+    /// Raw Hermes color from `color`, `bot_color`, or `ui_meta.hermes-bots.color`.
+    pub color: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1059,9 +1061,35 @@ pub fn parse_dashboard_profiles(value: &Value) -> Vec<DiscoveredProfile> {
             profile,
             display_name,
             detail,
+            color: json_profile_color(&item),
         });
     }
     out
+}
+
+fn json_text(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn json_profile_color(item: &Value) -> String {
+    let direct = json_text(item.get("color"));
+    if !direct.is_empty() {
+        return direct;
+    }
+    let bot = json_text(item.get("bot_color"));
+    if !bot.is_empty() {
+        return bot;
+    }
+    let nested = item
+        .get("ui_meta")
+        .and_then(|ui| ui.get("hermes-bots").or_else(|| ui.get("hermes_bots")))
+        .and_then(|bots| bots.get("color"));
+    json_text(nested)
 }
 
 pub async fn stream_turn<F>(
@@ -1523,6 +1551,7 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].display_name, "資料搜查");
         assert_eq!(found[0].detail, "搜尋");
+        assert_eq!(found[0].color, "");
         assert!(profiles_from_health_body("ok").is_empty());
         assert!(profiles_from_health_body(r#"{"status":"ok"}"#).is_empty());
         let health = profiles_from_health_body(
@@ -1531,6 +1560,15 @@ mod tests {
         assert_eq!(health.len(), 1);
         assert_eq!(health[0].profile, "coder");
         assert_eq!(health[0].detail, "程式");
+        assert_eq!(health[0].color, "");
+        let colored = parse_dashboard_profiles(&json!({"profiles":[
+            {"name":"planner","color":"hsl(326 68% 58%)"},
+            {"name":"coder","bot_color":"#ABC"},
+            {"name":"writer","ui_meta":{"hermes-bots":{"color":"rgb(10, 20, 30)"}}}
+        ]}));
+        assert_eq!(colored[0].color, "hsl(326 68% 58%)");
+        assert_eq!(colored[1].color, "#ABC");
+        assert_eq!(colored[2].color, "rgb(10, 20, 30)");
     }
 
     fn oneshot(status: &str, content_type: &str, body: &str) -> String {

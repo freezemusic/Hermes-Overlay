@@ -5,6 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, toastAnchor, TOAST_MS } from "./activity.js";
+import { latestPlan, planDemoMarkdown, planTask } from "./plan.js";
 import { closePanel, fromOrbDelta, openPanel, panelStackOffset } from "./panels.js";
 import { isProfileEnabled, profilesNeedingKeys } from "./roster.js";
 import { resolveSession, sessionLabel } from "./sessions.js";
@@ -665,12 +666,48 @@ function renderChat(id = state.activeId) {
   applyBotColor(panel, bot.color);
   thread.messages.forEach((m) => chat.appendChild(bubbleEl(m)));
   chat.scrollTop = chat.scrollHeight;
+  paintPlan(id);
   paintSessionSelect(id);
   const stop = role(panel, "stop");
   const send = role(panel, "send");
   if (stop) stop.hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
   if (send) send.disabled = state.mode === "hermes" && state.busy.has(bot.id);
   syncActivityChrome(id);
+  scheduleHitSync();
+}
+
+function paintPlan(id) {
+  const panel = panelFor(id);
+  const section = role(panel, "plan");
+  if (!section) return;
+  const plan = latestPlan(threadFor(id).messages);
+  if (!plan) {
+    section.hidden = true;
+    section.dataset.key = "";
+    return;
+  }
+  if (section.dataset.key !== plan.key) {
+    section.dataset.key = plan.key;
+    section.dataset.collapsed = "";
+  }
+  const collapsed = section.dataset.collapsed === "1";
+  section.hidden = false;
+  const title = role(panel, "plan-title");
+  if (title) title.textContent = plan.title;
+  const body = role(panel, "plan-body");
+  if (body) {
+    body.hidden = collapsed;
+    if (!collapsed) {
+      const html = renderAssistantMarkdown(plan.markdown);
+      if (body.dataset.md !== html) {
+        body.dataset.md = html;
+        body.innerHTML = html;
+        decorateCodeBlocks(body);
+      }
+    }
+  }
+  const toggle = role(panel, "plan-toggle");
+  if (toggle) toggle.textContent = collapsed ? "展開" : "收起";
   scheduleHitSync();
 }
 
@@ -757,6 +794,7 @@ function appendMessage(id, message) {
   if (!chat) return;
   chat.appendChild(bubbleEl(message));
   chat.scrollTop = chat.scrollHeight;
+  paintPlan(id);
 }
 
 function setBotStatus(id, text, statusState) {
@@ -976,6 +1014,12 @@ function wireBotPanel(panel, id) {
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
   role(panel, "stop")?.addEventListener("click", () => stopActive(id));
   role(panel, "save")?.addEventListener("click", () => saveBotPanel(id));
+  role(panel, "plan-toggle")?.addEventListener("click", () => {
+    const section = role(panel, "plan");
+    if (!section) return;
+    section.dataset.collapsed = section.dataset.collapsed === "1" ? "" : "1";
+    paintPlan(id);
+  });
   const sessionSelect = role(panel, "session");
   sessionSelect?.addEventListener("pointerdown", () => {
     state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "pointerdown");
@@ -1267,12 +1311,15 @@ async function sendActive(id = state.activeId) {
     await sendClientCommand(id, text, action);
     return;
   }
-  appendMessage(id, { role: "user", text });
+  const task = planTask(text);
+  appendMessage(id, task === null ? { role: "user", text } : { role: "user", text, command: "plan" });
   const sentId = id;
   noteActivity(sentId, { type: "send" });
   if (state.mode !== "hermes" || !inTauri()) {
     setTimeout(() => {
-      const reply = `（示範回覆）收到：「${text}」。未設定 Hermes gateway。`;
+      const reply = task === null
+        ? `（示範回覆）收到：「${text}」。未設定 Hermes gateway。`
+        : planDemoMarkdown(task);
       appendMessage(sentId, { role: "bot", text: reply });
       noteActivity(sentId, { type: "completed", text: reply });
     }, 350);

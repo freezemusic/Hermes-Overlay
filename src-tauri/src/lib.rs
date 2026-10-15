@@ -781,7 +781,8 @@ async fn discover_profiles(
         .filter_map(|item| {
             config::validate_profile(&item.profile).ok()?;
             Some(DiscoveredBot {
-                color: config::color_for(&item.profile),
+                color: config::parse_hermes_color(&item.color)
+                    .unwrap_or_else(|| config::color_for(&item.profile)),
                 profile: item.profile,
                 display_name: item.display_name,
                 detail: item.detail,
@@ -809,12 +810,13 @@ async fn sync_profiles(
         drop(guard);
         return get_settings(app);
     }
-    let mut hints = config::local_hermes_profiles(&hermes_home_dir());
+    let mut hints = Vec::new();
     for item in hermes::profiles_from_gateway_health(&state.http, &cfg.gateway_base_url).await {
         hints.push(config::ProfileHint {
             profile: item.profile,
             display_name: item.display_name,
             detail: item.detail,
+            color: item.color,
         });
     }
     let token = match secrets::get_dashboard_token() {
@@ -835,10 +837,12 @@ async fn sync_profiles(
                     profile: item.profile,
                     display_name: item.display_name,
                     detail: item.detail,
+                    color: item.color,
                 });
             }
         }
     }
+    hints.extend(config::local_hermes_profiles(&hermes_home_dir()));
     let before = cfg.bots.clone();
     config::merge_discovered_profiles(&mut cfg.bots, &hints);
     if cfg.bots != before {
