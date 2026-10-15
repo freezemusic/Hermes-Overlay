@@ -6,6 +6,7 @@
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, toastAnchor, TOAST_MS } from "./activity.js";
 import { closePanel, fromOrbDelta, openPanel, panelStackOffset } from "./panels.js";
+import { isProfileEnabled, profilesNeedingKeys } from "./roster.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_BOARD,
@@ -510,6 +511,11 @@ function renderBots() {
       btn.dataset.botId = bot.id;
       btn.dataset.hitId = `bot:${bot.id}`;
       btn.addEventListener("click", () => selectBot(bot.id));
+      btn.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openOrbMenu(bot.id, event.clientX, event.clientY);
+      });
       btn.addEventListener("animationend", (event) => {
         if (event.animationName === "orb-pulse") btn.classList.remove("orb-enter");
         if (event.animationName === "ping") event.target.remove();
@@ -1181,7 +1187,7 @@ async function sendActive(id = state.activeId) {
 }
 
 function botsFromSettings(settings) {
-  return (settings.bots || []).map((bot) => ({
+  return (settings.bots || []).filter(isProfileEnabled).map((bot) => ({
     id: bot.profile,
     name: bot.display_name || bot.profile,
     short: shortLabel(bot.display_name || bot.profile),
@@ -1283,10 +1289,153 @@ function useHermes(settings) {
   if (state.activeId) void selectBot(state.activeId);
 }
 
+async function connectHermes(settings) {
+  if (!inTauri() || settings?.mode !== "hermes") {
+    useHermes(settings);
+    return;
+  }
+  const before = settings.bots || [];
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const synced = await invoke("sync_profiles");
+    const added = profilesNeedingKeys(before, synced.bots || []);
+    useHermes(synced);
+    if (added.length && !synced.keyring_error) {
+      const names = added.map((bot) => bot.display_name || bot.profile).join("、");
+      setBanner(`${names} 未有 API 金鑰，請喺設定填寫。金鑰唔會自動產生。`, "info", "", "settings");
+    }
+  } catch (err) {
+    useHermes(settings);
+    setBanner(String(err), "error");
+  }
+}
+
+function ensureSettingsList() {
+  if (!state.settings || typeof state.settings !== "object") {
+    state.settings = { mode: state.mode, bots: [] };
+  }
+  if (!Array.isArray(state.settings.bots)) state.settings.bots = [];
+  return state.settings.bots;
+}
+
+function rosterForSettings() {
+  const saved = Array.isArray(state.settings?.bots) ? [...state.settings.bots] : [];
+  if (state.mode !== "mock") return saved;
+  const ids = new Set(saved.map((bot) => bot.profile));
+  for (const bot of state.bots) {
+    if (ids.has(bot.id)) continue;
+    saved.push({
+      profile: bot.id,
+      display_name: bot.name || bot.id,
+      color: bot.color || "",
+      detail: bot.detail || "",
+      base_url: "",
+      has_key: false,
+      enabled: true,
+    });
+  }
+  return saved;
+}
+
+function syncRosterCheckbox(id, enabled) {
+  document.querySelectorAll(".bot-row").forEach((row) => {
+    const profile = row.querySelector('[data-field="profile"]')?.value.trim();
+    if (profile !== id) return;
+    const box = row.querySelector('[data-field="enabled"]');
+    if (box) box.checked = enabled;
+  });
+}
+
+function settingsRowFromLive(id) {
+  const live = state.bots.find((bot) => bot.id === id);
+  if (!live) return null;
+  return {
+    profile: id,
+    display_name: live.name || id,
+    color: live.color || "",
+    detail: live.detail || "",
+    base_url: "",
+    has_key: !!live.hasKey,
+    enabled: true,
+  };
+}
+
+async function setProfileShown(id, enabled) {
+  const bots = ensureSettingsList();
+  const persisted = bots.some((bot) => bot.profile === id);
+  let row = bots.find((bot) => bot.profile === id);
+  if (!row) {
+    row = settingsRowFromLive(id);
+    if (!row) return;
+    bots.push(row);
+  }
+  const previous = row.enabled !== false;
+  row.enabled = !!enabled;
+  if (!enabled) {
+    state.bots = state.bots.filter((bot) => bot.id !== id);
+    closeBotPanel(id);
+  } else if (!state.bots.some((bot) => bot.id === id)) {
+    const [mapped] = botsFromSettings({ bots: [{ ...row, enabled: true }] });
+    if (mapped) state.bots.push(mapped);
+    renderBots();
+  }
+  syncRosterCheckbox(id, !!enabled);
+  closeOrbMenu();
+  if (!(inTauri() && state.mode === "hermes" && persisted)) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const settings = await invoke("set_profile_enabled", { profile: id, enabled: !!enabled });
+    state.settings = settings;
+    state.bots = botsFromSettings(settings);
+    renderBots();
+    syncRosterCheckbox(id, !!enabled);
+  } catch (err) {
+    row.enabled = previous;
+    if (previous) {
+      if (!state.bots.some((bot) => bot.id === id)) {
+        const [mapped] = botsFromSettings({ bots: [{ ...row, enabled: true }] });
+        if (mapped) state.bots.push(mapped);
+      }
+    } else {
+      state.bots = state.bots.filter((bot) => bot.id !== id);
+      closeBotPanel(id);
+    }
+    syncRosterCheckbox(id, previous);
+    renderBots();
+    showActionError(String(err));
+  }
+}
+
+function openOrbMenu(id, x, y) {
+  const menu = $("#orb-menu");
+  if (!menu) return;
+  menu.hidden = false;
+  menu.dataset.profile = id;
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  const box = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(x, window.innerWidth - box.width - 8));
+  const top = Math.max(8, Math.min(y, window.innerHeight - box.height - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  cursorPoint.x = x;
+  cursorPoint.y = y;
+  flushHits();
+}
+
+function closeOrbMenu() {
+  const menu = $("#orb-menu");
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  delete menu.dataset.profile;
+  scheduleHitSync();
+}
+
 function rowFromBot(bot = {}) {
   const row = document.createElement("div");
   row.className = "bot-row";
   row.innerHTML = `
+    <label class="show-toggle"><input type="checkbox" data-field="enabled" /><span>顯示</span></label>
     <input type="text" data-field="profile" placeholder="profile" autocomplete="off" />
     <input type="text" data-field="display_name" placeholder="顯示名稱" autocomplete="off" />
     <input type="color" data-field="color" aria-label="顏色" />
@@ -1296,6 +1445,16 @@ function rowFromBot(bot = {}) {
     <input class="span-2" type="password" data-field="key" placeholder="API 金鑰" autocomplete="off" />
   `;
   row.querySelector('[data-field="profile"]').value = bot.profile || "";
+  const enabled = row.querySelector('[data-field="enabled"]');
+  enabled.checked = bot.enabled !== false;
+  enabled.addEventListener("change", () => {
+    const profile = row.querySelector('[data-field="profile"]').value.trim();
+    if (!profile) {
+      enabled.checked = true;
+      return;
+    }
+    void setProfileShown(profile, enabled.checked);
+  });
   row.querySelector('[data-field="display_name"]').value = bot.display_name || "";
   const existingRows = $("#bot-editor") ? $("#bot-editor").querySelectorAll(".bot-row").length : 0;
   row.querySelector('[data-field="color"]').value = bot.color || colorForIndex(existingRows);
@@ -1321,6 +1480,7 @@ function readRows() {
       key: keyInput.value,
       clear_key: false,
       has_key: keyInput.dataset.hasKey === "1",
+      enabled: row.querySelector('[data-field="enabled"]').checked,
     };
   });
 }
@@ -1357,7 +1517,7 @@ function fillSettings(settings) {
     : "可留空";
   const editor = $("#bot-editor");
   editor.innerHTML = "";
-  const bots = settings?.bots?.length ? settings.bots : [];
+  const bots = rosterForSettings();
   if (bots.length === 0) editor.appendChild(rowFromBot());
   bots.forEach((bot) => editor.appendChild(rowFromBot(bot)));
   const interaction = settings?.interaction || state.interaction;
@@ -1464,7 +1624,7 @@ async function saveSettings(event) {
     $("#settings-status").textContent = "已儲存。";
     $("#dashboard-token").value = "";
     if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。", "settings");
-    else useHermes(settings);
+    else await connectHermes(settings);
     closeSettings();
   } catch (err) {
     $("#settings-status").textContent = String(err);
@@ -1510,6 +1670,7 @@ async function discoverProfiles() {
           detail: bot.detail,
           base_url: "",
           has_key: false,
+          enabled: true,
         });
       }
     }
@@ -1752,6 +1913,11 @@ function topOpenPanel() {
 function setupComposer() {
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    const menu = $("#orb-menu");
+    if (menu && !menu.hidden) {
+      closeOrbMenu();
+      return;
+    }
     if (state.dropdownOpen) {
       state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "escape");
       return;
@@ -1816,6 +1982,15 @@ function setupComposer() {
   $("#btn-add-bot").addEventListener("click", () => $("#bot-editor").appendChild(rowFromBot()));
   $("#btn-probe").addEventListener("click", probeSaved);
   $("#btn-discover").addEventListener("click", discoverProfiles);
+  $("#orb-menu-hide")?.addEventListener("click", () => {
+    const id = $("#orb-menu")?.dataset.profile;
+    if (id) void setProfileShown(id, false);
+  });
+  window.addEventListener("pointerdown", (event) => {
+    const menu = $("#orb-menu");
+    if (!menu || menu.hidden || menu.contains(event.target)) return;
+    closeOrbMenu();
+  });
 }
 
 function paintOrb(el, color, letter) {
@@ -1895,6 +2070,8 @@ function collectHits() {
   document.querySelectorAll(".bot-btn").forEach((el) => {
     if (el.dataset.hitId) push(el.dataset.hitId, el, 0, true);
   });
+  const menu = $("#orb-menu");
+  if (menu && !menu.hidden) push("orb-menu", menu, 80);
   return rects;
 }
 
@@ -2602,7 +2779,7 @@ async function boot() {
       useMock(SETUP_BANNER, "settings");
       openSettings();
     } else if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。", "settings");
-    else useHermes(settings);
+    else await connectHermes(settings);
     if (settings.keyring_error) {
       setBanner(`鑰匙圈：${settings.keyring_error}`, "error", "keyring");
     }

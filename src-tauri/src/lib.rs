@@ -140,6 +140,7 @@ struct PublicBot {
     base_url: String,
     detail: String,
     has_key: bool,
+    enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -187,6 +188,12 @@ struct SaveBot {
     key: String,
     #[serde(default)]
     clear_key: bool,
+    #[serde(default = "default_bot_enabled")]
+    enabled: bool,
+}
+
+fn default_bot_enabled() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -404,6 +411,7 @@ fn save_bot_meta(app: AppHandle, input: SaveBotMeta) -> Result<PublicBot, String
         base_url: bot.base_url.clone(),
         detail: bot.detail.clone(),
         has_key,
+        enabled: bot.enabled,
     };
     config::save(&path, &cfg)?;
     Ok(saved)
@@ -439,6 +447,7 @@ fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
             base_url: bot.base_url.clone(),
             detail: bot.detail.clone(),
             has_key,
+            enabled: bot.enabled,
         });
     }
     let has_dashboard_token = match secrets::get_dashboard_token() {
@@ -527,6 +536,7 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
             display_name,
             base_url,
             session_id,
+            enabled: bot.enabled,
         });
     }
 
@@ -679,6 +689,87 @@ async fn discover_profiles(
             })
         })
         .collect())
+}
+
+#[tauri::command]
+async fn sync_profiles(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PublicSettings, String> {
+    let initial = load_config(&app)?;
+    if initial.mode() != "hermes" {
+        return get_settings(app);
+    }
+    let guard = state
+        .config_write
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let path = config_path(&app)?;
+    let mut cfg = config::load(&path)?;
+    if cfg.mode() != "hermes" {
+        drop(guard);
+        return get_settings(app);
+    }
+    let mut hints = config::local_hermes_profiles(&hermes_home_dir());
+    for item in hermes::profiles_from_gateway_health(&state.http, &cfg.gateway_base_url).await {
+        hints.push(config::ProfileHint {
+            profile: item.profile,
+            display_name: item.display_name,
+            detail: item.detail,
+        });
+    }
+    let token = match secrets::get_dashboard_token() {
+        Ok(Lookup::Value(value)) if !value.trim().is_empty() => Some(value),
+        _ => None,
+    };
+    if let Some(token) = token.as_deref() {
+        if let Ok(found) = hermes::list_dashboard_profiles_timeout(
+            &state.http,
+            &cfg.dashboard_base_url,
+            Some(token),
+            std::time::Duration::from_secs(4),
+        )
+        .await
+        {
+            for item in found {
+                hints.push(config::ProfileHint {
+                    profile: item.profile,
+                    display_name: item.display_name,
+                    detail: item.detail,
+                });
+            }
+        }
+    }
+    let before = cfg.bots.clone();
+    config::merge_discovered_profiles(&mut cfg.bots, &hints);
+    if cfg.bots != before {
+        config::save(&path, &cfg)?;
+    }
+    drop(guard);
+    get_settings(app)
+}
+
+#[tauri::command]
+fn set_profile_enabled(
+    app: AppHandle,
+    profile: String,
+    enabled: bool,
+) -> Result<PublicSettings, String> {
+    let profile = profile.trim().to_string();
+    config::validate_profile(&profile)?;
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    let mut cfg = config::load(&path)?;
+    config::set_bot_enabled(&mut cfg.bots, &profile, enabled)?;
+    config::save(&path, &cfg)?;
+    drop(_guard);
+    get_settings(app)
 }
 
 #[tauri::command]
@@ -1345,6 +1436,8 @@ pub fn run() {
             save_settings,
             probe_gateway,
             discover_profiles,
+            sync_profiles,
+            set_profile_enabled,
             open_bot,
             send_chat,
             stop_chat,

@@ -92,3 +92,13 @@ commands.allow = ["write_soul"]
 identifier = "allow-save-bot-meta"
 description = "Save one bot display name and detail."
 commands.allow = ["save_bot_meta"]
+
+[[permission]]
+identifier = "allow-sync-profiles"
+description = "Discover Hermes profiles into the roster without inventing API keys."
+commands.allow = ["sync_profiles"]
+
+[[permission]]
+identifier = "allow-set-profile-enabled"
+description = "Show or hide one roster profile without deleting its key."
+commands.allow = ["set_profile_enabled"]

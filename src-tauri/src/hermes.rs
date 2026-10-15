@@ -920,15 +920,48 @@ pub async fn lock_session_model(
     Ok(())
 }
 
+pub fn profiles_from_health_body(body: &str) -> Vec<DiscoveredProfile> {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    if value.get("profiles").and_then(Value::as_array).is_none() {
+        return Vec::new();
+    }
+    parse_dashboard_profiles(&value)
+}
+
+pub async fn profiles_from_gateway_health(http: &Client, gateway: &str) -> Vec<DiscoveredProfile> {
+    let url = format!("{}/health", gateway.trim_end_matches('/'));
+    let Ok(resp) = http.get(url).timeout(Duration::from_secs(8)).send().await else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(body) = resp.text().await else {
+        return Vec::new();
+    };
+    profiles_from_health_body(&body)
+}
+
 pub async fn list_dashboard_profiles(
     http: &Client,
     dashboard: &str,
     token: Option<&str>,
 ) -> Result<Vec<DiscoveredProfile>, HermesError> {
+    list_dashboard_profiles_timeout(http, dashboard, token, Duration::from_secs(15)).await
+}
+
+pub async fn list_dashboard_profiles_timeout(
+    http: &Client,
+    dashboard: &str,
+    token: Option<&str>,
+    timeout: Duration,
+) -> Result<Vec<DiscoveredProfile>, HermesError> {
     let url = format!("{}/api/profiles", dashboard.trim_end_matches('/'));
     let mut req = http
         .get(url)
-        .timeout(Duration::from_secs(15))
+        .timeout(timeout)
         .header("Accept", "application/json");
     if let Some(token) = token.map(str::trim).filter(|t| !t.is_empty()) {
         req = req.header("X-Hermes-Session-Token", token);
@@ -1444,6 +1477,14 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].display_name, "資料搜查");
         assert_eq!(found[0].detail, "搜尋");
+        assert!(profiles_from_health_body("ok").is_empty());
+        assert!(profiles_from_health_body(r#"{"status":"ok"}"#).is_empty());
+        let health = profiles_from_health_body(
+            r#"{"status":"ok","profiles":[{"profile":"coder","description":"程式"}]}"#,
+        );
+        assert_eq!(health.len(), 1);
+        assert_eq!(health[0].profile, "coder");
+        assert_eq!(health[0].detail, "程式");
     }
 
     fn oneshot(status: &str, content_type: &str, body: &str) -> String {

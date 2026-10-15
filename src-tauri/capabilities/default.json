@@ -32,6 +32,8 @@
     "allow-quit-app",
     "allow-read-soul",
     "allow-write-soul",
-    "allow-save-bot-meta"
+    "allow-save-bot-meta",
+    "allow-sync-profiles",
+    "allow-set-profile-enabled"
   ]
 }

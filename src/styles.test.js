@@ -81,6 +81,10 @@ test("bot panels own SOUL and the settings orb owns the gateway", () => {
   assert.match(html, /id="settings"/);
   assert.doesNotMatch(html, /data-tauri-drag-region/);
   assert.doesNotMatch(html, /游標靠近時淡出/);
+  assert.match(html, /id="orb-menu"/);
+  assert.match(html, /隱藏呢個 Bot/);
+  assert.match(html, /隱藏保留金鑰/);
+  assert.match(css, /\.orb-menu-btn \{[^}]*text-transform:\s*none/s);
 });
 
 test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {

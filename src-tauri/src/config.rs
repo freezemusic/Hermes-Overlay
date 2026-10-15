@@ -19,6 +19,16 @@ pub struct BotConfig {
     /// Active Hermes session for this profile. Empty falls back to the `Bot Chat` title.
     #[serde(default)]
     pub session_id: String,
+    /// Hidden profiles stay in the roster (and keep their key) but are not orbs.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileHint {
+    pub profile: String,
+    pub display_name: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -232,6 +242,98 @@ pub fn normalize_http_base(raw: &str, allow_empty: bool) -> Result<String, Strin
     Ok(format!("{}://{host}{port}{path}", url.scheme()))
 }
 
+/// `default` when the Hermes home has `config.yaml` or `SOUL.md`.
+/// Other profiles are subdirectories of `profiles/` with a legal profile name.
+pub fn local_hermes_profiles(home: &Path) -> Vec<ProfileHint> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let has_default = home.join("config.yaml").is_file() || home.join("SOUL.md").is_file();
+    if has_default && validate_profile("default").is_ok() && seen.insert("default".to_string()) {
+        out.push(ProfileHint {
+            profile: "default".into(),
+            display_name: "default".into(),
+            detail: String::new(),
+        });
+    }
+    let mut names = Vec::new();
+    if let Ok(entries) = fs::read_dir(home.join("profiles")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if validate_profile(name).is_err() {
+                continue;
+            }
+            names.push(name.to_string());
+        }
+    }
+    names.sort();
+    for name in names {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        out.push(ProfileHint {
+            profile: name.clone(),
+            display_name: name,
+            detail: String::new(),
+        });
+    }
+    out
+}
+
+/// Adds unknown profiles. Existing rows keep enabled, color, base URL, session,
+/// and a custom display name or detail. Does not drop rows that were not rediscovered.
+pub fn merge_discovered_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint]) {
+    for hint in found {
+        if validate_profile(&hint.profile).is_err() {
+            continue;
+        }
+        if let Some(existing) = bots.iter_mut().find(|bot| bot.profile == hint.profile) {
+            let name = hint.display_name.trim();
+            let untitled = existing.display_name.trim().is_empty()
+                || existing.display_name.trim() == existing.profile;
+            if !name.is_empty() && untitled {
+                existing.display_name = name.to_string();
+            }
+            if existing.detail.trim().is_empty() {
+                existing.detail = hint.detail.trim().to_string();
+            }
+            continue;
+        }
+        let display_name = {
+            let name = hint.display_name.trim();
+            if name.is_empty() {
+                hint.profile.clone()
+            } else {
+                name.to_string()
+            }
+        };
+        bots.push(BotConfig {
+            profile: hint.profile.clone(),
+            display_name,
+            color: color_for(&hint.profile),
+            base_url: String::new(),
+            detail: hint.detail.trim().to_string(),
+            session_id: String::new(),
+            enabled: true,
+        });
+    }
+}
+
+pub fn set_bot_enabled(bots: &mut [BotConfig], profile: &str, enabled: bool) -> Result<(), String> {
+    validate_profile(profile)?;
+    let bot = bots
+        .iter_mut()
+        .find(|bot| bot.profile == profile)
+        .ok_or_else(|| format!("名單冇 profile「{profile}」"))?;
+    bot.enabled = enabled;
+    Ok(())
+}
+
 pub fn color_for(name: &str) -> String {
     // Same chart colours as src/proximity.js. Not a copy of Nous artwork.
     const COLORS: [&str; 10] = [
@@ -284,6 +386,7 @@ mod tests {
                 base_url: String::new(),
                 detail: String::new(),
                 session_id: String::new(),
+                enabled: true,
             }],
             ..AppConfig::default()
         };
@@ -322,6 +425,7 @@ mod tests {
             serde_json::from_str(r#"{"bots":[{"profile":"alice","display_name":"Alice"}]}"#)
                 .unwrap();
         assert_eq!(cfg.bots[0].session_id, "");
+        assert!(cfg.bots[0].enabled);
         assert_eq!(preferred_session(None, ""), None);
         assert_eq!(preferred_session(Some("  "), "stored"), Some("stored"));
         assert_eq!(preferred_session(Some("memory"), "stored"), Some("memory"));
@@ -337,5 +441,80 @@ mod tests {
             session_to_keep(Some("sess_live"), &again.bot("alice").unwrap().session_id),
             "sess_live"
         );
+    }
+
+    #[test]
+    fn local_layout_lists_default_and_profile_dirs() {
+        let root =
+            std::env::temp_dir().join(format!("hermes-overlay-discover-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("profiles").join("planner")).unwrap();
+        fs::create_dir_all(root.join("profiles").join("bad name")).unwrap();
+        fs::write(root.join("config.yaml"), "model: x").unwrap();
+        fs::write(root.join("profiles").join("notes.txt"), "x").unwrap();
+        let found = local_hermes_profiles(&root);
+        let names: Vec<_> = found.iter().map(|hint| hint.profile.as_str()).collect();
+        assert_eq!(names, vec!["default", "planner"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_keeps_hidden_rows_and_adds_new_profiles_without_keys() {
+        let mut bots = vec![
+            BotConfig {
+                profile: "planner".into(),
+                display_name: "我的計劃".into(),
+                color: "#00f2f2".into(),
+                base_url: "http://127.0.0.1:9000".into(),
+                detail: "自訂".into(),
+                session_id: "sess".into(),
+                enabled: false,
+            },
+            BotConfig {
+                profile: "remote".into(),
+                display_name: "remote".into(),
+                color: "#f20000".into(),
+                base_url: String::new(),
+                detail: String::new(),
+                session_id: String::new(),
+                enabled: true,
+            },
+        ];
+        merge_discovered_profiles(
+            &mut bots,
+            &[
+                ProfileHint {
+                    profile: "planner".into(),
+                    display_name: "Planner".into(),
+                    detail: "新".into(),
+                },
+                ProfileHint {
+                    profile: "coder".into(),
+                    display_name: "碼".into(),
+                    detail: String::new(),
+                },
+                ProfileHint {
+                    profile: "bad name".into(),
+                    display_name: "nope".into(),
+                    detail: String::new(),
+                },
+            ],
+        );
+        assert_eq!(bots.len(), 3);
+        assert!(!bots[0].enabled);
+        assert_eq!(bots[0].display_name, "我的計劃");
+        assert_eq!(bots[0].detail, "自訂");
+        assert_eq!(bots[0].color, "#00f2f2");
+        assert_eq!(bots[0].session_id, "sess");
+        assert_eq!(bots[1].profile, "remote");
+        assert_eq!(bots[2].profile, "coder");
+        assert!(bots[2].enabled);
+        assert_eq!(bots[2].display_name, "碼");
+        assert!(bots[2].base_url.is_empty());
+        let text = serde_json::to_string(&bots[2]).unwrap();
+        assert!(!text.contains("key"));
+        set_bot_enabled(&mut bots, "coder", false).unwrap();
+        assert!(!bots[2].enabled);
+        assert!(set_bot_enabled(&mut bots, "missing", false).is_err());
     }
 }
