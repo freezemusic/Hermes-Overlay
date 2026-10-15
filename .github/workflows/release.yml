@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: --bundles nsis,msi
+            rust_targets: ""
+          - platform: macos-latest
+            args: --target universal-apple-darwin --bundles dmg,app
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - platform: ubuntu-22.04
+            args: --bundles appimage,deb
+            rust_targets: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config \
+            build-essential \
+            libssl-dev \
+            libgtk-3-dev \
+            libdbus-1-dev \
+            libx11-dev \
+            libfuse2 \
+            file
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # Signing stays off until the matching secrets exist.
+      # Apple: APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
+      #        APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID.
+      # Windows: WINDOWS_CERTIFICATE (base64 .pfx), WINDOWS_CERTIFICATE_PASSWORD.
+      # Updater key: TAURI_SIGNING_PRIVATE_KEY and optional TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
+      # The updater itself is not enabled.
+      - name: Expose signing secrets when present
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          publish() {
+            local name="$1"
+            local value="$2"
+            if [ -z "$value" ]; then
+              return 0
+            fi
+            {
+              echo "${name}<<__HERMES_SECRET__"
+              printf '%s\n' "$value"
+              echo "__HERMES_SECRET__"
+            } >> "$GITHUB_ENV"
+          }
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            publish APPLE_CERTIFICATE "$APPLE_CERTIFICATE"
+            publish APPLE_CERTIFICATE_PASSWORD "$APPLE_CERTIFICATE_PASSWORD"
+            publish APPLE_SIGNING_IDENTITY "$APPLE_SIGNING_IDENTITY"
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              publish APPLE_ID "$APPLE_ID"
+              publish APPLE_PASSWORD "$APPLE_PASSWORD"
+              publish APPLE_TEAM_ID "$APPLE_TEAM_ID"
+            fi
+          fi
+          if [ -n "$WINDOWS_CERTIFICATE" ] && [ -n "$WINDOWS_CERTIFICATE_PASSWORD" ]; then
+            publish WINDOWS_CERTIFICATE "$WINDOWS_CERTIFICATE"
+            publish WINDOWS_CERTIFICATE_PASSWORD "$WINDOWS_CERTIFICATE_PASSWORD"
+          fi
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            publish TAURI_SIGNING_PRIVATE_KEY "$TAURI_SIGNING_PRIVATE_KEY"
+            publish TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+          fi
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Hermes Overlay v__VERSION__
+          releaseBody: |
+            Draft build of Hermes Overlay. Unsigned unless the Apple or Windows signing secrets are set.
+            macOS uses a private API for the transparent window, so this build is not for the Mac App Store.
+            Install notes are in the README.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Attach macOS app archive
+        if: matrix.platform == 'macos-latest'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          app=$(find src-tauri/target -type d -name '*.app' | head -n 1)
+          dir=$(dirname "$app")
+          base=$(basename "$app")
+          archive="$dir/${base}.tar.gz"
+          tar -C "$dir" -czf "$archive" "$base"
+          tag="v$(jq -r .version src-tauri/tauri.conf.json)"
+          gh release upload "$tag" "$archive" --clobber
