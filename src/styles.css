@@ -622,6 +622,38 @@ html, body {
   flex-direction: column;
 }
 
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.chat-head .section-label { margin: 0; }
+
+.session-select {
+  width: min(220px, 46%);
+  height: 28px;
+  padding: 0 28px 0 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--nous-blue);
+  background-color: rgb(255 255 255 / .96);
+  color: #1a1a1a;
+  font: 400 12px/1 var(--font-body);
+  letter-spacing: 0;
+  text-transform: none;
+  appearance: none;
+  -webkit-appearance: none;
+  color-scheme: light;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--bot) 50%),
+    linear-gradient(135deg, var(--bot) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
 .chat-messages,
 .slash-popup,
 .settings-card {
@@ -868,6 +900,7 @@ html, body {
 .composer input:focus,
 .field input:focus,
 .field select:focus,
+.session-select:focus,
 .bot-row input:focus {
   border-color: var(--bot-60);
   box-shadow: 0 0 0 3px var(--bot-10);
@@ -888,6 +921,11 @@ html, body {
 }
 
 .field select option {
+  background-color: #f7f8f8;
+  color: var(--nous-navy);
+}
+
+.session-select option {
   background-color: #f7f8f8;
   color: var(--nous-navy);
 }

@@ -7,6 +7,7 @@
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, toastAnchor, TOAST_MS } from "./activity.js";
 import { closePanel, fromOrbDelta, openPanel, panelStackOffset } from "./panels.js";
 import { isProfileEnabled, profilesNeedingKeys } from "./roster.js";
+import { resolveSession, sessionLabel } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_BOARD,
@@ -439,6 +440,11 @@ function threadFor(id) {
       status: "閒置",
       activity: { thinking: false, streaming: false, deadline: null },
       unread: false,
+      sessions: [],
+      sessionId: "",
+      sessionExplicit: false,
+      sessionAnchor: 0,
+      bySession: new Map(),
     });
   }
   return state.threads.get(id);
@@ -659,6 +665,7 @@ function renderChat(id = state.activeId) {
   applyBotColor(panel, bot.color);
   thread.messages.forEach((m) => chat.appendChild(bubbleEl(m)));
   chat.scrollTop = chat.scrollHeight;
+  paintSessionSelect(id);
   const stop = role(panel, "stop");
   const send = role(panel, "send");
   if (stop) stop.hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
@@ -768,18 +775,92 @@ function cancelReconnect() {
   state.reconnectTimer = 0;
 }
 
+function applyOpened(id, opened) {
+  const thread = threadFor(id);
+  thread.messages = (opened.messages || []).map(presentMessage);
+  thread.loaded = true;
+  thread.sessionId = opened.session_id || "";
+  thread.sessionExplicit = !!opened.session_explicit;
+  thread.sessionAnchor = Number(opened.session_anchor) || 0;
+  thread.sessions = opened.sessions || [];
+  thread.loading = false;
+  clearConnectionBanner();
+  setBotStatus(id, "閒置", "idle");
+}
+
 async function loadBotHistory(id, token) {
   const { invoke } = await import("@tauri-apps/api/core");
   const opened = await invoke("open_bot", { profile: id });
   if (token !== state.reconnectToken || state.mode !== "hermes") return false;
-  const thread = threadFor(id);
-  thread.messages = (opened.messages || []).map(presentMessage);
-  thread.loaded = true;
-  thread.sessionId = opened.session_id;
-  thread.loading = false;
-  clearConnectionBanner();
-  setBotStatus(id, "閒置", "idle");
+  applyOpened(id, opened);
   return true;
+}
+
+function paintSessionSelect(id) {
+  const select = role(panelFor(id), "session");
+  if (!select || document.activeElement === select) return;
+  const thread = threadFor(id);
+  const sessions = thread.sessions || [];
+  const key = JSON.stringify([thread.sessionId, sessions.map((session) => [session.id, session.title, session.hidden])]);
+  if (select.dataset.key === key) return;
+  select.replaceChildren();
+  const rows = sessions.length
+    ? sessions
+    : thread.sessionId
+      ? [{ id: thread.sessionId, title: thread.sessionId, hidden: false }]
+      : [];
+  if (!rows.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "未有對話";
+    select.appendChild(option);
+    select.disabled = true;
+    select.dataset.key = key;
+    return;
+  }
+  for (const session of rows) {
+    const option = document.createElement("option");
+    option.value = session.id;
+    option.textContent = sessionLabel(session);
+    select.appendChild(option);
+  }
+  select.disabled = false;
+  select.value = thread.sessionId || rows[0].id;
+  select.dataset.key = key;
+}
+
+async function pickSession(id, sessionId) {
+  const thread = threadFor(id);
+  const select = role(panelFor(id), "session");
+  if (!sessionId || sessionId === thread.sessionId) return;
+  if (state.busy.has(id)) {
+    if (select) select.value = thread.sessionId;
+    showActionError("呢個 Bot 仲喺度回覆，停咗先至轉對話。");
+    return;
+  }
+  if (state.mode !== "hermes" || !inTauri()) {
+    if (!thread.bySession) thread.bySession = new Map();
+    thread.bySession.set(thread.sessionId, thread.messages.map((message) => ({ ...message })));
+    const anchor = Math.max(0, ...(thread.sessions || []).map((session) => Number(session.last_active) || 0));
+    thread.sessionId = sessionId;
+    thread.sessionExplicit = true;
+    thread.sessionAnchor = anchor;
+    const stored = thread.bySession.get(sessionId);
+    thread.messages = (stored || [{ role: "bot", text: "（舊對話）" }]).map((message) => ({ ...message }));
+    thread.loaded = true;
+    if (select) delete select.dataset.key;
+    renderChat(id);
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const opened = await invoke("select_session", { profile: id, sessionId });
+    if (select) delete select.dataset.key;
+    applyOpened(id, opened);
+  } catch (err) {
+    if (select) select.value = thread.sessionId;
+    showActionError(String(err));
+  }
 }
 
 function armReconnect(id, attempt, token) {
@@ -895,6 +976,30 @@ function wireBotPanel(panel, id) {
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
   role(panel, "stop")?.addEventListener("click", () => stopActive(id));
   role(panel, "save")?.addEventListener("click", () => saveBotPanel(id));
+  const sessionSelect = role(panel, "session");
+  sessionSelect?.addEventListener("pointerdown", () => {
+    state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "pointerdown");
+  });
+  sessionSelect?.addEventListener("keydown", (event) => {
+    if (selectKeyOpensDropdown(event.key)) {
+      state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "open-key");
+    }
+    if (event.key === "Escape" && state.dropdownOpen) {
+      state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "escape");
+      event.stopPropagation();
+    }
+  });
+  sessionSelect?.addEventListener("change", () => {
+    state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "change");
+    void pickSession(id, sessionSelect.value);
+  });
+  sessionSelect?.addEventListener("blur", () => {
+    const action = selectBlurAction({
+      dropdownOpen: state.dropdownOpen,
+      documentFocused: document.hasFocus(),
+    });
+    if (action === "close") state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "blur");
+  });
   role(panel, "chat")?.addEventListener("click", (event) => {
     const anchor = event.target.closest?.("a");
     const chat = role(panel, "chat");
@@ -1254,9 +1359,23 @@ function useMock(reason, bannerAction = "") {
   }));
   state.threads = new Map();
   state.bots.forEach((bot) => {
-    threadFor(bot.id).messages = bot.messages.map((m) => ({ ...m }));
-    threadFor(bot.id).status = bot.status;
-    threadFor(bot.id).loaded = true;
+    const thread = threadFor(bot.id);
+    const sessions = [
+      { id: `${bot.id}-latest`, title: bot.name, last_active: 200, hidden: false, preview: "" },
+      { id: `${bot.id}-splitLot`, title: "_splitLot", last_active: 40, hidden: true, preview: "" },
+    ];
+    const choice = resolveSession(sessions, { id: "", explicit: false, anchor: 0 });
+    thread.sessions = sessions;
+    thread.sessionId = choice.id;
+    thread.sessionExplicit = false;
+    thread.sessionAnchor = choice.anchor;
+    thread.messages = bot.messages.map((m) => ({ ...m }));
+    thread.bySession = new Map([
+      [choice.id, thread.messages.map((m) => ({ ...m }))],
+      [`${bot.id}-splitLot`, [{ role: "bot", text: "（舊對話）_splitLot" }]],
+    ]);
+    thread.status = bot.status;
+    thread.loaded = true;
   });
   removeBotPanels();
   state.activeId = state.bots[0]?.id || null;
@@ -1283,7 +1402,7 @@ function useHermes(settings) {
   } else if (state.bots.length === 0) {
     setBanner("Gateway 已設定，但未有 Bot。打開設定加入 profile 同金鑰。", "info");
   } else {
-    setBanner("已連接設定。點頭像載入該 Bot 嘅 Bot Chat。", "ok");
+    setBanner("已連接設定。點頭像載入該 Bot 最近嘅對話。", "ok");
   }
   renderBots();
   if (state.activeId) void selectBot(state.activeId);

@@ -18,6 +18,7 @@
     "allow-probe-gateway",
     "allow-discover-profiles",
     "allow-open-bot",
+    "allow-select-session",
     "allow-send-chat",
     "allow-stop-chat",
     "allow-list-commands",

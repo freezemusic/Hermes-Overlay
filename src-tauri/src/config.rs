@@ -4,7 +4,7 @@ use std::path::Path;
 
 pub const BOT_CHAT_TITLE: &str = "Bot Chat";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BotConfig {
     pub profile: String,
     pub display_name: String,
@@ -16,9 +16,15 @@ pub struct BotConfig {
     pub base_url: String,
     #[serde(default)]
     pub detail: String,
-    /// Active Hermes session for this profile. Empty falls back to the `Bot Chat` title.
+    /// Session this profile opens. Empty means follow the latest session on the gateway.
     #[serde(default)]
     pub session_id: String,
+    /// User picked `session_id`. A newer `last_active` than `session_anchor` drops the pick.
+    #[serde(default)]
+    pub session_explicit: bool,
+    /// Highest `last_active` seen when the current session was chosen.
+    #[serde(default)]
+    pub session_anchor: f64,
     /// Hidden profiles stay in the roster (and keep their key) but are not orbs.
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -319,6 +325,8 @@ pub fn merge_discovered_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint
             base_url: String::new(),
             detail: hint.detail.trim().to_string(),
             session_id: String::new(),
+            session_explicit: false,
+            session_anchor: 0.0,
             enabled: true,
         });
     }
@@ -386,6 +394,8 @@ mod tests {
                 base_url: String::new(),
                 detail: String::new(),
                 session_id: String::new(),
+                session_explicit: false,
+                session_anchor: 0.0,
                 enabled: true,
             }],
             ..AppConfig::default()
@@ -425,6 +435,8 @@ mod tests {
             serde_json::from_str(r#"{"bots":[{"profile":"alice","display_name":"Alice"}]}"#)
                 .unwrap();
         assert_eq!(cfg.bots[0].session_id, "");
+        assert!(!cfg.bots[0].session_explicit);
+        assert_eq!(cfg.bots[0].session_anchor, 0.0);
         assert!(cfg.bots[0].enabled);
         assert_eq!(preferred_session(None, ""), None);
         assert_eq!(preferred_session(Some("  "), "stored"), Some("stored"));
@@ -468,6 +480,8 @@ mod tests {
                 base_url: "http://127.0.0.1:9000".into(),
                 detail: "自訂".into(),
                 session_id: "sess".into(),
+                session_explicit: true,
+                session_anchor: 40.0,
                 enabled: false,
             },
             BotConfig {
@@ -477,6 +491,8 @@ mod tests {
                 base_url: String::new(),
                 detail: String::new(),
                 session_id: String::new(),
+                session_explicit: false,
+                session_anchor: 0.0,
                 enabled: true,
             },
         ];

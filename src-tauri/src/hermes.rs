@@ -115,23 +115,58 @@ pub fn route_root(gateway: &str, profile: &str, bot_base: &str) -> String {
     }
 }
 
-pub fn find_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
-    let mut matches: Vec<&SessionSummary> = sessions
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedSession {
+    pub id: String,
+    pub explicit: bool,
+    pub anchor: f64,
+}
+
+/// Highest `last_active`. Equal timestamps keep the smaller id.
+pub fn most_recent_session(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+    sessions
         .iter()
-        .filter(|s| s.title == BOT_CHAT_TITLE)
-        .collect();
-    if matches.is_empty() {
-        return None;
-    }
-    matches.sort_by(|a, b| {
-        let rank = |s: &&SessionSummary| if s.hidden == Some(true) { 0 } else { 1 };
-        rank(a).cmp(&rank(b)).then_with(|| {
-            b.last_active
-                .partial_cmp(&a.last_active)
-                .unwrap_or(std::cmp::Ordering::Equal)
+        .max_by(|a, b| match a.last_active.partial_cmp(&b.last_active) {
+            Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Greater,
+            Some(std::cmp::Ordering::Less) => std::cmp::Ordering::Less,
+            _ => b.id.cmp(&a.id),
         })
-    });
-    matches.into_iter().next()
+}
+
+/// Latest session by default. An explicit pick sticks until a session is active
+/// after `anchor`, or until that pick disappears.
+pub fn resolve_session(
+    sessions: &[SessionSummary],
+    remembered: &str,
+    explicit: bool,
+    anchor: f64,
+) -> Option<ResolvedSession> {
+    let latest = most_recent_session(sessions)?;
+    let remembered = remembered.trim();
+    let picked = if explicit && !remembered.is_empty() {
+        sessions.iter().find(|session| session.id == remembered)
+    } else {
+        None
+    };
+    if let Some(picked) = picked {
+        if latest.last_active > anchor && latest.id != picked.id {
+            return Some(ResolvedSession {
+                id: latest.id.clone(),
+                explicit: false,
+                anchor: latest.last_active,
+            });
+        }
+        return Some(ResolvedSession {
+            id: picked.id.clone(),
+            explicit: true,
+            anchor: anchor.max(latest.last_active),
+        });
+    }
+    Some(ResolvedSession {
+        id: latest.id.clone(),
+        explicit: false,
+        anchor: latest.last_active,
+    })
 }
 
 pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
@@ -348,7 +383,7 @@ pub async fn list_sessions(
     root: &str,
     key: &str,
 ) -> Result<Vec<SessionSummary>, HermesError> {
-    let url = format!("{root}/api/sessions?limit=200&title=Bot%20Chat&include_hidden=true");
+    let url = format!("{root}/api/sessions?limit=200&include_hidden=true");
     let resp = send(http.get(url).timeout(Duration::from_secs(20)), key).await?;
     let value: Value = resp
         .json()
@@ -359,7 +394,7 @@ pub async fn list_sessions(
 
 pub async fn ensure_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
     let sessions = list_sessions(http, root, key).await?;
-    if let Some(session) = find_bot_chat(&sessions) {
+    if let Some(session) = most_recent_session(&sessions) {
         return Ok(session.id.clone());
     }
     let url = format!("{root}/api/sessions");
@@ -1404,7 +1439,7 @@ mod tests {
     }
 
     #[test]
-    fn prefers_hidden_bot_chat() {
+    fn latest_session_is_not_limited_to_bot_chat() {
         let sessions = vec![
             SessionSummary {
                 id: "visible".into(),
@@ -1414,21 +1449,32 @@ mod tests {
                 preview: String::new(),
             },
             SessionSummary {
-                id: "hidden".into(),
-                title: "Bot Chat".into(),
+                id: "split".into(),
+                title: "_splitLot".into(),
                 hidden: Some(true),
                 last_active: 10.0,
                 preview: String::new(),
             },
             SessionSummary {
-                id: "other".into(),
-                title: "notes".into(),
+                id: "desktop".into(),
+                title: "System Architect".into(),
                 hidden: None,
                 last_active: 99.0,
                 preview: String::new(),
             },
         ];
-        assert_eq!(find_bot_chat(&sessions).unwrap().id, "hidden");
+        assert_eq!(most_recent_session(&sessions).unwrap().id, "desktop");
+        let stale = resolve_session(&sessions, "split", false, 10.0).unwrap();
+        assert_eq!(stale.id, "desktop");
+        assert!(!stale.explicit);
+        let pinned = resolve_session(&sessions, "split", true, 99.0).unwrap();
+        assert_eq!(pinned.id, "split");
+        assert!(pinned.explicit);
+        let newer = resolve_session(&sessions, "split", true, 40.0).unwrap();
+        assert_eq!(newer.id, "desktop");
+        assert!(!newer.explicit);
+        assert_eq!(newer.anchor, 99.0);
+        assert!(resolve_session(&[], "split", true, 1.0).is_none());
     }
 
     #[test]
@@ -1514,7 +1560,7 @@ mod tests {
         let http = Client::new();
         let sessions = list_sessions(&http, &base, "test-key").await.unwrap();
         assert_eq!(sessions[0].id, "abc");
-        assert_eq!(find_bot_chat(&sessions).unwrap().id, "abc");
+        assert_eq!(most_recent_session(&sessions).unwrap().id, "abc");
     }
 
     #[tokio::test]

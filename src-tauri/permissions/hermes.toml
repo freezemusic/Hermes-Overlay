@@ -24,6 +24,11 @@ description = "Load a bot chat transcript."
 commands.allow = ["open_bot"]
 
 [[permission]]
+identifier = "allow-select-session"
+description = "Pin one Hermes session for a profile."
+commands.allow = ["select_session"]
+
+[[permission]]
 identifier = "allow-send-chat"
 description = "Stream a chat turn."
 commands.allow = ["send_chat"]

@@ -75,6 +75,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
 test("bot panels own SOUL and the settings orb owns the gateway", () => {
   const template = html.slice(html.indexOf('id="bot-panel-template"'), html.indexOf("</template>"));
   assert.match(template, /SOUL\.md/);
+  assert.match(template, /data-role="session"/);
+  assert.match(template, /揀一個對話/);
   assert.match(template, /data-role="soul"/);
   assert.doesNotMatch(template, /Gateway/);
   assert.match(html, /Gateway 位址/);

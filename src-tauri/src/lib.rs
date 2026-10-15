@@ -103,10 +103,17 @@ struct CommandCacheEntry {
     commands: Vec<hermes::OverlayCommand>,
 }
 
+#[derive(Clone)]
+struct SessionPin {
+    id: String,
+    explicit: bool,
+    anchor: f64,
+}
+
 struct AppState {
     http: reqwest::Client,
     stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    sessions: Arc<Mutex<HashMap<String, String>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionPin>>>,
     config_write: Arc<Mutex<()>>,
     command_cache: Mutex<HashMap<String, CommandCacheEntry>>,
     interaction: Arc<interaction::InteractionHub>,
@@ -238,7 +245,19 @@ struct ProbeReport {
 struct OpenedChat {
     profile: String,
     session_id: String,
+    session_explicit: bool,
+    session_anchor: f64,
     messages: Vec<hermes::UiMessage>,
+    sessions: Vec<SessionChoice>,
+}
+
+#[derive(Serialize)]
+struct SessionChoice {
+    id: String,
+    title: String,
+    last_active: f64,
+    hidden: bool,
+    preview: String,
 }
 
 #[derive(Serialize)]
@@ -269,42 +288,63 @@ fn profile_key(profile: &str) -> Result<String, String> {
     }
 }
 
-fn session_map(state: &AppState) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
+fn session_map(state: &AppState) -> std::sync::MutexGuard<'_, HashMap<String, SessionPin>> {
     state.sessions.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 fn cached_session(state: &AppState, profile: &str) -> Option<String> {
-    session_map(state).get(profile).cloned()
+    session_map(state)
+        .get(profile)
+        .map(|pin| pin.id.clone())
+        .filter(|id| !id.is_empty())
 }
 
-fn remember_session(app: &AppHandle, state: &AppState, profile: &str, id: &str) {
-    persist_session(app, &state.sessions, &state.config_write, profile, id);
+fn load_pin(app: &AppHandle, state: &AppState, profile: &str) -> SessionPin {
+    if let Some(pin) = session_map(state).get(profile).cloned() {
+        return pin;
+    }
+    let cfg = load_config(app).ok();
+    let bot = cfg.as_ref().and_then(|cfg| cfg.bot(profile));
+    SessionPin {
+        id: bot.map(|bot| bot.session_id.clone()).unwrap_or_default(),
+        explicit: bot.map(|bot| bot.session_explicit).unwrap_or(false),
+        anchor: bot.map(|bot| bot.session_anchor).unwrap_or(0.0),
+    }
+}
+
+fn remember_pin(app: &AppHandle, state: &AppState, profile: &str, pin: SessionPin) {
+    persist_pin(app, &state.sessions, &state.config_write, profile, pin);
 }
 
 fn active_session(app: &AppHandle, state: &AppState, profile: &str) -> Option<String> {
-    let stored = load_config(app)
-        .ok()
-        .and_then(|cfg| cfg.bot(profile).map(|bot| bot.session_id.clone()))
-        .unwrap_or_default();
-    let memory = cached_session(state, profile);
-    config::preferred_session(memory.as_deref(), &stored).map(str::to_string)
+    let pin = load_pin(app, state, profile);
+    if pin.id.trim().is_empty() {
+        None
+    } else {
+        Some(pin.id)
+    }
 }
 
-fn persist_session(
+fn persist_pin(
     app: &AppHandle,
-    sessions: &Mutex<HashMap<String, String>>,
+    sessions: &Mutex<HashMap<String, SessionPin>>,
     config_write: &Mutex<()>,
     profile: &str,
-    id: &str,
+    pin: SessionPin,
 ) {
     let _write = config_write.lock().unwrap_or_else(|err| err.into_inner());
-    let id = id.trim();
+    let id = pin.id.trim().to_string();
+    let pin = SessionPin {
+        explicit: pin.explicit && !id.is_empty(),
+        anchor: if id.is_empty() { 0.0 } else { pin.anchor },
+        id,
+    };
     {
         let mut map = sessions.lock().unwrap_or_else(|err| err.into_inner());
-        if id.is_empty() {
+        if pin.id.is_empty() {
             map.remove(profile);
         } else {
-            map.insert(profile.to_string(), id.to_string());
+            map.insert(profile.to_string(), pin.clone());
         }
     }
     let Ok(path) = config_path(app) else {
@@ -316,11 +356,55 @@ fn persist_session(
     let Some(bot) = cfg.bot_mut(profile) else {
         return;
     };
-    if bot.session_id == id {
+    if bot.session_id == pin.id
+        && bot.session_explicit == pin.explicit
+        && bot.session_anchor == pin.anchor
+    {
         return;
     }
-    bot.session_id = id.to_string();
+    bot.session_id = pin.id;
+    bot.session_explicit = pin.explicit;
+    bot.session_anchor = pin.anchor;
     let _ = config::save(&path, &cfg);
+}
+
+fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<SessionChoice> {
+    let mut rows: Vec<SessionChoice> = sessions
+        .iter()
+        .map(|session| SessionChoice {
+            title: {
+                let title = session.title.trim();
+                if title.is_empty() {
+                    session.id.clone()
+                } else {
+                    title.to_string()
+                }
+            },
+            id: session.id.clone(),
+            last_active: session.last_active,
+            hidden: session.hidden.unwrap_or(false),
+            preview: session.preview.clone(),
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.last_active
+            .partial_cmp(&a.last_active)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    if !active.is_empty() && !rows.iter().any(|row| row.id == active) {
+        rows.insert(
+            0,
+            SessionChoice {
+                id: active.to_string(),
+                title: config::BOT_CHAT_TITLE.to_string(),
+                last_active: 0.0,
+                hidden: false,
+                preview: String::new(),
+            },
+        );
+    }
+    rows
 }
 
 fn replace_stop(state: &AppState, profile: &str) -> Arc<AtomicBool> {
@@ -521,14 +605,20 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
             }
         };
         let base_url = config::normalize_http_base(&bot.base_url, true)?;
-        let previous_id = previous
-            .bot(&profile)
-            .map(|bot| bot.session_id.as_str())
-            .unwrap_or("");
-        let session_id = config::session_to_keep(
-            memory_sessions.get(&profile).map(String::as_str),
-            previous_id,
-        );
+        let previous_bot = previous.bot(&profile);
+        let previous_id = previous_bot
+            .map(|bot| bot.session_id.clone())
+            .unwrap_or_default();
+        let pin = memory_sessions.get(&profile);
+        let session_id = config::session_to_keep(pin.map(|pin| pin.id.as_str()), &previous_id);
+        let session_explicit = pin.map(|pin| pin.explicit).unwrap_or_else(|| {
+            previous_bot
+                .map(|bot| bot.session_explicit)
+                .unwrap_or(false)
+        });
+        let session_anchor = pin
+            .map(|pin| pin.anchor)
+            .unwrap_or_else(|| previous_bot.map(|bot| bot.session_anchor).unwrap_or(0.0));
         bots.push(BotConfig {
             color: config::normalize_color(&bot.color, &profile),
             detail: bot.detail.trim().to_string(),
@@ -536,6 +626,8 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
             display_name,
             base_url,
             session_id,
+            session_explicit,
+            session_anchor,
             enabled: bot.enabled,
         });
     }
@@ -584,7 +676,14 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
         for bot in &cfg.bots {
             let id = bot.session_id.trim();
             if !id.is_empty() {
-                map.insert(bot.profile.clone(), id.to_string());
+                map.insert(
+                    bot.profile.clone(),
+                    SessionPin {
+                        id: id.to_string(),
+                        explicit: bot.session_explicit,
+                        anchor: bot.session_anchor,
+                    },
+                );
             }
         }
         drop(map);
@@ -784,29 +883,40 @@ async fn open_bot(
     let key = profile_key(&profile)?;
     let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
     emit_status(&app, &profile, "busy", "載入對話…");
-    let cached = active_session(&app, &state, &profile);
+    let pin = load_pin(&app, &state, &profile);
     let result = async {
-        if let Some(session_id) = cached {
-            match hermes::fetch_messages(&state.http, &root, &key, &session_id).await {
-                Ok(messages) => return Ok((session_id, messages)),
-                Err(HermesError::Http { status: 404, .. }) => {
-                    persist_session(&app, &state.sessions, &state.config_write, &profile, "");
-                }
-                Err(err) => return Err(err),
-            }
-        }
-        let session_id = hermes::ensure_bot_chat(&state.http, &root, &key).await?;
+        let sessions = hermes::list_sessions(&state.http, &root, &key).await?;
+        let resolved = hermes::resolve_session(&sessions, &pin.id, pin.explicit, pin.anchor);
+        let (session_id, explicit, anchor) = if let Some(resolved) = resolved {
+            (resolved.id, resolved.explicit, resolved.anchor)
+        } else {
+            let id = hermes::create_session(&state.http, &root, &key, Some(config::BOT_CHAT_TITLE))
+                .await?;
+            (id, false, 0.0)
+        };
         let messages = hermes::fetch_messages(&state.http, &root, &key, &session_id).await?;
-        Ok::<_, HermesError>((session_id, messages))
+        Ok::<_, HermesError>((session_id, explicit, anchor, messages, sessions))
     }
     .await;
     match result {
-        Ok((session_id, messages)) => {
-            remember_session(&app, &state, &profile, &session_id);
+        Ok((session_id, explicit, anchor, messages, sessions)) => {
+            remember_pin(
+                &app,
+                &state,
+                &profile,
+                SessionPin {
+                    id: session_id.clone(),
+                    explicit,
+                    anchor,
+                },
+            );
             emit_status(&app, &profile, "idle", "閒置");
             Ok(OpenedChat {
+                sessions: session_choices(&sessions, &session_id),
                 profile,
                 session_id,
+                session_explicit: explicit,
+                session_anchor: anchor,
                 messages,
             })
         }
@@ -816,6 +926,54 @@ async fn open_bot(
             Err(message)
         }
     }
+}
+
+#[tauri::command]
+async fn select_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    session_id: String,
+) -> Result<OpenedChat, String> {
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("未揀對話".into());
+    }
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?;
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let sessions = hermes::list_sessions(&state.http, &root, &key)
+        .await
+        .map_err(|err| explain(&err))?;
+    if !sessions.iter().any(|session| session.id == session_id) {
+        return Err("搵唔到呢個對話".into());
+    }
+    let anchor = hermes::most_recent_session(&sessions)
+        .map(|session| session.last_active)
+        .unwrap_or(0.0);
+    let messages = hermes::fetch_messages(&state.http, &root, &key, &session_id)
+        .await
+        .map_err(|err| explain(&err))?;
+    remember_pin(
+        &app,
+        &state,
+        &profile,
+        SessionPin {
+            id: session_id.clone(),
+            explicit: true,
+            anchor,
+        },
+    );
+    Ok(OpenedChat {
+        sessions: session_choices(&sessions, &session_id),
+        profile,
+        session_id,
+        session_explicit: true,
+        session_anchor: anchor,
+        messages,
+    })
 }
 
 #[tauri::command]
@@ -838,7 +996,12 @@ async fn send_chat(
     let http = state.http.clone();
     let session_cache = Arc::clone(&state.sessions);
     let config_write = Arc::clone(&state.config_write);
-    let cached = active_session(&app, &state, &profile);
+    let pin = load_pin(&app, &state, &profile);
+    let cached = if pin.explicit && !pin.id.trim().is_empty() {
+        Some(pin.id)
+    } else {
+        None
+    };
     emit_status(&app, &profile, "busy", "思考中…");
 
     tauri::async_runtime::spawn(async move {
@@ -847,7 +1010,17 @@ async fn send_chat(
                 id
             } else {
                 let id = hermes::ensure_bot_chat(&http, &root, &key).await?;
-                persist_session(&app, &session_cache, &config_write, &profile, &id);
+                persist_pin(
+                    &app,
+                    &session_cache,
+                    &config_write,
+                    &profile,
+                    SessionPin {
+                        id: id.clone(),
+                        explicit: false,
+                        anchor: 0.0,
+                    },
+                );
                 id
             };
             let first =
@@ -856,9 +1029,29 @@ async fn send_chat(
                 })
                 .await;
             if matches!(first, Err(HermesError::Http { status: 404, .. })) {
-                persist_session(&app, &session_cache, &config_write, &profile, "");
+                persist_pin(
+                    &app,
+                    &session_cache,
+                    &config_write,
+                    &profile,
+                    SessionPin {
+                        id: String::new(),
+                        explicit: false,
+                        anchor: 0.0,
+                    },
+                );
                 session_id = hermes::ensure_bot_chat(&http, &root, &key).await?;
-                persist_session(&app, &session_cache, &config_write, &profile, &session_id);
+                persist_pin(
+                    &app,
+                    &session_cache,
+                    &config_write,
+                    &profile,
+                    SessionPin {
+                        id: session_id.clone(),
+                        explicit: false,
+                        anchor: 0.0,
+                    },
+                );
                 hermes::stream_turn(&http, &root, &key, &session_id, &text, &stop, |event| {
                     dispatch_turn(&app, &profile, event)
                 })
@@ -1217,7 +1410,7 @@ async fn client_command(
             let session_id = hermes::create_session(&state.http, &root, &key, title)
                 .await
                 .map_err(|err| explain(&err))?;
-            remember_session(&app, &state, &input.profile, &session_id);
+            pin_explicit(&app, &state, &input.profile, &root, &key, &session_id).await;
             Ok(ClientCommandOut {
                 command,
                 notice: format!("新 session {session_id}"),
@@ -1270,7 +1463,7 @@ async fn client_command(
                 }
                 Err(err) => return Err(explain(&err)),
             };
-            remember_session(&app, &state, &input.profile, &forked);
+            pin_explicit(&app, &state, &input.profile, &root, &key, &forked).await;
             Ok(ClientCommandOut {
                 command,
                 notice: format!("已分支做 {forked}"),
@@ -1350,14 +1543,51 @@ async fn session_for_client(
     root: &str,
     key: &str,
 ) -> Result<String, String> {
-    if let Some(id) = active_session(app, state, profile) {
-        return Ok(id);
+    let pin = load_pin(app, state, profile);
+    if pin.explicit && !pin.id.trim().is_empty() {
+        return Ok(pin.id);
     }
     let id = hermes::ensure_bot_chat(&state.http, root, key)
         .await
         .map_err(|err| explain(&err))?;
-    remember_session(app, state, profile, &id);
+    remember_pin(
+        app,
+        state,
+        profile,
+        SessionPin {
+            id: id.clone(),
+            explicit: false,
+            anchor: 0.0,
+        },
+    );
     Ok(id)
+}
+
+async fn pin_explicit(
+    app: &AppHandle,
+    state: &AppState,
+    profile: &str,
+    root: &str,
+    key: &str,
+    id: &str,
+) {
+    let anchor = hermes::list_sessions(&state.http, root, key)
+        .await
+        .ok()
+        .and_then(|sessions| {
+            hermes::most_recent_session(&sessions).map(|session| session.last_active)
+        })
+        .unwrap_or(0.0);
+    remember_pin(
+        app,
+        state,
+        profile,
+        SessionPin {
+            id: id.to_string(),
+            explicit: true,
+            anchor,
+        },
+    );
 }
 
 async fn replace_missing_session(
@@ -1367,11 +1597,30 @@ async fn replace_missing_session(
     root: &str,
     key: &str,
 ) -> Result<String, String> {
-    persist_session(app, &state.sessions, &state.config_write, profile, "");
+    persist_pin(
+        app,
+        &state.sessions,
+        &state.config_write,
+        profile,
+        SessionPin {
+            id: String::new(),
+            explicit: false,
+            anchor: 0.0,
+        },
+    );
     let id = hermes::ensure_bot_chat(&state.http, root, key)
         .await
         .map_err(|err| explain(&err))?;
-    remember_session(app, state, profile, &id);
+    remember_pin(
+        app,
+        state,
+        profile,
+        SessionPin {
+            id: id.clone(),
+            explicit: false,
+            anchor: 0.0,
+        },
+    );
     Ok(id)
 }
 
@@ -1439,6 +1688,7 @@ pub fn run() {
             sync_profiles,
             set_profile_enabled,
             open_bot,
+            select_session,
             send_chat,
             stop_chat,
             list_commands,

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test src/markdown.test.js src/slash.test.js src/styles.test.js src/proximity.test.js src/panels.test.js src/setup.test.js src/icons.test.js src/activity.test.js src/kanban.test.js src/roster.test.js",
+    "test": "node --test src/markdown.test.js src/slash.test.js src/styles.test.js src/proximity.test.js src/panels.test.js src/setup.test.js src/icons.test.js src/activity.test.js src/kanban.test.js src/roster.test.js src/sessions.test.js",
     "preview": "vite preview",
     "tauri": "node scripts/tauri.mjs"
   },
