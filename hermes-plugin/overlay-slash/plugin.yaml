@@ -1,0 +1,33 @@
+name: overlay-slash
+version: 0.1.0
+description: >
+  Teach the Hermes API server (port 8642) to expand slash commands and skills,
+  and expose a command catalog for Hermes Overlay.
+manifest_version: 2
+api_version: 1
+kind: standalone
+requires_hermes: ">=0.21.6"
+provides_tools: []
+provides_hooks: []
+license: MIT
+homepage: https://github.com/freezemusic/Hermes-Overlay
+tags: [gateway, api_server, overlay]
+config_schema:
+  rewrite_chat:
+    type: bool
+    default: true
+    description: >
+      Rewrite POST /api/sessions/{id}/chat[/stream], /v1/chat/completions and
+      /v1/responses so prompt, skill and bundle commands expand before the agent turn.
+  fix_v1_skills:
+    type: bool
+    default: false
+    description: >
+      Also answer GET /v1/skills from _find_all_skills (works around the
+      include_editorial 500). Off by default.
+  allow_init:
+    type: bool
+    default: false
+    description: >
+      Offer /init in the catalog and expand it. Off by default because the
+      prompt scans the gateway process cwd, not the overlay workspace.
