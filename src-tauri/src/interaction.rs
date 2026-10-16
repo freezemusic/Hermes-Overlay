@@ -1040,7 +1040,8 @@ fn remember_hit_region(rects: &[HitRect], origin_x: f64, origin_y: f64, scale: f
 #[cfg(windows)]
 fn queue_windows_hit_style(app: &AppHandle, transparent: bool) {
     let app = app.clone();
-    let _ = app.run_on_main_thread(move || {
+    let handle = app.clone();
+    let _ = handle.run_on_main_thread(move || {
         let Some(window) = app.get_webview_window("main") else {
             return;
         };
@@ -1163,7 +1164,8 @@ fn apply_linux_input_shape(app: &AppHandle, rects: &[HitRect], scale: f64) {
     let rects = rects.to_vec();
     let scale = if scale > 0.0 { scale } else { 1.0 };
     let app = app.clone();
-    let _ = app.run_on_main_thread(move || {
+    let handle = app.clone();
+    let _ = handle.run_on_main_thread(move || {
         use gtk::prelude::*;
         let Some(window) = app.get_webview_window("main") else {
             return;
