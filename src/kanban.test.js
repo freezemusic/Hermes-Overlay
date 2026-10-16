@@ -4,6 +4,7 @@ import {
   KANBAN_EMPTY,
   KANBAN_STATUSES,
   boardFingerprint,
+  kanbanChangeLine,
   columnsFromTasks,
   moveTask,
   normalizeBoard,
@@ -38,6 +39,59 @@ test("board columns follow status order and hide archived", () => {
   assert.equal(moved.columns.find((column) => column.name === "todo").tasks.length, 0);
   assert.notEqual(boardFingerprint(board), boardFingerprint(moved));
   assert.equal(moveTask(board, "missing", "todo").columns.length, board.columns.length);
+});
+
+test("a kanban change becomes one preview line and the first snapshot stays quiet", () => {
+  const base = {
+    columns: [{ name: "todo", tasks: [{ id: "a", title: "已有", status: "todo" }] }],
+  };
+  assert.equal(kanbanChangeLine(null, base), "");
+  assert.equal(kanbanChangeLine({ unavailable: true }, base), "");
+  assert.equal(kanbanChangeLine(base, base), "");
+  assert.equal(
+    kanbanChangeLine(base, {
+      columns: [{ name: "todo", tasks: [
+        { id: "a", title: "已有", status: "todo" },
+        { id: "b", title: "新卡片", status: "todo" },
+      ] }],
+    }),
+    "新增：新卡片",
+  );
+  assert.equal(
+    kanbanChangeLine(base, {
+      columns: [{ name: "todo", tasks: [
+        { id: "a", title: "已有", status: "todo" },
+        { id: "b", title: "甲", status: "todo" },
+        { id: "c", title: "乙", status: "todo" },
+      ] }],
+    }),
+    "新增 2 張卡片",
+  );
+  assert.equal(
+    kanbanChangeLine(base, {
+      columns: [{ name: "ready", tasks: [{ id: "a", title: "已有", status: "ready" }] }],
+    }),
+    "已有 → ready",
+  );
+  assert.equal(
+    kanbanChangeLine(
+      { columns: [{ name: "todo", tasks: [
+        { id: "a", title: "甲", status: "todo" },
+        { id: "b", title: "乙", status: "todo" },
+      ] }] },
+      { columns: [{ name: "done", tasks: [
+        { id: "a", title: "甲", status: "done" },
+        { id: "b", title: "乙", status: "done" },
+      ] }] },
+    ),
+    "2 張卡片改咗狀態",
+  );
+  assert.equal(
+    kanbanChangeLine(base, {
+      columns: [{ name: "todo", tasks: [{ id: "a", title: "改咗名", status: "todo" }] }],
+    }),
+    "看板有更新",
+  );
 });
 
 test("404 is an empty state and owner colour follows the bot", () => {

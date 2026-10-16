@@ -59,6 +59,11 @@ description = "Move or edit an overlay-slash kanban task."
 commands.allow = ["patch_kanban_task"]
 
 [[permission]]
+identifier = "allow-list-cron-jobs"
+description = "Read Hermes scheduled jobs for each shown profile."
+commands.allow = ["list_cron_jobs"]
+
+[[permission]]
 identifier = "allow-set-hit-rects"
 description = "Report overlay element rectangles for proximity fade."
 commands.allow = ["set_hit_rects"]

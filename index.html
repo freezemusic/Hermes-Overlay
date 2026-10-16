@@ -37,13 +37,6 @@
           </div>
 
           <div class="panel-view" data-role="view-chat">
-            <section class="plan-preview" data-role="plan" hidden>
-              <div class="plan-head">
-                <h2 class="plan-title" data-role="plan-title">計劃</h2>
-                <button type="button" class="plan-toggle" data-role="plan-toggle">收起</button>
-              </div>
-              <div class="plan-body" data-role="plan-body"></div>
-            </section>
             <div class="chat-head">
               <select data-role="session" class="session-select" aria-label="揀一個對話"></select>
             </div>
@@ -80,6 +73,22 @@
             <button type="button" class="icon-btn" data-role="stop" hidden>停止</button>
             <button type="button" class="send-btn" data-role="send">傳送</button>
           </footer>
+        </aside>
+        <aside class="plan-window plan-preview" data-role="plan" hidden>
+          <span class="hud-corner tl" aria-hidden="true"></span>
+          <span class="hud-corner tr" aria-hidden="true"></span>
+          <span class="hud-corner bl" aria-hidden="true"></span>
+          <span class="hud-corner br" aria-hidden="true"></span>
+          <header class="panel-header plan-head">
+            <h2 class="plan-title" data-role="plan-title">計劃</h2>
+            <div class="panel-actions">
+              <button type="button" class="plan-toggle" data-role="plan-preview-mode" aria-pressed="true">預覽</button>
+              <button type="button" class="plan-toggle" data-role="plan-source-mode" aria-pressed="false">原文</button>
+              <button type="button" class="icon-btn danger" data-role="plan-close">關閉計劃視窗</button>
+            </div>
+          </header>
+          <div class="plan-body" data-role="plan-body"></div>
+          <pre class="plan-source" data-role="plan-source" hidden></pre>
         </aside>
       </template>
 
@@ -129,7 +138,7 @@
 
           <fieldset class="experimental">
             <legend>游標同穿透</legend>
-            <p class="hint">光球（包括設定同看板）預設半透明，滑鼠穿透，唔會接點擊或 hover。按住修飾鍵時，游標下面嗰粒光球先變實色、可以點；右鍵隱藏都只喺按住修飾鍵時先有效。放開就回復穿透。新訊息會由光球向畫面中心橫向展開成膠囊，顯示 5 秒之後收回。膠囊唔使按修飾鍵都睇到，但要按住先至點得入去。面板預設實色，游標喺面板上面就可以拖同點。按住修飾鍵時，面板變透明並穿透。輸入框聚焦唔使按住修飾鍵。</p>
+            <p class="hint">光球（包括設定、看板同排程）預設半透明，滑鼠穿透，唔會接點擊或 hover。按住修飾鍵時，游標下面嗰粒光球先變實色、可以點；右鍵隱藏都只喺按住修飾鍵時先有效。放開就回復穿透。新訊息會由光球向畫面中心橫向展開成膠囊，顯示 5 秒之後收回。膠囊唔使按修飾鍵都睇到，但要按住先至點得入去。面板預設實色，游標喺面板上面就可以拖同點。按住修飾鍵時，面板變透明並穿透。輸入框聚焦唔使按住修飾鍵。</p>
             <label class="field">
               <span>修飾鍵</span>
               <select id="interaction-modifier">
@@ -157,6 +166,20 @@
             </div>
           </div>
         </form>
+      </aside>
+
+      <aside id="cron-panel" class="center-panel cron-panel panel-motion" data-interactive data-hit-id="cron" data-panel-key="cron" hidden>
+        <span class="hud-corner tl" aria-hidden="true"></span>
+        <span class="hud-corner tr" aria-hidden="true"></span>
+        <span class="hud-corner bl" aria-hidden="true"></span>
+        <span class="hud-corner br" aria-hidden="true"></span>
+        <header class="panel-header">
+          <h1 class="panel-title">排程工作</h1>
+          <button type="button" id="btn-cron-close" class="icon-btn">關閉</button>
+        </header>
+        <p class="hint">只供查看。開關留喺 Hermes。</p>
+        <p id="cron-empty" class="kanban-empty" hidden></p>
+        <div id="cron-list" class="cron-list"></div>
       </aside>
 
       <aside id="kanban-panel" class="center-panel kanban-panel panel-motion" data-interactive data-hit-id="kanban" data-panel-key="kanban" hidden>

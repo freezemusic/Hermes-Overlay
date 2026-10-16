@@ -1499,6 +1499,72 @@ async fn patch_kanban_task(
         .map_err(|err| hermes::kanban_move_error(&err))
 }
 
+#[derive(Serialize)]
+struct CronProfileOut {
+    profile: String,
+    name: String,
+    jobs: Vec<hermes::CronJob>,
+    unavailable: bool,
+    message: String,
+}
+
+#[tauri::command]
+async fn list_cron_jobs(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<CronProfileOut>, String> {
+    let cfg = load_config(&app)?;
+    if cfg.mode() != "hermes" {
+        return Ok(Vec::new());
+    }
+    let gateway = cfg.gateway_base_url.clone();
+    let bots: Vec<BotConfig> = cfg
+        .bots
+        .iter()
+        .filter(|bot| bot.enabled)
+        .cloned()
+        .collect();
+    let mut out = Vec::new();
+    for bot in bots {
+        let name = if bot.display_name.trim().is_empty() {
+            bot.profile.clone()
+        } else {
+            bot.display_name.clone()
+        };
+        let key = match profile_key(&bot.profile) {
+            Ok(key) => key,
+            Err(err) => {
+                out.push(CronProfileOut {
+                    profile: bot.profile,
+                    name,
+                    jobs: Vec::new(),
+                    unavailable: true,
+                    message: err,
+                });
+                continue;
+            }
+        };
+        let root = hermes::route_root(&gateway, &bot.profile, &bot.base_url);
+        match hermes::fetch_cron_jobs(&state.http, &root, &key).await {
+            Ok(list) => out.push(CronProfileOut {
+                profile: bot.profile,
+                name,
+                jobs: list.jobs,
+                unavailable: list.unavailable,
+                message: list.message,
+            }),
+            Err(err) => out.push(CronProfileOut {
+                profile: bot.profile,
+                name,
+                jobs: Vec::new(),
+                unavailable: true,
+                message: explain(&err),
+            }),
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Deserialize)]
 struct ClientCommandIn {
     profile: String,
@@ -1855,6 +1921,7 @@ pub fn run() {
             client_command,
             get_kanban_board,
             patch_kanban_task,
+            list_cron_jobs,
             set_hit_rects,
             set_interaction_latch,
             focus_owner,

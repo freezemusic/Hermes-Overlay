@@ -25,6 +25,7 @@
     "allow-client-command",
     "allow-get-kanban-board",
     "allow-patch-kanban-task",
+    "allow-list-cron-jobs",
     "allow-set-hit-rects",
     "allow-set-interaction-latch",
     "allow-focus-owner",

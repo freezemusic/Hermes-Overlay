@@ -234,9 +234,14 @@ export function slotPoint(edge, t, width, height, pad = 42, orb = ORB) {
 }
 
 export function fixedOrbPoint(which, width, height, pad = 42, orb = ORB) {
-  const extra = which === "settings" ? 152 : 76;
+  if (which === "kanban") {
+    return { x: width / 2, y: pad + orb / 2, edge: "top" };
+  }
+  if (which === "cron") {
+    return { x: width - pad - orb / 2, y: Math.round(height * 0.38), edge: "right" };
+  }
   return {
-    x: width - pad - extra - orb / 2,
+    x: width - pad - 152 - orb / 2,
     y: height - pad - orb / 2,
     edge: "bottom",
   };

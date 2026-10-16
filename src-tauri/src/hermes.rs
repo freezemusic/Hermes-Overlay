@@ -737,6 +737,146 @@ pub fn parse_kanban_board(value: &Value, board: &str) -> KanbanBoard {
     }
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CronJob {
+    pub id: String,
+    pub name: String,
+    pub schedule: String,
+    pub enabled: bool,
+    pub next_run_at: String,
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CronList {
+    pub jobs: Vec<CronJob>,
+    pub unavailable: bool,
+    pub message: String,
+}
+
+fn json_time(value: &Value, key: &str) -> String {
+    match value.get(key) {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Number(number)) => number.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn schedule_text(value: &Value) -> String {
+    if let Some(text) = value.get("schedule_display").and_then(Value::as_str) {
+        let text = text.trim();
+        if !text.is_empty() {
+            return text.to_string();
+        }
+    }
+    match value.get("schedule") {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Object(map)) => {
+            for key in ["display", "expression", "expr"] {
+                if let Some(Value::String(text)) = map.get(*key) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        return text.to_string();
+                    }
+                }
+            }
+            String::new()
+        }
+        _ => String::new(),
+    }
+}
+
+fn cron_job_from(value: &Value) -> Option<CronJob> {
+    let id = json_string(value, "id");
+    let name = json_string(value, "name");
+    if id.is_empty() && name.is_empty() {
+        return None;
+    }
+    let state = json_string(value, "state");
+    let enabled = match value.get("enabled").and_then(Value::as_bool) {
+        Some(flag) => flag,
+        None => !state.eq_ignore_ascii_case("paused"),
+    };
+    Some(CronJob {
+        id: if id.is_empty() { name.clone() } else { id },
+        name: if name.is_empty() {
+            "未命名".into()
+        } else {
+            name
+        },
+        schedule: schedule_text(value),
+        enabled,
+        next_run_at: {
+            let next = json_time(value, "next_run_at");
+            if next.is_empty() {
+                json_time(value, "next_run")
+            } else {
+                next
+            }
+        },
+        running: state.eq_ignore_ascii_case("running"),
+    })
+}
+
+/// `GET /api/crons` for one profile. `cron_unavailable` is an empty list, not an error.
+pub fn parse_cron_list(value: &Value) -> CronList {
+    if value.get("cron_unavailable").and_then(Value::as_bool) == Some(true) {
+        return CronList {
+            jobs: Vec::new(),
+            unavailable: true,
+            message: "呢個 Bot 未有排程。".into(),
+        };
+    }
+    let items = if let Some(list) = value.as_array() {
+        list
+    } else if let Some(list) = value.get("jobs").and_then(Value::as_array) {
+        list
+    } else {
+        return CronList {
+            jobs: Vec::new(),
+            unavailable: false,
+            message: String::new(),
+        };
+    };
+    CronList {
+        jobs: items.iter().filter_map(cron_job_from).collect(),
+        unavailable: false,
+        message: String::new(),
+    }
+}
+
+pub async fn fetch_cron_jobs(
+    http: &Client,
+    root: &str,
+    key: &str,
+) -> Result<CronList, HermesError> {
+    let url = format!("{}/api/crons", root.trim_end_matches('/'));
+    let resp = authed(http.get(url).timeout(Duration::from_secs(8)), key)
+        .send()
+        .await
+        .map_err(map_reqwest)?;
+    let status = resp.status().as_u16();
+    if status == 404 {
+        return Ok(CronList {
+            jobs: Vec::new(),
+            unavailable: true,
+            message: "呢個 Bot 未有排程。".into(),
+        });
+    }
+    if !(200..300).contains(&status) {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(HermesError::Http {
+            status,
+            body: clip(&body, 200),
+        });
+    }
+    let value: Value = resp
+        .json()
+        .await
+        .map_err(|err| HermesError::Protocol(format!("cron 回應唔係 JSON：{err}")))?;
+    Ok(parse_cron_list(&value))
+}
+
 pub fn kanban_patch_body(status: &str, assignee: &str, priority: &str, title: &str) -> Value {
     let mut body = serde_json::Map::new();
     if !status.trim().is_empty() {
@@ -1507,6 +1647,39 @@ mod tests {
             text: text.into(),
             tool_name: String::new(),
         }
+    }
+
+    #[test]
+    fn cron_list_reads_schedule_enabled_and_running() {
+        let parsed = parse_cron_list(&json!({
+            "jobs": [{
+                "id": "brief",
+                "name": "每日摘要",
+                "schedule": { "kind": "cron", "expr": "0 9 * * *", "display": "每日 09:00" },
+                "enabled": true,
+                "state": "running",
+                "next_run_at": "2026-10-16T09:00:00Z"
+            }, {
+                "id": "quiet",
+                "name": "停用",
+                "schedule_display": "every 2h",
+                "enabled": false,
+                "state": "paused",
+                "next_run_at": 1712000000
+            }]
+        }));
+        assert!(!parsed.unavailable);
+        assert_eq!(parsed.jobs.len(), 2);
+        assert_eq!(parsed.jobs[0].schedule, "每日 09:00");
+        assert!(parsed.jobs[0].running);
+        assert!(parsed.jobs[0].enabled);
+        assert_eq!(parsed.jobs[1].schedule, "every 2h");
+        assert!(!parsed.jobs[1].enabled);
+        assert!(!parsed.jobs[1].running);
+        assert_eq!(parsed.jobs[1].next_run_at, "1712000000");
+        let missing = parse_cron_list(&json!({ "jobs": [], "cron_unavailable": true }));
+        assert!(missing.unavailable);
+        assert!(missing.jobs.is_empty());
     }
 
     #[test]

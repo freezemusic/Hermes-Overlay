@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { latestPlan, looksLikePlan, planDemoMarkdown, planTask, planTitle } from "./plan.js";
+import { latestPlan, looksLikePlan, planDemoMarkdown, plansIn, planTask, planTitle } from "./plan.js";
 
 test("plan markdown is recognized and a short ack is not", () => {
   const body = planDemoMarkdown("整理設定");
@@ -27,4 +27,15 @@ test("latest plan is the newest bot reply, including a /plan turn", () => {
   assert.equal(found.markdown, newer);
   assert.equal(found.title, "計劃");
   assert.equal(latestPlan([{ role: "user", text: "hi" }, { role: "bot", text: "ok" }]), null);
+  const listed = plansIn([
+    { role: "user", text: "/plan 舊", command: "plan" },
+    { role: "bot", text: older },
+    { role: "bot", text: "# 未完成", live: true },
+    { role: "user", text: "/plan 新", command: "plan" },
+    { role: "bot", text: newer },
+  ]);
+  assert.equal(listed.length, 2);
+  assert.equal(listed[0].markdown, older);
+  assert.equal(listed[1].markdown, newer);
+  assert.equal(plansIn([{ role: "bot", text: "# 未完成", live: true }]).length, 0);
 });

@@ -105,7 +105,7 @@ hermes gateway
 curl http://127.0.0.1:8642/health
 ```
 
-**Bot 就係 profile。** 每個 Bot 的主對話標題係 `Bot Chat`，cron 輸出都寫入呢度。具名 profile 要喺自己嘅 `~/.hermes/profiles/<profile>/.env` 設**另一條** `API_SERVER_KEY`。共享一個 listener 時要開 multiplex：
+**Bot 就係 profile。** 每個 Bot 的主對話標題係 `Bot Chat`，cron 輸出都寫入呢度。排程工作本身有獨立光球，只供查看。具名 profile 要喺自己嘅 `~/.hermes/profiles/<profile>/.env` 設**另一條** `API_SERVER_KEY`。共享一個 listener 時要開 multiplex：
 
 ```yaml
 gateway:

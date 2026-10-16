@@ -5,7 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { latestPlan, planDemoMarkdown, planTask } from "./plan.js";
+import { latestPlan, planDemoMarkdown, planTask, plansIn } from "./plan.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
   CONTENT_OUT_MS,
@@ -32,11 +32,20 @@ import {
   KANBAN_EMPTY,
   KANBAN_POLL_MS,
   boardFingerprint,
+  kanbanChangeLine,
   kanbanErrorText,
   moveTask,
   normalizeBoard,
   ownerColor,
 } from "./kanban.js";
+import {
+  anyJobRunning,
+  CRON_EMPTY,
+  CRON_POLL_MS,
+  CRON_UNAVAILABLE,
+  nextRunLabel,
+  normalizeCronGroup,
+} from "./cron.js";
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 import { SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
 import {
@@ -227,6 +236,7 @@ function boxSize(id) {
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
   if (id === "kanban") return { w: Math.min(960, vw * 0.8), h: Math.min(vh * 0.8, 760) };
+  if (id === "cron") return { w: Math.min(320, vw * 0.86), h: Math.min(vh * 0.7, 640) };
   if (id === "settings") return { w: Math.min(680, vw * 0.92), h: Math.min(vh * 0.86, 760) };
   return { w: PANEL_W, h: PANEL_H };
 }
@@ -237,7 +247,7 @@ function anchorPoint(id) {
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
   const pad = edgePadPx();
-  if (id === "settings" || id === "kanban") return fixedOrbPoint(id, vw, vh, pad, ORB);
+  if (id === "settings" || id === "kanban" || id === "cron") return fixedOrbPoint(id, vw, vh, pad, ORB);
   const index = Math.max(0, state.bots.findIndex((bot) => bot.id === id));
   const slots = distributeEdges(Math.max(state.bots.length, 1));
   const slot = slots[index] || { edge: "right", t: 0.5 };
@@ -270,6 +280,7 @@ function hitFor(id, visual) {
   if (visual === "pill") return `pill:${id}`;
   if (id === "settings") return "settings";
   if (id === "kanban") return "kanban";
+  if (id === "cron") return "cron";
   return `panel:${id}`;
 }
 
@@ -315,6 +326,7 @@ function layoutShell(shell) {
   shell.style.setProperty("--icon-dy", `${shift.y}px`);
   shell.style.transformOrigin = `${placed.anchor.x}px ${placed.anchor.y}px`;
   const visual = shell.dataset.visual || "orb";
+  syncPlanSide(shell);
   paintClip(shell, insetsFor(visual, {
     boxW: placed.width,
     boxH: placed.height,
@@ -493,6 +505,7 @@ function bindPanelDrag(panel) {
       if (ev.pointerId !== event.pointerId) return;
       host.style.left = `${origin.left + ev.clientX - startX}px`;
       host.style.top = `${origin.top + ev.clientY - startY}px`;
+      syncPlanSide(host);
       rememberAnchor(host);
       scheduleHitSync();
     };
@@ -568,6 +581,9 @@ const state = {
   kanbanOpen: false,
   kanban: { board: null, fingerprint: "", unread: false, saving: false, dragging: false },
   kanbanTimer: 0,
+  cronOpen: false,
+  cronGroups: [],
+  cronTimer: 0,
   toastSeq: 0,
 };
 
@@ -666,6 +682,7 @@ function attachShell(shell, id) {
     if (state.interaction.supported !== false && !modifierHeld(event)) return;
     if (id === "settings") focusSettings();
     else if (id === "kanban") toggleKanban();
+    else if (id === "cron") toggleCron();
     else selectBot(id);
   });
   shell.addEventListener("contextmenu", (event) => {
@@ -673,7 +690,7 @@ function attachShell(shell, id) {
     if (shell.dataset.state !== "orb") return;
     if (!modifierHeld(event)) return;
     event.stopPropagation();
-    if (id === "settings" || id === "kanban") return;
+    if (id === "settings" || id === "kanban" || id === "cron") return;
     openOrbMenu(id, event.clientX, event.clientY);
   });
 }
@@ -681,7 +698,9 @@ function attachShell(shell, id) {
 function mountBotPanel(shell, id) {
   if (shell.querySelector(".bot-panel")) return;
   const tpl = document.getElementById("bot-panel-template");
-  const panel = tpl.content.firstElementChild.cloneNode(true);
+  const fragment = tpl.content.cloneNode(true);
+  const panel = fragment.querySelector(".bot-panel");
+  const plan = fragment.querySelector(".plan-window");
   panel.dataset.botId = id;
   panel.dataset.panelKey = id;
   panel.classList.add("morph-body");
@@ -690,9 +709,12 @@ function mountBotPanel(shell, id) {
   if (slash) slash.dataset.hitId = `slash:${id}`;
   const close = role(panel, "close");
   if (close) close.dataset.hitId = `close:${id}`;
-  shell.appendChild(panel);
+  shell.append(panel);
+  if (plan) shell.append(plan);
   wireBotPanel(panel, id);
+  wirePlanWindow(plan, id);
   bindPanelDrag(panel);
+  if (plan) bindPanelDrag(plan);
 }
 
 function ensureBotShell(bot) {
@@ -756,7 +778,7 @@ function ensureChromeShell(panel, id, glyph, label, orbClass) {
   panel.classList.add("morph-body");
   panel.hidden = true;
   panel.removeAttribute("data-hit-id");
-  const close = panel.querySelector("#btn-settings-close, #btn-kanban-close");
+  const close = panel.querySelector("#btn-settings-close, #btn-kanban-close, #btn-cron-close");
   if (close) close.dataset.hitId = `close:${id}`;
   shell.append(fill, btn, previewNode(), panel);
   attachShell(shell, id);
@@ -769,8 +791,10 @@ function ensureChromeShell(panel, id, glyph, label, orbClass) {
 function ensureChrome() {
   const settings = document.getElementById("settings");
   const kanban = document.getElementById("kanban-panel");
+  const cron = document.getElementById("cron-panel");
   if (settings) ensureChromeShell(settings, "settings", "設", "設定", "orb--settings");
   if (kanban) ensureChromeShell(kanban, "kanban", "▥", "看板", "orb--kanban");
+  if (cron) ensureChromeShell(cron, "cron", "時", "排程", "orb--cron");
 }
 
 function renderBots() {
@@ -809,6 +833,7 @@ function renderBots() {
     rail.appendChild(shell);
   });
   renderKanbanOrb();
+  renderCronOrb();
   renderSettingsOrb();
   scheduleHitSync();
 }
@@ -857,6 +882,22 @@ function renderKanbanOrb() {
   layoutShell(shell);
 }
 
+function renderCronOrb() {
+  ensureChrome();
+  const shell = shellFor("cron");
+  const btn = shell?.querySelector(".orb--cron");
+  if (!btn) return;
+  const running = anyJobRunning(state.cronGroups);
+  btn.className = ["bot-btn", "morph-orb", "orb--cron", state.cronOpen ? "active" : "", running ? "is-thinking" : ""]
+    .filter(Boolean)
+    .join(" ");
+  applyBotColor(shell, NOUS.neutral);
+  applyBotColor(btn, NOUS.neutral);
+  btn.setAttribute("aria-label", running ? "排程工作進行中" : "排程工作");
+  btn.title = running ? "排程工作進行中" : "排程工作";
+  layoutShell(shell);
+}
+
 function renderChat(id = state.activeId) {
   const panel = panelFor(id);
   if (!panel) return;
@@ -884,7 +925,7 @@ function renderChat(id = state.activeId) {
   if (hint) hint.textContent = hintText();
   paintOrb(role(panel, "avatar"), bot.color, bot.short || "");
   applyBotColor(panel, bot.color);
-  thread.messages.forEach((m) => chat.appendChild(bubbleEl(m)));
+  thread.messages.forEach((m) => chat.appendChild(bubbleEl(m, bot.id)));
   stickChat(id);
   paintPlan(id);
   paintSessionSelect(id);
@@ -896,29 +937,64 @@ function renderChat(id = state.activeId) {
   scheduleHitSync();
 }
 
+function planWindow(id) {
+  return shellFor(id)?.querySelector(".plan-window") || null;
+}
+
+function syncPlanSide(shell) {
+  const plan = shell?.querySelector?.(".plan-window");
+  if (!shell || !plan || plan.hidden) return;
+  const box = shell.getBoundingClientRect();
+  const width = Math.min(420, (window.innerWidth || 1280) * 0.42);
+  const roomRight = (window.innerWidth || 1280) - box.right;
+  shell.dataset.planSide = roomRight >= width + 8 ? "right" : "left";
+}
+
+function openPlanWindow(id, key) {
+  const thread = threadFor(id);
+  thread.planFocus = key || "";
+  thread.planDismissed = "";
+  paintPlan(id);
+}
+
 function paintPlan(id) {
-  const panel = panelFor(id);
-  const section = role(panel, "plan");
-  if (!section) return;
-  const plan = latestPlan(threadFor(id).messages);
-  if (!plan) {
-    section.hidden = true;
-    section.dataset.key = "";
+  const shell = shellFor(id);
+  const section = planWindow(id);
+  if (!shell || !section) return;
+  const thread = threadFor(id);
+  const plans = plansIn(thread.messages);
+  const newest = plans.at(-1) || null;
+  if (newest && thread.seenPlanKey !== newest.key) {
+    thread.seenPlanKey = newest.key;
+    thread.planDismissed = "";
+    if (!thread.planFocus || !plans.some((item) => item.key === thread.planFocus)) {
+      thread.planFocus = newest.key;
+    }
+  }
+  const focus = plans.find((item) => item.key === thread.planFocus) || newest;
+  const open = !!(focus && thread.planDismissed !== focus.key);
+  section.hidden = !open;
+  if (open) shell.dataset.planOpen = "1";
+  else delete shell.dataset.planOpen;
+  if (!open) {
+    scheduleHitSync();
     return;
   }
-  if (section.dataset.key !== plan.key) {
-    section.dataset.key = plan.key;
-    section.dataset.collapsed = "";
-  }
-  const collapsed = section.dataset.collapsed === "1";
-  section.hidden = false;
-  const title = role(panel, "plan-title");
-  if (title) title.textContent = plan.title;
-  const body = role(panel, "plan-body");
+  section.dataset.key = focus.key;
+  const title = role(section, "plan-title");
+  if (title) title.textContent = focus.title;
+  const mode = section.dataset.mode === "source" ? "source" : "preview";
+  section.dataset.mode = mode;
+  const previewBtn = role(section, "plan-preview-mode");
+  const sourceBtn = role(section, "plan-source-mode");
+  if (previewBtn) previewBtn.setAttribute("aria-pressed", mode === "preview" ? "true" : "false");
+  if (sourceBtn) sourceBtn.setAttribute("aria-pressed", mode === "source" ? "true" : "false");
+  const body = role(section, "plan-body");
+  const source = role(section, "plan-source");
   if (body) {
-    body.hidden = collapsed;
-    if (!collapsed) {
-      const html = renderAssistantMarkdown(plan.markdown);
+    body.hidden = mode !== "preview";
+    if (mode === "preview") {
+      const html = renderAssistantMarkdown(focus.markdown);
       if (body.dataset.md !== html) {
         body.dataset.md = html;
         body.innerHTML = html;
@@ -926,9 +1002,33 @@ function paintPlan(id) {
       }
     }
   }
-  const toggle = role(panel, "plan-toggle");
-  if (toggle) toggle.textContent = collapsed ? "展開" : "收起";
+  if (source) {
+    source.hidden = mode !== "source";
+    if (mode === "source" && source.textContent !== focus.markdown) source.textContent = focus.markdown;
+  }
+  syncPlanSide(shell);
   scheduleHitSync();
+}
+
+function wirePlanWindow(section, id) {
+  if (!section) return;
+  role(section, "plan-close")?.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const thread = threadFor(id);
+    const focus = plansIn(thread.messages).find((item) => item.key === thread.planFocus) || latestPlan(thread.messages);
+    thread.planDismissed = focus?.key || "closed";
+    paintPlan(id);
+  });
+  role(section, "plan-preview-mode")?.addEventListener("click", () => {
+    section.dataset.mode = "preview";
+    paintPlan(id);
+  });
+  role(section, "plan-source-mode")?.addEventListener("click", () => {
+    section.dataset.mode = "source";
+    paintPlan(id);
+  });
 }
 
 function setStatusText(id, text) {
@@ -936,13 +1036,28 @@ function setStatusText(id, text) {
   if (node) node.textContent = text;
 }
 
-function bubbleEl(m) {
+function bubbleEl(m, id) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${m.role === "user" ? "user" : m.role === "bot" ? "bot" : m.role}`;
   if (m.role === "bot") paintBotBubble(bubble, m.text);
   else if (m.role === "user") paintUserBubble(bubble, m);
   else bubble.textContent = m.text;
   if (m.live) bubble.dataset.live = "1";
+  if (id && m.role === "bot" && !m.live) {
+    const plan = plansIn(threadFor(id).messages).find((item) => item.markdown === String(m.text || "").trim());
+    if (plan) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "plan-chip";
+      chip.textContent = "睇計劃";
+      chip.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openPlanWindow(id, plan.key);
+      });
+      bubble.appendChild(chip);
+    }
+  }
   return bubble;
 }
 
@@ -1080,7 +1195,7 @@ function appendMessage(id, message) {
   thread.messages.push(message);
   const chat = chatOf(id);
   if (!chat) return;
-  chat.appendChild(bubbleEl(message));
+  chat.appendChild(bubbleEl(message, id));
   if (thread.followTail !== false) pinChat(id);
   paintPlan(id);
 }
@@ -1324,12 +1439,6 @@ function wireBotPanel(panel, id) {
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
   role(panel, "stop")?.addEventListener("click", () => stopActive(id));
   role(panel, "save")?.addEventListener("click", () => saveBotPanel(id));
-  role(panel, "plan-toggle")?.addEventListener("click", () => {
-    const section = role(panel, "plan");
-    if (!section) return;
-    section.dataset.collapsed = section.dataset.collapsed === "1" ? "" : "1";
-    paintPlan(id);
-  });
   const sessionSelect = role(panel, "session");
   sessionSelect?.addEventListener("pointerdown", () => {
     state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "pointerdown");
@@ -2457,6 +2566,7 @@ function setupComposer() {
     if (!top) return;
     if (top.id === "settings") closeSettings();
     else if (top.id === "kanban-panel") closeKanban();
+    else if (top.id === "cron-panel") closeCron();
     else if (top.dataset.botId) closeBotPanel(top.dataset.botId);
   });
   $("#conn-banner")?.addEventListener("click", (event) => {
@@ -2630,7 +2740,7 @@ function collectHits() {
     } else {
       const box = visibleBox(shell);
       if (box.w < 1 || box.h < 1) return;
-      rects.push({
+      const rect = {
         id,
         x: box.x,
         y: box.y,
@@ -2638,7 +2748,27 @@ function collectHits() {
         h: box.h,
         z: level,
         round: shell.dataset.state === "orb",
-      });
+      };
+      const plan = shell.querySelector(".plan-window");
+      const planVisible = plan
+        && !plan.hidden
+        && shell.dataset.state === "panel"
+        && !shell.classList.contains("is-morphing")
+        && !shell.classList.contains("is-collapsing");
+      if (planVisible) {
+        const dock = plan.getBoundingClientRect();
+        if (dock.width >= 1 && dock.height >= 1) {
+          const left = Math.min(rect.x, dock.x);
+          const top = Math.min(rect.y, dock.y);
+          const right = Math.max(rect.x + rect.w, dock.x + dock.width);
+          const bottom = Math.max(rect.y + rect.h, dock.y + dock.height);
+          rect.x = left;
+          rect.y = top;
+          rect.w = right - left;
+          rect.h = bottom - top;
+        }
+      }
+      rects.push(rect);
     }
     if (shell.dataset.state === "panel") {
       const slash = role(shell, "slash");
@@ -3061,7 +3191,6 @@ function openKanban() {
 
 function closeKanban() {
   state.kanbanOpen = false;
-  stopKanbanPoll();
   if (kanbanDrag) {
     kanbanDrag.ghost?.remove();
     kanbanDrag.card?.classList.remove("is-dragging");
@@ -3086,9 +3215,9 @@ function closeKanban() {
 }
 
 function startKanbanPoll() {
-  stopKanbanPoll();
+  if (state.kanbanTimer) return;
   state.kanbanTimer = window.setInterval(() => {
-    if (!state.kanbanOpen || document.hidden) return;
+    if (document.hidden) return;
     refreshKanban();
   }, KANBAN_POLL_MS);
 }
@@ -3111,15 +3240,21 @@ async function refreshKanban() {
       payload = { unavailable: true, message: String(err) };
     }
   }
-  const board = normalizeBoard(payload);
-  const fingerprint = boardFingerprint(board);
-  if (state.kanban.fingerprint && fingerprint !== state.kanban.fingerprint) {
-    state.kanban.unread = true;
-    pingOrb("kanban");
-    renderKanbanOrb();
-  }
-  state.kanban.fingerprint = fingerprint;
+  commitKanban(normalizeBoard(payload));
+}
+
+function commitKanban(board) {
+  const line = kanbanChangeLine(state.kanban.board, board);
+  state.kanban.fingerprint = boardFingerprint(board);
   state.kanban.board = board;
+  if (line) {
+    showToast("kanban", { kind: "message", text: line });
+    if (!state.kanbanOpen) {
+      state.kanban.unread = true;
+      pingOrb("kanban");
+      renderKanbanOrb();
+    }
+  }
   paintKanban(board);
 }
 
@@ -3328,6 +3463,166 @@ async function dropKanban(taskId, status) {
   }
 }
 
+function mockCronGroups() {
+  const soon = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  return [
+    normalizeCronGroup({
+      profile: "planner",
+      name: "計劃助手",
+      jobs: [
+        { id: "daily", name: "每日摘要", schedule: "每日 09:00", enabled: true, next_run_at: soon, state: "scheduled" },
+        { id: "tidy", name: "整理看板", schedule: "每週一 10:00", enabled: false, next_run_at: "", state: "paused" },
+      ],
+    }),
+    normalizeCronGroup({
+      profile: "coder",
+      name: "程式夥伴",
+      jobs: [
+        { id: "tests", name: "檢查測試", schedule: "每 30 分鐘", enabled: true, next_run_at: soon, state: "running" },
+      ],
+    }),
+  ];
+}
+
+function toggleCron() {
+  const shell = shellFor("cron");
+  if (state.cronOpen && shell && !shell.classList.contains("is-collapsing")) {
+    raisePanel(shell);
+    return;
+  }
+  openCron();
+}
+
+function openCron() {
+  ensureChrome();
+  state.cronOpen = true;
+  const panel = $("#cron-panel");
+  const shell = shellFor("cron");
+  if (panel && shell) {
+    const opening = shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing");
+    panel.hidden = false;
+    applyBotColor(shell, NOUS.neutral);
+    applyBotColor(panel, NOUS.neutral);
+    window.clearTimeout(shell._pillTimer);
+    if (opening) {
+      raisePanel(shell);
+      void runShellMorph(shell, "panel");
+    } else {
+      raisePanel(shell);
+    }
+  }
+  renderBots();
+  paintCron();
+  refreshCron();
+}
+
+function closeCron() {
+  state.cronOpen = false;
+  const shell = shellFor("cron");
+  if (
+    shell
+    && !shell.classList.contains("is-collapsing")
+    && (shell.dataset.state === "panel" || shell.dataset.opening === "panel")
+  ) {
+    void runShellMorph(shell, "orb").then((closed) => {
+      if (!closed) return;
+      syncLatch();
+      scheduleHitSync();
+    });
+  }
+  renderBots();
+  scheduleHitSync();
+}
+
+function paintCron() {
+  const empty = $("#cron-empty");
+  const list = $("#cron-list");
+  if (!empty || !list) return;
+  list.replaceChildren();
+  const blocks = (state.cronGroups || []).filter((group) => group.unavailable || (group.jobs || []).length);
+  if (!blocks.length) {
+    empty.hidden = false;
+    empty.textContent = CRON_EMPTY;
+    scheduleHitSync();
+    return;
+  }
+  empty.hidden = true;
+  blocks.forEach((group) => {
+    const block = document.createElement("section");
+    const title = document.createElement("h2");
+    title.className = "cron-group-title";
+    title.textContent = group.name || group.profile || "Bot";
+    block.appendChild(title);
+    if (group.unavailable) {
+      const note = document.createElement("p");
+      note.className = "cron-meta";
+      note.textContent = group.message || CRON_UNAVAILABLE;
+      block.appendChild(note);
+    }
+    (group.jobs || []).forEach((job) => {
+      const row = document.createElement("article");
+      row.className = job.running ? "cron-job is-running" : "cron-job";
+      const name = document.createElement("p");
+      name.className = "cron-name";
+      name.textContent = job.name;
+      const meta = document.createElement("p");
+      meta.className = "cron-meta";
+      const bits = [];
+      if (job.schedule) bits.push(job.schedule);
+      bits.push(job.enabled ? "啟用" : "停用");
+      const next = nextRunLabel(job.next_run_at);
+      if (next) bits.push(`下次 ${next}`);
+      if (job.running) bits.push("進行中");
+      meta.textContent = bits.join(" · ");
+      row.append(name, meta);
+      block.appendChild(row);
+    });
+    list.appendChild(block);
+  });
+  scheduleHitSync();
+}
+
+async function refreshCron() {
+  if (!inTauri() || state.mode !== "hermes") {
+    state.cronGroups = mockCronGroups();
+  } else {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const rows = await invoke("list_cron_jobs");
+      state.cronGroups = (rows || []).map((row) => normalizeCronGroup(row));
+    } catch (err) {
+      state.cronGroups = [normalizeCronGroup({
+        unavailable: true,
+        name: "排程",
+        message: String(err),
+      })];
+    }
+  }
+  renderCronOrb();
+  if (state.cronOpen) paintCron();
+}
+
+function startCronPoll() {
+  if (state.cronTimer) return;
+  state.cronTimer = window.setInterval(() => {
+    if (document.hidden) return;
+    refreshCron();
+  }, CRON_POLL_MS);
+}
+
+function stopCronPoll() {
+  window.clearInterval(state.cronTimer);
+  state.cronTimer = 0;
+}
+
+function startWatchers() {
+  ensureChrome();
+  startKanbanPoll();
+  startCronPoll();
+  refreshKanban();
+  refreshCron();
+}
+
 async function boot() {
   setupComposer();
   setupWindowChrome();
@@ -3345,12 +3640,26 @@ async function boot() {
   window.addEventListener("pointermove", moveKanbanPointer);
   window.addEventListener("pointerup", endKanbanPointer);
   window.addEventListener("pointercancel", endKanbanPointer);
+  const cronClose = $("#btn-cron-close");
+  if (cronClose) {
+    cronClose.dataset.hitId = "close:cron";
+    cronClose.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeCron();
+    });
+  }
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) stopKanbanPoll();
-    else if (state.kanbanOpen) {
-      refreshKanban();
-      startKanbanPoll();
+    if (document.hidden) {
+      stopKanbanPoll();
+      stopCronPoll();
+      return;
     }
+    refreshKanban();
+    startKanbanPoll();
+    refreshCron();
+    startCronPoll();
   });
   window.addEventListener("resize", layoutShells);
   applyInteraction(state.interaction);
@@ -3358,7 +3667,9 @@ async function boot() {
     window.__deliverCron = deliverCron;
     window.__handleHermes = handleHermes;
     window.__setBanner = setBanner;
+    window.__applyKanbanBoard = (payload) => commitKanban(normalizeBoard(payload));
     useMock("瀏覽器預覽：離線示範。Gateway 同金鑰只喺桌面版可用。", "settings");
+    startWatchers();
     if (new URLSearchParams(location.search).has("setup")) {
       state.settings = { needs_setup: true, mode: "mock", gateway_base_url: "" };
       openSettings();
@@ -3386,6 +3697,7 @@ async function boot() {
   } catch (err) {
     useMock(`讀唔到設定，改用示範模式：${err}`);
   }
+  startWatchers();
 }
 
 if (linuxAltWarning(`${navigator.platform || ""} ${navigator.userAgent || ""}`)) {

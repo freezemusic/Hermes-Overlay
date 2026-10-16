@@ -39,25 +39,36 @@ export function planDemoMarkdown(task) {
   ].join("\n");
 }
 
+function planRecord(text) {
+  return {
+    title: planTitle(text),
+    markdown: text,
+    key: `${planTitle(text)}\n${text.length}\n${text.slice(0, 80)}`,
+  };
+}
+
 /**
- * Newest bot reply that is a plan. A preceding user `/plan` counts when the
+ * Every finished bot plan in order. A preceding user `/plan` counts when the
  * reply is long enough to be the plan body. Live bubbles are skipped.
  */
-export function latestPlan(messages) {
+export function plansIn(messages) {
   const list = messages || [];
-  for (let i = list.length - 1; i >= 0; i -= 1) {
-    const message = list[i];
+  const found = [];
+  for (let index = 0; index < list.length; index += 1) {
+    const message = list[index];
     if (!message || message.role !== "bot" || message.live) continue;
     const text = String(message.text || "").trim();
     if (!text) continue;
-    const previous = [...list.slice(0, i)].reverse().find((item) => item && item.role === "user");
+    const previous = [...list.slice(0, index)].reverse().find((item) => item && item.role === "user");
     const fromCommand = previous?.command === "plan" && text.length >= 40;
     if (!looksLikePlan(text) && !fromCommand) continue;
-    return {
-      title: planTitle(text),
-      markdown: text,
-      key: `${planTitle(text)}\n${text.length}\n${text.slice(0, 80)}`,
-    };
+    found.push({ ...planRecord(text), index });
   }
-  return null;
+  return found;
+}
+
+/** Newest bot reply that is a plan. */
+export function latestPlan(messages) {
+  const found = plansIn(messages);
+  return found.length ? found[found.length - 1] : null;
 }

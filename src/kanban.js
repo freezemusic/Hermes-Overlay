@@ -5,6 +5,32 @@ export const KANBAN_POLL_MS = 5_000;
 export const KANBAN_EMPTY = "未裝 overlay-slash kanban，看板唔會出現。";
 export const KANBAN_BOARD = "default";
 
+function clipLine(text) {
+  const line = String(text || "").replace(/\s+/g, " ").trim();
+  const chars = Array.from(line);
+  if (chars.length <= 180) return line;
+  return `${chars.slice(0, 179).join("")}…`;
+}
+
+/** One preview line for a real board change. The first snapshot stays quiet. */
+export function kanbanChangeLine(previous, next) {
+  if (!previous || !next || previous.unavailable || next.unavailable) return "";
+  const before = tasksOf(previous);
+  const after = tasksOf(next);
+  const beforeById = new Map(before.map((task) => [task.id, task]));
+  const added = after.filter((task) => !beforeById.has(task.id));
+  if (added.length === 1) return clipLine(`新增：${added[0].title || "卡片"}`);
+  if (added.length > 1) return clipLine(`新增 ${added.length} 張卡片`);
+  const moved = after.filter((task) => {
+    const old = beforeById.get(task.id);
+    return old && old.status !== task.status;
+  });
+  if (moved.length === 1) return clipLine(`${moved[0].title || "卡片"} → ${moved[0].status}`);
+  if (moved.length > 1) return clipLine(`${moved.length} 張卡片改咗狀態`);
+  if (boardFingerprint(previous) !== boardFingerprint(next)) return "看板有更新";
+  return "";
+}
+
 export function boardFingerprint(board) {
   const tasks = tasksOf(board).map((task) => [
     task.id,

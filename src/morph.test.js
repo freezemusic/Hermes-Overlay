@@ -20,6 +20,7 @@ import {
   insetsFor,
   openPhases,
   phaseList,
+  fixedOrbPoint,
   iconShift,
   placeShell,
   previewBlocked,
@@ -30,6 +31,18 @@ import {
 } from "./morph.js";
 
 const screen = { w: 1280, h: 800 };
+
+test("kanban sits on the top edge and cron on the right", () => {
+  const kanban = fixedOrbPoint("kanban", screen.w, screen.h);
+  assert.equal(kanban.edge, "top");
+  assert.equal(kanban.x, screen.w / 2);
+  assert.equal(kanban.y, 42 + ORB / 2);
+  const cron = fixedOrbPoint("cron", screen.w, screen.h);
+  assert.equal(cron.edge, "right");
+  assert.equal(cron.x, screen.w - 42 - ORB / 2);
+  assert.equal(cron.y, Math.round(screen.h * 0.38));
+  assert.equal(fixedOrbPoint("settings", screen.w, screen.h).edge, "bottom");
+});
 
 function geom(edge, orbX, orbY, boxW = PANEL_W, boxH = PANEL_H) {
   const anchor = anchorInBox({
