@@ -33,6 +33,9 @@ import {
   includePlan,
   revealClip,
   seamInsets,
+  seamEase,
+  seamScaleFrames,
+  SEAM_MIN,
   cronShellHeight,
   chatTailAction,
   separateStackedPanels,
@@ -91,6 +94,26 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(CONTENT_IN_DELAY_MS, 0);
   assert.ok(CONTENT_IN_MS < PILL_PANEL_MS);
   assert.equal(PLAN_GROW_MS, 240);
+  assert.equal(SEAM_MIN, 0.001);
+  const seam = seamScaleFrames(12);
+  assert.equal(seam.outer.length, 13);
+  assert.equal(seam.inner.length, 13);
+  assert.equal(seam.outer[0].transform, "scaleX(0.001)");
+  assert.equal(seam.inner[0].transform, "scaleX(1000)");
+  assert.equal(seam.outer.at(-1).transform, "scaleX(1)");
+  assert.equal(seam.inner.at(-1).transform, "scaleX(1)");
+  seam.outer.forEach((frame, index) => {
+    const outer = Number(frame.transform.slice(7, -1));
+    const inner = Number(seam.inner[index].transform.slice(7, -1));
+    assert.ok(Math.abs(outer * inner - 1) < 1e-9, frame.transform);
+    assert.equal(frame.offset, index / 12);
+    if (index > 0) {
+      const prev = Number(seam.outer[index - 1].transform.slice(7, -1));
+      assert.ok(outer > prev);
+    }
+  });
+  assert.ok(seamEase(0.208) > 0.6 && seamEase(0.208) < 0.85);
+  assert.ok(seamEase(0.417) > 0.85);
   assert.equal(EASE, "cubic-bezier(.2,.8,.2,1)");
   assert.equal(COLLAPSE_EASE, "cubic-bezier(.4,0,1,1)");
   assert.doesNotMatch(EASE, /spring/i);

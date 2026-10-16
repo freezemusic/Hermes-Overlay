@@ -855,6 +855,17 @@ html, body {
 
 .plan-window[hidden] { display: none; }
 
+.plan-fit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  transform-origin: left center;
+}
+
 .plan-chip {
   display: inline-flex;
   margin-top: 6px;
@@ -1072,6 +1083,18 @@ html, body {
 .morph .plan-window.is-seam-grow {
   display: flex;
   overflow: hidden;
+  transform-origin: left center;
+}
+
+.morph[data-plan-side="left"] .plan-window.is-seam-grow,
+.morph[data-plan-side="left"] .plan-fit {
+  transform-origin: right center;
+}
+
+/* Settled panels force overflow:visible so the corner L can leave the box.
+   The seam has to keep clipping or the counter-scaled text paints at full width. */
+.morph[data-state="panel"] .plan-window.is-seam-grow {
+  overflow: hidden !important;
 }
 
 .chat-block {

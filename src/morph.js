@@ -397,6 +397,58 @@ export function dropParkedAnchor(anchors, id) {
   return true;
 }
 
+/** First seam scale. 0 is invisible to the compositor; this is about 0% of the plan. */
+export const SEAM_MIN = 0.001;
+
+/** y at time t for cubic-bezier(.2, .8, .2, 1). The plan seam bakes this into
+ *  keyframe values so the outer scale and the inner counter-scale stay inverses. */
+export function seamEase(t) {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  const x1 = 0.2;
+  const y1 = 0.8;
+  const x2 = 0.2;
+  const y2 = 1;
+  const xAt = (u) => {
+    const a = 1 - u;
+    return (3 * a * a * u * x1) + (3 * a * u * u * x2) + (u * u * u);
+  };
+  const yAt = (u) => {
+    const a = 1 - u;
+    return (3 * a * a * u * y1) + (3 * a * u * u * y2) + (u * u * u);
+  };
+  const dxAt = (u) => {
+    const a = 1 - u;
+    return (3 * a * a * x1) + (6 * a * u * (x2 - x1)) + (3 * u * u * (1 - x2));
+  };
+  let u = t;
+  for (let i = 0; i < 8; i += 1) {
+    const dx = dxAt(u);
+    if (Math.abs(dx) < 1e-6) break;
+    u = Math.min(1, Math.max(0, u - ((xAt(u) - t) / dx)));
+  }
+  return yAt(u);
+}
+
+/** Composited seam. WebKitGTK does not run clip-path on the compositor, so a
+ *  240ms inset animation paints on the main thread and the first presented
+ *  frame is already most of the way open. scaleX is composited. The inner
+ *  track is the reciprocal, with the ease baked into the values and a linear
+ *  clock, so the text is not stretched. */
+export function seamScaleFrames(steps = 12) {
+  const n = Math.max(2, steps);
+  const outer = [];
+  const inner = [];
+  for (let i = 0; i <= n; i += 1) {
+    const offset = i / n;
+    const eased = i === 0 ? 0 : i === n ? 1 : seamEase(offset);
+    const scale = i === 0 ? SEAM_MIN : Math.max(SEAM_MIN, eased);
+    outer.push({ transform: `scaleX(${scale})`, offset });
+    inner.push({ transform: `scaleX(${1 / scale})`, offset });
+  }
+  return { outer, inner };
+}
+
 /** A message preview must not start, or cancel a close, while a panel is up. */
 export function previewBlocked({
   intent = "",
