@@ -77,6 +77,35 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(html, /class="hud-corner br"/);
 });
 
+test("chat is the primary panel and the hover label does not stick", () => {
+  const template = html.slice(html.indexOf('id="bot-panel-template"'), html.indexOf("</template>"));
+  assert.match(template, /data-role="tab-chat"/);
+  assert.match(template, /data-role="tab-bot"/);
+  assert.match(template, /data-role="view-chat"/);
+  assert.match(template, /data-role="view-bot" hidden/);
+  assert.match(template, /data-role="chat"/);
+  assert.match(template, /data-role="session"/);
+  const chatAt = template.indexOf('data-role="chat"');
+  const soulAt = template.indexOf('data-role="soul"');
+  const composerAt = template.indexOf('class="composer"');
+  assert.ok(chatAt > 0 && chatAt < composerAt);
+  assert.ok(soulAt > chatAt);
+  assert.match(css, /\.chat-messages \{[^}]*flex:\s*1 1 96px/s);
+  assert.match(css, /\.chat-messages \{[^}]*min-height:\s*96px/s);
+  assert.match(css, /\.chat-messages \{[^}]*overflow-y:\s*auto/s);
+  assert.match(css, /\.composer \{[^}]*flex:\s*none/s);
+  assert.match(css, /\.bot-btn \.bot-label \{[^}]*opacity:\s*0/s);
+  assert.match(html, /id="orb-hover-label"/);
+  assert.match(css, /\.orb-hover-label \{[^}]*pointer-events:\s*none/s);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const mock = main.slice(main.indexOf("function useMock"), main.indexOf("function useHermes"));
+  const hermes = main.slice(main.indexOf("function useHermes"), main.indexOf("async function connectHermes"));
+  assert.doesNotMatch(mock, /selectBot/);
+  assert.doesNotMatch(hermes, /selectBot/);
+  assert.match(main, /previewBlocked/);
+  assert.match(main, /iconShift/);
+});
+
 test("bot panels own SOUL and the settings orb owns the gateway", () => {
   const template = html.slice(html.indexOf('id="bot-panel-template"'), html.indexOf("</template>"));
   assert.match(template, /SOUL\.md/);

@@ -20,7 +20,9 @@ import {
   insetsFor,
   openPhases,
   phaseList,
+  iconShift,
   placeShell,
+  previewBlocked,
   screenEdge,
   slotPoint,
   tighten,
@@ -136,6 +138,39 @@ test("clip-path is inset() round and the hairline sits one pixel inside", () => 
   assert.equal(inner.radius, outer.radius - 1);
   assert.equal(containsPoint(inner, PANEL_W, PANEL_H, g.ax, g.ay), true);
   assert.equal(clipPath(insetsFor("panel", g)), "inset(0px 0px 0px 0px round 3px)");
+});
+
+test("the panel icon sits in the header corner on the edge side", () => {
+  const bottomLeft = geom("bottom", 200, 760);
+  const shift = iconShift(bottomLeft.ax, bottomLeft.ay, PANEL_W, PANEL_H);
+  assert.equal(shift.x, 0);
+  assert.equal(bottomLeft.ay + shift.y, ORB / 2);
+  assert.ok(shift.y < 0);
+
+  const bottomRight = geom("bottom", 1100, 736);
+  const rightShift = iconShift(bottomRight.ax, bottomRight.ay, PANEL_W, PANEL_H);
+  assert.equal(bottomRight.ax + rightShift.x, PANEL_W - ORB / 2);
+  assert.equal(bottomRight.ay + rightShift.y, ORB / 2);
+
+  const lowerLeft = geom("left", 40, 640);
+  const leftShift = iconShift(lowerLeft.ax, lowerLeft.ay, PANEL_W, PANEL_H);
+  assert.equal(leftShift.x, 0);
+  assert.equal(lowerLeft.ay + leftShift.y, ORB / 2);
+
+  const top = geom("top", 200, 30);
+  assert.deepEqual(iconShift(top.ax, top.ay, PANEL_W, PANEL_H), { x: 0, y: 0 });
+  const clip = insetsFor("panel", top);
+  assert.equal(containsPoint(clip, PANEL_W, PANEL_H, top.ax, top.ay), true);
+});
+
+test("a preview cannot cancel a close or replace an open panel", () => {
+  assert.equal(previewBlocked({ intent: "close" }), true);
+  assert.equal(previewBlocked({ collapsing: true, state: "panel" }), true);
+  assert.equal(previewBlocked({ opening: "panel", visual: "pill" }), true);
+  assert.equal(previewBlocked({ state: "panel", visual: "tall" }), true);
+  assert.equal(previewBlocked({ visual: "wide" }), true);
+  assert.equal(previewBlocked({ state: "orb", visual: "orb" }), false);
+  assert.equal(previewBlocked({ state: "pill", visual: "pill" }), false);
 });
 
 test("screen edge and slot centres keep the orb on that edge", () => {

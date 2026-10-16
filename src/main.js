@@ -16,9 +16,11 @@ import {
   clipPath,
   distributeEdges,
   fixedOrbPoint,
+  iconShift,
   insetsFor,
   phaseList,
   placeShell,
+  previewBlocked,
   slotPoint,
   tighten,
 } from "./morph.js";
@@ -308,6 +310,9 @@ function layoutShell(shell) {
   shell.dataset.anchor = placed.anchor.x > placed.width / 2 ? "end" : "start";
   shell.style.setProperty("--ax", `${placed.anchor.x}px`);
   shell.style.setProperty("--ay", `${placed.anchor.y}px`);
+  const shift = iconShift(placed.anchor.x, placed.anchor.y, placed.width, placed.height);
+  shell.style.setProperty("--icon-dx", `${shift.x}px`);
+  shell.style.setProperty("--icon-dy", `${shift.y}px`);
   shell.style.transformOrigin = `${placed.anchor.x}px ${placed.anchor.y}px`;
   const visual = shell.dataset.visual || "orb";
   paintClip(shell, insetsFor(visual, {
@@ -388,22 +393,47 @@ function wait(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function settleShell(shell, target) {
+  markVisual(shell, target);
+  paintClip(shell, insetsFor(target, shellGeom(shell)));
+  shell.classList.remove("is-morphing", "is-collapsing");
+  shell.dataset.opening = "";
+  shell.dataset.intent = "";
+  if (target === "orb") {
+    shell.querySelectorAll(".center-panel").forEach((panel) => {
+      panel.hidden = true;
+    });
+  }
+  scheduleHitSync();
+}
+
 async function runShellMorph(shell, target) {
   if (!shell) return false;
+  if (target !== "orb" && shell.dataset.intent === "close") return false;
   const token = String((Number(shell.dataset.morphToken) || 0) + 1);
   shell.dataset.morphToken = token;
   shell.getAnimations?.().forEach((anim) => anim.cancel());
   const alive = () => shell.dataset.morphToken === token && shell.isConnected;
   const from = shell.dataset.visual || shell.dataset.state || "orb";
   window.clearTimeout(shell._pillTimer);
-  if (from === target && !shell.classList.contains("is-collapsing")) return true;
+  shell.classList.add("is-morphing");
+  if (from === target && !shell.classList.contains("is-collapsing")) {
+    if (alive()) settleShell(shell, target);
+    return true;
+  }
   if (target === "orb") {
+    shell.dataset.intent = "close";
     shell.classList.add("is-collapsing");
     shell.dataset.opening = "";
     if (!reducedMotion()) await wait(CONTENT_OUT_MS);
     if (!alive()) return false;
   } else {
     shell.classList.remove("is-collapsing");
+    if (shell.dataset.intent === "close") {
+      shell.classList.remove("is-morphing");
+      return false;
+    }
+    shell.dataset.intent = target === "panel" ? "open" : "preview";
     if (target === "panel") {
       shell.dataset.opening = "panel";
       shell.querySelectorAll(".center-panel").forEach((panel) => {
@@ -417,20 +447,17 @@ async function runShellMorph(shell, target) {
     const toInsets = insetsFor(step.state, shellGeom(shell));
     markVisual(shell, step.state);
     const ok = await playClip(shell, fromInsets, toInsets, reducedMotion() ? 0 : step.ms, token);
-    if (!ok || !alive()) return false;
+    if (!ok || !alive()) {
+      if (alive() && target === "orb") {
+        settleShell(shell, "orb");
+        return true;
+      }
+      return false;
+    }
     current = step.state;
   }
   if (!alive()) return false;
-  markVisual(shell, target);
-  paintClip(shell, insetsFor(target, shellGeom(shell)));
-  shell.classList.remove("is-morphing", "is-collapsing");
-  shell.dataset.opening = "";
-  if (target === "orb") {
-    shell.querySelectorAll(".center-panel").forEach((panel) => {
-      panel.hidden = true;
-    });
-  }
-  scheduleHitSync();
+  settleShell(shell, target);
   return true;
 }
 
@@ -1143,6 +1170,7 @@ function openBotPanel(id) {
   if (!shell) return null;
   state.openIds = openPanel(state.openIds, id);
   window.clearTimeout(shell._pillTimer);
+  shell.dataset.intent = "open";
   raisePanel(shell);
   void runShellMorph(shell, "panel");
   void loadSoul(id);
@@ -1153,6 +1181,7 @@ function openBotPanel(id) {
 function closeBotPanel(id) {
   const panel = panelFor(id);
   const shell = shellFor(id);
+  if (shell) shell.dataset.intent = "close";
   state.openIds = closePanel(state.openIds, id);
   if (state.activeId === id) state.activeId = state.openIds.at(-1) || null;
   if (state.slashPanelId === id) state.slashPanelId = state.activeId || "";
@@ -1172,8 +1201,32 @@ async function finishClose(shell) {
   scheduleHitSync();
 }
 
+function showBotTab(panel, tab) {
+  const chat = role(panel, "view-chat");
+  const sheet = role(panel, "view-bot");
+  const showChat = tab !== "bot";
+  if (chat) chat.hidden = !showChat;
+  if (sheet) sheet.hidden = showChat;
+  role(panel, "tab-chat")?.setAttribute("aria-selected", showChat ? "true" : "false");
+  role(panel, "tab-bot")?.setAttribute("aria-selected", showChat ? "false" : "true");
+}
+
 function wireBotPanel(panel, id) {
-  role(panel, "close")?.addEventListener("click", () => closeBotPanel(id));
+  role(panel, "close")?.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeBotPanel(id);
+  });
+  role(panel, "tab-chat")?.addEventListener("click", () => showBotTab(panel, "chat"));
+  role(panel, "tab-bot")?.addEventListener("click", () => showBotTab(panel, "bot"));
+  panel.addEventListener("wheel", (event) => {
+    const sheet = role(panel, "view-bot");
+    if (sheet && !sheet.hidden) return;
+    const chat = role(panel, "chat");
+    if (!chat || event.target.closest?.(".chat-messages, .plan-preview, textarea, select")) return;
+    chat.scrollTop += event.deltaY;
+  }, { passive: true });
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
   role(panel, "stop")?.addEventListener("click", () => stopActive(id));
   role(panel, "save")?.addEventListener("click", () => saveBotPanel(id));
@@ -1588,11 +1641,11 @@ function useMock(reason, bannerAction = "") {
     thread.loaded = true;
   });
   removeBotPanels();
-  state.activeId = state.bots[0]?.id || null;
-  state.slashPanelId = state.activeId || "";
+  state.activeId = null;
+  state.slashPanelId = "";
+  state.openIds = [];
   setBanner(reason, "info", "", bannerAction);
   renderBots();
-  if (state.activeId) void selectBot(state.activeId);
 }
 
 function useHermes(settings) {
@@ -1605,8 +1658,9 @@ function useHermes(settings) {
   state.threads = new Map();
   state.busy.clear();
   removeBotPanels();
-  state.activeId = state.bots[0]?.id || null;
-  state.slashPanelId = state.activeId || "";
+  state.activeId = null;
+  state.slashPanelId = "";
+  state.openIds = [];
   if (settings.keyring_error) {
     setBanner(`鑰匙圈：${settings.keyring_error}`, "error", "keyring");
   } else if (state.bots.length === 0) {
@@ -1615,7 +1669,6 @@ function useHermes(settings) {
     setBanner("已連接設定。點頭像載入該 Bot 最近嘅對話。", "ok");
   }
   renderBots();
-  if (state.activeId) void selectBot(state.activeId);
 }
 
 async function connectHermes(settings) {
@@ -2476,6 +2529,40 @@ function applyFrames(frames, interactiveAll = false) {
     if (interactiveAll || known?.capture) el.dataset.hitCapture = "1";
     else delete el.dataset.hitCapture;
   });
+  paintOrbLabel();
+}
+
+function paintOrbLabel() {
+  const label = document.getElementById("orb-hover-label");
+  if (!label) return;
+  const shells = [...document.querySelectorAll('.morph[data-state="orb"][data-hit-capture]')];
+  let shell = shells.length === 1 ? shells[0] : null;
+  if (shells.length > 1) {
+    shell = shells.find((item) => {
+      const box = visibleBox(item);
+      return cursorPoint.x >= box.x - 12
+        && cursorPoint.x <= box.x + box.w + 12
+        && cursorPoint.y >= box.y - 12
+        && cursorPoint.y <= box.y + box.h + 12;
+    }) || null;
+  }
+  const name = shell?.querySelector(".morph-orb")?.getAttribute("aria-label") || "";
+  if (!shell || !name) {
+    label.hidden = true;
+    label.textContent = "";
+    return;
+  }
+  if (label.textContent !== name) label.textContent = name;
+  label.hidden = false;
+  const box = visibleBox(shell);
+  const width = label.offsetWidth;
+  const height = label.offsetHeight;
+  let left = box.x + box.w / 2 - width / 2;
+  let top = box.y + box.h + 6;
+  if (top + height > window.innerHeight - 8) top = Math.max(8, box.y - height - 6);
+  left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+  label.style.left = `${Math.round(left)}px`;
+  label.style.top = `${Math.round(top)}px`;
 }
 
 const cursorPoint = { x: -10000, y: -10000 };
@@ -2641,6 +2728,11 @@ function setupProximity() {
         applyFrames(payload.opacities || []);
       });
     });
+    window.addEventListener("mousemove", (event) => {
+      cursorPoint.x = event.clientX;
+      cursorPoint.y = event.clientY;
+      paintOrbLabel();
+    });
     return;
   }
   document.documentElement.classList.add("overlay-passthrough");
@@ -2739,9 +2831,13 @@ function pingOrb(id) {
 
 function showToast(id, toast) {
   const shell = shellFor(id);
-  if (!shell) return;
-  if (shell.dataset.opening === "panel") return;
-  if (shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) return;
+  if (!shell || previewBlocked({
+    intent: shell.dataset.intent || "",
+    collapsing: shell.classList.contains("is-collapsing"),
+    opening: shell.dataset.opening || "",
+    visual: shell.dataset.visual || "",
+    state: shell.dataset.state || "",
+  })) return;
   const preview = shell.querySelector("[data-role='preview']");
   const time = shell.querySelector("[data-role='preview-time']");
   if (preview) preview.textContent = toast.text || "";

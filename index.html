@@ -24,7 +24,6 @@
               <div class="bot-meta">
                 <h1 class="panel-title" data-role="name">載入中…</h1>
                 <p class="bot-status" data-role="status"><span class="spinner" aria-hidden="true"></span><span data-role="status-text">準備就緒</span></p>
-                <p class="interact-hint" data-role="hint"></p>
               </div>
             </div>
             <div class="panel-actions">
@@ -32,41 +31,46 @@
             </div>
           </header>
 
-          <section class="detail-block" aria-label="呢個 Bot">
-            <h2 class="section-label">呢個 Bot</h2>
-            <label class="field">
-              <span>顯示名稱</span>
-              <input data-role="display-name" type="text" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>詳情</span>
-              <textarea data-role="detail" rows="2"></textarea>
-            </label>
-          </section>
+          <div class="panel-switch" role="tablist" aria-label="面板分頁">
+            <button type="button" class="panel-tab" data-role="tab-chat" role="tab" aria-selected="true">對話</button>
+            <button type="button" class="panel-tab" data-role="tab-bot" role="tab" aria-selected="false">呢個 Bot</button>
+          </div>
 
-          <section class="soul-block" aria-label="SOUL.md">
-            <h2 class="section-label">SOUL.md</h2>
-            <textarea data-role="soul" class="soul-input" rows="5" placeholder="呢個 Bot 嘅 SOUL.md"></textarea>
-            <div class="soul-actions">
-              <button type="button" class="send-btn" data-role="save">儲存呢個 Bot</button>
-              <p class="hint" data-role="save-status"></p>
-            </div>
-          </section>
-
-          <section class="plan-preview" data-role="plan" hidden>
-            <div class="plan-head">
-              <h2 class="plan-title" data-role="plan-title">計劃</h2>
-              <button type="button" class="plan-toggle" data-role="plan-toggle">收起</button>
-            </div>
-            <div class="plan-body" data-role="plan-body"></div>
-          </section>
-
-          <section class="chat-block" aria-label="對話">
+          <div class="panel-view" data-role="view-chat">
+            <section class="plan-preview" data-role="plan" hidden>
+              <div class="plan-head">
+                <h2 class="plan-title" data-role="plan-title">計劃</h2>
+                <button type="button" class="plan-toggle" data-role="plan-toggle">收起</button>
+              </div>
+              <div class="plan-body" data-role="plan-body"></div>
+            </section>
             <div class="chat-head">
-              <h2 class="section-label">對話</h2>
               <select data-role="session" class="session-select" aria-label="揀一個對話"></select>
             </div>
             <div class="chat-messages" data-role="chat"></div>
+          </div>
+
+          <section class="bot-sheet" data-role="view-bot" hidden>
+            <p class="interact-hint" data-role="hint"></p>
+            <section class="detail-block" aria-label="呢個 Bot">
+              <h2 class="section-label">呢個 Bot</h2>
+              <label class="field">
+                <span>顯示名稱</span>
+                <input data-role="display-name" type="text" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>詳情</span>
+                <textarea data-role="detail" rows="2"></textarea>
+              </label>
+            </section>
+            <section class="soul-block" aria-label="SOUL.md">
+              <h2 class="section-label">SOUL.md</h2>
+              <textarea data-role="soul" class="soul-input" rows="5" placeholder="呢個 Bot 嘅 SOUL.md"></textarea>
+              <div class="soul-actions">
+                <button type="button" class="send-btn" data-role="save">儲存呢個 Bot</button>
+                <p class="hint" data-role="save-status"></p>
+              </div>
+            </section>
           </section>
 
           <footer class="composer">
@@ -169,6 +173,7 @@
         <div id="kanban-board" class="kanban"></div>
       </aside>
 
+      <div id="orb-hover-label" class="orb-hover-label" hidden></div>
       <div id="orb-menu" class="orb-menu" data-interactive data-hit-id="orb-menu" hidden>
         <button type="button" id="orb-menu-hide" class="orb-menu-btn">隱藏呢個 Bot</button>
       </div>

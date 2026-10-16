@@ -289,6 +289,7 @@ html, body {
   color: #000091;
   text-shadow: 0 0 4px #fff, 0 0 2px #fff;
   pointer-events: none;
+  opacity: 0;
 }
 
 .bot-btn:hover::before { opacity: 1; transform: scale(1.08); }
@@ -456,7 +457,7 @@ html, body {
 }
 
 .panel-header,
-.settings-head { cursor: grab; }
+.settings-head { cursor: grab; flex: none; }
 
 .panel-header:active,
 .settings-head:active { cursor: grabbing; }
@@ -709,6 +710,51 @@ html, body {
   cursor: pointer;
 }
 
+.panel-switch {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.panel-tab {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--nous-blue);
+  border-radius: var(--r-sm);
+  background: #fff;
+  color: #000091;
+  font: 500 var(--fs-ui)/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.panel-tab[aria-selected="true"] {
+  background: var(--bot);
+  border-color: var(--bot);
+  color: #fff;
+}
+
+.panel-view,
+.bot-sheet {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.panel-view[hidden],
+.bot-sheet[hidden] { display: none; }
+
+.bot-sheet { overflow-y: auto; }
+
+.bot-panel .plan-preview {
+  flex: none;
+  max-height: 120px;
+}
+
 .chat-block {
   flex: 1;
   min-height: 0;
@@ -725,6 +771,8 @@ html, body {
 }
 
 .chat-head .section-label { margin: 0; }
+
+.panel-view .session-select { width: 100%; }
 
 .session-select {
   width: min(220px, 46%);
@@ -775,8 +823,10 @@ html, body {
 .settings-card::-webkit-scrollbar-thumb:hover { background: var(--bot-40); }
 
 .chat-messages {
-  flex: 1;
+  flex: 1 1 96px;
+  min-height: 96px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -965,6 +1015,7 @@ html, body {
 
 .composer {
   position: relative;
+  flex: none;
   display: flex;
   gap: var(--sp-2);
   align-items: center;
@@ -1404,8 +1455,15 @@ html, body {
   height: 140px;
   transform: translate(-50%, -50%);
   pointer-events: none;
+  transition: transform 240ms var(--ease-morph);
   background: radial-gradient(circle, rgb(var(--bot-rgb) / .22) 0%, transparent 70%);
 }
+
+.morph[data-visual="panel"] .morph-fill::after {
+  transform: translate(calc(-50% + var(--icon-dx, 0px)), calc(-50% + var(--icon-dy, 0px)));
+}
+
+.morph.is-collapsing .morph-fill::after { transition-duration: 80ms; }
 
 .morph .morph-orb {
   position: absolute;
@@ -1413,11 +1471,23 @@ html, body {
   top: calc(var(--ay, 22px) - 22px);
   z-index: 4;
   margin: 0;
-  transition: transform var(--dur-2) var(--ease-morph);
+  transition: transform 240ms var(--ease-morph);
 }
 
 .morph[data-state="panel"] .morph-orb {
-  transform: scale(calc(28 / 44));
+  pointer-events: none;
+  transform: translate(var(--icon-dx, 0px), var(--icon-dy, 0px)) scale(calc(28 / 44));
+}
+
+.morph[data-visual="wide"] .morph-orb,
+.morph[data-visual="tall"] .morph-orb {
+  transform: none;
+}
+
+.morph.is-collapsing .morph-orb { transition-duration: 80ms; }
+
+html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
+  pointer-events: none !important;
 }
 
 .morph .center-panel {
@@ -1427,6 +1497,7 @@ html, body {
   top: 0;
   width: auto;
   height: auto;
+  min-height: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1534,6 +1605,24 @@ html, body {
   height: 16px;
   padding: 0;
   box-shadow: none;
+}
+
+.orb-hover-label[hidden] { display: none; }
+
+.orb-hover-label {
+  position: absolute;
+  z-index: 30;
+  padding: 1px 4px;
+  border: 1px solid rgb(0 0 242 / .35);
+  border-radius: 2px;
+  background: rgb(247 248 248 / .92);
+  color: #000091;
+  font: 500 var(--fs-micro)/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  text-shadow: 0 0 4px #fff, 0 0 2px #fff;
+  pointer-events: none;
 }
 
 .orb-menu[hidden] { display: none; }

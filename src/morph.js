@@ -241,3 +241,29 @@ export function fixedOrbPoint(which, width, height, pad = 42, orb = ORB) {
     edge: "bottom",
   };
 }
+
+/**
+ * Offset from the clip anchor to the header-corner icon.
+ * The anchor itself stays put. Y is always the top of the panel so a
+ * bottom or lower-left orb does not sit on the composer. X stays on the
+ * screen-edge side (left half → top-left).
+ */
+export function iconShift(ax, ay, boxW, boxH, orb = ORB) {
+  const edgeX = ax > boxW / 2 ? boxW - orb / 2 : orb / 2;
+  const headerY = orb / 2;
+  return { x: edgeX - ax, y: headerY - ay };
+}
+
+/** A message preview must not start, or cancel a close, while a panel is up. */
+export function previewBlocked({
+  intent = "",
+  collapsing = false,
+  opening = "",
+  visual = "",
+  state = "",
+} = {}) {
+  if (intent === "close" || collapsing) return true;
+  if (opening === "panel") return true;
+  if (state === "panel") return true;
+  return visual === "panel" || visual === "wide" || visual === "tall";
+}
