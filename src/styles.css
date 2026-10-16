@@ -826,6 +826,7 @@ html, body {
   flex: 1 1 96px;
   min-height: 96px;
   overflow-y: auto;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
@@ -1158,10 +1159,11 @@ html, body {
 #conn-banner {
   position: absolute;
   z-index: 45;
-  top: 16px;
+  top: 96px;
   left: 50%;
   transform: translateX(-50%);
   max-width: min(560px, 86vw);
+  pointer-events: none;
 }
 
 .conn-banner {
@@ -1191,6 +1193,11 @@ html, body {
   color: var(--bot);
 }
 
+.conn-banner.ok,
+.conn-banner.info {
+  border-radius: 999px;
+}
+
 .conn-banner .banner-action {
   display: block;
   width: 100%;
@@ -1202,6 +1209,7 @@ html, body {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  pointer-events: auto;
   text-decoration: underline;
   text-underline-offset: 2px;
 }

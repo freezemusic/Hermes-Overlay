@@ -404,6 +404,7 @@ function settleShell(shell, target) {
       panel.hidden = true;
     });
   }
+  if (target === "panel" && shell.dataset.kind === "bot") stickChat(shell.dataset.botId);
   scheduleHitSync();
 }
 
@@ -594,8 +595,13 @@ function showActionError(message) {
   if (status && settingsOpen()) status.textContent = message;
 }
 
+const BANNER_OK_MS = 4000;
+let bannerTimer = 0;
+
 function setBanner(text, kind = "error", sticky = "", action = "") {
   const banner = $("#conn-banner");
+  window.clearTimeout(bannerTimer);
+  bannerTimer = 0;
   banner.classList.remove("ok", "info", "danger");
   banner.dataset.sticky = sticky || "";
   banner.replaceChildren();
@@ -618,6 +624,13 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
     return;
   }
   banner.textContent = text;
+  if ((kind === "ok" || kind === "info") && sticky !== "keyring") {
+    bannerTimer = window.setTimeout(() => {
+      bannerTimer = 0;
+      if (banner.dataset.sticky === "keyring") return;
+      setBanner("");
+    }, BANNER_OK_MS);
+  }
 }
 
 function clearConnectionBanner() {
@@ -675,6 +688,8 @@ function mountBotPanel(shell, id) {
   panel.hidden = true;
   const slash = role(panel, "slash");
   if (slash) slash.dataset.hitId = `slash:${id}`;
+  const close = role(panel, "close");
+  if (close) close.dataset.hitId = `close:${id}`;
   shell.appendChild(panel);
   wireBotPanel(panel, id);
   bindPanelDrag(panel);
@@ -741,6 +756,8 @@ function ensureChromeShell(panel, id, glyph, label, orbClass) {
   panel.classList.add("morph-body");
   panel.hidden = true;
   panel.removeAttribute("data-hit-id");
+  const close = panel.querySelector("#btn-settings-close, #btn-kanban-close");
+  if (close) close.dataset.hitId = `close:${id}`;
   shell.append(fill, btn, previewNode(), panel);
   attachShell(shell, id);
   bindPanelDrag(panel);
@@ -846,8 +863,10 @@ function renderChat(id = state.activeId) {
   const bot = state.bots.find((b) => b.id === id);
   const chat = role(panel, "chat");
   if (!bot || !chat) return;
-  chat.innerHTML = "";
   const thread = threadFor(bot.id);
+  if (thread.followTail === false) thread.scrollTop = chat.scrollTop;
+  markProgrammaticScroll(chat);
+  chat.innerHTML = "";
   const title = role(panel, "name");
   if (title) title.textContent = bot.name;
   const statusEl = role(panel, "status");
@@ -866,7 +885,7 @@ function renderChat(id = state.activeId) {
   paintOrb(role(panel, "avatar"), bot.color, bot.short || "");
   applyBotColor(panel, bot.color);
   thread.messages.forEach((m) => chat.appendChild(bubbleEl(m)));
-  chat.scrollTop = chat.scrollHeight;
+  stickChat(id);
   paintPlan(id);
   paintSessionSelect(id);
   const stop = role(panel, "stop");
@@ -988,13 +1007,81 @@ async function openExternal(url) {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+const TAIL_GAP_PX = 80;
+
+function chatNearTail(chat) {
+  if (!chat) return true;
+  return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= TAIL_GAP_PX;
+}
+
+function markProgrammaticScroll(chat) {
+  if (chat) chat.dataset.programmaticScroll = "1";
+}
+
+function assignChatScroll(chat, top) {
+  if (!chat) return;
+  markProgrammaticScroll(chat);
+  chat.scrollTop = top;
+  requestAnimationFrame(() => {
+    delete chat.dataset.programmaticScroll;
+  });
+}
+
+const pinTokens = new Map();
+
+function pinChat(id) {
+  const apply = () => {
+    const thread = threadFor(id);
+    const chat = chatOf(id);
+    if (!chat || thread.followTail === false) return;
+    markProgrammaticScroll(chat);
+    chat.scrollTop = chat.scrollHeight;
+  };
+  apply();
+  const token = (pinTokens.get(id) || 0) + 1;
+  pinTokens.set(id, token);
+  requestAnimationFrame(() => {
+    if (pinTokens.get(id) !== token) return;
+    apply();
+    requestAnimationFrame(() => {
+      if (pinTokens.get(id) !== token) return;
+      apply();
+      requestAnimationFrame(() => {
+        if (pinTokens.get(id) !== token) return;
+        const chat = chatOf(id);
+        if (chat) delete chat.dataset.programmaticScroll;
+      });
+    });
+  });
+}
+
+function stickChat(id) {
+  if (!id) return;
+  const thread = threadFor(id);
+  if (thread.followTail === false) {
+    const chat = chatOf(id);
+    assignChatScroll(chat, thread.scrollTop || 0);
+    requestAnimationFrame(() => {
+      if (thread.followTail === false) assignChatScroll(chatOf(id), thread.scrollTop || 0);
+    });
+    return;
+  }
+  pinChat(id);
+}
+
+function noteChatScroll(id, chat) {
+  const thread = threadFor(id);
+  thread.scrollTop = chat.scrollTop;
+  thread.followTail = chatNearTail(chat);
+}
+
 function appendMessage(id, message) {
   const thread = threadFor(id);
   thread.messages.push(message);
   const chat = chatOf(id);
   if (!chat) return;
   chat.appendChild(bubbleEl(message));
-  chat.scrollTop = chat.scrollHeight;
+  if (thread.followTail !== false) pinChat(id);
   paintPlan(id);
 }
 
@@ -1168,6 +1255,7 @@ function openBotPanel(id) {
   const bot = state.bots.find((item) => item.id === id);
   const shell = shellFor(id) || (bot ? ensureBotShell(bot) : null);
   if (!shell) return null;
+  threadFor(id).followTail = true;
   state.openIds = openPanel(state.openIds, id);
   window.clearTimeout(shell._pillTimer);
   shell.dataset.intent = "open";
@@ -1225,8 +1313,14 @@ function wireBotPanel(panel, id) {
     if (sheet && !sheet.hidden) return;
     const chat = role(panel, "chat");
     if (!chat || event.target.closest?.(".chat-messages, .plan-preview, textarea, select")) return;
-    chat.scrollTop += event.deltaY;
+    assignChatScroll(chat, chat.scrollTop + event.deltaY);
+    noteChatScroll(id, chat);
   }, { passive: true });
+  role(panel, "chat")?.addEventListener("scroll", (event) => {
+    const chat = event.currentTarget;
+    if (chat.dataset.programmaticScroll === "1") return;
+    noteChatScroll(id, chat);
+  });
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
   role(panel, "stop")?.addEventListener("click", () => stopActive(id));
   role(panel, "save")?.addEventListener("click", () => saveBotPanel(id));
@@ -1428,8 +1522,7 @@ function paintLiveNow(id) {
   const nodes = chat.querySelectorAll("[data-live]");
   const node = nodes[nodes.length - 1];
   if (live && node) paintBotBubble(node, live.text);
-  const gap = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
-  if (gap < 80) chat.scrollTop = chat.scrollHeight;
+  if (thread.followTail !== false) pinChat(id);
 }
 
 function patchLive(id) {
@@ -1562,6 +1655,7 @@ async function sendActive(id = state.activeId) {
   if (!text || !id) return;
   state.activeId = id;
   state.slashPanelId = id;
+  threadFor(id).followTail = true;
   const busy = state.mode === "hermes" && state.busy.has(id);
   if (sendBlockedWhileBusy(text, state.catalog || [], busy)) return;
   closeSlash();
@@ -2395,7 +2489,16 @@ function setupComposer() {
     }
     if (action === "close") state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "blur");
   });
-  $("#btn-settings-close").addEventListener("click", closeSettings);
+  const settingsClose = $("#btn-settings-close");
+  if (settingsClose) {
+    settingsClose.dataset.hitId = "close:settings";
+    settingsClose.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeSettings();
+    });
+  }
   $("#btn-quit")?.addEventListener("click", async () => {
     const action = settingsQuitAction();
     if (!inTauri()) return;
@@ -2464,6 +2567,24 @@ function syncLatch() {
   paintLocalProximity();
 }
 
+const CLOSE_PAD_PX = 36;
+
+function pushCloseHit(rects, shell, level) {
+  const close = shell.querySelector("[data-hit-id^='close:']");
+  if (!close || close.hidden || close.closest("[hidden]")) return;
+  const box = close.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return;
+  rects.push({
+    id: close.dataset.hitId,
+    x: box.x - CLOSE_PAD_PX,
+    y: box.y - CLOSE_PAD_PX,
+    w: box.width + CLOSE_PAD_PX * 2,
+    h: box.height + CLOSE_PAD_PX * 2,
+    z: level + 40,
+    round: false,
+  });
+}
+
 function collectHits() {
   const rects = [];
   const push = (id, el, z = 0, round = false) => {
@@ -2522,6 +2643,7 @@ function collectHits() {
     if (shell.dataset.state === "panel") {
       const slash = role(shell, "slash");
       if (slash?.dataset.hitId) push(slash.dataset.hitId, slash, level + 20);
+      pushCloseHit(rects, shell, level);
     }
   });
   const banner = $("#conn-banner");
@@ -3210,7 +3332,16 @@ async function boot() {
   setupComposer();
   setupWindowChrome();
   setupProximity();
-  $("#btn-kanban-close")?.addEventListener("click", () => closeKanban());
+  const kanbanClose = $("#btn-kanban-close");
+  if (kanbanClose) {
+    kanbanClose.dataset.hitId = "close:kanban";
+    kanbanClose.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeKanban();
+    });
+  }
   window.addEventListener("pointermove", moveKanbanPointer);
   window.addEventListener("pointerup", endKanbanPointer);
   window.addEventListener("pointercancel", endKanbanPointer);
@@ -3225,6 +3356,8 @@ async function boot() {
   applyInteraction(state.interaction);
   if (!inTauri()) {
     window.__deliverCron = deliverCron;
+    window.__handleHermes = handleHermes;
+    window.__setBanner = setBanner;
     useMock("瀏覽器預覽：離線示範。Gateway 同金鑰只喺桌面版可用。", "settings");
     if (new URLSearchParams(location.search).has("setup")) {
       state.settings = { needs_setup: true, mode: "mock", gateway_base_url: "" };

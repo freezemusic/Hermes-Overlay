@@ -234,9 +234,14 @@ pub fn is_pill_hit(rect: &HitRect) -> bool {
     rect.id.starts_with("pill:")
 }
 
-/// Round avatars, pills, and toasts are not panels. Everything else is a panel.
+/// Close buttons capture on the first press, even while the modifier is held.
+pub fn is_close_hit(rect: &HitRect) -> bool {
+    rect.id.starts_with("close:")
+}
+
+/// Round avatars, pills, close buttons, and toasts are not panels. Everything else is a panel.
 pub fn is_panel_hit(rect: &HitRect) -> bool {
-    if is_pill_hit(rect) || is_orb_hit(rect) {
+    if is_pill_hit(rect) || is_close_hit(rect) || is_orb_hit(rect) {
         return false;
     }
     !rect.id.starts_with("toast:")
@@ -244,7 +249,7 @@ pub fn is_panel_hit(rect: &HitRect) -> bool {
 
 /// Bot, settings, and kanban orbs. A round hit or a `bot:` id both count.
 pub fn is_orb_hit(rect: &HitRect) -> bool {
-    if is_pill_hit(rect) {
+    if is_pill_hit(rect) || is_close_hit(rect) {
         return false;
     }
     rect.round || rect.id.starts_with("bot:")
@@ -255,7 +260,9 @@ pub fn is_orb_hit(rect: &HitRect) -> bool {
 /// and capture nothing. Orbs stay at `min_opacity` and click-through until the
 /// modifier is held over that orb, which turns it solid and clickable.
 /// A message-preview pill stays visually solid and captures only while the
-/// modifier is held over it. Toasts stay visually solid. A missing cursor does not capture.
+/// modifier is held over it. A close button stays solid and captures whenever
+/// the cursor is over it, including while the modifier is held. Toasts stay
+/// visually solid. A missing cursor does not capture.
 pub fn interaction_frame(
     held: bool,
     latched_ids: &[String],
@@ -270,7 +277,9 @@ pub fn interaction_frame(
         .iter()
         .map(|rect| {
             let here = cursor.is_some() && under.as_deref() == Some(rect.id.as_str());
-            let (opacity, capture) = if is_pill_hit(rect) {
+            let (opacity, capture) = if is_close_hit(rect) {
+                (1.0, here)
+            } else if is_pill_hit(rect) {
                 (1.0, here && held)
             } else if is_orb_hit(rect) {
                 let awake = here && held;
@@ -1714,6 +1723,46 @@ mod tests {
         assert!(frame_of(&held, "pill:a").capture);
         assert!((frame_of(&held, "panel:a").opacity - 0.18).abs() < 0.001);
         assert!(!frame_of(&held, "panel:a").capture);
+    }
+
+    #[test]
+    fn close_button_captures_while_the_modifier_is_held() {
+        let cfg = fade_cfg();
+        let rects = vec![
+            HitRect {
+                id: "panel:a".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 420.0,
+                h: 560.0,
+                z: 4,
+                round: false,
+            },
+            HitRect {
+                id: "close:a".into(),
+                x: 300.0,
+                y: 8.0,
+                w: 100.0,
+                h: 80.0,
+                z: 44,
+                round: false,
+            },
+        ];
+        assert!(is_close_hit(&rects[1]));
+        assert!(!is_panel_hit(&rects[1]));
+        assert!(!is_orb_hit(&rects[1]));
+        let over = Some((340.0, 40.0));
+        let held = interaction_frame(true, &[], over, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&held, "close:a").capture);
+        assert_eq!(frame_of(&held, "close:a").opacity, 1.0);
+        assert!(!frame_of(&held, "panel:a").capture);
+        assert!((frame_of(&held, "panel:a").opacity - 0.18).abs() < 0.001);
+        let idle = interaction_frame(false, &[], over, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&idle, "close:a").capture);
+        assert!(!frame_of(&idle, "panel:a").capture);
+        let away = interaction_frame(true, &[], Some((20.0, 200.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(!frame_of(&away, "close:a").capture);
+        assert!(!frame_of(&away, "panel:a").capture);
     }
 
     #[test]

@@ -56,9 +56,14 @@ export function isPillHit(rect) {
   return String(rect?.id || "").startsWith("pill:");
 }
 
-/** Panels wash out while the modifier is held. Orbs, pills, and toasts are not panels. */
+/** Close buttons stay clickable on the first press, even while the modifier is held. */
+export function isCloseHit(rect) {
+  return String(rect?.id || "").startsWith("close:");
+}
+
+/** Panels wash out while the modifier is held. Orbs, pills, close buttons, and toasts are not panels. */
 export function isPanelHit(rect) {
-  if (!rect || isPillHit(rect) || isOrbHit(rect)) return false;
+  if (!rect || isPillHit(rect) || isCloseHit(rect) || isOrbHit(rect)) return false;
   const id = String(rect.id || "");
   if (id.startsWith("toast:")) return false;
   return true;
@@ -66,7 +71,7 @@ export function isPanelHit(rect) {
 
 /** Bot, settings, and kanban orbs. Round hits and `bot:` ids both count. */
 export function isOrbHit(rect) {
-  if (!rect || isPillHit(rect)) return false;
+  if (!rect || isPillHit(rect) || isCloseHit(rect)) return false;
   if (rect.round) return true;
   return String(rect.id || "").startsWith("bot:");
 }
@@ -107,8 +112,9 @@ function preferHit(candidate, current) {
  * Orbs stay faded and click-through. Only the orb under or near the cursor
  * turns solid and clickable while the modifier is held.
  * A message-preview pill stays visually solid. It captures only while the
- * modifier is held over it. Toasts stay visually solid and are clickable only
- * when the modifier is up.
+ * modifier is held over it. A close button stays solid and captures whenever
+ * the cursor is over it, including while the modifier is held. Toasts stay
+ * visually solid and are clickable only when the modifier is up.
  */
 export function elementStates({
   held = false,
@@ -122,6 +128,9 @@ export function elementStates({
   const floor = Number.isFinite(minOpacity) ? minOpacity : 0.18;
   return rects.map((rect) => {
     const here = !!cursor && under === rect.id;
+    if (isCloseHit(rect)) {
+      return { id: rect.id, opacity: 1, capture: here };
+    }
     if (isPillHit(rect)) {
       return { id: rect.id, opacity: 1, capture: here && held };
     }

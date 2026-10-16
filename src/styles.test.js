@@ -93,6 +93,7 @@ test("chat is the primary panel and the hover label does not stick", () => {
   assert.match(css, /\.chat-messages \{[^}]*flex:\s*1 1 96px/s);
   assert.match(css, /\.chat-messages \{[^}]*min-height:\s*96px/s);
   assert.match(css, /\.chat-messages \{[^}]*overflow-y:\s*auto/s);
+  assert.match(css, /\.chat-messages \{[^}]*overflow-anchor:\s*none/s);
   assert.match(css, /\.composer \{[^}]*flex:\s*none/s);
   assert.match(css, /\.bot-btn \.bot-label \{[^}]*opacity:\s*0/s);
   assert.match(html, /id="orb-hover-label"/);
@@ -104,6 +105,14 @@ test("chat is the primary panel and the hover label does not stick", () => {
   assert.doesNotMatch(hermes, /selectBot/);
   assert.match(main, /previewBlocked/);
   assert.match(main, /iconShift/);
+  assert.match(main, /followTail/);
+  assert.match(main, /CLOSE_PAD_PX = 36/);
+  assert.match(main, /close:\$\{id\}/);
+  assert.match(main, /BANNER_OK_MS = 4000/);
+  assert.match(css, /#conn-banner \{[^}]*top:\s*96px/s);
+  assert.match(css, /#conn-banner \{[^}]*pointer-events:\s*none/s);
+  assert.match(css, /\.conn-banner\.ok,\s*\.conn-banner\.info \{[^}]*border-radius:\s*999px/s);
+  assert.match(css, /\.conn-banner \.banner-action \{[^}]*pointer-events:\s*auto/s);
 });
 
 test("bot panels own SOUL and the settings orb owns the gateway", () => {

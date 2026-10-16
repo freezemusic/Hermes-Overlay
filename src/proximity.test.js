@@ -6,6 +6,7 @@ import {
   distanceToRect,
   elementOpacity,
   elementStates,
+  isCloseHit,
   isOrbHit,
   isPanelHit,
   isPillHit,
@@ -165,6 +166,28 @@ test("round avatar ignores bounding-box corners", () => {
   assert.equal(isPillHit({ id: "pill:a" }), true);
   assert.equal(isOrbHit({ id: "pill:a", round: true }), false);
   assert.equal(isPanelHit({ id: "pill:a" }), false);
+});
+
+test("the close button captures on the first press while the modifier is held", () => {
+  const rects = [
+    { id: "panel:a", x: 0, y: 0, w: 420, h: 560, z: 4 },
+    { id: "close:a", x: 300, y: 8, w: 100, h: 80, z: 44 },
+  ];
+  assert.equal(isCloseHit(rects[1]), true);
+  assert.equal(isPanelHit(rects[1]), false);
+  assert.equal(isOrbHit({ id: "close:a", round: true }), false);
+  const over = { x: 340, y: 40 };
+  const held = elementStates({ held: true, cursor: over, rects, ...fadeOpts });
+  assert.equal(byId(held, "close:a").opacity, 1);
+  assert.equal(byId(held, "close:a").capture, true);
+  assert.equal(byId(held, "panel:a").capture, false);
+  assert.equal(byId(held, "panel:a").opacity, 0.18);
+  const idle = elementStates({ held: false, cursor: over, rects, ...fadeOpts });
+  assert.equal(byId(idle, "close:a").capture, true);
+  assert.equal(byId(idle, "panel:a").capture, false);
+  const away = elementStates({ held: true, cursor: { x: 20, y: 200 }, rects, ...fadeOpts });
+  assert.equal(byId(away, "close:a").capture, false);
+  assert.equal(byId(away, "panel:a").capture, false);
 });
 
 test("a message preview pill stays solid and click-through until the modifier is held", () => {
