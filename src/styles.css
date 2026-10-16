@@ -4,7 +4,9 @@
    panels 1px #0000f2 hairline + HUD corners, radius ≤ 3px;
    popout shadow only (0 4px 40px rgb(0 0 145 / .6));
    hover/press 120–200ms, no scale bounce;
-   panels expand from their orb and collapse back, .48s ease-out, no spring;
+   the orb, pill, and panel are one shell. Clip-path inset() morphs the shape.
+   Orb→pill 200ms, pill→panel 480ms, cubic-bezier(.2,.8,.2,1), no spring.
+   Collapse reverses in ≤360ms. prefers-reduced-motion fades opacity.
    CJK stays untracked — uppercase and letter-spacing only under :lang(en). */
 
 @font-face {
@@ -148,6 +150,7 @@
   --shadow-pop: 0 4px 40px rgb(0 0 145 / .6);
 
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-morph: cubic-bezier(.2, .8, .2, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --dur-1: 120ms;
   --dur-2: 200ms;
@@ -162,7 +165,7 @@
   --warn: var(--nous-yellow);
   --scrim: rgb(0 0 145 / .08);
 
-  --bot-size: 52px;
+  --bot-size: 44px;
   --orb-glow-radius: 34px;
   --edge-pad: calc(var(--orb-glow-radius) + 8px);
   --avatar-radius: 50%;
@@ -218,7 +221,6 @@ html, body {
   cursor: pointer;
   isolation: isolate;
   contain: layout style;
-  will-change: opacity;
   display: grid;
   place-items: center;
   user-select: none;
@@ -1311,7 +1313,6 @@ html, body {
 
 [data-hit-id] {
   opacity: var(--hit-opacity, 1);
-  will-change: opacity;
 }
 
 .bot-btn[data-hit-id] {
@@ -1349,14 +1350,160 @@ html, body {
   padding: var(--sp-4);
 }
 
-.panel-motion.is-opening {
-  animation: panel-from-orb var(--dur-enter) var(--ease-out) both;
+.morph {
+  position: absolute;
+  background: var(--nous-blue);
+  color: var(--text);
+  overflow: hidden;
+  pointer-events: auto;
+  will-change: auto;
+  clip-path: inset(0px 0px 0px 0px round 3px);
+  transform-origin: var(--ax, 22px) var(--ay, 22px);
 }
 
-.panel-motion.is-closing {
-  animation: panel-to-orb var(--dur-enter) var(--ease-out) both;
+.morph[data-hit-id] {
+  opacity: var(--hit-opacity, 1);
+  will-change: auto;
+}
+
+.morph.is-morphing {
+  will-change: clip-path, transform, opacity;
+}
+
+.morph[data-state="orb"][data-hit-id] {
+  opacity: var(--hit-opacity, 0.18);
+}
+
+.morph[data-state="panel"] {
+  filter: drop-shadow(var(--shadow-pop));
+}
+
+.morph.is-collapsing {
   pointer-events: none;
 }
+
+.morph-fill {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    var(--glass-sheen),
+    var(--glass-tint),
+    linear-gradient(var(--grid-line) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    var(--noise),
+    var(--glass-fog);
+}
+
+.morph-fill::after {
+  content: "";
+  position: absolute;
+  left: var(--ax, 22px);
+  top: var(--ay, 22px);
+  width: 140px;
+  height: 140px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background: radial-gradient(circle, rgb(var(--bot-rgb) / .22) 0%, transparent 70%);
+}
+
+.morph .morph-orb {
+  position: absolute;
+  left: calc(var(--ax, 22px) - 22px);
+  top: calc(var(--ay, 22px) - 22px);
+  z-index: 4;
+  margin: 0;
+  transition: transform var(--dur-2) var(--ease-morph);
+}
+
+.morph[data-state="panel"] .morph-orb {
+  transform: scale(calc(28 / 44));
+}
+
+.morph .center-panel {
+  position: absolute;
+  inset: 0;
+  left: 0;
+  top: 0;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.morph .active-avatar { display: none; }
+
+.morph[data-anchor="start"] .panel-header,
+.morph[data-anchor="start"] .settings-head { padding-left: 40px; }
+
+.morph[data-anchor="end"] .panel-header,
+.morph[data-anchor="end"] .settings-head { padding-right: 40px; }
+
+.morph-body,
+.morph-pill {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-1) linear var(--dur-1);
+}
+
+.morph[data-state="panel"]:not(.is-collapsing) .morph-body,
+.morph[data-state="pill"]:not(.is-collapsing) .morph-pill {
+  opacity: 1;
+}
+
+.morph[data-state="panel"]:not(.is-collapsing) .morph-body {
+  pointer-events: auto;
+}
+
+.morph.is-collapsing .morph-body,
+.morph.is-collapsing .morph-pill {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 100ms linear;
+}
+
+.morph-pill {
+  position: absolute;
+  top: calc(var(--ay, 22px) - 22px);
+  height: 44px;
+  width: 320px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  color: #000091;
+  font: 400 var(--fs-ui)/1.2 var(--font-body);
+  z-index: 3;
+}
+
+.morph[data-anchor="start"] .morph-pill {
+  left: 0;
+  padding: 0 12px 0 52px;
+}
+
+.morph[data-anchor="end"] .morph-pill {
+  right: 0;
+  left: auto;
+  padding: 0 52px 0 12px;
+  flex-direction: row-reverse;
+}
+
+.morph-preview {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.morph-pill time {
+  flex: none;
+  font: 400 var(--fs-meta)/1 var(--font-mono);
+  color: var(--text-muted);
+}
+
+.morph-pill.is-error { color: var(--nous-red); }
 
 .bot-editor {
   display: flex;
@@ -1443,13 +1590,6 @@ html.overlay-passthrough .overlay-root * { pointer-events: none !important; }
 html.overlay-passthrough .overlay-root [data-hit-capture],
 html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: auto !important; }
 
-@keyframes panel-from-orb {
-  from { opacity: 0; transform: translate(var(--from-x, 0px), var(--from-y, 0px)) scale(0.92); }
-  to { opacity: 1; transform: translate(0, 0) scale(1); }
-}
-@keyframes panel-to-orb {
-  to { opacity: 0; transform: translate(var(--from-x, 0px), var(--from-y, 0px)) scale(0.92); }
-}
 @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes ping { from { transform: scale(1); opacity: 0.6; } to { transform: scale(2.2); opacity: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1467,6 +1607,16 @@ html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: au
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
   }
+  .morph,
+  .morph-fill {
+    animation: none !important;
+    transition: opacity 120ms linear !important;
+  }
+  .morph-body,
+  .morph-pill {
+    transition: opacity 120ms linear !important;
+  }
+  .morph.is-morphing { will-change: auto; }
   .is-thinking .spinner {
     animation: none;
     opacity: 0.6;

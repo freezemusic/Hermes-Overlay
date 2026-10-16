@@ -8,6 +8,7 @@ import {
   elementStates,
   isOrbHit,
   isPanelHit,
+  isPillHit,
   focusLossAction,
   osFocusAction,
   selectBlurAction,
@@ -161,6 +162,29 @@ test("round avatar ignores bounding-box corners", () => {
   assert.equal(isPanelHit(orb), false);
   assert.equal(isPanelHit({ id: "center" }), true);
   assert.equal(isPanelHit({ id: "toast:1" }), false);
+  assert.equal(isPillHit({ id: "pill:a" }), true);
+  assert.equal(isOrbHit({ id: "pill:a", round: true }), false);
+  assert.equal(isPanelHit({ id: "pill:a" }), false);
+});
+
+test("a message preview pill stays solid and click-through until the modifier is held", () => {
+  const rects = [
+    { id: "pill:a", x: 0, y: 0, w: 320, h: 44 },
+    { id: "bot:b", x: 400, y: 0, w: 44, h: 44, round: true },
+    { id: "panel:a", x: 0, y: 80, w: 420, h: 560 },
+  ];
+  const idle = elementStates({ held: false, cursor: { x: 40, y: 20 }, rects, ...fadeOpts });
+  assert.equal(byId(idle, "pill:a").opacity, 1);
+  assert.equal(byId(idle, "pill:a").capture, false);
+  assert.equal(byId(idle, "bot:b").opacity, 0.18);
+  assert.equal(byId(idle, "panel:a").opacity, 1);
+  const held = elementStates({ held: true, cursor: { x: 40, y: 20 }, rects, ...fadeOpts });
+  assert.equal(byId(held, "pill:a").opacity, 1);
+  assert.equal(byId(held, "pill:a").capture, true);
+  assert.equal(byId(held, "bot:b").opacity, 0.18);
+  assert.equal(byId(held, "bot:b").capture, false);
+  assert.equal(byId(held, "panel:a").opacity, 0.18);
+  assert.equal(byId(held, "panel:a").capture, false);
 });
 
 test("light swatches use dark ink", () => {

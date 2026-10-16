@@ -4,9 +4,24 @@
  * Gateway keys stay in the Rust process; this file only sees has_key.
  */
 
-import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, toastAnchor, TOAST_MS } from "./activity.js";
+import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
 import { latestPlan, planDemoMarkdown, planTask } from "./plan.js";
-import { closePanel, fromOrbDelta, openPanel, panelStackOffset } from "./panels.js";
+import { closePanel, openPanel } from "./panels.js";
+import {
+  CONTENT_OUT_MS,
+  EASE,
+  ORB,
+  PANEL_H,
+  PANEL_W,
+  clipPath,
+  distributeEdges,
+  fixedOrbPoint,
+  insetsFor,
+  phaseList,
+  placeShell,
+  slotPoint,
+  tighten,
+} from "./morph.js";
 import { isProfileEnabled, profilesNeedingKeys } from "./roster.js";
 import { resolveSession, sessionLabel } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
@@ -159,70 +174,6 @@ const MOCK_BOTS = [
   },
 ];
 
-function edgePositions(count) {
-  const pads = { top: 0.08, right: 0.08, bottom: 0.08, left: 0.08 };
-  const segments = [
-    { edge: "top", weight: 1 },
-    { edge: "right", weight: 3 },
-    { edge: "bottom", weight: 3 },
-    { edge: "left", weight: 2 },
-  ];
-  const total = segments.reduce((s, x) => s + x.weight, 0);
-  const slots = [];
-  let remaining = count;
-  segments.forEach((seg, i) => {
-    const isLast = i === segments.length - 1;
-    const n = isLast ? remaining : Math.max(1, Math.round((seg.weight / total) * count));
-    const take = Math.min(n, remaining);
-    remaining -= take;
-    for (let j = 0; j < take; j++) {
-      const t = (j + 1) / (take + 1);
-      slots.push({ edge: seg.edge, t });
-    }
-  });
-  while (remaining > 0) {
-    slots.push({ edge: "right", t: 0.5 });
-    remaining--;
-  }
-  return slots.map(({ edge, t }) => {
-    const inset = "var(--edge-pad)";
-    if (edge === "top") {
-      return {
-        style: {
-          top: inset,
-          left: `calc(${pads.left * 100}% + (100% - ${pads.left * 100}% - ${pads.right * 100}%) * ${t})`,
-          transform: "translateX(-50%)",
-        },
-      };
-    }
-    if (edge === "right") {
-      return {
-        style: {
-          right: inset,
-          top: `calc(${pads.top * 100}% + (100% - ${pads.top * 100}% - ${pads.bottom * 100}%) * ${t})`,
-          transform: "translateY(-50%)",
-        },
-      };
-    }
-    if (edge === "bottom") {
-      return {
-        style: {
-          bottom: inset,
-          left: `calc(${pads.left * 100}% + (100% - ${pads.left * 100}% - ${pads.right * 100}%) * ${t})`,
-          transform: "translateX(-50%)",
-        },
-      };
-    }
-    return {
-      style: {
-        left: inset,
-        top: `calc(${pads.top * 100}% + (100% - ${pads.top * 100}% - ${pads.bottom * 100}%) * ${t})`,
-        transform: "translateY(-50%)",
-      },
-    };
-  });
-}
-
 function $(sel) {
   return document.querySelector(sel);
 }
@@ -243,7 +194,7 @@ function chatOf(id) {
 function hintText() {
   const name = modifierLabel(state.interaction.modifier);
   return state.interaction.supported
-    ? `光球預設半透明同穿透。按住 ${name}，游標下嗰粒先變實色、可以點同右鍵隱藏。面板預設實色，可以拖同點；按住 ${name} 就變透明並穿透。`
+    ? `光球預設半透明同穿透。按住 ${name}，游標下嗰粒先變實色、可以點同右鍵隱藏。新訊息會由光球橫向展開成膠囊 5 秒，唔使按 ${name} 都睇到，但要按住先至點得。面板預設實色，可以拖同點；按住 ${name} 就變透明並穿透。`
     : "呢個環境讀唔到全域游標或修飾鍵，所以保持可點擊，唔會穿透。";
 }
 
@@ -255,99 +206,244 @@ function modifierHeld(event) {
   return !!event.ctrlKey;
 }
 
-const panelMotion = new WeakMap();
-
-function beginMotion(panel) {
-  const token = (panelMotion.get(panel) || 0) + 1;
-  panelMotion.set(panel, token);
-  return token;
+function reducedMotion() {
+  return !!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
 }
 
-function orbForPanel(panel) {
-  if (!panel) return null;
-  if (panel.id === "settings") return document.querySelector(".orb--settings");
-  if (panel.id === "kanban-panel") return document.querySelector(".orb--kanban");
-  return document.querySelector(`.bot-btn[data-bot-id="${cssEscape(panel.dataset.botId || "")}"]`);
+function shellFor(id) {
+  if (!id) return null;
+  return document.querySelector(`.morph[data-bot-id="${cssEscape(id)}"]`);
 }
 
-function runMotion(panel, mode) {
-  const token = beginMotion(panel);
-  panel.classList.remove("is-opening", "is-closing");
-  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-  const orbEl = orbForPanel(panel);
-  if (orbEl && !reduce) {
-    const orb = orbEl.getBoundingClientRect();
-    const box = panel.getBoundingClientRect();
-    const delta = fromOrbDelta(
-      { x: orb.x, y: orb.y, w: orb.width, h: orb.height },
-      { x: box.x, y: box.y, w: box.width, h: box.height },
-    );
-    panel.style.setProperty("--from-x", `${Math.round(delta.x)}px`);
-    panel.style.setProperty("--from-y", `${Math.round(delta.y)}px`);
-  } else {
-    panel.style.setProperty("--from-x", "0px");
-    panel.style.setProperty("--from-y", "0px");
-  }
-  const cls = mode === "close" ? "is-closing" : "is-opening";
-  return new Promise((resolve) => {
-    let settled = false;
-    let timer = 0;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      panel.removeEventListener("animationend", onEnd);
-      window.clearTimeout(timer);
-      if (panelMotion.get(panel) !== token) {
-        resolve(false);
-        return;
-      }
-      panel.classList.remove(cls);
-      resolve(true);
-    };
-    const onEnd = (event) => {
-      if (event.target !== panel) return;
-      finish();
-    };
-    panel.addEventListener("animationend", onEnd);
-    void panel.offsetWidth;
-    panel.classList.add(cls);
-    timer = window.setTimeout(finish, reduce ? 30 : 700);
-  });
+function edgePadPx() {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue("--orb-glow-radius");
+  const glow = Number.parseFloat(raw);
+  return (Number.isFinite(glow) ? glow : 34) + 8;
 }
 
-function rememberPanel(panel) {
-  const key = panel?.dataset.panelKey || panel?.dataset.hitId;
-  if (!key) return;
-  const box = panel.getBoundingClientRect();
-  if (box.width < 1 || box.height < 1) return;
-  state.panelPos[key] = { left: box.left, top: box.top };
-}
-
-function placePanel(panel, key, fallback = {}) {
-  panel.style.right = "auto";
-  panel.style.bottom = "auto";
-  const saved = state.panelPos[key];
-  if (saved) {
-    panel.style.left = `${saved.left}px`;
-    panel.style.top = `${saved.top}px`;
-    return;
-  }
-  const index = state.openIds.indexOf(key);
-  const shift = panelStackOffset(index < 0 ? state.openIds.length : index);
+function boxSize(id) {
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
-  panel.style.left = `${Math.round(vw * (fallback.leftRatio ?? 0.12) + shift.x)}px`;
-  panel.style.top = `${Math.round(vh * (fallback.topRatio ?? 0.1) + shift.y)}px`;
+  if (id === "kanban") return { w: Math.min(960, vw * 0.8), h: Math.min(vh * 0.8, 760) };
+  if (id === "settings") return { w: Math.min(680, vw * 0.92), h: Math.min(vh * 0.86, 760) };
+  return { w: PANEL_W, h: PANEL_H };
+}
+
+function anchorPoint(id) {
+  const saved = state.anchors[id];
+  if (saved?.placed) return { x: saved.x, y: saved.y };
+  const vw = window.innerWidth || 1280;
+  const vh = window.innerHeight || 800;
+  const pad = edgePadPx();
+  if (id === "settings" || id === "kanban") return fixedOrbPoint(id, vw, vh, pad, ORB);
+  const index = Math.max(0, state.bots.findIndex((bot) => bot.id === id));
+  const slots = distributeEdges(Math.max(state.bots.length, 1));
+  const slot = slots[index] || { edge: "right", t: 0.5 };
+  return slotPoint(slot.edge, slot.t, vw, vh, pad, ORB);
+}
+
+function paintClip(shell, insets) {
+  shell.style.clipPath = clipPath(insets);
+  const fill = shell.querySelector(".morph-fill");
+  if (fill) fill.style.clipPath = clipPath(tighten(insets));
+  shell.dataset.clipTop = String(insets.top);
+  shell.dataset.clipRight = String(insets.right);
+  shell.dataset.clipBottom = String(insets.bottom);
+  shell.dataset.clipLeft = String(insets.left);
+  shell.dataset.clipRadius = String(insets.radius);
+}
+
+function shellGeom(shell) {
+  const size = boxSize(shell.dataset.botId);
+  return {
+    boxW: Number.parseFloat(shell.style.width) || size.w,
+    boxH: Number.parseFloat(shell.style.height) || size.h,
+    ax: Number(shell.dataset.ax) || ORB / 2,
+    ay: Number(shell.dataset.ay) || ORB / 2,
+  };
+}
+
+function hitFor(id, visual) {
+  if (visual === "orb") return `bot:${id}`;
+  if (visual === "pill") return `pill:${id}`;
+  if (id === "settings") return "settings";
+  if (id === "kanban") return "kanban";
+  return `panel:${id}`;
+}
+
+function markVisual(shell, visual) {
+  shell.dataset.visual = visual;
+  shell.dataset.state = visual === "orb" || visual === "pill" ? visual : "panel";
+  shell.dataset.hitId = hitFor(shell.dataset.botId, shell.dataset.state);
+}
+
+function rememberAnchor(shell) {
+  const id = shell?.dataset.botId;
+  if (!id) return;
+  const box = shell.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return;
+  const ax = Number(shell.dataset.ax) || 0;
+  const ay = Number(shell.dataset.ay) || 0;
+  state.anchors[id] = { x: box.left + ax, y: box.top + ay, placed: true };
+}
+
+function layoutShell(shell) {
+  if (!shell || shell.classList.contains("is-morphing")) return;
+  if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return;
+  const id = shell.dataset.botId;
+  const size = boxSize(id);
+  const point = anchorPoint(id);
+  const vw = window.innerWidth || 1280;
+  const vh = window.innerHeight || 800;
+  const placed = placeShell(point.x, point.y, size.w, size.h, vw, vh);
+  shell.style.width = `${placed.width}px`;
+  shell.style.height = `${placed.height}px`;
+  shell.style.left = `${placed.left}px`;
+  shell.style.top = `${placed.top}px`;
+  shell.style.right = "auto";
+  shell.style.bottom = "auto";
+  shell.dataset.edge = placed.edge;
+  shell.dataset.ax = String(placed.anchor.x);
+  shell.dataset.ay = String(placed.anchor.y);
+  shell.dataset.anchor = placed.anchor.x > placed.width / 2 ? "end" : "start";
+  shell.style.setProperty("--ax", `${placed.anchor.x}px`);
+  shell.style.setProperty("--ay", `${placed.anchor.y}px`);
+  shell.style.transformOrigin = `${placed.anchor.x}px ${placed.anchor.y}px`;
+  const visual = shell.dataset.visual || "orb";
+  paintClip(shell, insetsFor(visual, {
+    boxW: placed.width,
+    boxH: placed.height,
+    ax: placed.anchor.x,
+    ay: placed.anchor.y,
+  }));
+}
+
+function layoutShells() {
+  document.querySelectorAll(".morph").forEach((shell) => layoutShell(shell));
+  scheduleHitSync();
+}
+
+function readInsets(shell) {
+  const raw = getComputedStyle(shell).clipPath || shell.style.clipPath || "";
+  const match = raw.match(/inset\(\s*([-\d.]+)px\s+([-\d.]+)px\s+([-\d.]+)px\s+([-\d.]+)px/i);
+  if (!match) {
+    return {
+      top: Number(shell.dataset.clipTop) || 0,
+      right: Number(shell.dataset.clipRight) || 0,
+      bottom: Number(shell.dataset.clipBottom) || 0,
+      left: Number(shell.dataset.clipLeft) || 0,
+    };
+  }
+  return {
+    top: Number(match[1]),
+    right: Number(match[2]),
+    bottom: Number(match[3]),
+    left: Number(match[4]),
+  };
+}
+
+function visibleBox(shell) {
+  const box = shell.getBoundingClientRect();
+  const insets = readInsets(shell);
+  return {
+    x: box.x + insets.left,
+    y: box.y + insets.top,
+    w: Math.max(0, box.width - insets.left - insets.right),
+    h: Math.max(0, box.height - insets.top - insets.bottom),
+  };
+}
+
+function playClip(shell, fromInsets, toInsets, duration, token) {
+  const fill = shell.querySelector(".morph-fill");
+  if (reducedMotion() || !(duration > 0) || typeof shell.animate !== "function") {
+    if (shell.dataset.morphToken !== token) return Promise.resolve(false);
+    paintClip(shell, toInsets);
+    return Promise.resolve(true);
+  }
+  shell.classList.add("is-morphing");
+  const anim = shell.animate(
+    [{ clipPath: clipPath(fromInsets) }, { clipPath: clipPath(toInsets) }],
+    { duration, easing: EASE, fill: "forwards" },
+  );
+  const animFill = fill?.animate(
+    [{ clipPath: clipPath(tighten(fromInsets)) }, { clipPath: clipPath(tighten(toInsets)) }],
+    { duration, easing: EASE, fill: "forwards" },
+  );
+  const track = () => {
+    if (shell.dataset.morphToken !== token || !shell.classList.contains("is-morphing")) return;
+    scheduleHitSync();
+    requestAnimationFrame(track);
+  };
+  requestAnimationFrame(track);
+  return anim.finished.then(() => {
+    if (shell.dataset.morphToken !== token) return false;
+    paintClip(shell, toInsets);
+    anim.cancel();
+    animFill?.cancel();
+    return true;
+  }).catch(() => false);
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function runShellMorph(shell, target) {
+  if (!shell) return false;
+  const token = String((Number(shell.dataset.morphToken) || 0) + 1);
+  shell.dataset.morphToken = token;
+  shell.getAnimations?.().forEach((anim) => anim.cancel());
+  const alive = () => shell.dataset.morphToken === token && shell.isConnected;
+  const from = shell.dataset.visual || shell.dataset.state || "orb";
+  window.clearTimeout(shell._pillTimer);
+  if (from === target && !shell.classList.contains("is-collapsing")) return true;
+  if (target === "orb") {
+    shell.classList.add("is-collapsing");
+    shell.dataset.opening = "";
+    if (!reducedMotion()) await wait(CONTENT_OUT_MS);
+    if (!alive()) return false;
+  } else {
+    shell.classList.remove("is-collapsing");
+    if (target === "panel") {
+      shell.dataset.opening = "panel";
+      shell.querySelectorAll(".center-panel").forEach((panel) => {
+        panel.hidden = false;
+      });
+    }
+  }
+  let current = from;
+  for (const step of phaseList(shell.dataset.edge || "bottom", from, target)) {
+    const fromInsets = insetsFor(current, shellGeom(shell));
+    const toInsets = insetsFor(step.state, shellGeom(shell));
+    markVisual(shell, step.state);
+    const ok = await playClip(shell, fromInsets, toInsets, reducedMotion() ? 0 : step.ms, token);
+    if (!ok || !alive()) return false;
+    current = step.state;
+  }
+  if (!alive()) return false;
+  markVisual(shell, target);
+  paintClip(shell, insetsFor(target, shellGeom(shell)));
+  shell.classList.remove("is-morphing", "is-collapsing");
+  shell.dataset.opening = "";
+  if (target === "orb") {
+    shell.querySelectorAll(".center-panel").forEach((panel) => {
+      panel.hidden = true;
+    });
+  }
+  scheduleHitSync();
+  return true;
 }
 
 function raisePanel(panel) {
-  if (!panel) return;
+  const host = panel?.closest?.(".morph") || panel;
+  if (!host) return;
   state.panelZ += 1;
-  panel.style.zIndex = String(state.panelZ);
+  host.style.zIndex = String(state.panelZ);
   scheduleHitSync();
 }
 
 function bindPanelDrag(panel) {
+  const host = panel.closest?.(".morph") || panel;
   const header = panel.querySelector(".panel-header, .settings-head");
   if (!header || header.dataset.dragBound) return;
   header.dataset.dragBound = "1";
@@ -355,20 +451,21 @@ function bindPanelDrag(panel) {
     if (event.button !== 0) return;
     if (event.target.closest("button, input, textarea, select, a, label")) return;
     event.preventDefault();
-    state.dragHitId = panel.dataset.hitId || "";
-    raisePanel(panel);
+    state.dragHitId = host.dataset.hitId || "";
+    raisePanel(host);
     flushHits();
     const startX = event.clientX;
     const startY = event.clientY;
-    const origin = panel.getBoundingClientRect();
-    panel.style.right = "auto";
-    panel.style.bottom = "auto";
-    panel.style.left = `${origin.left}px`;
-    panel.style.top = `${origin.top}px`;
+    const origin = host.getBoundingClientRect();
+    host.style.right = "auto";
+    host.style.bottom = "auto";
+    host.style.left = `${origin.left}px`;
+    host.style.top = `${origin.top}px`;
     const move = (ev) => {
       if (ev.pointerId !== event.pointerId) return;
-      panel.style.left = `${origin.left + ev.clientX - startX}px`;
-      panel.style.top = `${origin.top + ev.clientY - startY}px`;
+      host.style.left = `${origin.left + ev.clientX - startX}px`;
+      host.style.top = `${origin.top + ev.clientY - startY}px`;
+      rememberAnchor(host);
       scheduleHitSync();
     };
     const up = (ev) => {
@@ -377,7 +474,8 @@ function bindPanelDrag(panel) {
       header.removeEventListener("pointerup", up);
       header.removeEventListener("pointercancel", up);
       state.dragHitId = "";
-      rememberPanel(panel);
+      rememberAnchor(host);
+      layoutShell(host);
       flushHits();
     };
     header.addEventListener("pointermove", move);
@@ -392,7 +490,7 @@ function bindPanelDrag(panel) {
 }
 
 function removeBotPanels() {
-  document.querySelectorAll(".bot-panel").forEach((panel) => panel.remove());
+  document.querySelectorAll(".morph[data-kind='bot']").forEach((shell) => shell.remove());
   state.openIds = [];
 }
 
@@ -433,6 +531,7 @@ const state = {
   reconnectToken: 0,
   reconnectTimer: 0,
   openIds: [],
+  anchors: {},
   panelPos: {},
   panelZ: 4,
   slashPanelId: "",
@@ -503,50 +602,152 @@ function clearConnectionBanner() {
 /** undefined until the first paint, so the initial selection does not pulse. */
 let renderedActiveId;
 
+function previewNode() {
+  const pill = document.createElement("div");
+  pill.className = "morph-pill";
+  const text = document.createElement("span");
+  text.className = "morph-preview";
+  text.dataset.role = "preview";
+  const time = document.createElement("time");
+  time.dataset.role = "preview-time";
+  pill.append(text, time);
+  return pill;
+}
+
+function attachShell(shell, id) {
+  shell.addEventListener("click", (event) => {
+    const orb = event.target.closest?.(".morph-orb");
+    if (shell.dataset.state === "panel" && !orb) return;
+    if (shell.dataset.state === "panel") {
+      raisePanel(shell);
+      return;
+    }
+    if (!orb && shell.dataset.state === "orb") return;
+    if (state.interaction.supported !== false && !modifierHeld(event)) return;
+    if (id === "settings") focusSettings();
+    else if (id === "kanban") toggleKanban();
+    else selectBot(id);
+  });
+  shell.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    if (shell.dataset.state !== "orb") return;
+    if (!modifierHeld(event)) return;
+    event.stopPropagation();
+    if (id === "settings" || id === "kanban") return;
+    openOrbMenu(id, event.clientX, event.clientY);
+  });
+}
+
+function mountBotPanel(shell, id) {
+  if (shell.querySelector(".bot-panel")) return;
+  const tpl = document.getElementById("bot-panel-template");
+  const panel = tpl.content.firstElementChild.cloneNode(true);
+  panel.dataset.botId = id;
+  panel.dataset.panelKey = id;
+  panel.classList.add("morph-body");
+  panel.hidden = true;
+  const slash = role(panel, "slash");
+  if (slash) slash.dataset.hitId = `slash:${id}`;
+  shell.appendChild(panel);
+  wireBotPanel(panel, id);
+  bindPanelDrag(panel);
+}
+
+function ensureBotShell(bot) {
+  let shell = shellFor(bot.id);
+  if (shell) return shell;
+  shell = document.createElement("div");
+  shell.className = "morph";
+  shell.dataset.kind = "bot";
+  shell.dataset.botId = bot.id;
+  shell.dataset.state = "orb";
+  shell.dataset.visual = "orb";
+  shell.dataset.hitId = `bot:${bot.id}`;
+  const fill = document.createElement("div");
+  fill.className = "morph-fill";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "bot-btn morph-orb";
+  btn.dataset.botId = bot.id;
+  btn.addEventListener("animationend", (event) => {
+    if (event.animationName === "orb-pulse") btn.classList.remove("orb-enter");
+    if (event.animationName === "ping") event.target.remove();
+  });
+  fillOrb(btn);
+  const label = document.createElement("span");
+  label.className = "bot-label";
+  btn.appendChild(label);
+  shell.append(fill, btn, previewNode());
+  attachShell(shell, bot.id);
+  $("#bot-rail").appendChild(shell);
+  mountBotPanel(shell, bot.id);
+  return shell;
+}
+
+function ensureChromeShell(panel, id, glyph, label, orbClass) {
+  let shell = shellFor(id);
+  if (shell) return shell;
+  shell = document.createElement("div");
+  shell.className = "morph";
+  shell.dataset.kind = "chrome";
+  shell.dataset.botId = id;
+  shell.dataset.state = "orb";
+  shell.dataset.visual = "orb";
+  shell.dataset.hitId = `bot:${id}`;
+  const fill = document.createElement("div");
+  fill.className = "morph-fill";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = `bot-btn morph-orb ${orbClass}`;
+  btn.dataset.botId = id;
+  if (id === "kanban") {
+    btn.addEventListener("animationend", (event) => {
+      if (event.animationName === "ping") event.target.remove();
+    });
+  }
+  fillOrb(btn);
+  const name = document.createElement("span");
+  name.className = "bot-label";
+  name.textContent = label;
+  btn.appendChild(name);
+  btn.querySelector(".orb-glyph").textContent = glyph;
+  panel.classList.add("morph-body");
+  panel.hidden = true;
+  panel.removeAttribute("data-hit-id");
+  shell.append(fill, btn, previewNode(), panel);
+  attachShell(shell, id);
+  bindPanelDrag(panel);
+  $("#bot-rail").appendChild(shell);
+  layoutShell(shell);
+  return shell;
+}
+
+function ensureChrome() {
+  const settings = document.getElementById("settings");
+  const kanban = document.getElementById("kanban-panel");
+  if (settings) ensureChromeShell(settings, "settings", "設", "設定", "orb--settings");
+  if (kanban) ensureChromeShell(kanban, "kanban", "▥", "看板", "orb--kanban");
+}
+
 function renderBots() {
   const rail = $("#bot-rail");
-  const positions = edgePositions(Math.max(state.bots.length, 1));
+  ensureChrome();
   const pulse = nextOrbPulse(renderedActiveId, state.activeId);
   renderedActiveId = pulse.rendered;
   const pulseId = pulse.pulseId;
   const keep = new Set(state.bots.map((bot) => bot.id));
-  const existing = new Map();
-  rail.querySelectorAll(".bot-btn:not(.orb--kanban):not(.orb--settings)").forEach((el) => {
-    if (!keep.has(el.dataset.botId)) el.remove();
-    else existing.set(el.dataset.botId, el);
+  rail.querySelectorAll(".morph[data-kind='bot']").forEach((shell) => {
+    if (keep.has(shell.dataset.botId)) return;
+    state.openIds = closePanel(state.openIds, shell.dataset.botId);
+    shell.remove();
   });
-  document.querySelectorAll(".bot-panel").forEach((panel) => {
-    if (keep.has(panel.dataset.botId)) return;
-    state.openIds = closePanel(state.openIds, panel.dataset.botId);
-    panel.remove();
-  });
-  state.bots.forEach((bot, i) => {
-    let btn = existing.get(bot.id);
-    if (!btn) {
-      btn = document.createElement("button");
-      btn.type = "button";
-      btn.dataset.botId = bot.id;
-      btn.dataset.hitId = `bot:${bot.id}`;
-      btn.addEventListener("click", () => selectBot(bot.id));
-      btn.addEventListener("contextmenu", (event) => {
-        event.preventDefault();
-        if (!modifierHeld(event)) return;
-        event.stopPropagation();
-        openOrbMenu(bot.id, event.clientX, event.clientY);
-      });
-      btn.addEventListener("animationend", (event) => {
-        if (event.animationName === "orb-pulse") btn.classList.remove("orb-enter");
-        if (event.animationName === "ping") event.target.remove();
-      });
-      fillOrb(btn);
-      const label = document.createElement("span");
-      label.className = "bot-label";
-      btn.appendChild(label);
-    }
+  state.bots.forEach((bot) => {
+    const shell = ensureBotShell(bot);
+    const btn = shell.querySelector(".morph-orb");
     const thread = threadFor(bot.id);
     const keepEnter = btn.classList.contains("orb-enter") && bot.id === state.activeId;
-    const classes = ["bot-btn"];
-    if (state.openIds.includes(bot.id)) classes.push("active");
+    const classes = ["bot-btn", "morph-orb"];
+    if (state.openIds.includes(bot.id) || shell.dataset.state === "panel") classes.push("active");
     const motion = orbMotion(thread.activity, thread.statusState);
     if (motion === "spin") classes.push("is-thinking");
     if (motion === "wait") classes.push("is-waiting");
@@ -554,19 +755,14 @@ function renderBots() {
     if (thread.statusState === "error") classes.push("error");
     if (bot.id === pulseId || keepEnter) classes.push("orb-enter");
     btn.className = classes.join(" ");
-    btn.style.background = "";
-    btn.style.top = "";
-    btn.style.right = "";
-    btn.style.bottom = "";
-    btn.style.left = "";
-    btn.style.transform = "";
+    applyBotColor(shell, bot.color);
     applyBotColor(btn, bot.color);
-    Object.assign(btn.style, positions[i].style);
     btn.setAttribute("aria-label", bot.name);
     btn.title = bot.name;
     btn.querySelector(".orb-glyph").textContent = bot.short || "";
     btn.querySelector(".bot-label").textContent = bot.name;
-    rail.appendChild(btn);
+    layoutShell(shell);
+    rail.appendChild(shell);
   });
   renderKanbanOrb();
   renderSettingsOrb();
@@ -574,31 +770,16 @@ function renderBots() {
 }
 
 function renderSettingsOrb() {
-  const rail = $("#bot-rail");
-  let btn = rail.querySelector(".orb--settings");
-  if (!btn) {
-    btn = document.createElement("button");
-    btn.type = "button";
-    btn.dataset.botId = "settings";
-    btn.dataset.hitId = "bot:settings";
-    btn.addEventListener("click", () => focusSettings());
-    fillOrb(btn);
-    const label = document.createElement("span");
-    label.className = "bot-label";
-    label.textContent = "設定";
-    btn.appendChild(label);
-    btn.querySelector(".orb-glyph").textContent = "設";
-    rail.appendChild(btn);
-  }
-  btn.className = ["bot-btn", "orb--settings", settingsOpen() ? "active" : ""].filter(Boolean).join(" ");
+  ensureChrome();
+  const shell = shellFor("settings");
+  const btn = shell?.querySelector(".orb--settings");
+  if (!btn) return;
+  btn.className = ["bot-btn", "morph-orb", "orb--settings", settingsOpen() ? "active" : ""].filter(Boolean).join(" ");
+  applyBotColor(shell, NOUS.blue);
   applyBotColor(btn, NOUS.blue);
-  btn.style.top = "auto";
-  btn.style.right = "calc(var(--edge-pad) + 152px)";
-  btn.style.bottom = "var(--edge-pad)";
-  btn.style.left = "auto";
-  btn.style.transform = "none";
   btn.setAttribute("aria-label", "Hermes 設定");
   btn.title = "Hermes 設定";
+  layoutShell(shell);
 }
 
 function fillOrb(btn) {
@@ -618,36 +799,18 @@ function fillOrb(btn) {
 }
 
 function renderKanbanOrb() {
-  const rail = $("#bot-rail");
-  let btn = rail.querySelector(".orb--kanban");
-  if (!btn) {
-    btn = document.createElement("button");
-    btn.type = "button";
-    btn.dataset.botId = "kanban";
-    btn.dataset.hitId = "bot:kanban";
-    btn.addEventListener("click", () => toggleKanban());
-    btn.addEventListener("animationend", (event) => {
-      if (event.animationName === "ping") event.target.remove();
-    });
-    fillOrb(btn);
-    const label = document.createElement("span");
-    label.className = "bot-label";
-    label.textContent = "看板";
-    btn.appendChild(label);
-    btn.querySelector(".orb-glyph").textContent = "▥";
-    rail.appendChild(btn);
-  }
-  btn.className = ["bot-btn", "orb--kanban", state.kanbanOpen ? "active" : "", state.kanban.unread ? "has-unread" : ""]
+  ensureChrome();
+  const shell = shellFor("kanban");
+  const btn = shell?.querySelector(".orb--kanban");
+  if (!btn) return;
+  btn.className = ["bot-btn", "morph-orb", "orb--kanban", state.kanbanOpen ? "active" : "", state.kanban.unread ? "has-unread" : ""]
     .filter(Boolean)
     .join(" ");
+  applyBotColor(shell, NOUS.neutral);
   applyBotColor(btn, NOUS.neutral);
-  btn.style.top = "auto";
-  btn.style.right = "calc(var(--edge-pad) + 76px)";
-  btn.style.bottom = "var(--edge-pad)";
-  btn.style.left = "auto";
-  btn.style.transform = "none";
   btn.setAttribute("aria-label", "看板");
   btn.title = "看板";
+  layoutShell(shell);
 }
 
 function renderChat(id = state.activeId) {
@@ -938,13 +1101,10 @@ async function selectBot(id) {
   }
   state.activeId = id;
   state.slashPanelId = id;
-  const existing = panelFor(id);
-  if (existing) {
-    existing.hidden = false;
-    beginMotion(existing);
-    existing.classList.remove("is-closing");
+  const shell = shellFor(id);
+  if (shell && shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) {
     if (!state.openIds.includes(id)) state.openIds = openPanel(state.openIds, id);
-    raisePanel(existing);
+    raisePanel(shell);
     renderBots();
     return;
   }
@@ -978,44 +1138,36 @@ async function selectBot(id) {
 }
 
 function openBotPanel(id) {
-  const tpl = document.getElementById("bot-panel-template");
-  const panel = tpl.content.firstElementChild.cloneNode(true);
-  panel.dataset.botId = id;
-  panel.dataset.hitId = `panel:${id}`;
-  panel.dataset.panelKey = id;
-  const slash = role(panel, "slash");
-  if (slash) slash.dataset.hitId = `slash:${id}`;
+  const bot = state.bots.find((item) => item.id === id);
+  const shell = shellFor(id) || (bot ? ensureBotShell(bot) : null);
+  if (!shell) return null;
   state.openIds = openPanel(state.openIds, id);
-  $("#panel-host").appendChild(panel);
-  placePanel(panel, id, { leftRatio: 0.12, topRatio: 0.1 });
-  raisePanel(panel);
-  bindPanelDrag(panel);
-  wireBotPanel(panel, id);
-  void runMotion(panel, "open");
+  window.clearTimeout(shell._pillTimer);
+  raisePanel(shell);
+  void runShellMorph(shell, "panel");
   void loadSoul(id);
   scheduleHitSync();
-  return panel;
+  return shell.querySelector(".bot-panel");
 }
 
 function closeBotPanel(id) {
   const panel = panelFor(id);
+  const shell = shellFor(id);
   state.openIds = closePanel(state.openIds, id);
   if (state.activeId === id) state.activeId = state.openIds.at(-1) || null;
   if (state.slashPanelId === id) state.slashPanelId = state.activeId || "";
   if (state.pointerHitId === `panel:${id}`) state.pointerHitId = "";
   if (panel) {
-    rememberPanel(panel);
     const active = document.activeElement;
     if (active && panel.contains(active)) active.blur();
-    void finishClose(panel);
   }
+  if (shell) void finishClose(shell);
   renderBots();
 }
 
-async function finishClose(panel) {
-  const closed = await runMotion(panel, "close");
-  if (!closed || !panel.isConnected) return;
-  panel.remove();
+async function finishClose(shell) {
+  const closed = await runShellMorph(shell, "orb");
+  if (!closed || !shell.isConnected) return;
   syncLatch();
   scheduleHitSync();
 }
@@ -1716,9 +1868,9 @@ function fillSettings(settings) {
 }
 
 function focusSettings() {
-  const panel = $("#settings");
-  if (settingsOpen() && panel && !panel.classList.contains("is-closing")) {
-    raisePanel(panel);
+  const shell = shellFor("settings");
+  if (settingsOpen() && shell && !shell.classList.contains("is-collapsing")) {
+    raisePanel(shell);
     renderSettingsOrb();
     return;
   }
@@ -1730,18 +1882,17 @@ function openSettings() {
   blurReleaseTimer = 0;
   state.windowFocused = true;
   fillSettings(state.settings);
+  ensureChrome();
   const panel = $("#settings");
-  if (!panel) return;
-  const opening = panel.hidden || panel.classList.contains("is-closing");
+  const shell = shellFor("settings");
+  if (!panel || !shell) return;
+  const opening = shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing");
   panel.hidden = false;
-  panel.classList.remove("is-closing");
   if (opening) {
-    placePanel(panel, "settings", { leftRatio: 0.46, topRatio: 0.08 });
-    raisePanel(panel);
-    bindPanelDrag(panel);
-    void runMotion(panel, "open");
+    raisePanel(shell);
+    void runShellMorph(shell, "panel");
   } else {
-    raisePanel(panel);
+    raisePanel(shell);
   }
   renderSettingsOrb();
   syncLatch();
@@ -1761,19 +1912,17 @@ function openSettings() {
 
 function closeSettings() {
   const panel = $("#settings");
-  if (!panel || panel.hidden || panel.classList.contains("is-closing")) return;
-  rememberPanel(panel);
+  const shell = shellFor("settings");
+  if (!panel || !shell || !settingsOpen()) return;
   const active = document.activeElement;
   if (active && panel.contains(active)) active.blur();
   if (state.pointerHitId === "settings") state.pointerHitId = "";
-  void (async () => {
-    const closed = await runMotion(panel, "close");
+  void runShellMorph(shell, "orb").then((closed) => {
     if (!closed) return;
-    panel.hidden = true;
     renderSettingsOrb();
     syncLatch();
     scheduleHitSync();
-  })();
+  });
   renderSettingsOrb();
 }
 
@@ -2080,11 +2229,11 @@ async function refreshSlash() {
 }
 
 function topOpenPanel() {
-  const panels = [...document.querySelectorAll(".center-panel")].filter(
-    (el) => !el.hidden && !el.classList.contains("is-closing"),
+  const shells = [...document.querySelectorAll(".morph")].filter(
+    (shell) => shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing"),
   );
-  panels.sort((a, b) => (Number(b.style.zIndex) || 0) - (Number(a.style.zIndex) || 0));
-  return panels[0] || null;
+  shells.sort((a, b) => (Number(b.style.zIndex) || 0) - (Number(a.style.zIndex) || 0));
+  return shells[0]?.querySelector(".center-panel") || null;
 }
 
 function setupComposer() {
@@ -2184,8 +2333,9 @@ function isTextField(el) {
 }
 
 function settingsOpen() {
-  const layer = $("#settings");
-  return !!layer && !layer.hidden && !layer.classList.contains("is-closing");
+  const shell = shellFor("settings");
+  if (!shell || shell.classList.contains("is-collapsing")) return false;
+  return shell.dataset.state === "panel" || shell.dataset.opening === "panel";
 }
 
 function currentLatchedIds() {
@@ -2233,20 +2383,47 @@ function collectHits() {
     if (box.width < 1 || box.height < 1) return;
     rects.push({ id, x: box.x, y: box.y, w: box.width, h: box.height, z, round });
   };
-  document.querySelectorAll(".bot-panel, #settings, #kanban-panel").forEach((el) => {
-    if (el.classList.contains("is-closing")) return;
-    const z = Number.parseInt(el.style.zIndex, 10);
-    const level = Number.isFinite(z) ? z : 1;
-    push(el.dataset.hitId, el, level);
-    const slash = role(el, "slash");
-    if (slash?.dataset.hitId) push(slash.dataset.hitId, slash, level + 20);
+  document.querySelectorAll(".morph").forEach((shell) => {
+    const id = shell.dataset.hitId;
+    if (!id) return;
+    const z = Number.parseInt(shell.style.zIndex, 10);
+    const level = Number.isFinite(z)
+      ? z
+      : shell.dataset.state === "pill"
+        ? 40
+        : shell.dataset.state === "panel"
+          ? 1
+          : 0;
+    if (id === state.dragHitId) {
+      rects.push({
+        id,
+        x: 0,
+        y: 0,
+        w: window.innerWidth,
+        h: window.innerHeight,
+        z: 1000,
+        round: false,
+      });
+    } else {
+      const box = visibleBox(shell);
+      if (box.w < 1 || box.h < 1) return;
+      rects.push({
+        id,
+        x: box.x,
+        y: box.y,
+        w: box.w,
+        h: box.h,
+        z: level,
+        round: shell.dataset.state === "orb",
+      });
+    }
+    if (shell.dataset.state === "panel") {
+      const slash = role(shell, "slash");
+      if (slash?.dataset.hitId) push(slash.dataset.hitId, slash, level + 20);
+    }
   });
   const banner = $("#conn-banner");
   if (banner?.dataset.hitId === "banner") push("banner", banner, 5);
-  document.querySelectorAll(".toast").forEach((el) => push(el.dataset.hitId, el, 40));
-  document.querySelectorAll(".bot-btn").forEach((el) => {
-    if (el.dataset.hitId) push(el.dataset.hitId, el, 0, true);
-  });
   const menu = $("#orb-menu");
   if (menu && !menu.hidden) push("orb-menu", menu, 80);
   return rects;
@@ -2415,13 +2592,13 @@ function paintLocalProximity(rects) {
 
 function setupProximity() {
   window.addEventListener("contextmenu", (event) => {
-    const orb = event.target.closest?.(".bot-btn");
-    if (orb && modifierHeld(event)) return;
+    const shell = event.target.closest?.(".morph");
+    if (shell && shell.dataset.state === "orb" && modifierHeld(event)) return;
     event.preventDefault();
   });
   document.addEventListener("pointerdown", (event) => {
-    const panel = event.target.closest?.(".center-panel");
-    if (panel && !panel.classList.contains("is-closing")) raisePanel(panel);
+    const shell = event.target.closest?.(".morph");
+    if (shell && shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) raisePanel(shell);
     const hit = event.target.closest?.("[data-hit-id]");
     if (hit) state.pointerHitId = hit.dataset.hitId || "";
     else {
@@ -2561,111 +2738,53 @@ function pingOrb(id) {
 }
 
 function showToast(id, toast) {
-  const stack = $("#toast-stack");
-  if (!stack) return;
-  const existing = [...stack.querySelectorAll(".toast")];
-  while (existing.length >= 3) {
-    existing.shift().remove();
+  const shell = shellFor(id);
+  if (!shell) return;
+  if (shell.dataset.opening === "panel") return;
+  if (shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) return;
+  const preview = shell.querySelector("[data-role='preview']");
+  const time = shell.querySelector("[data-role='preview-time']");
+  if (preview) preview.textContent = toast.text || "";
+  if (time) {
+    const now = new Date();
+    time.dateTime = now.toISOString();
+    time.textContent = formatToastClock(now);
   }
-  const bot = state.bots.find((item) => item.id === id);
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = `toast${toast.kind === "error" ? " toast-error" : ""}`;
-  button.dataset.botId = id;
-  button.dataset.hitId = `toast:${++state.toastSeq}`;
-  button.dataset.side = "right";
-  const kicker = document.createElement("span");
-  kicker.className = "toast-kicker";
-  const name = document.createElement("span");
-  name.className = "toast-name";
-  name.textContent = bot?.name || (id === "kanban" ? "看板" : id);
-  if (bot?.name && /^[\x00-\x7F]+$/.test(bot.name)) name.lang = "en";
-  const time = document.createElement("time");
-  time.dateTime = new Date().toISOString();
-  time.textContent = formatToastClock(new Date());
-  kicker.append(name, time);
-  const body = document.createElement("span");
-  body.className = "toast-body";
-  body.textContent = toast.text || "";
-  button.append(kicker, body);
-  applyBotColor(button, bot?.color || NOUS.blue);
-  button.addEventListener("mouseenter", () => {
-    button.remaining = Math.max(0, (button.deadline || Date.now()) - Date.now());
-    window.clearTimeout(button.timer);
-  });
-  button.addEventListener("mouseleave", () => scheduleToastDismiss(button, button.remaining ?? TOAST_MS));
-  button.addEventListener("click", () => {
-    dismissToast(button);
-    if (id === "kanban") openKanban();
-    else selectBot(id);
-  });
-  stack.appendChild(button);
-  layoutToasts();
-  scheduleToastDismiss(button, TOAST_MS);
+  shell.querySelector(".morph-pill")?.classList.toggle("is-error", toast.kind === "error");
+  window.clearTimeout(shell._pillTimer);
+  if ((shell.dataset.visual || shell.dataset.state) !== "pill") void runShellMorph(shell, "pill");
+  shell._pillTimer = window.setTimeout(() => {
+    if (shell.dataset.state === "pill" && shell.dataset.opening !== "panel") void runShellMorph(shell, "orb");
+  }, TOAST_MS);
   scheduleHitSync();
 }
 
-function scheduleToastDismiss(button, delay) {
-  button.deadline = Date.now() + delay;
-  window.clearTimeout(button.timer);
-  button.timer = window.setTimeout(() => dismissToast(button), delay);
-}
-
-function dismissToast(button) {
-  if (!button?.isConnected || button.classList.contains("is-leaving")) return;
-  window.clearTimeout(button.timer);
-  button.classList.add("is-leaving");
-  window.setTimeout(() => {
-    button.remove();
-    scheduleHitSync();
-  }, 200);
-}
-
-function layoutToasts() {
-  const groups = new Map();
-  document.querySelectorAll(".toast").forEach((toast) => {
-    const list = groups.get(toast.dataset.botId) || [];
-    list.push(toast);
-    groups.set(toast.dataset.botId, list);
-  });
-  groups.forEach((list, id) => {
-    const orb = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
-    const box = orb ? orb.getBoundingClientRect() : { x: 24, y: 24, width: 52, height: 52 };
-    const rect = { x: box.x, y: box.y, w: box.width, h: box.height };
-    list.forEach((toast, index) => {
-      const place = toastAnchor(rect, { width: window.innerWidth, height: window.innerHeight }, index);
-      toast.dataset.side = place.side;
-      toast.style.left = `${place.x}px`;
-      toast.style.top = `${place.y}px`;
-    });
-  });
-}
-
 function toggleKanban() {
-  const panel = $("#kanban-panel");
-  if (state.kanbanOpen && panel && !panel.classList.contains("is-closing")) {
-    raisePanel(panel);
+  const shell = shellFor("kanban");
+  if (state.kanbanOpen && shell && !shell.classList.contains("is-collapsing")) {
+    raisePanel(shell);
     return;
   }
   openKanban();
 }
 
 function openKanban() {
+  ensureChrome();
   state.kanbanOpen = true;
   state.kanban.unread = false;
   const panel = $("#kanban-panel");
-  if (panel) {
-    const opening = panel.hidden || panel.classList.contains("is-closing");
+  const shell = shellFor("kanban");
+  if (panel && shell) {
+    const opening = shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing");
     panel.hidden = false;
-    panel.classList.remove("is-closing");
+    applyBotColor(shell, NOUS.neutral);
     applyBotColor(panel, NOUS.neutral);
+    window.clearTimeout(shell._pillTimer);
     if (opening) {
-      placePanel(panel, "kanban", { leftRatio: 0.08, topRatio: 0.08 });
-      raisePanel(panel);
-      bindPanelDrag(panel);
-      void runMotion(panel, "open");
+      raisePanel(shell);
+      void runShellMorph(shell, "panel");
     } else {
-      raisePanel(panel);
+      raisePanel(shell);
     }
   }
   renderBots();
@@ -2683,16 +2802,17 @@ function closeKanban() {
     state.kanban.dragging = false;
   }
   setKanbanError("");
-  const panel = $("#kanban-panel");
-  if (panel && !panel.hidden && !panel.classList.contains("is-closing")) {
-    rememberPanel(panel);
-    void (async () => {
-      const closed = await runMotion(panel, "close");
+  const shell = shellFor("kanban");
+  if (
+    shell
+    && !shell.classList.contains("is-collapsing")
+    && (shell.dataset.state === "panel" || shell.dataset.opening === "panel")
+  ) {
+    void runShellMorph(shell, "orb").then((closed) => {
       if (!closed) return;
-      panel.hidden = true;
       syncLatch();
       scheduleHitSync();
-    })();
+    });
   }
   renderBots();
   scheduleHitSync();
@@ -2956,7 +3076,7 @@ async function boot() {
       startKanbanPoll();
     }
   });
-  window.addEventListener("resize", layoutToasts);
+  window.addEventListener("resize", layoutShells);
   applyInteraction(state.interaction);
   if (!inTauri()) {
     useMock("瀏覽器預覽：離線示範。Gateway 同金鑰只喺桌面版可用。", "settings");

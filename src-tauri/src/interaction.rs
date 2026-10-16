@@ -229,9 +229,14 @@ fn id_listed(ids: &[String], id: &str) -> bool {
     ids.iter().any(|item| item == id)
 }
 
-/// Round avatars and toasts are not panels. Everything else is a panel.
+/// Message-preview pills are neither orbs nor panels.
+pub fn is_pill_hit(rect: &HitRect) -> bool {
+    rect.id.starts_with("pill:")
+}
+
+/// Round avatars, pills, and toasts are not panels. Everything else is a panel.
 pub fn is_panel_hit(rect: &HitRect) -> bool {
-    if is_orb_hit(rect) {
+    if is_pill_hit(rect) || is_orb_hit(rect) {
         return false;
     }
     !rect.id.starts_with("toast:")
@@ -239,6 +244,9 @@ pub fn is_panel_hit(rect: &HitRect) -> bool {
 
 /// Bot, settings, and kanban orbs. A round hit or a `bot:` id both count.
 pub fn is_orb_hit(rect: &HitRect) -> bool {
+    if is_pill_hit(rect) {
+        return false;
+    }
     rect.round || rect.id.starts_with("bot:")
 }
 
@@ -246,7 +254,8 @@ pub fn is_orb_hit(rect: &HitRect) -> bool {
 /// Panels are opaque and captured until the modifier is held, then they wash out
 /// and capture nothing. Orbs stay at `min_opacity` and click-through until the
 /// modifier is held over that orb, which turns it solid and clickable.
-/// Toasts stay visually solid. A missing cursor does not capture.
+/// A message-preview pill stays visually solid and captures only while the
+/// modifier is held over it. Toasts stay visually solid. A missing cursor does not capture.
 pub fn interaction_frame(
     held: bool,
     latched_ids: &[String],
@@ -261,7 +270,9 @@ pub fn interaction_frame(
         .iter()
         .map(|rect| {
             let here = cursor.is_some() && under.as_deref() == Some(rect.id.as_str());
-            let (opacity, capture) = if is_orb_hit(rect) {
+            let (opacity, capture) = if is_pill_hit(rect) {
+                (1.0, here && held)
+            } else if is_orb_hit(rect) {
                 let awake = here && held;
                 (if awake { 1.0 } else { cfg.min_opacity }, awake)
             } else if is_panel_hit(rect) {
@@ -1666,6 +1677,43 @@ mod tests {
         assert_eq!(frame_of(&held, "bot:settings").opacity, 1.0);
         assert!(!frame_of(&held, "bot:kanban").capture);
         assert!((frame_of(&held, "bot:kanban").opacity - 0.18).abs() < 0.001);
+    }
+
+    #[test]
+    fn preview_pill_stays_solid_until_the_modifier_is_held() {
+        let cfg = fade_cfg();
+        let rects = vec![
+            HitRect {
+                id: "pill:a".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 320.0,
+                h: 44.0,
+                z: 40,
+                round: false,
+            },
+            HitRect {
+                id: "panel:a".into(),
+                x: 0.0,
+                y: 80.0,
+                w: 420.0,
+                h: 560.0,
+                z: 4,
+                round: false,
+            },
+        ];
+        assert!(is_pill_hit(&rects[0]));
+        assert!(!is_orb_hit(&rects[0]));
+        assert!(!is_panel_hit(&rects[0]));
+        let idle = interaction_frame(false, &[], Some((40.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(frame_of(&idle, "pill:a").opacity, 1.0);
+        assert!(!frame_of(&idle, "pill:a").capture);
+        assert_eq!(frame_of(&idle, "panel:a").opacity, 1.0);
+        let held = interaction_frame(true, &[], Some((40.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(frame_of(&held, "pill:a").opacity, 1.0);
+        assert!(frame_of(&held, "pill:a").capture);
+        assert!((frame_of(&held, "panel:a").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&held, "panel:a").capture);
     }
 
     #[test]

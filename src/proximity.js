@@ -51,17 +51,22 @@ export function elementOpacity({ solid, distance, fadeDistance, minOpacity, fade
   return opacityForDistance(distance, fadeDistance, minOpacity, fadeEnabled);
 }
 
-/** Panels wash out while the modifier is held. Orbs and toasts are not panels. */
+/** Message-preview pills. They are not orbs and not panels. */
+export function isPillHit(rect) {
+  return String(rect?.id || "").startsWith("pill:");
+}
+
+/** Panels wash out while the modifier is held. Orbs, pills, and toasts are not panels. */
 export function isPanelHit(rect) {
-  if (!rect || rect.round) return false;
+  if (!rect || isPillHit(rect) || isOrbHit(rect)) return false;
   const id = String(rect.id || "");
-  if (id.startsWith("bot:") || id.startsWith("toast:")) return false;
+  if (id.startsWith("toast:")) return false;
   return true;
 }
 
 /** Bot, settings, and kanban orbs. Round hits and `bot:` ids both count. */
 export function isOrbHit(rect) {
-  if (!rect) return false;
+  if (!rect || isPillHit(rect)) return false;
   if (rect.round) return true;
   return String(rect.id || "").startsWith("bot:");
 }
@@ -101,7 +106,9 @@ function preferHit(candidate, current) {
  * panel out and captures none of them.
  * Orbs stay faded and click-through. Only the orb under or near the cursor
  * turns solid and clickable while the modifier is held.
- * Toasts stay visually solid and are clickable only when the modifier is up.
+ * A message-preview pill stays visually solid. It captures only while the
+ * modifier is held over it. Toasts stay visually solid and are clickable only
+ * when the modifier is up.
  */
 export function elementStates({
   held = false,
@@ -115,6 +122,9 @@ export function elementStates({
   const floor = Number.isFinite(minOpacity) ? minOpacity : 0.18;
   return rects.map((rect) => {
     const here = !!cursor && under === rect.id;
+    if (isPillHit(rect)) {
+      return { id: rect.id, opacity: 1, capture: here && held };
+    }
     if (isOrbHit(rect)) {
       const awake = here && held;
       return { id: rect.id, opacity: awake ? 1 : floor, capture: awake };
