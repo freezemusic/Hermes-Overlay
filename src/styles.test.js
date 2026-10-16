@@ -181,6 +181,8 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /radial-gradient\(circle closest-side,\s*transparent calc\(100% - 2px\)/);
   assert.match(css, /\.morph\[data-bot-id="cron"\]\[data-state="orb"\] \{[^}]*overflow:\s*visible/s);
   assert.match(css, /\.cron-name \{[^}]*color:\s*#10102a/s);
+  assert.match(css, /\.cron-panel > \.hud-corner\.tl \{[^}]*top:\s*1px/s);
+  assert.match(css, /\.cron-panel > \.hud-corner\.br \{[^}]*bottom:\s*1px/s);
   assert.match(html, /id="cron-panel"[\s\S]{0,500}class="hud-corner br"/);
   assert.match(css, /\.cron-group-title \{[^}]*color:\s*var\(--nous-blue\)/s);
   assert.match(css, /\.cron-group-title \{[^}]*text-transform:\s*none/s);
