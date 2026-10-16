@@ -21,6 +21,7 @@ import {
   insetsFor,
   openPhases,
   phaseList,
+  dropParkedAnchor,
   fixedOrbPoint,
   iconShift,
   placeShell,
@@ -202,4 +203,13 @@ test("screen edge and slot centres keep the orb on that edge", () => {
   const top = slotPoint("top", 0.5, 1280, 800, 42, ORB);
   assert.equal(top.y, 42 + ORB / 2);
   assert.equal(screenEdge(top.x, top.y, 1280, 800), "top");
+});
+
+test("collapse drops a dragged park so the orb can return to its edge", () => {
+  const anchors = { planner: { x: 400, y: 300, placed: true }, kanban: { x: 10, y: 10, placed: true } };
+  assert.equal(dropParkedAnchor(anchors, "planner"), true);
+  assert.equal(anchors.planner, undefined);
+  assert.equal(anchors.kanban.placed, true);
+  assert.equal(dropParkedAnchor(anchors, "planner"), false);
+  assert.equal(dropParkedAnchor(null, "planner"), false);
 });

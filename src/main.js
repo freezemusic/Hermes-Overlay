@@ -5,7 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { latestPlan, planDemoMarkdown, planTask, plansIn } from "./plan.js";
+import { latestPlan, noteNewestPlan, planDemoMarkdown, planTask, plansIn } from "./plan.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
   CONTENT_OUT_MS,
@@ -19,6 +19,7 @@ import {
   iconShift,
   insetsFor,
   phaseList,
+  dropParkedAnchor,
   placeShell,
   previewBlocked,
   slotPoint,
@@ -415,6 +416,7 @@ function settleShell(shell, target) {
     shell.querySelectorAll(".center-panel").forEach((panel) => {
       panel.hidden = true;
     });
+    layoutShell(shell);
   }
   if (target === "panel" && shell.dataset.kind === "bot") stickChat(shell.dataset.botId);
   scheduleHitSync();
@@ -429,6 +431,7 @@ async function runShellMorph(shell, target) {
   const alive = () => shell.dataset.morphToken === token && shell.isConnected;
   const from = shell.dataset.visual || shell.dataset.state || "orb";
   window.clearTimeout(shell._pillTimer);
+  if (target === "orb" && dropParkedAnchor(state.anchors, shell.dataset.botId)) layoutShell(shell);
   shell.classList.add("is-morphing");
   if (from === target && !shell.classList.contains("is-collapsing")) {
     if (alive()) settleShell(shell, target);
@@ -963,14 +966,8 @@ function paintPlan(id) {
   if (!shell || !section) return;
   const thread = threadFor(id);
   const plans = plansIn(thread.messages);
+  noteNewestPlan(thread, plans);
   const newest = plans.at(-1) || null;
-  if (newest && thread.seenPlanKey !== newest.key) {
-    thread.seenPlanKey = newest.key;
-    thread.planDismissed = "";
-    if (!thread.planFocus || !plans.some((item) => item.key === thread.planFocus)) {
-      thread.planFocus = newest.key;
-    }
-  }
   const focus = plans.find((item) => item.key === thread.planFocus) || newest;
   const open = !!(focus && thread.planDismissed !== focus.key);
   section.hidden = !open;
@@ -1044,7 +1041,8 @@ function bubbleEl(m, id) {
   else bubble.textContent = m.text;
   if (m.live) bubble.dataset.live = "1";
   if (id && m.role === "bot" && !m.live) {
-    const plan = plansIn(threadFor(id).messages).find((item) => item.markdown === String(m.text || "").trim());
+    const messages = threadFor(id).messages;
+    const plan = plansIn(messages).find((item) => messages[item.index] === m);
     if (plan) {
       const chip = document.createElement("button");
       chip.type = "button";
@@ -1736,6 +1734,7 @@ function handleHermes(payload) {
     const live = [...thread.messages].reverse().find((m) => m.live);
     painterFor(id).flush();
     if (live) live.live = false;
+    if (panelFor(id)) renderChat(id);
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
     noteActivity(id, { type: outcome, text: outcome === "completed" ? live?.text || "" : payload.detail || "" });
     if (payload.outcome === "completed") clearConnectionBanner();
@@ -2966,6 +2965,8 @@ function paintLocalProximity(rects) {
   const list = rects || collectHits();
   const cfg = state.interaction;
   const held = engagedModifier();
+  if (held) document.documentElement.dataset.pass = "1";
+  else delete document.documentElement.dataset.pass;
   const frames = elementStates({
     held,
     latchedIds: state.latchedIds,
@@ -3465,12 +3466,13 @@ async function dropKanban(taskId, status) {
 
 function mockCronGroups() {
   const soon = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  const earlier = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   return [
     normalizeCronGroup({
       profile: "planner",
       name: "計劃助手",
       jobs: [
-        { id: "daily", name: "每日摘要", schedule: "每日 09:00", enabled: true, next_run_at: soon, state: "scheduled" },
+        { id: "daily", name: "每日摘要", schedule: "每日 09:00", enabled: true, next_run_at: soon, last_run_at: earlier, state: "scheduled" },
         { id: "tidy", name: "整理看板", schedule: "每週一 10:00", enabled: false, next_run_at: "", state: "paused" },
       ],
     }),
@@ -3478,7 +3480,15 @@ function mockCronGroups() {
       profile: "coder",
       name: "程式夥伴",
       jobs: [
-        { id: "tests", name: "檢查測試", schedule: "每 30 分鐘", enabled: true, next_run_at: soon, state: "running" },
+        {
+          id: "tests",
+          name: "檢查測試",
+          schedule: "每 30 分鐘",
+          enabled: true,
+          next_run_at: soon,
+          state: "scheduled",
+          latest_execution: { status: "running", started_at: earlier },
+        },
       ],
     }),
   ];
@@ -3573,6 +3583,8 @@ function paintCron() {
       const next = nextRunLabel(job.next_run_at);
       if (next) bits.push(`下次 ${next}`);
       if (job.running) bits.push("進行中");
+      const last = nextRunLabel(job.last_run_at);
+      if (last) bits.push(`上次 ${last}`);
       meta.textContent = bits.join(" · ");
       row.append(name, meta);
       block.appendChild(row);

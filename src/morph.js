@@ -270,6 +270,13 @@ export function iconShift(ax, ay, boxW, boxH, orb = ORB) {
   return { x: edgeX - ax, y: headerY - ay };
 }
 
+/** Collapse forgets a dragged park so the next layout uses the edge anchor. */
+export function dropParkedAnchor(anchors, id) {
+  if (!anchors || !id || !anchors[id]) return false;
+  delete anchors[id];
+  return true;
+}
+
 /** A message preview must not start, or cancel a close, while a panel is up. */
 export function previewBlocked({
   intent = "",

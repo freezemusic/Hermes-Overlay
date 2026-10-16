@@ -744,6 +744,7 @@ pub struct CronJob {
     pub schedule: String,
     pub enabled: bool,
     pub next_run_at: String,
+    pub last_run_at: String,
     pub running: bool,
 }
 
@@ -786,6 +787,42 @@ fn schedule_text(value: &Value) -> String {
     }
 }
 
+fn execution_status(value: &Value) -> String {
+    value
+        .get("latest_execution")
+        .and_then(|item| item.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn job_is_running(value: &Value, state: &str) -> bool {
+    if state.eq_ignore_ascii_case("running") || value.get("running").and_then(Value::as_bool) == Some(true)
+    {
+        return true;
+    }
+    let status = execution_status(value);
+    status.eq_ignore_ascii_case("running") || status.eq_ignore_ascii_case("claimed")
+}
+
+fn last_run_text(value: &Value) -> String {
+    for key in ["last_run_at", "last_run"] {
+        let text = json_time(value, key);
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    let Some(exec) = value.get("latest_execution") else {
+        return String::new();
+    };
+    let finished = json_time(exec, "finished_at");
+    if !finished.is_empty() {
+        return finished;
+    }
+    json_time(exec, "started_at")
+}
+
 fn cron_job_from(value: &Value) -> Option<CronJob> {
     let id = json_string(value, "id");
     let name = json_string(value, "name");
@@ -814,18 +851,57 @@ fn cron_job_from(value: &Value) -> Option<CronJob> {
                 next
             }
         },
-        running: state.eq_ignore_ascii_case("running"),
+        last_run_at: last_run_text(value),
+        running: job_is_running(value, &state),
     })
 }
 
-/// `GET /api/crons` for one profile. `cron_unavailable` is an empty list, not an error.
+fn unavailable_cron() -> CronList {
+    CronList {
+        jobs: Vec::new(),
+        unavailable: true,
+        message: "呢個 Bot 未有排程。".into(),
+    }
+}
+
+/// Hermes 0.21.6 lists jobs at `/api/jobs`. `/api/crons` is only a fallback.
+pub fn cron_jobs_url(root: &str) -> String {
+    format!(
+        "{}/api/jobs?include_disabled=true",
+        root.trim_end_matches('/')
+    )
+}
+
+pub fn cron_legacy_url(root: &str) -> String {
+    format!("{}/api/crons", root.trim_end_matches('/'))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CronFetchStep {
+    Parse,
+    TryFallback,
+    Unavailable,
+    Error,
+}
+
+/// 404 on the jobs route may try `/api/crons`. 404 there, or 501, is an empty list.
+fn cron_fetch_step(status: u16, primary: bool) -> CronFetchStep {
+    if (200..300).contains(&status) {
+        return CronFetchStep::Parse;
+    }
+    if status == 404 && primary {
+        return CronFetchStep::TryFallback;
+    }
+    if status == 404 || status == 501 {
+        return CronFetchStep::Unavailable;
+    }
+    CronFetchStep::Error
+}
+
+/// `GET /api/jobs` for one profile. `cron_unavailable` is an empty list, not an error.
 pub fn parse_cron_list(value: &Value) -> CronList {
     if value.get("cron_unavailable").and_then(Value::as_bool) == Some(true) {
-        return CronList {
-            jobs: Vec::new(),
-            unavailable: true,
-            message: "呢個 Bot 未有排程。".into(),
-        };
+        return unavailable_cron();
     }
     let items = if let Some(list) = value.as_array() {
         list
@@ -845,36 +921,55 @@ pub fn parse_cron_list(value: &Value) -> CronList {
     }
 }
 
-pub async fn fetch_cron_jobs(
+enum CronFetchBody {
+    Parsed(CronList),
+    Fallback,
+}
+
+async fn fetch_cron_url(
     http: &Client,
-    root: &str,
+    url: &str,
     key: &str,
-) -> Result<CronList, HermesError> {
-    let url = format!("{}/api/crons", root.trim_end_matches('/'));
+    primary: bool,
+) -> Result<CronFetchBody, HermesError> {
     let resp = authed(http.get(url).timeout(Duration::from_secs(8)), key)
         .send()
         .await
         .map_err(map_reqwest)?;
     let status = resp.status().as_u16();
-    if status == 404 {
-        return Ok(CronList {
-            jobs: Vec::new(),
-            unavailable: true,
-            message: "呢個 Bot 未有排程。".into(),
-        });
+    match cron_fetch_step(status, primary) {
+        CronFetchStep::Parse => {
+            let value: Value = resp.json().await.map_err(|err| {
+                HermesError::Protocol(format!("cron 回應唔係 JSON：{err}"))
+            })?;
+            Ok(CronFetchBody::Parsed(parse_cron_list(&value)))
+        }
+        CronFetchStep::TryFallback => Ok(CronFetchBody::Fallback),
+        CronFetchStep::Unavailable => Ok(CronFetchBody::Parsed(unavailable_cron())),
+        CronFetchStep::Error => {
+            let body = resp.text().await.unwrap_or_default();
+            Err(HermesError::Http {
+                status,
+                body: clip(&body, 200),
+            })
+        }
     }
-    if !(200..300).contains(&status) {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(HermesError::Http {
-            status,
-            body: clip(&body, 200),
-        });
+}
+
+pub async fn fetch_cron_jobs(
+    http: &Client,
+    root: &str,
+    key: &str,
+) -> Result<CronList, HermesError> {
+    match fetch_cron_url(http, &cron_jobs_url(root), key, true).await? {
+        CronFetchBody::Parsed(list) => Ok(list),
+        CronFetchBody::Fallback => {
+            match fetch_cron_url(http, &cron_legacy_url(root), key, false).await? {
+                CronFetchBody::Parsed(list) => Ok(list),
+                CronFetchBody::Fallback => Ok(unavailable_cron()),
+            }
+        }
     }
-    let value: Value = resp
-        .json()
-        .await
-        .map_err(|err| HermesError::Protocol(format!("cron 回應唔係 JSON：{err}")))?;
-    Ok(parse_cron_list(&value))
 }
 
 pub fn kanban_patch_body(status: &str, assignee: &str, priority: &str, title: &str) -> Value {
@@ -1665,11 +1760,33 @@ mod tests {
                 "schedule_display": "every 2h",
                 "enabled": false,
                 "state": "paused",
-                "next_run_at": 1712000000
+                "next_run_at": 1712000000,
+                "last_run_at": "2026-10-15T10:00:00Z"
+            }, {
+                "id": "claimed",
+                "name": "檢查測試",
+                "schedule": { "kind": "cron", "expr": "*/30 * * * *" },
+                "enabled": true,
+                "state": "scheduled",
+                "next_run_at": "2026-10-16T12:00:00Z",
+                "latest_execution": {
+                    "status": "claimed",
+                    "started_at": "2026-10-16T11:30:00Z"
+                }
+            }, {
+                "id": "done",
+                "name": "上次先",
+                "enabled": true,
+                "state": "scheduled",
+                "latest_execution": {
+                    "status": "completed",
+                    "finished_at": "2026-10-16T08:00:00Z",
+                    "started_at": "2026-10-16T07:59:00Z"
+                }
             }]
         }));
         assert!(!parsed.unavailable);
-        assert_eq!(parsed.jobs.len(), 2);
+        assert_eq!(parsed.jobs.len(), 4);
         assert_eq!(parsed.jobs[0].schedule, "每日 09:00");
         assert!(parsed.jobs[0].running);
         assert!(parsed.jobs[0].enabled);
@@ -1677,9 +1794,32 @@ mod tests {
         assert!(!parsed.jobs[1].enabled);
         assert!(!parsed.jobs[1].running);
         assert_eq!(parsed.jobs[1].next_run_at, "1712000000");
+        assert_eq!(parsed.jobs[1].last_run_at, "2026-10-15T10:00:00Z");
+        assert!(parsed.jobs[2].running);
+        assert_eq!(parsed.jobs[2].schedule, "*/30 * * * *");
+        assert_eq!(parsed.jobs[2].last_run_at, "2026-10-16T11:30:00Z");
+        assert!(!parsed.jobs[3].running);
+        assert_eq!(parsed.jobs[3].last_run_at, "2026-10-16T08:00:00Z");
         let missing = parse_cron_list(&json!({ "jobs": [], "cron_unavailable": true }));
         assert!(missing.unavailable);
         assert!(missing.jobs.is_empty());
+        assert_eq!(
+            cron_jobs_url("http://127.0.0.1:8642/"),
+            "http://127.0.0.1:8642/api/jobs?include_disabled=true"
+        );
+        assert_eq!(
+            cron_jobs_url("http://127.0.0.1:8642/p/coder"),
+            "http://127.0.0.1:8642/p/coder/api/jobs?include_disabled=true"
+        );
+        assert_eq!(
+            cron_legacy_url("http://127.0.0.1:8642/p/coder/"),
+            "http://127.0.0.1:8642/p/coder/api/crons"
+        );
+        assert_eq!(cron_fetch_step(200, true), CronFetchStep::Parse);
+        assert_eq!(cron_fetch_step(404, true), CronFetchStep::TryFallback);
+        assert_eq!(cron_fetch_step(404, false), CronFetchStep::Unavailable);
+        assert_eq!(cron_fetch_step(501, true), CronFetchStep::Unavailable);
+        assert_eq!(cron_fetch_step(500, false), CronFetchStep::Error);
     }
 
     #[test]

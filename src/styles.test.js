@@ -187,7 +187,13 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(main, /list_cron_jobs/);
   assert.match(main, /__applyKanbanBoard/);
   assert.match(main, /睇計劃/);
+  assert.match(main, /noteNewestPlan/);
+  assert.match(main, /dropParkedAnchor/);
+  assert.match(main, /上次 /);
   assert.doesNotMatch(main.slice(main.indexOf("function closeKanban"), main.indexOf("function startKanbanPoll")), /stopKanbanPoll/);
+  const hermes = readFileSync(new URL("../src-tauri/src/hermes.rs", import.meta.url), "utf8");
+  assert.match(hermes, /\/api\/jobs\?include_disabled=true/);
+  assert.match(hermes, /\/api\/crons/);
   assert.match(css, /\.plan-title \{[^}]*color:\s*#000091/s);
   assert.match(css, /\.plan-title \{[^}]*text-transform:\s*none/s);
   assert.match(css, /\.plan-body \{[^}]*color:\s*#1a1a1a/s);

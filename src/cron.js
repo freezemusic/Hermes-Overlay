@@ -44,8 +44,24 @@ export function nextRunLabel(value, now = new Date()) {
   return `${y}-${mo}-${day} ${clock}`;
 }
 
+function executionStatus(job) {
+  return String(job?.latest_execution?.status || "").toLowerCase();
+}
+
 export function jobRunning(job) {
-  return String(job?.state || "").toLowerCase() === "running" || job?.running === true;
+  if (job?.running === true) return true;
+  if (String(job?.state || "").toLowerCase() === "running") return true;
+  const status = executionStatus(job);
+  return status === "running" || status === "claimed";
+}
+
+/** Last run is `last_run_at`, then `last_run`, then the latest execution. */
+export function lastRunValue(job) {
+  if (!job) return "";
+  if (job.last_run_at) return job.last_run_at;
+  if (job.last_run) return job.last_run;
+  const exec = job.latest_execution || {};
+  return exec.finished_at || exec.started_at || "";
 }
 
 export function anyJobRunning(groups) {
@@ -67,11 +83,12 @@ function jobFrom(raw, index) {
     schedule: scheduleLabel(raw),
     enabled: jobEnabled(raw),
     next_run_at: raw.next_run_at ?? raw.next_run ?? "",
+    last_run_at: lastRunValue(raw),
     running: jobRunning(raw),
   };
 }
 
-/** One profile block from `GET /api/crons` or the overlay command. */
+/** One profile block from `GET /api/jobs` or the overlay command. */
 export function normalizeCronGroup(payload, fallback = {}) {
   const profile = String(payload?.profile || fallback.profile || "");
   const name = String(payload?.name || fallback.name || profile || "Bot");

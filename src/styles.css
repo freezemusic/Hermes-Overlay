@@ -1792,6 +1792,20 @@ html.overlay-passthrough .morph[data-state="orb"] .morph-pill,
   pointer-events: none !important;
 }
 
+/* An open panel is hit-testable the instant the pointer arrives. Ctrl sets
+   data-pass and the panel body goes click-through again; the close button stays. */
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .center-panel,
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .center-panel *,
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .plan-window:not([hidden]),
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .plan-window:not([hidden]) * {
+  pointer-events: auto !important;
+}
+
+html.overlay-passthrough .overlay-root [data-hit-id^="close:"],
+html.overlay-passthrough .overlay-root [data-hit-id^="close:"] * {
+  pointer-events: auto !important;
+}
+
 @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes ping { from { transform: scale(1); opacity: 0.6; } to { transform: scale(2.2); opacity: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }

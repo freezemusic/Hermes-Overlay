@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { latestPlan, looksLikePlan, planDemoMarkdown, plansIn, planTask, planTitle } from "./plan.js";
+import { latestPlan, looksLikePlan, noteNewestPlan, planDemoMarkdown, planSource, plansIn, planTask, planTitle, unwrapPlan } from "./plan.js";
 
 test("plan markdown is recognized and a short ack is not", () => {
   const body = planDemoMarkdown("整理設定");
@@ -38,4 +38,29 @@ test("latest plan is the newest bot reply, including a /plan turn", () => {
   assert.equal(listed[0].markdown, older);
   assert.equal(listed[1].markdown, newer);
   assert.equal(plansIn([{ role: "bot", text: "# 未完成", live: true }]).length, 0);
+});
+
+test("a fenced markdown or plan block is the plan, and a new plan replaces the open one", () => {
+  const fenced = ["```markdown", "# 整理設定 Implementation Plan", "", "**Goal:** 對齊面板", "```"].join("\n");
+  assert.equal(looksLikePlan(fenced), true);
+  assert.match(unwrapPlan(fenced), /^# 整理設定/);
+  assert.equal(planTitle(planSource(fenced)), "整理設定 Implementation Plan");
+  assert.doesNotMatch(planSource(fenced), /```/);
+  const planFence = ["```plan", "# 只得標題", "", "下一步", "```"].join("\n");
+  assert.equal(looksLikePlan(planFence), true);
+  assert.equal(planTitle(planSource(planFence)), "只得標題");
+  assert.equal(looksLikePlan("```js\n# 唔算\n```"), false);
+  const found = plansIn([{ role: "bot", text: fenced }]);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].title, "整理設定 Implementation Plan");
+  assert.doesNotMatch(found[0].markdown, /```/);
+  const thread = { seenPlanKey: "old", planFocus: "old", planDismissed: "old" };
+  assert.equal(noteNewestPlan(thread, [{ key: "old" }, { key: "new" }]), true);
+  assert.equal(thread.planFocus, "new");
+  assert.equal(thread.planDismissed, "");
+  assert.equal(thread.seenPlanKey, "new");
+  assert.equal(noteNewestPlan(thread, [{ key: "old" }, { key: "new" }]), false);
+  thread.planFocus = "old";
+  assert.equal(noteNewestPlan(thread, [{ key: "old" }, { key: "new" }]), false);
+  assert.equal(thread.planFocus, "old");
 });

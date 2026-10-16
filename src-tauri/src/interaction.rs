@@ -5,6 +5,8 @@ use crate::config::InteractionConfig;
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, AtomicPtr};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -237,6 +239,48 @@ pub fn is_pill_hit(rect: &HitRect) -> bool {
 /// Close buttons capture on the first press, even while the modifier is held.
 pub fn is_close_hit(rect: &HitRect) -> bool {
     rect.id.starts_with("close:")
+}
+
+/// Open panels and close buttons stay in the OS hit region the whole time they
+/// are on screen. Orbs are left out, so they stay click-through until the
+/// modifier is held over them.
+pub fn immediate_hit_rects(held: bool, rects: &[HitRect]) -> Vec<HitRect> {
+    rects
+        .iter()
+        .filter(|rect| {
+            if rect.w < 1.0 || rect.h < 1.0 {
+                return false;
+            }
+            if is_close_hit(rect) {
+                return true;
+            }
+            !held && is_panel_hit(rect)
+        })
+        .cloned()
+        .collect()
+}
+
+/// OS input region: panels that are already open, plus whatever the hover poll
+/// is currently capturing (an orb under the modifier, a preview pill).
+pub fn os_input_rects(held: bool, rects: &[HitRect], frames: &[ElementFrame]) -> Vec<HitRect> {
+    let mut out = immediate_hit_rects(held, rects);
+    for frame in frames {
+        if !frame.capture || out.iter().any(|item| item.id == frame.id) {
+            continue;
+        }
+        if let Some(rect) = rects.iter().find(|item| item.id == frame.id) {
+            if rect.w >= 1.0 && rect.h >= 1.0 {
+                out.push(rect.clone());
+            }
+        }
+    }
+    out
+}
+
+pub fn css_point_hits(rects: &[HitRect], x: f64, y: f64) -> bool {
+    rects.iter().any(|rect| {
+        x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
+    })
 }
 
 /// Round avatars, pills, close buttons, and toasts are not panels. Everything else is a panel.
@@ -799,6 +843,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
         };
         let mut last_signature = String::new();
         let mut ignoring: Option<bool> = None;
+        let mut region_signature = String::new();
         let mut arm_at: Option<Instant> = None;
         let mut chord_suppressed = false;
         let mut focus_probe = FocusProbe::open();
@@ -834,12 +879,15 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 .clone();
             let cursor = cursor_in_view(&window, &device);
             let frames = interaction_frame(held, &latched_ids, cursor, &rects, HIT_MARGIN_PX, &cfg);
-            let ignore = !frames.iter().any(|item| item.capture);
-            if ignoring != Some(ignore) {
-                if window.set_ignore_cursor_events(ignore).is_ok() {
-                    ignoring = Some(ignore);
-                }
-            }
+            sync_os_hit_region(
+                &app,
+                &window,
+                held,
+                &rects,
+                &frames,
+                &mut ignoring,
+                &mut region_signature,
+            );
             let items: Vec<OpacityItem> = frames
                 .iter()
                 .map(|item| OpacityItem {
@@ -858,6 +906,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 if !closed_popup_for_other && option_menu_is_open() {
                     if window.set_ignore_cursor_events(true).is_ok() {
                         ignoring = Some(true);
+                        region_signature.clear();
                     }
                     let app_handle = app.clone();
                     let _ = app.run_on_main_thread(move || {
@@ -893,6 +942,256 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 }),
             );
         }
+    });
+}
+
+fn sync_os_hit_region(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+    held: bool,
+    rects: &[HitRect],
+    frames: &[ElementFrame],
+    ignoring: &mut Option<bool>,
+    region_signature: &mut String,
+) {
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        let region = os_input_rects(held, rects, frames);
+        let origin = window.inner_position().ok();
+        let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+        let (origin_x, origin_y) = origin
+            .map(|point| (f64::from(point.x), f64::from(point.y)))
+            .unwrap_or((0.0, 0.0));
+        let signature = format!(
+            "{origin_x:.0},{origin_y:.0},{scale:.2}|{}",
+            region
+                .iter()
+                .map(|rect| {
+                    format!(
+                        "{}:{:.0},{:.0},{:.0},{:.0}",
+                        rect.id, rect.x, rect.y, rect.w, rect.h
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(";")
+        );
+        if signature == *region_signature {
+            return;
+        }
+        *region_signature = signature;
+        #[cfg(windows)]
+        {
+            remember_hit_region(&region, origin_x, origin_y, scale);
+            let empty = region.is_empty();
+            if *ignoring != Some(empty) {
+                queue_windows_hit_style(app, empty);
+                *ignoring = Some(empty);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            apply_linux_input_shape(app, &region, scale);
+            *ignoring = Some(region.is_empty());
+        }
+        let _ = window;
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = (app, held, rects, region_signature);
+        let ignore = !frames.iter().any(|item| item.capture);
+        if *ignoring != Some(ignore) && window.set_ignore_cursor_events(ignore).is_ok() {
+            *ignoring = Some(ignore);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct HitRegionCache {
+    rects: Vec<HitRect>,
+    origin_x: f64,
+    origin_y: f64,
+    scale: f64,
+}
+
+#[cfg(windows)]
+fn hit_region_cache() -> &'static Mutex<HitRegionCache> {
+    static CACHE: OnceLock<Mutex<HitRegionCache>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        Mutex::new(HitRegionCache {
+            rects: Vec::new(),
+            origin_x: 0.0,
+            origin_y: 0.0,
+            scale: 1.0,
+        })
+    })
+}
+
+#[cfg(windows)]
+fn remember_hit_region(rects: &[HitRect], origin_x: f64, origin_y: f64, scale: f64) {
+    let mut cache = hit_region_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    cache.rects = rects.to_vec();
+    cache.origin_x = origin_x;
+    cache.origin_y = origin_y;
+    cache.scale = if scale > 0.0 { scale } else { 1.0 };
+}
+
+#[cfg(windows)]
+fn queue_windows_hit_style(app: &AppHandle, transparent: bool) {
+    let app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(window) = app.get_webview_window("main") else {
+            return;
+        };
+        let Some(hwnd) = window_hwnd(&window) else {
+            return;
+        };
+        install_hit_proc(hwnd);
+        set_window_transparent(hwnd, transparent);
+    });
+}
+
+#[cfg(windows)]
+fn window_hwnd(window: &tauri::WebviewWindow) -> Option<*mut std::ffi::c_void> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = window.window_handle().ok()?;
+    let RawWindowHandle::Win32(win) = handle.as_raw() else {
+        return None;
+    };
+    let hwnd = win.hwnd.get() as *mut std::ffi::c_void;
+    if hwnd.is_null() {
+        None
+    } else {
+        Some(hwnd)
+    }
+}
+
+#[cfg(windows)]
+fn install_hit_proc(hwnd: *mut std::ffi::c_void) {
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.load(Ordering::Relaxed) {
+        return;
+    }
+    const GWLP_WNDPROC: i32 = -4;
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowLongPtrW(hwnd: *mut std::ffi::c_void, index: i32, new_proc: isize) -> isize;
+    }
+    let previous = unsafe {
+        SetWindowLongPtrW(
+            hwnd,
+            GWLP_WNDPROC,
+            hit_window_proc as *const std::ffi::c_void as isize,
+        )
+    };
+    if previous == 0 {
+        return;
+    }
+    HIT_PROC_PREVIOUS.store(previous as *mut std::ffi::c_void, Ordering::Relaxed);
+    INSTALLED.store(true, Ordering::Relaxed);
+}
+
+#[cfg(windows)]
+fn set_window_transparent(hwnd: *mut std::ffi::c_void, transparent: bool) {
+    const GWL_EXSTYLE: i32 = -20;
+    const WS_EX_TRANSPARENT: i32 = 0x0000_0020;
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowLongW(hwnd: *mut std::ffi::c_void, index: i32) -> i32;
+        fn SetWindowLongW(hwnd: *mut std::ffi::c_void, index: i32, value: i32) -> i32;
+    }
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        let next = if transparent {
+            style | WS_EX_TRANSPARENT
+        } else {
+            style & !WS_EX_TRANSPARENT
+        };
+        if next != style {
+            SetWindowLongW(hwnd, GWL_EXSTYLE, next);
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn hit_window_proc(
+    hwnd: *mut std::ffi::c_void,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    const WM_NCHITTEST: u32 = 0x0084;
+    const HTTRANSPARENT: isize = -1;
+    if msg == WM_NCHITTEST {
+        let cache = hit_region_cache()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let x = (lparam as u16) as i16 as f64;
+        let y = ((lparam >> 16) as u16) as i16 as f64;
+        let scale = if cache.scale > 0.0 { cache.scale } else { 1.0 };
+        let css_x = (x - cache.origin_x) / scale;
+        let css_y = (y - cache.origin_y) / scale;
+        let hit = css_point_hits(&cache.rects, css_x, css_y);
+        drop(cache);
+        if !hit {
+            return HTTRANSPARENT;
+        }
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn CallWindowProcW(
+            prev: *mut std::ffi::c_void,
+            hwnd: *mut std::ffi::c_void,
+            msg: u32,
+            wparam: usize,
+            lparam: isize,
+        ) -> isize;
+    }
+    let previous = HIT_PROC_PREVIOUS.load(Ordering::Relaxed);
+    if previous.is_null() {
+        return 0;
+    }
+    unsafe { CallWindowProcW(previous, hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(windows)]
+static HIT_PROC_PREVIOUS: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+#[cfg(target_os = "linux")]
+fn apply_linux_input_shape(app: &AppHandle, rects: &[HitRect], scale: f64) {
+    let rects = rects.to_vec();
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        let Some(window) = app.get_webview_window("main") else {
+            return;
+        };
+        let Ok(gtk_window) = window.gtk_window() else {
+            return;
+        };
+        let Some(gdk_window) = gtk_window.window() else {
+            return;
+        };
+        let pixels: Vec<gtk::cairo::RectangleInt> = rects
+            .iter()
+            .filter(|rect| rect.w >= 1.0 && rect.h >= 1.0)
+            .map(|rect| {
+                gtk::cairo::RectangleInt::new(
+                    (rect.x * scale).floor() as i32,
+                    (rect.y * scale).floor() as i32,
+                    ((rect.w * scale).ceil() as i32).max(1),
+                    ((rect.h * scale).ceil() as i32).max(1),
+                )
+            })
+            .collect();
+        let region = if pixels.is_empty() {
+            gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, 1, 1))
+        } else {
+            gtk::cairo::Region::create_rectangles(&pixels)
+        };
+        gdk_window.input_shape_combine_region(&region, 0, 0);
     });
 }
 
@@ -1763,6 +2062,59 @@ mod tests {
         let away = interaction_frame(true, &[], Some((20.0, 200.0)), &rects, HIT_MARGIN_PX, &cfg);
         assert!(!frame_of(&away, "close:a").capture);
         assert!(!frame_of(&away, "panel:a").capture);
+    }
+
+    #[test]
+    fn open_panel_is_hit_testable_before_the_cursor_arrives() {
+        let cfg = fade_cfg();
+        let rects = vec![
+            HitRect {
+                id: "bot:a".into(),
+                x: 0.0,
+                y: 700.0,
+                w: 44.0,
+                h: 44.0,
+                z: 1,
+                round: true,
+            },
+            HitRect {
+                id: "panel:a".into(),
+                x: 80.0,
+                y: 40.0,
+                w: 420.0,
+                h: 560.0,
+                z: 4,
+                round: false,
+            },
+            HitRect {
+                id: "close:a".into(),
+                x: 460.0,
+                y: 20.0,
+                w: 80.0,
+                h: 80.0,
+                z: 44,
+                round: false,
+            },
+        ];
+        let far = interaction_frame(false, &[], Some((900.0, 900.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(!frame_of(&far, "panel:a").capture);
+        let region = os_input_rects(false, &rects, &far);
+        assert!(css_point_hits(&region, 100.0, 80.0));
+        assert!(css_point_hits(&region, 470.0, 40.0));
+        assert!(!css_point_hits(&region, 10.0, 710.0));
+        assert!(!css_point_hits(&region, 900.0, 900.0));
+        assert!(!region.iter().any(|rect| rect.id == "bot:a"));
+        let held_far = interaction_frame(true, &[], Some((900.0, 900.0)), &rects, HIT_MARGIN_PX, &cfg);
+        let passed = os_input_rects(true, &rects, &held_far);
+        assert!(!css_point_hits(&passed, 100.0, 80.0));
+        assert!(css_point_hits(&passed, 470.0, 40.0));
+        assert!(!passed.iter().any(|rect| rect.id == "bot:a"));
+        let over_orb = interaction_frame(true, &[], Some((10.0, 710.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&over_orb, "bot:a").capture);
+        let armed = os_input_rects(true, &rects, &over_orb);
+        assert!(armed.iter().any(|rect| rect.id == "bot:a"));
+        assert!(css_point_hits(&armed, 10.0, 710.0));
+        assert!(!css_point_hits(&armed, 100.0, 80.0));
     }
 
     #[test]

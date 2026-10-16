@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   CRON_UNAVAILABLE,
   anyJobRunning,
+  jobRunning,
+  lastRunValue,
   nextRunLabel,
   normalizeCronGroup,
   scheduleLabel,
@@ -45,4 +47,29 @@ test("groups stay read-only and a missing cron API is empty", () => {
   assert.equal(group.jobs[2].schedule, "*/30 * * * *");
   assert.equal(anyJobRunning([missing, group]), true);
   assert.equal(anyJobRunning([missing]), false);
+});
+
+test("a claimed execution counts as running and keeps the last run", () => {
+  const claimed = {
+    id: "tests",
+    name: "檢查測試",
+    state: "scheduled",
+    enabled: true,
+    latest_execution: { status: "claimed", started_at: "2026-10-16T11:30:00Z" },
+  };
+  assert.equal(jobRunning(claimed), true);
+  assert.equal(lastRunValue(claimed), "2026-10-16T11:30:00Z");
+  const finished = {
+    state: "scheduled",
+    last_run_at: "2026-10-16T09:00:00Z",
+    latest_execution: { status: "completed", finished_at: "2026-10-16T09:01:00Z" },
+  };
+  assert.equal(jobRunning(finished), false);
+  assert.equal(lastRunValue(finished), "2026-10-16T09:00:00Z");
+  const group = normalizeCronGroup({ jobs: [claimed, finished] });
+  assert.equal(group.jobs[0].running, true);
+  assert.equal(group.jobs[0].last_run_at, "2026-10-16T11:30:00Z");
+  assert.equal(group.jobs[1].running, false);
+  assert.equal(group.jobs[1].last_run_at, "2026-10-16T09:00:00Z");
+  assert.equal(anyJobRunning([group]), true);
 });

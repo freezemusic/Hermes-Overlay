@@ -2,14 +2,54 @@
 
 const PLAN_PATH = /\.hermes\/plans\/[^\s)]+\.md/;
 
+function hasHeading(body) {
+  return /^#{1,3}\s+\S/m.test(body);
+}
+
+function strictPlan(body) {
+  if (/implementation plan/i.test(body) && hasHeading(body)) return true;
+  if (PLAN_PATH.test(body) && hasHeading(body)) return true;
+  if (hasHeading(body) && /\*\*Goal:\*\*/i.test(body)) return true;
+  return false;
+}
+
+/** Inner markdown of a ```markdown or ```plan fence that contains a heading. */
+export function unwrapPlan(text) {
+  const body = String(text || "");
+  const re = /```(?:markdown|plan)[^\n]*\r?\n([\s\S]*?)```/gi;
+  let match = re.exec(body);
+  while (match) {
+    const inner = match[1].trim();
+    if (hasHeading(inner) || strictPlan(inner)) return inner;
+    match = re.exec(body);
+  }
+  return "";
+}
+
 export function looksLikePlan(text) {
   const body = String(text || "").trim();
   if (!body) return false;
-  const hasHeading = /^#{1,3}\s+\S/m.test(body);
-  if (/implementation plan/i.test(body) && hasHeading) return true;
-  if (PLAN_PATH.test(body) && hasHeading) return true;
-  if (hasHeading && /\*\*Goal:\*\*/i.test(body)) return true;
-  return false;
+  if (unwrapPlan(body)) return true;
+  return strictPlan(body);
+}
+
+/** Markdown to render. Fenced plans use the inside, not the fence. */
+export function planSource(text) {
+  const body = String(text || "").trim();
+  return unwrapPlan(body) || body;
+}
+
+/**
+ * A new plan key always becomes the open plan, even when an older plan is showing.
+ * Returns whether the focus changed.
+ */
+export function noteNewestPlan(thread, plans) {
+  const newest = plans?.length ? plans[plans.length - 1] : null;
+  if (!thread || !newest || thread.seenPlanKey === newest.key) return false;
+  thread.seenPlanKey = newest.key;
+  thread.planDismissed = "";
+  thread.planFocus = newest.key;
+  return true;
 }
 
 export function planTitle(markdown) {
@@ -62,7 +102,8 @@ export function plansIn(messages) {
     const previous = [...list.slice(0, index)].reverse().find((item) => item && item.role === "user");
     const fromCommand = previous?.command === "plan" && text.length >= 40;
     if (!looksLikePlan(text) && !fromCommand) continue;
-    found.push({ ...planRecord(text), index });
+    const markdown = looksLikePlan(text) ? planSource(text) : text;
+    found.push({ ...planRecord(markdown), index });
   }
   return found;
 }
