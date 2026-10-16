@@ -80,6 +80,17 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /inset\(0% 100% 0% 0%\)/);
   assert.match(mainSrc, /inset\(0% 0% 0% 0%\)/);
   assert.match(css, /\.morph \.center-panel \{[^}]*overflow:\s*visible/s);
+  assert.match(css, /\.morph-stroke \{[^}]*background:\s*#0000f2/s);
+  assert.match(css, /\.morph-stroke \{[^}]*visibility:\s*hidden/s);
+  assert.match(css, /\.morph\.is-growing-panel \.morph-stroke \{[^}]*visibility:\s*visible/s);
+  assert.match(css, /\.morph \.center-panel > \.hud-corner,\s*\n\.morph \.plan-window > \.hud-corner \{[^}]*z-index:\s*8/s);
+  assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-morphing\):not\(\.is-collapsing\) \.center-panel,[\s\S]*overflow:\s*visible !important/);
+  assert.match(mainSrc, /FRAME_BLEED \+ HAIRLINE/);
+  assert.match(mainSrc, /function revealPlanFrame/);
+  assert.match(mainSrc, /requestAnimationFrame\(\(\) => requestAnimationFrame\(resolve\)\)/);
+  const reveal = mainSrc.slice(mainSrc.indexOf("function revealPlanFrame"), mainSrc.indexOf("function growPlan"));
+  assert.match(reveal, /offsetWidth/);
+  assert.match(reveal, /visibility = "visible"/);
   const clipFn = mainSrc.slice(mainSrc.indexOf("function playClip"), mainSrc.indexOf("function planWidthPx"));
   assert.match(clipFn, /transition-delay", "0s"/);
   assert.match(clipFn, /moveOrbToHeader\(shell, token\)/);

@@ -30,6 +30,7 @@ import {
   includePlan,
   slotPoint,
   FRAME_BLEED,
+  HAIRLINE,
   STACK_GAP,
   tighten,
   cronShellHeight,
@@ -286,7 +287,13 @@ function paintClip(shell, insets, visual = shell.dataset.visual || shell.dataset
       radius: insets.radius + CRON_ORB_BLEED,
     }
     : null;
-  shell.style.clipPath = outer ? clipPath(outer) : revealClip(visual, shellGeom(shell));
+  if (visual === "panel") {
+    shell.style.setProperty("clip-path", "none", "important");
+    shell.style.setProperty("overflow", "visible", "important");
+  } else {
+    shell.style.removeProperty("clip-path");
+    shell.style.clipPath = outer ? clipPath(outer) : revealClip(visual, shellGeom(shell));
+  }
   const fill = shell.querySelector(".morph-fill");
   if (fill) fill.style.clipPath = clipPath(tighten(insets));
   shell.dataset.clipTop = String(insets.top);
@@ -487,8 +494,10 @@ function writeClip(shell, insets) {
 
 function cancelClipAnims(shell) {
   const fill = shell.querySelector(".morph-fill");
+  const stroke = shell.querySelector(".morph-stroke");
   shell.getAnimations?.().forEach((anim) => anim.cancel());
   fill?.getAnimations?.().forEach((anim) => anim.cancel());
+  stroke?.getAnimations?.().forEach((anim) => anim.cancel());
   shell.querySelector(".morph-orb")?.getAnimations?.().forEach((anim) => anim.cancel());
   shell.querySelector(".morph-glow")?.getAnimations?.().forEach((anim) => anim.cancel());
   shell.querySelector(".plan-window")?.getAnimations?.().forEach((anim) => anim.cancel());
@@ -547,11 +556,19 @@ function bleedInsets(insets, px) {
 
 function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const fill = shell.querySelector(".morph-fill");
+  const stroke = shell.querySelector(".morph-stroke");
   const from = insetsFor(fromState, shellGeom(shell));
   const to = insetsFor(toState, shellGeom(shell));
-  const shellTo = toState === "panel" ? bleedInsets(to, FRAME_BLEED) : to;
-  const fillFrom = toState === "panel" ? from : tighten(from);
-  const fillTo = toState === "panel" ? to : tighten(to);
+  // The corner stroke is the outer 1px of an 8px box parked at -3px. A clip
+  // of exactly -3px eats that pixel. The shell window is one pixel larger
+  // than the corner, transparent, so the L sits inside the clip. The blue
+  // line is the stroke layer, clipped to the shape, with the glass 1px inside
+  // it — every edge of the clip, including the first frame.
+  const cornerRoom = FRAME_BLEED + HAIRLINE;
+  const shellFrom = toState === "panel" ? bleedInsets(from, cornerRoom) : from;
+  const shellTo = toState === "panel" ? bleedInsets(to, cornerRoom) : to;
+  const fillFrom = tighten(from);
+  const fillTo = tighten(to);
   if (shell.dataset.morphToken !== token) return Promise.resolve(false);
   shell.classList.remove("is-growing-pill", "is-growing-panel");
   holdMotion(shell);
@@ -569,6 +586,13 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   // is the WAAPI duration (480ms), and transition-delay stays 0.
   writeClip(shell, from);
   void shell.offsetWidth;
+  shell.style.clipPath = clipPath(shellFrom);
+  if (fill) fill.style.clipPath = clipPath(fillFrom);
+  if (stroke && toState === "panel") stroke.style.clipPath = clipPath(from);
+  if (toState === "panel") {
+    shell.style.background = "transparent";
+    shell.style.setProperty("overflow", "visible", "important");
+  }
   shell.style.setProperty("transition", "none", "important");
   shell.style.setProperty("transition-delay", "0s", "important");
   fill?.style.setProperty("transition", "none", "important");
@@ -578,15 +602,22 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const timing = { duration, easing, fill: "forwards" };
   let shellAnim;
   let fillAnim;
+  let strokeAnim;
   let orbMove;
   try {
     shellAnim = shell.animate([
-      { clipPath: clipPath(from) },
+      { clipPath: clipPath(shellFrom) },
       { clipPath: clipPath(shellTo) },
     ], timing);
     if (toState === "panel") {
       playContentIn(shell, duration);
       orbMove = moveOrbToHeader(shell, token);
+      if (stroke) {
+        strokeAnim = stroke.animate([
+          { clipPath: clipPath(from) },
+          { clipPath: clipPath(to) },
+        ], timing);
+      }
     }
     if (fill) {
       fillAnim = fill.animate([
@@ -623,7 +654,12 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     holdMotion(fill);
     if (toState === "panel") {
       const fillEl = shell.querySelector(".morph-fill");
-      if (fillEl) fillEl.style.clipPath = clipPath(to);
+      if (fillEl) {
+        fillEl.style.clipPath = clipPath(to);
+        fillEl.style.boxShadow = "inset 0 0 0 1px #0000f2";
+      }
+      if (stroke) stroke.style.clipPath = "";
+      // none, not inset(-3px): the corner stroke lives on that pixel.
       shell.style.clipPath = "none";
       shell.dataset.clipTop = String(to.top);
       shell.dataset.clipRight = String(to.right);
@@ -636,6 +672,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     shell.classList.remove("is-growing-pill", "is-growing-panel");
     shellAnim.cancel();
     fillAnim?.cancel();
+    strokeAnim?.cancel();
     if (orbMove) await orbMove;
     return true;
   });
@@ -683,7 +720,12 @@ function armPlanSeam(shell) {
   plan.classList.add("is-seam-grow");
   plan.style.setProperty("display", "flex", "important");
   plan.style.setProperty("overflow", "hidden", "important");
+  // Stay unpainted while the shell clip would only reveal a sliver. The
+  // closed percentage is armed, but the 240ms clock waits until a frame of
+  // this box has actually painted.
+  plan.style.visibility = "hidden";
   holdMotion(plan);
+  plan.style.removeProperty("clip-path");
   plan.style.clipPath = planClipPath(side, false);
 }
 
@@ -720,6 +762,36 @@ function primePanelTail(shell) {
   armPlanSeam(shell);
 }
 
+function nextPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
+
+/** Show the closed plan, force its box, and let that frame paint before
+ *  growPlan starts the clock. WebKitGTK holds inset(0% 100% 0% 0%) and burns
+ *  the 240ms if animate() runs while the plan is still clipped or unpainted. */
+function revealPlanFrame(shell) {
+  const plan = shell.querySelector(".plan-window");
+  if (!plan || shell.dataset.planOpen !== "1") return Promise.resolve();
+  shell.style.setProperty("overflow", "visible", "important");
+  shell.style.background = "transparent";
+  shell.style.clipPath = "none";
+  plan.hidden = false;
+  plan.classList.add("is-seam-grow");
+  plan.style.setProperty("display", "flex", "important");
+  plan.style.setProperty("overflow", "hidden", "important");
+  plan.style.visibility = "visible";
+  plan.style.willChange = "clip-path";
+  holdMotion(plan);
+  const side = shell.dataset.planSide === "left" ? "left" : "right";
+  plan.style.removeProperty("clip-path");
+  plan.style.clipPath = planClipPath(side, false);
+  // This read is the frame before the animation, not the turn that starts it.
+  void plan.offsetWidth;
+  return nextPaint();
+}
+
 function growPlan(shell, token) {
   const plan = shell.querySelector(".plan-window");
   if (!plan || shell.dataset.planOpen !== "1") return Promise.resolve();
@@ -728,9 +800,12 @@ function growPlan(shell, token) {
   if (reducedMotion()) {
     plan.style.clipPath = "";
     plan.style.removeProperty("display");
+    plan.style.removeProperty("visibility");
+    plan.style.removeProperty("will-change");
     plan.classList.remove("is-seam-grow");
     return Promise.resolve();
   }
+  plan.style.visibility = "visible";
   const armed = plan.classList.contains("is-seam-grow") && !!plan.style.clipPath;
   if (!armed) {
     syncPlanSide(shell);
@@ -764,7 +839,8 @@ function growPlan(shell, token) {
   return whenAnimEnds(anim, PLAN_GROW_MS).then((finished) => {
     if (token && shell.dataset.morphToken !== token) return;
     if (!finished) return;
-    plan.style.clipPath = to;
+    plan.style.clipPath = "none";
+    plan.style.removeProperty("will-change");
     anim.cancel();
     holdMotion(plan);
   });
@@ -863,10 +939,19 @@ function settleShell(shell, target) {
     releaseContent(shell);
   }
   const plan = shell.querySelector(".plan-window");
+  const stroke = shell.querySelector(".morph-stroke");
   shell.classList.remove("is-morphing", "is-collapsing");
-  shell.style.removeProperty("overflow");
   shell.style.background = "";
   shell.style.removeProperty("filter");
+  if (fill) fill.style.removeProperty("box-shadow");
+  if (stroke) stroke.style.clipPath = "";
+  if (target === "panel") {
+    shell.style.setProperty("overflow", "visible", "important");
+    shell.style.setProperty("clip-path", "none", "important");
+  } else {
+    shell.style.removeProperty("overflow");
+    shell.style.removeProperty("clip-path");
+  }
   const promoted = shell;
   requestAnimationFrame(() => promoted.classList.remove("is-content-promoted"));
   releaseMotion(shell);
@@ -875,7 +960,14 @@ function settleShell(shell, target) {
     plan.classList.remove("is-seam-grow");
     plan.style.removeProperty("display");
     plan.style.removeProperty("overflow");
-    plan.style.clipPath = "";
+    plan.style.removeProperty("visibility");
+    plan.style.removeProperty("will-change");
+    if (target === "panel" && shell.dataset.planOpen === "1") {
+      plan.style.setProperty("overflow", "visible", "important");
+      plan.style.setProperty("clip-path", "none", "important");
+    } else {
+      plan.style.clipPath = "";
+    }
     releaseMotion(plan);
   }
   paintClip(shell, insetsFor(target, shellGeom(shell)), target);
@@ -895,14 +987,20 @@ function settleShell(shell, target) {
 
 function stopShellTransition(shell) {
   const fill = shell.querySelector(".morph-fill");
+  const stroke = shell.querySelector(".morph-stroke");
   holdMotion(shell);
   holdMotion(fill);
+  holdMotion(stroke);
   cancelClipAnims(shell);
+  if (stroke) stroke.style.clipPath = "";
+  if (fill) fill.style.removeProperty("box-shadow");
   const plan = shell.querySelector(".plan-window");
   if (plan) {
     holdMotion(plan);
-    plan.style.clipPath = "";
+    plan.style.removeProperty("clip-path");
     plan.style.removeProperty("display");
+    plan.style.removeProperty("visibility");
+    plan.style.removeProperty("will-change");
     plan.classList.remove("is-seam-grow");
   }
   shell.classList.remove("is-growing-pill", "is-growing-panel", "is-orb-moving", "is-content-promoted");
@@ -915,6 +1013,12 @@ async function runShellMorph(shell, target) {
   shell.dataset.morphToken = token;
   shell.getAnimations?.().forEach((anim) => anim.cancel());
   stopShellTransition(shell);
+  // Settled panels pin clip-path/overflow with !important so the corner
+  // stroke is not cut. The next morph has to drop that before it can clip.
+  shell.style.removeProperty("clip-path");
+  shell.style.removeProperty("overflow");
+  shell.querySelector(".plan-window")?.style.removeProperty("clip-path");
+  shell.querySelector(".plan-window")?.style.removeProperty("overflow");
   const alive = () => shell.dataset.morphToken === token && shell.isConnected;
   const from = shell.dataset.visual || shell.dataset.state || "orb";
   window.clearTimeout(shell._pillTimer);
@@ -974,7 +1078,7 @@ async function runShellMorph(shell, target) {
   }
   if (!alive()) return false;
   if (target === "panel" && shell.dataset.planOpen === "1") {
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await revealPlanFrame(shell);
     if (!alive()) return false;
     await growPlan(shell, token);
   }
@@ -1243,6 +1347,9 @@ function ensureBotShell(bot) {
   shell.dataset.state = "orb";
   shell.dataset.visual = "orb";
   shell.dataset.hitId = `bot:${bot.id}`;
+  const stroke = document.createElement("div");
+  stroke.className = "morph-stroke";
+  stroke.setAttribute("aria-hidden", "true");
   const fill = document.createElement("div");
   fill.className = "morph-fill";
   const glow = document.createElement("div");
@@ -1260,7 +1367,7 @@ function ensureBotShell(bot) {
   const label = document.createElement("span");
   label.className = "bot-label";
   btn.appendChild(label);
-  shell.append(fill, btn, previewNode());
+  shell.append(stroke, fill, btn, previewNode());
   attachShell(shell, bot.id);
   $("#bot-rail").appendChild(shell);
   mountBotPanel(shell, bot.id);
@@ -1277,6 +1384,9 @@ function ensureChromeShell(panel, id, glyph, label, orbClass) {
   shell.dataset.state = "orb";
   shell.dataset.visual = "orb";
   shell.dataset.hitId = `bot:${id}`;
+  const stroke = document.createElement("div");
+  stroke.className = "morph-stroke";
+  stroke.setAttribute("aria-hidden", "true");
   const fill = document.createElement("div");
   fill.className = "morph-fill";
   const glow = document.createElement("div");
@@ -1302,7 +1412,7 @@ function ensureChromeShell(panel, id, glyph, label, orbClass) {
   panel.removeAttribute("data-hit-id");
   const close = panel.querySelector("#btn-settings-close, #btn-kanban-close, #btn-cron-close");
   if (close) close.dataset.hitId = `close:${id}`;
-  shell.append(fill, btn, previewNode(), panel);
+  shell.append(stroke, fill, btn, previewNode(), panel);
   attachShell(shell, id);
   bindPanelDrag(panel);
   $("#bot-rail").appendChild(shell);
@@ -1609,7 +1719,10 @@ function paintPlan(id) {
   syncPlanSide(shell);
   separateOpenShells([...document.querySelectorAll(".morph")]);
   const morphing = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
-  if (open && !wasOpen && !morphing) void growPlan(shell, shell.dataset.morphToken || "");
+  if (open && !wasOpen && !morphing) {
+    const token = shell.dataset.morphToken || "";
+    void revealPlanFrame(shell).then(() => growPlan(shell, token));
+  }
   scheduleHitSync();
 }
 
