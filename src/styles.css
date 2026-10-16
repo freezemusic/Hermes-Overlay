@@ -1814,6 +1814,19 @@ html, body {
   box-shadow: 0 0 0 1px rgba(0, 0, 242, .45), 0 6px 24px rgba(0, 0, 242, .12);
 }
 
+/* Set before the clip ends so the handoff does not swap filter, background,
+   or overflow in the same frame as the orb move and the seam grow. The
+   panel clip still hides the plan; overflow only matters once clip-path is none. */
+.morph.is-morphing[data-kind="bot"][data-state="panel"] {
+  overflow: visible;
+  background: transparent;
+  filter: none;
+}
+
+.morph.is-morphing[data-kind="bot"][data-state="panel"] .morph-fill {
+  box-shadow: inset 0 0 0 1px #0000f2;
+}
+
 /* Settled panels paint the 8px L outside the frame. The shell stays
    transparent so the square border box does not fill the corner, and the
    hairline moves onto the fill, which keeps its own rounded clip. */
@@ -1886,9 +1899,19 @@ html, body {
   transform: translate(calc(-70px + var(--icon-dx, 0px)), calc(-70px + var(--icon-dy, 0px)));
 }
 
-.morph.is-morphing:not(.is-orb-docked) .morph-glow,
+.morph.is-morphing:not(.is-orb-docked):not(.is-orb-moving) .morph-glow,
 .morph.is-collapsing .morph-glow {
   transform: translate(-70px, -70px);
+}
+
+.morph.is-orb-moving .morph-orb,
+.morph.is-orb-moving .morph-glow {
+  transition: none;
+  will-change: transform;
+}
+
+.morph.is-orb-moving .morph-orb {
+  contain: none;
 }
 
 .morph .morph-orb {
@@ -1905,7 +1928,7 @@ html, body {
   transform: translate(var(--icon-dx, 0px), var(--icon-dy, 0px)) scale(calc(28 / 44));
 }
 
-.morph.is-morphing:not(.is-orb-docked) .morph-orb,
+.morph.is-morphing:not(.is-orb-docked):not(.is-orb-moving) .morph-orb,
 .morph.is-collapsing .morph-orb {
   transform: translate(0px, 0px) scale(1);
 }
@@ -1967,6 +1990,14 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 .morph.is-content-hold .morph-body {
   opacity: 1;
   transition: none;
+}
+
+/* Promoted while the panel clip is still running, so the clip-end handoff
+   does not build the text layer in the same frame it starts the seam. */
+.morph.is-content-promoted .content,
+.morph.is-content-promoted .morph-body {
+  transform: translateZ(0);
+  will-change: opacity;
 }
 
 .morph.open:not(.is-collapsing) .morph-body {

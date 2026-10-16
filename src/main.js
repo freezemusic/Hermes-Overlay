@@ -568,13 +568,6 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     writeClip(shell, to);
     return Promise.resolve(shell.dataset.morphToken === token);
   }
-  try {
-    const started = document.timeline?.currentTime;
-    if (started != null) {
-      shellAnim.startTime = started;
-      if (fillAnim) fillAnim.startTime = started;
-    }
-  } catch { /* timeline not ready; the animation still runs */ }
   if (toState === "panel") shell.classList.add("is-growing-panel");
   else if (toState === "pill") shell.classList.add("is-growing-pill");
   if (toState !== "orb") {
@@ -591,19 +584,44 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   return whenAnimEnds(shellAnim, duration).then((finished) => {
     if (shell.dataset.morphToken !== token) return false;
     if (!finished) return false;
-    // Lock opacity before any class change. WebKit otherwise paints the
-    // base opacity 0 for one frame when is-growing-panel / is-orb-docked flips.
+    pauseHitSync();
+    // Inline opacity only. A class that sets opacity or filter here is the
+    // one-frame header dim (contrast dips, then jumps).
     if (toState === "panel" && !shell.classList.contains("is-collapsing")) holdContent(shell);
-    try { shellAnim.commitStyles(); } catch { /* WebKit without commitStyles */ }
-    try { fillAnim?.commitStyles(); } catch { /* WebKit without commitStyles */ }
-    shellAnim.cancel();
-    fillAnim?.cancel();
-    shell.classList.remove("is-growing-pill", "is-growing-panel");
     holdMotion(shell);
     holdMotion(fill);
-    writeClip(shell, to);
+    const revealPlan = toState === "panel"
+      && shell.dataset.planOpen === "1"
+      && !shell.classList.contains("is-collapsing");
+    if (revealPlan) {
+      const fillEl = shell.querySelector(".morph-fill");
+      if (fillEl) fillEl.style.clipPath = clipPath(tighten(to));
+      shell.style.clipPath = "none";
+      shell.dataset.clipTop = String(to.top);
+      shell.dataset.clipRight = String(to.right);
+      shell.dataset.clipBottom = String(to.bottom);
+      shell.dataset.clipLeft = String(to.left);
+      shell.dataset.clipRadius = String(to.radius);
+    } else {
+      writeClip(shell, to);
+    }
+    shell.classList.remove("is-growing-pill", "is-growing-panel");
+    shellAnim.cancel();
+    fillAnim?.cancel();
     return true;
   });
+}
+
+function planWidthPx() {
+  return Math.min(420, (window.innerWidth || 1280) * 0.42);
+}
+
+/** Side from the parked box. Reading layout here is what stalls the seam. */
+function sideFromStyle(shell) {
+  const left = Number.parseFloat(shell.style.left) || 0;
+  const width = Number.parseFloat(shell.style.width) || 0;
+  const roomRight = (window.innerWidth || 1280) - (left + width);
+  return roomRight >= planWidthPx() ? "right" : "left";
 }
 
 /** The plan sits outside the shell box. A shell clip or overflow:hidden
@@ -611,16 +629,39 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
 function showPlanHost(shell) {
   shell.style.setProperty("overflow", "visible", "important");
   shell.style.background = "transparent";
+  shell.style.setProperty("filter", "none", "important");
   shell.style.clipPath = "none";
   const fill = shell.querySelector(".morph-fill");
   if (fill && !fill.style.clipPath) fill.style.clipPath = "inset(0px 0px 0px 0px round 3px)";
+}
+
+/** Park the seam while the panel clip is still covering it, before content
+ *  fades in. The handoff must not flip display, filter, or measure. */
+function armPlanSeam(shell) {
+  const plan = shell.querySelector(".plan-window");
+  if (!plan || shell.dataset.planOpen !== "1") return;
+  const side = shell.dataset.planSide === "left" ? "left" : sideFromStyle(shell);
+  shell.dataset.planSide = side;
+  const width = planWidthPx();
+  shell.dataset.seamWidth = String(width);
+  plan.hidden = false;
+  plan.classList.add("is-seam-grow");
+  plan.style.setProperty("display", "flex", "important");
+  plan.style.setProperty("overflow", "hidden", "important");
+  holdMotion(plan);
+  plan.style.clipPath = clipPath(seamInsets(width, side, false));
+}
+
+function primePanelTail(shell) {
+  shell.classList.add("is-content-promoted", "is-orb-moving");
+  shell.classList.remove("is-orb-docked");
+  armPlanSeam(shell);
 }
 
 function growPlan(shell, token) {
   const plan = shell.querySelector(".plan-window");
   if (!plan || shell.dataset.planOpen !== "1") return Promise.resolve();
   if (token && shell.dataset.morphToken !== token) return Promise.resolve();
-  syncPlanSide(shell);
   plan.getAnimations?.().forEach((anim) => anim.cancel());
   if (reducedMotion()) {
     plan.style.clipPath = "";
@@ -628,20 +669,26 @@ function growPlan(shell, token) {
     plan.classList.remove("is-seam-grow");
     return Promise.resolve();
   }
+  const armed = plan.classList.contains("is-seam-grow") && !!plan.style.clipPath;
+  if (!armed) {
+    syncPlanSide(shell);
+    plan.hidden = false;
+    plan.classList.add("is-seam-grow");
+    plan.style.setProperty("display", "flex", "important");
+    plan.style.setProperty("overflow", "hidden", "important");
+    holdMotion(plan);
+    showPlanHost(shell);
+    const side = shell.dataset.planSide === "left" ? "left" : "right";
+    const width = planWidthPx();
+    shell.dataset.seamWidth = String(width);
+    plan.style.clipPath = clipPath(seamInsets(width, side, false));
+  } else if (shell.style.clipPath !== "none") {
+    shell.style.clipPath = "none";
+  }
   const side = shell.dataset.planSide === "left" ? "left" : "right";
-  plan.hidden = false;
-  plan.classList.add("is-seam-grow");
-  plan.style.setProperty("display", "flex", "important");
-  plan.style.setProperty("overflow", "hidden", "important");
-  holdMotion(plan);
-  showPlanHost(shell);
-  void plan.offsetWidth;
-  const measured = plan.getBoundingClientRect().width;
-  const width = measured > 1 ? measured : Math.min(420, (window.innerWidth || 1280) * 0.42);
+  const width = Number(shell.dataset.seamWidth) || planWidthPx();
   const from = seamInsets(width, side, false);
   const to = seamInsets(width, side, true);
-  plan.style.clipPath = clipPath(from);
-  void plan.offsetWidth;
   let anim;
   try {
     anim = plan.animate([
@@ -652,24 +699,15 @@ function growPlan(shell, token) {
     plan.style.clipPath = clipPath(to);
     return Promise.resolve();
   }
-  try {
-    const started = document.timeline?.currentTime;
-    if (started != null) anim.startTime = started;
-  } catch { /* timeline not ready; the animation still runs */ }
-  const track = () => {
-    if (token && shell.dataset.morphToken !== token) return;
-    scheduleHitSync();
-    if (anim.playState === "finished" || anim.playState === "idle") return;
-    requestAnimationFrame(track);
-  };
-  requestAnimationFrame(track);
+  // Do not pin the animation clock. A layout flush freezes the timeline at
+  // the frame start, so the first painted frame is already most of the way
+  // through the ease and the orb's visible move collapses to about 100ms.
   return whenAnimEnds(anim, PLAN_GROW_MS).then((finished) => {
     if (token && shell.dataset.morphToken !== token) return;
     if (!finished) return;
-    try { anim.commitStyles(); } catch { /* WebKit without commitStyles */ }
+    plan.style.clipPath = clipPath(to);
     anim.cancel();
     holdMotion(plan);
-    plan.style.clipPath = clipPath(to);
   });
 }
 
@@ -687,8 +725,13 @@ function moveOrbToHeader(shell, token) {
     shell.classList.add("is-orb-docked");
     return Promise.resolve();
   }
-  shell.classList.add("is-orb-moving");
-  shell.classList.remove("is-orb-docked");
+  // is-orb-moving is already on from the panel clip, so this does not
+  // restyle transform in the handoff frame. Adding it here is only the
+  // fallback when the tail was not primed.
+  if (!shell.classList.contains("is-orb-moving")) {
+    shell.classList.add("is-orb-moving");
+    shell.classList.remove("is-orb-docked");
+  }
   holdMotion(orb);
   holdMotion(glow);
   const scale = ICON / ORB;
@@ -712,22 +755,19 @@ function moveOrbToHeader(shell, token) {
     shell.classList.add("is-orb-docked");
     return Promise.resolve();
   }
-  try {
-    const started = document.timeline?.currentTime;
-    if (started != null) {
-      orbAnim.startTime = started;
-      if (glowAnim) glowAnim.startTime = started;
-    }
-  } catch { /* timeline not ready; the animation still runs */ }
   return whenAnimEnds(orbAnim, PLAN_GROW_MS).then((finished) => {
     if (token && shell.dataset.morphToken !== token) return;
     if (!finished) return;
-    shell.classList.add("is-orb-docked");
-    shell.classList.remove("is-orb-moving");
-    try { orbAnim.commitStyles(); } catch { /* WebKit without commitStyles */ }
-    try { glowAnim?.commitStyles(); } catch { /* WebKit without commitStyles */ }
+    const end = `translate(${dx}px, ${dy}px) scale(${scale})`;
+    orb.style.transform = end;
+    if (glow) {
+      const half = GLOW / 2;
+      glow.style.transform = `translate(${-half + dx}px, ${-half + dy}px)`;
+    }
     orbAnim.cancel();
     glowAnim?.cancel();
+    shell.classList.add("is-orb-docked");
+    shell.classList.remove("is-orb-moving");
     orb.style.transform = "";
     if (glow) glow.style.transform = "";
     releaseMotion(orb);
@@ -742,13 +782,13 @@ function releaseContent(shell) {
   });
 }
 
-/** Freeze the fade before a class change, so WebKit cannot replay opacity from 0. */
+/** Freeze the fade before a class change, so WebKit cannot replay opacity from 0.
+ *  Inline only: adding a class here restyles the header for one frame. */
 function holdContent(shell) {
   shell.querySelectorAll(".content, .morph-body").forEach((el) => {
     el.style.opacity = "1";
     el.style.setProperty("transition", "none", "important");
   });
-  shell.classList.add("is-content-hold");
 }
 
 function resetContent(shell) {
@@ -780,6 +820,9 @@ function settleShell(shell, target) {
   shell.classList.remove("is-morphing", "is-collapsing");
   shell.style.removeProperty("overflow");
   shell.style.background = "";
+  shell.style.removeProperty("filter");
+  const promoted = shell;
+  requestAnimationFrame(() => promoted.classList.remove("is-content-promoted"));
   releaseMotion(shell);
   releaseMotion(fill);
   if (plan) {
@@ -816,7 +859,7 @@ function stopShellTransition(shell) {
     plan.style.removeProperty("display");
     plan.classList.remove("is-seam-grow");
   }
-  shell.classList.remove("is-growing-pill", "is-growing-panel", "is-orb-moving");
+  shell.classList.remove("is-growing-pill", "is-growing-panel", "is-orb-moving", "is-content-promoted");
 }
 
 async function runShellMorph(shell, target) {
@@ -874,6 +917,7 @@ async function runShellMorph(shell, target) {
         if (!alive()) return false;
       }
       revealContent(shell);
+      primePanelTail(shell);
     }
     if (target !== "orb") markVisual(shell, step.state);
     const ok = await playClip(shell, current, step.state, reducedMotion() ? 0 : step.ms, token, step.ease || EASE);
@@ -3454,6 +3498,11 @@ function scheduleHitSync() {
   hitFrame = requestAnimationFrame(publishHits);
 }
 
+function pauseHitSync() {
+  cancelAnimationFrame(hitFrame);
+  hitFrame = 0;
+}
+
 function flushHits() {
   cancelAnimationFrame(hitFrame);
   publishHits();
@@ -3465,7 +3514,10 @@ function applyFrames(frames, interactiveAll = false) {
     const known = map.get(el.dataset.hitId);
     const nested = !!el.parentElement?.closest?.("[data-hit-id]");
     const value = known == null || nested ? 1 : known.opacity;
-    el.style.setProperty("--hit-opacity", String(value));
+    const nextOpacity = String(value);
+    if (el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
+      el.style.setProperty("--hit-opacity", nextOpacity);
+    }
     if (interactiveAll || known?.capture) el.dataset.hitCapture = "1";
     else delete el.dataset.hitCapture;
   });
