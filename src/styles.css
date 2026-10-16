@@ -1065,8 +1065,13 @@ html, body {
   display: none;
 }
 
+/* Beats the morphing `display: none` above. The plan has to stay painted
+   for the whole seam grow, or WebKit shows it in one frame when the class drops. */
+.morph.is-morphing .plan-window.is-seam-grow,
+.morph.is-collapsing .plan-window.is-seam-grow,
 .morph .plan-window.is-seam-grow {
   display: flex;
+  overflow: hidden;
 }
 
 .chat-block {
@@ -1851,11 +1856,6 @@ html, body {
 
 .morph.is-collapsing {
   pointer-events: none;
-  transition: clip-path 300ms cubic-bezier(.4, 0, 1, 1);
-}
-
-.morph.is-collapsing .morph-fill {
-  transition: clip-path 300ms cubic-bezier(.4, 0, 1, 1);
 }
 
 .morph-fill {
@@ -1871,29 +1871,25 @@ html, body {
     var(--glass-fog);
 }
 
-.morph-fill::after {
-  content: "";
+.morph-glow {
   position: absolute;
   left: var(--ax, 22px);
   top: var(--ay, 22px);
   width: 140px;
   height: 140px;
-  transform: translate(-50%, -50%);
+  transform: translate(-70px, -70px);
   pointer-events: none;
-  transition: transform 240ms var(--ease-morph);
   background: radial-gradient(circle, rgb(var(--bot-rgb) / .22) 0%, transparent 70%);
 }
 
-.morph[data-visual="panel"] .morph-fill::after {
-  transform: translate(calc(-50% + var(--icon-dx, 0px)), calc(-50% + var(--icon-dy, 0px)));
+.morph.is-orb-docked .morph-glow {
+  transform: translate(calc(-70px + var(--icon-dx, 0px)), calc(-70px + var(--icon-dy, 0px)));
 }
 
-.morph.is-morphing:not(.is-orb-docked) .morph-fill::after,
-.morph.is-collapsing .morph-fill::after {
-  transform: translate(-50%, -50%);
+.morph.is-morphing:not(.is-orb-docked) .morph-glow,
+.morph.is-collapsing .morph-glow {
+  transform: translate(-70px, -70px);
 }
-
-.morph.is-collapsing .morph-fill::after { transition-duration: 80ms; }
 
 .morph .morph-orb {
   position: absolute;
@@ -1901,25 +1897,25 @@ html, body {
   top: calc(var(--ay, 22px) - 22px);
   z-index: 4;
   margin: 0;
-  transition: transform 240ms var(--ease-morph);
 }
 
-.morph[data-state="panel"] .morph-orb {
+.morph.is-orb-docked .morph-orb,
+.morph[data-state="panel"]:not(.is-morphing) .morph-orb {
   pointer-events: none;
   transform: translate(var(--icon-dx, 0px), var(--icon-dy, 0px)) scale(calc(28 / 44));
 }
 
 .morph.is-morphing:not(.is-orb-docked) .morph-orb,
 .morph.is-collapsing .morph-orb {
-  transform: none;
+  transform: translate(0px, 0px) scale(1);
 }
 
 .morph[data-visual="wide"] .morph-orb,
 .morph[data-visual="tall"] .morph-orb {
-  transform: none;
+  transform: translate(0px, 0px) scale(1);
 }
 
-.morph.is-collapsing .morph-orb { transition-duration: 80ms; }
+.morph.is-collapsing .morph-orb { transition: transform 80ms var(--ease-morph); }
 
 html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   pointer-events: none !important;

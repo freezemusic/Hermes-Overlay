@@ -9,6 +9,7 @@ import { latestPlan, noteNewestPlan, planDemoMarkdown, planTask, plansIn } from 
 import { closePanel, openPanel } from "./panels.js";
 import {
   EASE,
+  ICON,
   ORB,
   PANEL_H,
   PANEL_W,
@@ -487,7 +488,43 @@ function cancelClipAnims(shell) {
   const fill = shell.querySelector(".morph-fill");
   shell.getAnimations?.().forEach((anim) => anim.cancel());
   fill?.getAnimations?.().forEach((anim) => anim.cancel());
+  shell.querySelector(".morph-orb")?.getAnimations?.().forEach((anim) => anim.cancel());
+  shell.querySelector(".morph-glow")?.getAnimations?.().forEach((anim) => anim.cancel());
   shell.querySelector(".plan-window")?.getAnimations?.().forEach((anim) => anim.cancel());
+}
+
+/** Stylesheet transitions must not run beside a WAAPI clip. WebKitGTK will
+ *  stretch a left or right collapse past 300ms when both are active. */
+function holdMotion(el) {
+  el?.style.setProperty("transition", "none", "important");
+}
+
+function releaseMotion(el) {
+  el?.style.removeProperty("transition");
+}
+
+function pxOf(shell, name) {
+  const n = Number.parseFloat(shell.style.getPropertyValue(name));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function whenAnimEnds(anim, duration) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = window.setTimeout(() => {
+      try {
+        if (anim.playState !== "finished") anim.currentTime = duration;
+      } catch { /* already finished */ }
+      finish(true);
+    }, duration);
+    anim.finished.then(() => finish(true), () => finish(false));
+  });
 }
 
 /**
@@ -503,11 +540,12 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const to = insetsFor(toState, shellGeom(shell));
   if (shell.dataset.morphToken !== token) return Promise.resolve(false);
   shell.classList.remove("is-growing-pill", "is-growing-panel");
-  shell.style.transition = "none";
-  if (fill) fill.style.transition = "none";
+  holdMotion(shell);
+  holdMotion(fill);
   cancelClipAnims(shell);
   if (reducedMotion() || !(duration > 0)) {
     writeClip(shell, to);
+    if (toState === "panel") holdContent(shell);
     return Promise.resolve(true);
   }
   writeClip(shell, from);
@@ -530,46 +568,76 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     writeClip(shell, to);
     return Promise.resolve(shell.dataset.morphToken === token);
   }
+  try {
+    const started = document.timeline?.currentTime;
+    if (started != null) {
+      shellAnim.startTime = started;
+      if (fillAnim) fillAnim.startTime = started;
+    }
+  } catch { /* timeline not ready; the animation still runs */ }
   if (toState === "panel") shell.classList.add("is-growing-panel");
   else if (toState === "pill") shell.classList.add("is-growing-pill");
-  const track = () => {
-    if (shell.dataset.morphToken !== token) return;
-    scheduleHitSync();
-    if (!shellAnim || shellAnim.playState === "finished" || shellAnim.playState === "idle") return;
+  if (toState !== "orb") {
+    const track = () => {
+      if (shell.dataset.morphToken !== token) return;
+      scheduleHitSync();
+      if (!shellAnim || shellAnim.playState === "finished" || shellAnim.playState === "idle") return;
+      requestAnimationFrame(track);
+    };
     requestAnimationFrame(track);
-  };
-  requestAnimationFrame(track);
-  return shellAnim.finished.then(() => true, () => false).then((finished) => {
+  } else {
+    scheduleHitSync();
+  }
+  return whenAnimEnds(shellAnim, duration).then((finished) => {
     if (shell.dataset.morphToken !== token) return false;
     if (!finished) return false;
+    // Lock opacity before any class change. WebKit otherwise paints the
+    // base opacity 0 for one frame when is-growing-panel / is-orb-docked flips.
+    if (toState === "panel" && !shell.classList.contains("is-collapsing")) holdContent(shell);
     try { shellAnim.commitStyles(); } catch { /* WebKit without commitStyles */ }
     try { fillAnim?.commitStyles(); } catch { /* WebKit without commitStyles */ }
     shellAnim.cancel();
     fillAnim?.cancel();
     shell.classList.remove("is-growing-pill", "is-growing-panel");
-    shell.style.transition = "none";
-    if (fill) fill.style.transition = "none";
+    holdMotion(shell);
+    holdMotion(fill);
     writeClip(shell, to);
     return true;
   });
 }
 
+/** The plan sits outside the shell box. A shell clip or overflow:hidden
+ *  hides the seam grow, then the open rect appears in one frame. */
+function showPlanHost(shell) {
+  shell.style.setProperty("overflow", "visible", "important");
+  shell.style.background = "transparent";
+  shell.style.clipPath = "none";
+  const fill = shell.querySelector(".morph-fill");
+  if (fill && !fill.style.clipPath) fill.style.clipPath = "inset(0px 0px 0px 0px round 3px)";
+}
+
 function growPlan(shell, token) {
   const plan = shell.querySelector(".plan-window");
-  if (!plan || plan.hidden || shell.dataset.planOpen !== "1") return Promise.resolve();
+  if (!plan || shell.dataset.planOpen !== "1") return Promise.resolve();
   if (token && shell.dataset.morphToken !== token) return Promise.resolve();
   syncPlanSide(shell);
   plan.getAnimations?.().forEach((anim) => anim.cancel());
   if (reducedMotion()) {
     plan.style.clipPath = "";
+    plan.style.removeProperty("display");
     plan.classList.remove("is-seam-grow");
     return Promise.resolve();
   }
   const side = shell.dataset.planSide === "left" ? "left" : "right";
-  plan.style.transition = "none";
+  plan.hidden = false;
   plan.classList.add("is-seam-grow");
-  const width = plan.offsetWidth || plan.getBoundingClientRect().width
-    || Math.min(420, (window.innerWidth || 1280) * 0.42);
+  plan.style.setProperty("display", "flex", "important");
+  plan.style.setProperty("overflow", "hidden", "important");
+  holdMotion(plan);
+  showPlanHost(shell);
+  void plan.offsetWidth;
+  const measured = plan.getBoundingClientRect().width;
+  const width = measured > 1 ? measured : Math.min(420, (window.innerWidth || 1280) * 0.42);
   const from = seamInsets(width, side, false);
   const to = seamInsets(width, side, true);
   plan.style.clipPath = clipPath(from);
@@ -581,34 +649,106 @@ function growPlan(shell, token) {
       { clipPath: clipPath(to) },
     ], { duration: PLAN_GROW_MS, easing: EASE, fill: "forwards" });
   } catch {
-    plan.style.clipPath = "";
+    plan.style.clipPath = clipPath(to);
     return Promise.resolve();
   }
-  return anim.finished.then(() => true, () => false).then((finished) => {
+  try {
+    const started = document.timeline?.currentTime;
+    if (started != null) anim.startTime = started;
+  } catch { /* timeline not ready; the animation still runs */ }
+  const track = () => {
+    if (token && shell.dataset.morphToken !== token) return;
+    scheduleHitSync();
+    if (anim.playState === "finished" || anim.playState === "idle") return;
+    requestAnimationFrame(track);
+  };
+  requestAnimationFrame(track);
+  return whenAnimEnds(anim, PLAN_GROW_MS).then((finished) => {
     if (token && shell.dataset.morphToken !== token) return;
     if (!finished) return;
     try { anim.commitStyles(); } catch { /* WebKit without commitStyles */ }
     anim.cancel();
-    plan.style.transition = "none";
-    plan.style.clipPath = "";
-    if (!shell.classList.contains("is-morphing")) plan.classList.remove("is-seam-grow");
+    holdMotion(plan);
+    plan.style.clipPath = clipPath(to);
+  });
+}
+
+const GLOW = 140;
+
+/** After the panel clip, slide the orb (and its glow) to the header corner. */
+function moveOrbToHeader(shell, token) {
+  if (token && shell.dataset.morphToken !== token) return Promise.resolve();
+  const orb = shell.querySelector(".morph-orb");
+  const glow = shell.querySelector(".morph-glow");
+  const dx = pxOf(shell, "--icon-dx");
+  const dy = pxOf(shell, "--icon-dy");
+  if (!orb || reducedMotion()) {
+    shell.classList.remove("is-orb-moving");
+    shell.classList.add("is-orb-docked");
+    return Promise.resolve();
+  }
+  shell.classList.add("is-orb-moving");
+  shell.classList.remove("is-orb-docked");
+  holdMotion(orb);
+  holdMotion(glow);
+  const scale = ICON / ORB;
+  const timing = { duration: PLAN_GROW_MS, easing: EASE, fill: "forwards" };
+  let orbAnim;
+  let glowAnim;
+  try {
+    orbAnim = orb.animate([
+      { transform: "translate(0px, 0px) scale(1)" },
+      { transform: `translate(${dx}px, ${dy}px) scale(${scale})` },
+    ], timing);
+    if (glow) {
+      const half = GLOW / 2;
+      glowAnim = glow.animate([
+        { transform: `translate(${-half}px, ${-half}px)` },
+        { transform: `translate(${-half + dx}px, ${-half + dy}px)` },
+      ], timing);
+    }
+  } catch {
+    shell.classList.remove("is-orb-moving");
+    shell.classList.add("is-orb-docked");
+    return Promise.resolve();
+  }
+  try {
+    const started = document.timeline?.currentTime;
+    if (started != null) {
+      orbAnim.startTime = started;
+      if (glowAnim) glowAnim.startTime = started;
+    }
+  } catch { /* timeline not ready; the animation still runs */ }
+  return whenAnimEnds(orbAnim, PLAN_GROW_MS).then((finished) => {
+    if (token && shell.dataset.morphToken !== token) return;
+    if (!finished) return;
+    shell.classList.add("is-orb-docked");
+    shell.classList.remove("is-orb-moving");
+    try { orbAnim.commitStyles(); } catch { /* WebKit without commitStyles */ }
+    try { glowAnim?.commitStyles(); } catch { /* WebKit without commitStyles */ }
+    orbAnim.cancel();
+    glowAnim?.cancel();
+    orb.style.transform = "";
+    if (glow) glow.style.transform = "";
+    releaseMotion(orb);
+    releaseMotion(glow);
   });
 }
 
 function releaseContent(shell) {
   shell.querySelectorAll(".content, .morph-body").forEach((el) => {
-    el.style.transition = "";
-    el.style.opacity = "";
+    el.style.removeProperty("transition");
+    el.style.removeProperty("opacity");
   });
 }
 
-/** Freeze the fade so a later class change cannot replay opacity from 0. */
+/** Freeze the fade before a class change, so WebKit cannot replay opacity from 0. */
 function holdContent(shell) {
-  shell.classList.add("is-content-hold");
   shell.querySelectorAll(".content, .morph-body").forEach((el) => {
-    el.style.transition = "none";
     el.style.opacity = "1";
+    el.style.setProperty("transition", "none", "important");
   });
+  shell.classList.add("is-content-hold");
 }
 
 function resetContent(shell) {
@@ -626,21 +766,30 @@ function revealContent(shell) {
 function settleShell(shell, target) {
   markVisual(shell, target);
   shell.classList.remove("is-growing-pill", "is-growing-panel");
-  shell.style.transition = "none";
   const fill = shell.querySelector(".morph-fill");
-  if (fill) fill.style.transition = "none";
   if (target === "panel") {
     holdContent(shell);
-    shell.classList.add("is-orb-docked");
+    if (!shell.classList.contains("is-orb-moving")) shell.classList.add("is-orb-docked");
     if (shell.dataset.contentOnce !== "1") revealContent(shell);
   } else {
-    shell.classList.remove("open", "is-content-hold", "is-orb-docked");
+    shell.classList.remove("open", "is-content-hold", "is-orb-docked", "is-orb-moving");
     shell.dataset.contentOnce = "";
     releaseContent(shell);
   }
-  paintClip(shell, insetsFor(target, shellGeom(shell)), target);
+  const plan = shell.querySelector(".plan-window");
   shell.classList.remove("is-morphing", "is-collapsing");
-  shell.querySelector(".plan-window")?.classList.remove("is-seam-grow");
+  shell.style.removeProperty("overflow");
+  shell.style.background = "";
+  releaseMotion(shell);
+  releaseMotion(fill);
+  if (plan) {
+    plan.classList.remove("is-seam-grow");
+    plan.style.removeProperty("display");
+    plan.style.removeProperty("overflow");
+    plan.style.clipPath = "";
+    releaseMotion(plan);
+  }
+  paintClip(shell, insetsFor(target, shellGeom(shell)), target);
   shell.dataset.opening = "";
   shell.dataset.intent = "";
   if (target === "orb") {
@@ -656,17 +805,18 @@ function settleShell(shell, target) {
 }
 
 function stopShellTransition(shell) {
-  shell.style.transition = "none";
   const fill = shell.querySelector(".morph-fill");
-  if (fill) fill.style.transition = "none";
+  holdMotion(shell);
+  holdMotion(fill);
   cancelClipAnims(shell);
   const plan = shell.querySelector(".plan-window");
   if (plan) {
-    plan.style.transition = "none";
+    holdMotion(plan);
     plan.style.clipPath = "";
+    plan.style.removeProperty("display");
     plan.classList.remove("is-seam-grow");
   }
-  shell.classList.remove("is-growing-pill", "is-growing-panel");
+  shell.classList.remove("is-growing-pill", "is-growing-panel", "is-orb-moving");
 }
 
 async function runShellMorph(shell, target) {
@@ -686,9 +836,11 @@ async function runShellMorph(shell, target) {
     return true;
   }
   if (target === "orb") {
+    holdMotion(shell);
+    holdMotion(shell.querySelector(".morph-fill"));
     shell.dataset.intent = "close";
     shell.classList.add("is-collapsing");
-    shell.classList.remove("is-orb-docked", "is-content-hold", "open");
+    shell.classList.remove("is-orb-docked", "is-orb-moving", "is-content-hold", "open");
     shell.dataset.contentOnce = "";
     shell.dataset.opening = "";
     releaseContent(shell);
@@ -736,8 +888,7 @@ async function runShellMorph(shell, target) {
   }
   if (!alive()) return false;
   if (target === "panel") {
-    shell.classList.add("is-orb-docked");
-    await growPlan(shell, token);
+    await Promise.all([growPlan(shell, token), moveOrbToHeader(shell, token)]);
   }
   if (!alive()) return false;
   settleShell(shell, target);
@@ -1006,6 +1157,9 @@ function ensureBotShell(bot) {
   shell.dataset.hitId = `bot:${bot.id}`;
   const fill = document.createElement("div");
   fill.className = "morph-fill";
+  const glow = document.createElement("div");
+  glow.className = "morph-glow";
+  fill.appendChild(glow);
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "bot-btn morph-orb";
@@ -1037,6 +1191,9 @@ function ensureChromeShell(panel, id, glyph, label, orbClass) {
   shell.dataset.hitId = `bot:${id}`;
   const fill = document.createElement("div");
   fill.className = "morph-fill";
+  const glow = document.createElement("div");
+  glow.className = "morph-glow";
+  fill.appendChild(glow);
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = `bot-btn morph-orb ${orbClass}`;

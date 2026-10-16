@@ -57,14 +57,16 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph \{[^}]*clip-path:\s*inset\(/s);
   assert.match(css, /\.morph\.is-growing-pill \{[^}]*transition:\s*clip-path 200ms cubic-bezier\(\.2,\s*\.8,\s*\.2,\s*1\)/s);
   assert.match(css, /\.morph\.is-growing-panel \{[^}]*transition:\s*clip-path 480ms cubic-bezier\(\.2,\s*\.8,\s*\.2,\s*1\)/s);
-  assert.match(css, /\.morph\.is-collapsing \{[^}]*transition:\s*clip-path 300ms cubic-bezier\(\.4,\s*0,\s*1,\s*1\)/s);
+  assert.match(css, /\.morph\.is-collapsing \{[^}]*pointer-events:\s*none/s);
+  assert.doesNotMatch(css, /\.morph\.is-collapsing \{[^}]*transition:\s*clip-path/s);
+  assert.match(css, /\.morph\.is-morphing \.plan-window\.is-seam-grow[\s\S]{0,240}display:\s*flex/);
   assert.match(css, /\.content \{[^}]*opacity:\s*0/s);
   assert.match(css, /\.content \{[^}]*transition:\s*opacity 160ms linear 320ms/s);
   assert.match(css, /\.open \.content \{[^}]*opacity:\s*1/s);
   assert.match(css, /\.morph\.is-collapsing \.content,[\s\S]*?transition:\s*opacity 80ms linear/);
   assert.match(css, /\.morph-pill \{[^}]*height:\s*44px/s);
   assert.match(css, /\.morph-pill \{[^}]*width:\s*320px/s);
-  assert.match(css, /\.morph\[data-state="panel"\] \.morph-orb \{[^}]*scale\(calc\(28 \/ 44\)\)/s);
+  assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-morphing\) \.morph-orb \{[^}]*scale\(calc\(28 \/ 44\)\)/s);
   assert.match(css, /\.morph\.is-morphing \{[^}]*will-change:\s*clip-path, transform, opacity/s);
   assert.match(css, /\.morph\[data-hit-id\] \{[^}]*will-change:\s*auto/s);
   assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\) \{[\s\S]*\.morph-body,\s*\.morph-pill \{[^}]*opacity 120ms linear/);
