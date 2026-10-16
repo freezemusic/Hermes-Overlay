@@ -292,6 +292,8 @@ html, body {
   opacity: 0;
 }
 
+.orb--cron .bot-label { background: rgba(248, 248, 252, .82); }
+
 .bot-btn:hover::before { opacity: 1; transform: scale(1.08); }
 .bot-btn:hover .bot-label { color: var(--bot); }
 
@@ -345,7 +347,7 @@ html, body {
   z-index: 2;
   opacity: 1;
   transform: none;
-  background: repeating-conic-gradient(rgba(97, 97, 145, .55) 0 2deg, transparent 2deg 30deg);
+  background: repeating-conic-gradient(rgba(97, 97, 145, .45) 0 2deg, transparent 2deg 30deg);
   -webkit-mask: radial-gradient(circle closest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
   mask: radial-gradient(circle closest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
   animation: none;
@@ -538,9 +540,11 @@ html, body {
 
 .cron-list {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 12px;
   min-height: 0;
+  overflow: auto;
 }
 
 .cron-cards {
@@ -607,17 +611,22 @@ html, body {
 .cron-dot,
 .cron-arc {
   flex: none;
-  width: 8px;
-  height: 8px;
   margin-top: 4px;
   border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.cron-dot {
+  width: 6px;
+  height: 6px;
 }
 
 .cron-dot.is-on { background: #0000f2; }
 
 .cron-dot.is-off {
   background: transparent;
-  box-shadow: inset 0 0 0 1px #616191;
+  border: 1px solid #616191;
+  box-shadow: none;
 }
 
 .cron-arc {
@@ -640,27 +649,18 @@ html, body {
   width: 8px;
   height: 8px;
   pointer-events: none;
-  border: 1px solid var(--nous-blue);
-  z-index: 2;
+  border: 1px solid rgba(0, 0, 242, .4);
+  z-index: 6;
 }
 
-.hud-corner { z-index: 6; }
 .cron-panel > .hud-corner {
   display: block;
-  width: 8px;
-  height: 8px;
   z-index: 8;
 }
-/* The cron shell hairline is solid #0000f2. A mark at 0 sits on that stroke
-   and disappears. 1px puts the L on the glass, inside the hairline. */
-.cron-panel > .hud-corner.tl { top: 1px; left: 1px; }
-.cron-panel > .hud-corner.tr { top: 1px; right: 1px; }
-.cron-panel > .hud-corner.bl { bottom: 1px; left: 1px; }
-.cron-panel > .hud-corner.br { bottom: 1px; right: 1px; }
-.hud-corner.tl { top: 0; left: 0; border-right: 0; border-bottom: 0; }
-.hud-corner.tr { top: 0; right: 0; border-left: 0; border-bottom: 0; }
-.hud-corner.bl { bottom: 0; left: 0; border-right: 0; border-top: 0; }
-.hud-corner.br { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+.hud-corner.tl { top: -3px; left: -3px; border-right: 0; border-bottom: 0; }
+.hud-corner.tr { top: -3px; right: -3px; border-left: 0; border-bottom: 0; }
+.hud-corner.bl { bottom: -3px; left: -3px; border-right: 0; border-top: 0; }
+.hud-corner.br { bottom: -3px; right: -3px; border-left: 0; border-top: 0; }
 
 .panel-header,
 .settings-head,
@@ -964,8 +964,9 @@ html, body {
   overflow-x: auto;
   background: #000;
   color: #fff;
-  border: var(--hair);
-  border-radius: var(--r-sm);
+  border: 1px solid var(--bot-20);
+  border-radius: 2px;
+  font: 400 11px/1.45 var(--font-mono);
   white-space: pre;
 }
 
@@ -974,6 +975,7 @@ html, body {
   border: 0;
   color: inherit;
   padding: 0;
+  font: inherit;
 }
 
 .plan-body .code-copy {
@@ -1028,27 +1030,30 @@ html, body {
 
 .bot-sheet { overflow-y: auto; }
 
-.morph[data-state="panel"][data-plan-open="1"]:not(.is-morphing):not(.is-collapsing) {
-  overflow: visible;
-  clip-path: none !important;
-}
+.plan-window::before { display: none; }
 
 .morph .plan-window {
   position: absolute;
-  left: calc(100% - 1px);
+  left: 100%;
   top: 0;
   width: min(420px, 42vw);
   height: 100%;
   z-index: 3;
-  border-left-width: 0;
-  box-shadow: 0 0 0 1px rgba(0, 0, 242, .45), 0 6px 24px rgba(0, 0, 242, .12);
+  margin-left: 0;
+  overflow: visible;
+  border-left: none;
+  border-radius: 0 var(--r-panel) var(--r-panel) 0;
+  box-shadow: none;
 }
 
 .morph[data-plan-side="left"] .plan-window {
   left: auto;
-  right: calc(100% - 1px);
-  border-left-width: 1px;
-  border-right-width: 0;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 0;
+  border-left: 1px solid var(--nous-blue);
+  border-right: none;
+  border-radius: var(--r-panel) 0 0 var(--r-panel);
 }
 
 .morph:not([data-state="panel"]) .plan-window,
@@ -1213,8 +1218,9 @@ html, body {
   overflow-x: auto;
   background: #000;
   color: #fff;
-  border: var(--hair);
-  border-radius: var(--r-sm);
+  border: 1px solid var(--bot-20);
+  border-radius: 2px;
+  font: 400 11px/1.45 var(--font-mono);
   white-space: pre;
 }
 
@@ -1223,6 +1229,7 @@ html, body {
   border: 0;
   color: inherit;
   padding: 0;
+  font: inherit;
 }
 
 .bubble.bot .code-copy {
@@ -1263,9 +1270,9 @@ html, body {
   align-self: flex-end;
   margin-left: auto;
   max-width: 85%;
-  background: rgb(var(--bot-rgb) / .22);
+  background: var(--bot-10);
   border: 1px solid var(--bot-60);
-  color: #000091;
+  color: var(--bot);
 }
 
 .user-line { white-space: pre-wrap; }
@@ -1775,6 +1782,46 @@ html, body {
 .morph[data-kind="bot"][data-state="panel"][data-plan-open="1"] {
   filter: none;
   box-shadow: 0 0 0 1px rgba(0, 0, 242, .45), 0 6px 24px rgba(0, 0, 242, .12);
+}
+
+/* Settled panels paint the 8px L outside the frame. The shell stays
+   transparent so the square border box does not fill the corner, and the
+   hairline moves onto the fill, which keeps its own rounded clip. */
+.morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) {
+  overflow: visible;
+  background: transparent;
+  filter: none;
+  box-shadow: none;
+  clip-path: none !important;
+}
+
+.morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .center-panel {
+  overflow: visible;
+}
+
+.morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .morph-fill {
+  clip-path: inset(0 round 3px) !important;
+  box-shadow: inset 0 0 0 1px #0000f2;
+  filter: none;
+}
+
+.morph[data-state="panel"][data-plan-open="1"]:not(.is-morphing):not(.is-collapsing):not([data-plan-side="left"]) .morph-fill {
+  clip-path: inset(0 round 3px 0 0 3px) !important;
+}
+
+.morph[data-state="panel"][data-plan-open="1"][data-plan-side="left"]:not(.is-morphing):not(.is-collapsing) .morph-fill {
+  clip-path: inset(0 round 0 3px 3px 0) !important;
+}
+
+.morph[data-plan-open="1"]:not([data-plan-side="left"]) > .center-panel > .hud-corner.tr,
+.morph[data-plan-open="1"]:not([data-plan-side="left"]) > .center-panel > .hud-corner.br,
+.morph[data-plan-open="1"]:not([data-plan-side="left"]) > .plan-window > .hud-corner.tl,
+.morph[data-plan-open="1"]:not([data-plan-side="left"]) > .plan-window > .hud-corner.bl,
+.morph[data-plan-open="1"][data-plan-side="left"] > .center-panel > .hud-corner.tl,
+.morph[data-plan-open="1"][data-plan-side="left"] > .center-panel > .hud-corner.bl,
+.morph[data-plan-open="1"][data-plan-side="left"] > .plan-window > .hud-corner.tr,
+.morph[data-plan-open="1"][data-plan-side="left"] > .plan-window > .hud-corner.br {
+  display: none;
 }
 
 .morph.is-collapsing {

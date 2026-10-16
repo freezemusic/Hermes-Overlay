@@ -18,6 +18,8 @@ export const CONTENT_OUT_MS = 100;
 export const CONTENT_IN_MS = 160;
 export const CONTENT_IN_DELAY_MS = PILL_PANEL_MS - CONTENT_IN_MS;
 export const STACK_GAP = 12;
+/** HUD corner L sits this far outside the frame. Both sides count toward the visible gap. */
+export const FRAME_BLEED = 3;
 export const EASE = "cubic-bezier(.2,.8,.2,1)";
 export const PREVIEW_MS = 5_000;
 
@@ -199,7 +201,7 @@ export function includePlan(box, plan) {
     edge: box.edge || "",
   };
   if (!plan || !(plan.width > 0)) return next;
-  const overlap = Number.isFinite(plan.overlap) ? plan.overlap : 1;
+  const overlap = Number.isFinite(plan.overlap) ? plan.overlap : 0;
   const extra = Math.max(0, plan.width - overlap);
   if (plan.side === "left") next.left -= extra;
   next.width += extra;

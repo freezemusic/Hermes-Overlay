@@ -25,6 +25,7 @@ import {
   separateStackedPanels,
   includePlan,
   slotPoint,
+  FRAME_BLEED,
   STACK_GAP,
   tighten,
 } from "./morph.js";
@@ -389,7 +390,7 @@ function separateOpenShells(shells) {
     dock.shell = shell;
     return dock;
   });
-  const after = separateStackedPanels(before, vh, STACK_GAP);
+  const after = separateStackedPanels(before, vh, STACK_GAP + 2 * FRAME_BLEED);
   after.forEach((box, index) => {
     const prev = before[index];
     if (Math.abs(box.top - prev.top) < 0.5 && Math.abs(box.height - prev.height) < 0.5) return;

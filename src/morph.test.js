@@ -27,6 +27,7 @@ import {
   iconShift,
   placeShell,
   previewBlocked,
+  FRAME_BLEED,
   includePlan,
   separateStackedPanels,
   screenEdge,
@@ -189,8 +190,9 @@ test("open top and bottom panels keep a 12px gap", () => {
     { top: 40, height: 400, left: 40, width: 420, edge: "top" },
     { side: "right", width: 420 },
   );
+  assert.equal(FRAME_BLEED, 3);
   assert.equal(withPlan.left, 40);
-  assert.equal(withPlan.width, 839);
+  assert.equal(withPlan.width, 840);
   assert.equal(withPlan.height, 400);
   const docked = separateStackedPanels([
     withPlan,
