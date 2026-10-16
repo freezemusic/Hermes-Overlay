@@ -117,6 +117,8 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.kanban-col-head \{[^}]*color:\s*var\(--nous-blue\)/s);
   assert.match(css, /\.orb-core \{[^}]*#fff 0 36%/s);
   assert.doesNotMatch(css, /\.orb-core \{[^}]*var\(--bot-20\) 55%/s);
+  assert.match(css, /\.bot-btn\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity,\s*0\.18\)/s);
+  assert.match(html, /光球（包括設定同看板）預設半透明/);
   assert.match(css, /\.bot-btn::before,[\s\S]*?rgb\(var\(--bot-rgb\) \/ \.55\)/);
   assert.match(css, /\.plan-preview \{[^}]*border:\s*1px solid var\(--nous-blue\)/s);
   assert.match(css, /\.plan-preview \{[^}]*border-radius:\s*var\(--r-panel\)/s);

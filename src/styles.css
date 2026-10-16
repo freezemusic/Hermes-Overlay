@@ -1314,6 +1314,10 @@ html, body {
   will-change: opacity;
 }
 
+.bot-btn[data-hit-id] {
+  opacity: var(--hit-opacity, 0.18);
+}
+
 .field {
   display: flex;
   flex-direction: column;

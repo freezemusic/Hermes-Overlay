@@ -6,6 +6,7 @@ import {
   distanceToRect,
   elementOpacity,
   elementStates,
+  isOrbHit,
   isPanelHit,
   focusLossAction,
   osFocusAction,
@@ -56,30 +57,42 @@ test("cursor near a panel does not fade it", () => {
   const held = elementStates({ held: true, cursor, rects: sampleBots, ...fadeOpts });
   const idle = elementStates({ held: false, cursor, rects: sampleBots, ...fadeOpts });
   assert.ok(held.every((item) => !item.capture));
-  assert.ok(idle.every((item) => !item.capture && item.opacity === 1));
-  assert.equal(byId(held, "bot:a").opacity, 1);
+  assert.ok(idle.every((item) => !item.capture));
+  assert.equal(byId(held, "bot:a").opacity, 0.18);
+  assert.equal(byId(idle, "bot:a").opacity, 0.18);
+  assert.equal(byId(idle, "center").opacity, 1);
   assert.equal(byId(held, "center").opacity, 0.18);
 
   const outside = { x: 70, y: 20 };
   const near = elementStates({ held: false, cursor: outside, rects: sampleBots, ...fadeOpts });
-  assert.ok(near.every((item) => item.opacity === 1 && !item.capture));
+  assert.equal(byId(near, "bot:a").opacity, 0.18);
+  assert.equal(byId(near, "bot:a").capture, false);
+  assert.equal(byId(near, "center").opacity, 1);
+  assert.equal(byId(near, "center").capture, false);
 });
 
-test("unheld cursor captures the element under it; modifier washes panels out", () => {
+test("orbs stay faded and click-through until the modifier is held over one", () => {
   const overA = elementStates({ held: false, cursor: { x: 20, y: 20 }, rects: sampleBots, ...fadeOpts });
-  assert.equal(byId(overA, "bot:a").opacity, 1);
-  assert.equal(byId(overA, "bot:a").capture, true);
-  assert.equal(byId(overA, "bot:b").opacity, 1);
+  assert.equal(byId(overA, "bot:a").opacity, 0.18);
+  assert.equal(byId(overA, "bot:a").capture, false);
+  assert.equal(byId(overA, "bot:b").opacity, 0.18);
   assert.equal(byId(overA, "bot:b").capture, false);
   assert.equal(byId(overA, "center").opacity, 1);
   assert.equal(byId(overA, "center").capture, false);
-  assert.equal(overA.filter((item) => item.capture).length, 1);
+  assert.equal(overA.filter((item) => item.capture).length, 0);
 
   const held = elementStates({ held: true, cursor: { x: 20, y: 20 }, rects: sampleBots, ...fadeOpts });
-  assert.ok(held.every((item) => !item.capture));
   assert.equal(byId(held, "bot:a").opacity, 1);
+  assert.equal(byId(held, "bot:a").capture, true);
+  assert.equal(byId(held, "bot:b").opacity, 0.18);
+  assert.equal(byId(held, "bot:b").capture, false);
   assert.equal(byId(held, "toast:1").opacity, 1);
+  assert.equal(byId(held, "toast:1").capture, false);
   assert.equal(byId(held, "center").opacity, 0.18);
+  assert.equal(byId(held, "center").capture, false);
+  assert.equal(isOrbHit({ id: "bot:settings", round: true }), true);
+  assert.equal(isOrbHit({ id: "bot:kanban" }), true);
+  assert.equal(isPanelHit({ id: "center" }), true);
 
   const overCenter = elementStates({
     held: false,
@@ -110,22 +123,22 @@ test("round avatar ignores bounding-box corners", () => {
     ...fadeOpts,
   });
   assert.equal(frames[0].capture, false);
-  assert.equal(frames[0].opacity, 1);
+  assert.equal(frames[0].opacity, 0.18);
   const rim = elementStates({
     held: false,
     cursor: { x: 110, y: 50 },
     rects: [orb],
     ...fadeOpts,
   });
-  assert.equal(rim[0].capture, true);
-  assert.equal(rim[0].opacity, 1);
+  assert.equal(rim[0].capture, false);
+  assert.equal(rim[0].opacity, 0.18);
   const heldRim = elementStates({
     held: true,
     cursor: { x: 110, y: 50 },
     rects: [orb],
     ...fadeOpts,
   });
-  assert.equal(heldRim[0].capture, false);
+  assert.equal(heldRim[0].capture, true);
   assert.equal(heldRim[0].opacity, 1);
   const square = elementStates({
     held: false,

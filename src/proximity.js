@@ -51,12 +51,19 @@ export function elementOpacity({ solid, distance, fadeDistance, minOpacity, fade
   return opacityForDistance(distance, fadeDistance, minOpacity, fadeEnabled);
 }
 
-/** Panels wash out while the modifier is held. Orbs and toasts stay visually solid. */
+/** Panels wash out while the modifier is held. Orbs and toasts are not panels. */
 export function isPanelHit(rect) {
   if (!rect || rect.round) return false;
   const id = String(rect.id || "");
   if (id.startsWith("bot:") || id.startsWith("toast:")) return false;
   return true;
+}
+
+/** Bot, settings, and kanban orbs. Round hits and `bot:` ids both count. */
+export function isOrbHit(rect) {
+  if (!rect) return false;
+  if (rect.round) return true;
+  return String(rect.id || "").startsWith("bot:");
 }
 
 /** CSS pixels around a hit rect that still count as under the cursor. */
@@ -90,9 +97,11 @@ function preferHit(candidate, current) {
 }
 
 /**
- * Panels stay opaque. The cursor captures whatever it is over.
- * Holding the modifier makes every panel transparent and the window click-through.
- * Distance does not change opacity. Orbs and toasts stay visually opaque while held.
+ * Panels stay opaque and capture the cursor. Holding the modifier washes every
+ * panel out and captures none of them.
+ * Orbs stay faded and click-through. Only the orb under or near the cursor
+ * turns solid and clickable while the modifier is held.
+ * Toasts stay visually solid and are clickable only when the modifier is up.
  */
 export function elementStates({
   held = false,
@@ -105,13 +114,19 @@ export function elementStates({
   const under = elementUnderCursor(cursor, rects, margin, latchedIds);
   const floor = Number.isFinite(minOpacity) ? minOpacity : 0.18;
   return rects.map((rect) => {
-    const panel = isPanelHit(rect);
-    const opacity = cursor && held && panel ? floor : 1;
-    return {
-      id: rect.id,
-      opacity,
-      capture: !!cursor && under === rect.id && !held,
-    };
+    const here = !!cursor && under === rect.id;
+    if (isOrbHit(rect)) {
+      const awake = here && held;
+      return { id: rect.id, opacity: awake ? 1 : floor, capture: awake };
+    }
+    if (isPanelHit(rect)) {
+      return {
+        id: rect.id,
+        opacity: cursor && held ? floor : 1,
+        capture: here && !held,
+      };
+    }
+    return { id: rect.id, opacity: 1, capture: here && !held };
   });
 }
 

@@ -1,10 +1,10 @@
-//! Hit testing: the cursor captures the element under it, and panels stay opaque.
-//! Holding the modifier makes panels transparent and the window click-through.
+//! Hit testing. Panels stay opaque and capture the cursor until the modifier is held.
+//! Orbs stay faded and click-through until the modifier is held over that orb.
 
 use crate::config::InteractionConfig;
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -190,19 +190,24 @@ fn id_listed(ids: &[String], id: &str) -> bool {
     ids.iter().any(|item| item == id)
 }
 
-/// Round avatars and toasts stay visually opaque. Everything else is a panel.
+/// Round avatars and toasts are not panels. Everything else is a panel.
 pub fn is_panel_hit(rect: &HitRect) -> bool {
-    if rect.round {
+    if is_orb_hit(rect) {
         return false;
     }
-    let id = rect.id.as_str();
-    !id.starts_with("bot:") && !id.starts_with("toast:")
+    !rect.id.starts_with("toast:")
+}
+
+/// Bot, settings, and kanban orbs. A round hit or a `bot:` id both count.
+pub fn is_orb_hit(rect: &HitRect) -> bool {
+    rect.round || rect.id.starts_with("bot:")
 }
 
 /// Per-element frame.
-/// Without the modifier, the element under the cursor is opaque and captured.
-/// Holding the modifier drops every panel to `min_opacity` and captures nothing.
-/// Distance does not change opacity. A missing cursor does not capture.
+/// Panels are opaque and captured until the modifier is held, then they wash out
+/// and capture nothing. Orbs stay at `min_opacity` and click-through until the
+/// modifier is held over that orb, which turns it solid and clickable.
+/// Toasts stay visually solid. A missing cursor does not capture.
 pub fn interaction_frame(
     held: bool,
     latched_ids: &[String],
@@ -216,12 +221,20 @@ pub fn interaction_frame(
     rects
         .iter()
         .map(|rect| {
-            let opacity = if cursor.is_some() && held && is_panel_hit(rect) {
-                cfg.min_opacity
+            let here = cursor.is_some() && under.as_deref() == Some(rect.id.as_str());
+            let (opacity, capture) = if is_orb_hit(rect) {
+                let awake = here && held;
+                (if awake { 1.0 } else { cfg.min_opacity }, awake)
+            } else if is_panel_hit(rect) {
+                let opacity = if cursor.is_some() && held {
+                    cfg.min_opacity
+                } else {
+                    1.0
+                };
+                (opacity, here && !held)
             } else {
-                1.0
+                (1.0, here && !held)
             };
-            let capture = cursor.is_some() && under.as_deref() == Some(rect.id.as_str()) && !held;
             ElementFrame {
                 id: rect.id.clone(),
                 opacity: round_opacity(opacity),
@@ -551,6 +564,152 @@ struct OpacityItem {
     id: String,
     opacity: f64,
     capture: bool,
+}
+
+static RECOVER_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
+
+/// Cover the monitor. `center` plus `maximized` can leave a borderless window at
+/// the configured 1280×800, and a later position change restores that size.
+pub fn place_overlay(window: &tauri::WebviewWindow) {
+    let _ = window.set_always_on_top(true);
+    #[cfg(windows)]
+    if cover_windows_monitor(window) {
+        let _ = window.set_focus();
+        return;
+    }
+    let _ = window.maximize();
+    let _ = window.set_focus();
+}
+
+/// A cold start that stayed at the config size is not covering the monitor.
+pub fn recover_startup_size(window: &tauri::WebviewWindow, width: u32, height: u32) {
+    if RECOVER_ATTEMPTS.load(Ordering::Relaxed) >= 4 {
+        return;
+    }
+    let Some((mon_w, mon_h)) = monitor_size(window) else {
+        return;
+    };
+    if width + 8 >= mon_w && height + 8 >= mon_h {
+        return;
+    }
+    let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
+    let fallback_w = (1280.0 * scale).round() as u32;
+    let fallback_h = (800.0 * scale).round() as u32;
+    if width.abs_diff(fallback_w) <= 4 && height.abs_diff(fallback_h) <= 4 {
+        RECOVER_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+        place_overlay(window);
+    }
+}
+
+fn monitor_size(window: &tauri::WebviewWindow) -> Option<(u32, u32)> {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())?;
+    let size = monitor.size();
+    Some((size.width, size.height))
+}
+
+#[cfg(windows)]
+fn cover_windows_monitor(window: &tauri::WebviewWindow) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct WinRect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+    #[repr(C)]
+    struct MonitorInfo {
+        cb_size: u32,
+        rc_monitor: WinRect,
+        rc_work: WinRect,
+        flags: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
+        fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MonitorInfo) -> i32;
+        fn GetWindowLongW(hwnd: *mut c_void, index: i32) -> i32;
+        fn SetWindowLongW(hwnd: *mut c_void, index: i32, value: i32) -> i32;
+        fn SetWindowPos(
+            hwnd: *mut c_void,
+            insert_after: *mut c_void,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else {
+        return false;
+    };
+    let hwnd = win.hwnd.get() as *mut c_void;
+    if hwnd.is_null() {
+        return false;
+    }
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, 2);
+        if monitor.is_null() {
+            return false;
+        }
+        let mut info = MonitorInfo {
+            cb_size: std::mem::size_of::<MonitorInfo>() as u32,
+            rc_monitor: WinRect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            rc_work: WinRect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            flags: 0,
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return false;
+        }
+        const GWL_STYLE: i32 = -16;
+        const WS_MAXIMIZE: i32 = 0x0100_0000;
+        let style = GetWindowLongW(hwnd, GWL_STYLE);
+        if style & WS_MAXIMIZE != 0 {
+            SetWindowLongW(hwnd, GWL_STYLE, style & !WS_MAXIMIZE);
+        }
+        let width = info.rc_monitor.right - info.rc_monitor.left;
+        let height = info.rc_monitor.bottom - info.rc_monitor.top;
+        if width <= 0 || height <= 0 {
+            return false;
+        }
+        const SWP_SHOWWINDOW: u32 = 0x0040;
+        const SWP_FRAMECHANGED: u32 = 0x0020;
+        SetWindowPos(
+            hwnd,
+            (-1isize) as *mut c_void,
+            info.rc_monitor.left,
+            info.rc_monitor.top,
+            width,
+            height,
+            SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+        ) != 0
+    }
+}
+
+#[cfg(not(windows))]
+fn cover_windows_monitor(_window: &tauri::WebviewWindow) -> bool {
+    false
 }
 
 pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
@@ -1176,13 +1335,14 @@ mod tests {
         let idle = interaction_frame(false, &[], far, &rects, HIT_MARGIN_PX, &cfg);
         assert!(held.iter().all(|item| !item.capture));
         assert!(idle.iter().all(|item| !item.capture));
-        assert!((frame_of(&held, "a").opacity - 1.0).abs() < 0.001);
+        assert!((frame_of(&held, "a").opacity - 0.18).abs() < 0.001);
         assert!((frame_of(&held, "center").opacity - 0.18).abs() < 0.001);
-        assert!(idle.iter().all(|item| (item.opacity - 1.0).abs() < 0.001));
+        assert!((frame_of(&idle, "a").opacity - 0.18).abs() < 0.001);
+        assert!((frame_of(&idle, "center").opacity - 1.0).abs() < 0.001);
 
         let outside_margin = Some((70.0, 20.0));
         let near = interaction_frame(false, &[], outside_margin, &rects, HIT_MARGIN_PX, &cfg);
-        assert!((frame_of(&near, "a").opacity - 1.0).abs() < 0.001);
+        assert!((frame_of(&near, "a").opacity - 0.18).abs() < 0.001);
         assert!(!frame_of(&near, "a").capture);
         assert!((frame_of(&near, "center").opacity - 1.0).abs() < 0.001);
     }
@@ -1192,17 +1352,20 @@ mod tests {
         let rects = bots();
         let cfg = fade_cfg();
         let over_a = interaction_frame(false, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
-        assert_eq!(frame_of(&over_a, "a").opacity, 1.0);
-        assert!(frame_of(&over_a, "a").capture);
-        assert_eq!(frame_of(&over_a, "b").opacity, 1.0);
+        assert!((frame_of(&over_a, "a").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&over_a, "a").capture);
+        assert!((frame_of(&over_a, "b").opacity - 0.18).abs() < 0.001);
         assert!(!frame_of(&over_a, "b").capture);
         assert_eq!(frame_of(&over_a, "center").opacity, 1.0);
         assert!(!frame_of(&over_a, "center").capture);
-        assert_eq!(over_a.iter().filter(|item| item.capture).count(), 1);
+        assert_eq!(over_a.iter().filter(|item| item.capture).count(), 0);
 
         let held = interaction_frame(true, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
-        assert!(held.iter().all(|item| !item.capture));
+        assert!(frame_of(&held, "a").capture);
         assert_eq!(frame_of(&held, "a").opacity, 1.0);
+        assert!(!frame_of(&held, "b").capture);
+        assert!((frame_of(&held, "b").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&held, "center").capture);
         assert!((frame_of(&held, "center").opacity - 0.18).abs() < 0.001);
 
         let over_center =
@@ -1222,8 +1385,8 @@ mod tests {
         let away = interaction_frame(false, &latched, cursor_on_a, &rects, HIT_MARGIN_PX, &cfg);
         assert_eq!(frame_of(&away, "center").opacity, 1.0);
         assert!(!frame_of(&away, "center").capture);
-        assert_eq!(frame_of(&away, "a").opacity, 1.0);
-        assert!(frame_of(&away, "a").capture);
+        assert!((frame_of(&away, "a").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&away, "a").capture);
 
         let over_center = interaction_frame(
             false,
@@ -1243,12 +1406,30 @@ mod tests {
     fn capture_follows_the_padded_rect_until_the_modifier_is_held() {
         let rects = [rect()];
         let cfg = fade_cfg();
-        let inside =
-            interaction_frame(false, &[], Some((110.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
-        let padded =
-            interaction_frame(false, &[], Some((152.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
-        let outside =
-            interaction_frame(false, &[], Some((170.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
+        let inside = interaction_frame(
+            false,
+            &[],
+            Some((110.0, 110.0)),
+            &rects,
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        let padded = interaction_frame(
+            false,
+            &[],
+            Some((152.0, 110.0)),
+            &rects,
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        let outside = interaction_frame(
+            false,
+            &[],
+            Some((170.0, 110.0)),
+            &rects,
+            HIT_MARGIN_PX,
+            &cfg,
+        );
         let held = interaction_frame(true, &[], Some((110.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
         let missing = interaction_frame(false, &[], None, &rects, HIT_MARGIN_PX, &cfg);
         assert!(inside[0].capture && inside[0].opacity == 1.0);
@@ -1366,10 +1547,21 @@ mod tests {
             HIT_MARGIN_PX,
             &cfg,
         );
-        assert!(inside[0].capture);
-        assert!(padded[0].capture && padded[0].opacity == 1.0);
+        assert!(!inside[0].capture);
+        assert!((inside[0].opacity - 0.18).abs() < 0.001);
+        assert!(!padded[0].capture);
+        assert!((padded[0].opacity - 0.18).abs() < 0.001);
+        let held_orb = interaction_frame(
+            true,
+            &[],
+            Some((110.0, 50.0)),
+            &[orb.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(held_orb[0].capture && held_orb[0].opacity == 1.0);
         assert!(!bbox_corner[0].capture);
-        assert!((bbox_corner[0].opacity - 1.0).abs() < 0.001);
+        assert!((bbox_corner[0].opacity - 0.18).abs() < 0.001);
 
         let mut square = orb;
         square.round = false;
@@ -1392,6 +1584,41 @@ mod tests {
         );
         assert!(!held_panel[0].capture);
         assert!((held_panel[0].opacity - 0.18).abs() < 0.001);
+    }
+
+    #[test]
+    fn settings_and_kanban_orbs_stay_faded_until_the_modifier_is_held() {
+        let cfg = fade_cfg();
+        let rects = vec![
+            HitRect {
+                id: "bot:settings".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 40.0,
+                z: 0,
+                round: true,
+            },
+            HitRect {
+                id: "bot:kanban".into(),
+                x: 80.0,
+                y: 0.0,
+                w: 40.0,
+                h: 40.0,
+                z: 0,
+                round: true,
+            },
+        ];
+        let idle = interaction_frame(false, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(is_orb_hit(&rects[0]) && is_orb_hit(&rects[1]));
+        assert!(!frame_of(&idle, "bot:settings").capture);
+        assert!((frame_of(&idle, "bot:settings").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&idle, "bot:kanban").capture);
+        let held = interaction_frame(true, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&held, "bot:settings").capture);
+        assert_eq!(frame_of(&held, "bot:settings").opacity, 1.0);
+        assert!(!frame_of(&held, "bot:kanban").capture);
+        assert!((frame_of(&held, "bot:kanban").opacity - 0.18).abs() < 0.001);
     }
 
     #[test]

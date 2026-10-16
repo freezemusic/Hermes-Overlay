@@ -241,8 +241,16 @@ function chatOf(id) {
 function hintText() {
   const name = modifierLabel(state.interaction.modifier);
   return state.interaction.supported
-    ? `按住 ${name}：面板變透明，滑鼠穿透。放開就實色，可以拖同點。`
+    ? `光球預設半透明同穿透。按住 ${name}，游標下嗰粒先變實色、可以點同右鍵隱藏。面板預設實色，可以拖同點；按住 ${name} 就變透明並穿透。`
     : "呢個環境讀唔到全域游標或修飾鍵，所以保持可點擊，唔會穿透。";
+}
+
+function modifierHeld(event) {
+  if (state.interaction.supported === false) return true;
+  const kind = state.interaction.modifier || "ctrl";
+  if (kind === "shift") return !!event.shiftKey;
+  if (kind === "alt") return !!event.altKey;
+  return !!event.ctrlKey;
 }
 
 const panelMotion = new WeakMap();
@@ -520,6 +528,7 @@ function renderBots() {
       btn.addEventListener("click", () => selectBot(bot.id));
       btn.addEventListener("contextmenu", (event) => {
         event.preventDefault();
+        if (!modifierHeld(event)) return;
         event.stopPropagation();
         openOrbMenu(bot.id, event.clientX, event.clientY);
       });

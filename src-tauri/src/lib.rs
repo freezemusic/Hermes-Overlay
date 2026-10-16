@@ -1668,18 +1668,28 @@ pub fn run() {
                     .unwrap_or_else(|err| err.into_inner()) = cfg.interaction;
             }
             let hub = Arc::clone(&app.state::<AppState>().interaction);
-            interaction::spawn_poll(app.handle().clone(), hub);
             if let Some(window) = app.get_webview_window("main") {
+                // 無邊框透明視窗喺未顯示時會跳過 SW_MAXIMIZE，再加 center 就停喺 1280×800。
+                interaction::place_overlay(&window);
                 interaction::install_option_menu_hook(&window);
+                let placed = window.clone();
                 // 置頂之後約 1 秒先拒絕 CloseRequested。過咗就俾 Alt+F4 / wmctrl -c 結束。
-                window.on_window_event(|event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                window.on_window_event(move |event| match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
                         if interaction::refuse_window_close() {
                             api.prevent_close();
                         }
                     }
+                    tauri::WindowEvent::Resized(size) => {
+                        interaction::recover_startup_size(&placed, size.width, size.height);
+                    }
+                    tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                        interaction::place_overlay(&placed);
+                    }
+                    _ => {}
                 });
             }
+            interaction::spawn_poll(app.handle().clone(), hub);
             #[cfg(unix)]
             install_unix_signal_exit(app.handle().clone());
             if let Err(err) = install_escape_hatches(app.handle()) {

@@ -125,7 +125,7 @@
 
           <fieldset class="experimental">
             <legend>游標同穿透</legend>
-            <p class="hint">面板預設實色。游標喺面板上面就可以拖同點。按住修飾鍵時，面板變透明，成個視窗穿透，方便你撳下面嘅程式。修飾鍵放開就回復實色。輸入框聚焦唔使按住修飾鍵。</p>
+            <p class="hint">光球（包括設定同看板）預設半透明，滑鼠穿透，唔會接點擊或 hover。按住修飾鍵時，游標下面嗰粒光球先變實色、可以點；右鍵隱藏都只喺按住修飾鍵時先有效。放開就回復穿透。面板預設實色，游標喺面板上面就可以拖同點。按住修飾鍵時，面板變透明並穿透。輸入框聚焦唔使按住修飾鍵。</p>
             <label class="field">
               <span>修飾鍵</span>
               <select id="interaction-modifier">
@@ -138,7 +138,7 @@
               Linux 視窗管理員常用 Alt 拖移視窗（xfwm4 預設，GNOME／KDE 都常見）。揀 Alt 之後，Alt+click 可能去唔到呢個程式，設定就開唔返。可以用快捷鍵 Ctrl+Shift+Alt+H，或者系統匣選單「設定」。
             </p>
             <label class="field">
-              <span>按住修飾鍵時面板透明度（%）</span>
+              <span>按住修飾鍵時面板透明度（%），亦係光球平時嘅透明度</span>
               <input id="interaction-min-opacity" type="number" min="5" max="60" step="1" value="18" />
             </label>
             <p id="interaction-support" class="hint"></p>
