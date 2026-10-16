@@ -32,6 +32,9 @@ import {
   FRAME_BLEED,
   includePlan,
   revealClip,
+  seamInsets,
+  cronShellHeight,
+  chatTailAction,
   separateStackedPanels,
   screenEdge,
   slotPoint,
@@ -172,6 +175,31 @@ test("pill to panel grows out of the orb corner on every edge", () => {
     revealClip("orb", bottomLeft),
     "inset(calc(100% - var(--pill-h)) calc(100% - var(--pill-h)) 0 0 round 999px)",
   );
+  const grown = insetsFor("pill", bottomLeft);
+  const full = insetsFor("panel", bottomLeft);
+  assert.equal(grown.radius, ORB / 2);
+  assert.equal(full.radius, PANEL_RADIUS);
+  assert.equal(clipPath(grown).includes("round 999px"), false);
+  assert.match(clipPath(grown), /round 22px/);
+  assert.match(clipPath(full), /round 3px/);
+  assert.equal(grown.left, 0);
+  assert.equal(grown.bottom, 0);
+  assert.ok(grown.top > 0 && grown.right > 0);
+});
+
+test("plan seam and cron height and chat tail use explicit pixels", () => {
+  assert.equal(seamInsets(420, "right", false).right, 420);
+  assert.equal(seamInsets(420, "right", true).right, 0);
+  assert.equal(seamInsets(380, "left", false).left, 380);
+  assert.equal(seamInsets(380, "left", true).left, 0);
+  assert.equal(seamInsets(420, "right", false).radius, PANEL_RADIUS);
+  assert.equal(cronShellHeight(0, 900), 140);
+  assert.equal(cronShellHeight(400, 900), 400);
+  assert.equal(cronShellHeight(800, 900), 630);
+  assert.equal(chatTailAction({ followTail: true, userGesture: false, nearTail: false }), "pin");
+  assert.equal(chatTailAction({ followTail: false, userGesture: false, nearTail: false }), "restore");
+  assert.equal(chatTailAction({ followTail: true, userGesture: true, nearTail: false }), "remember");
+  assert.equal(chatTailAction({ followTail: false, userGesture: true, nearTail: true }), "pin");
 });
 
 test("collapse is one 300ms ease-in and content fades inside that window", () => {

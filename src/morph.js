@@ -146,6 +146,37 @@ export function clipPath(insets) {
 }
 
 /**
+ * Plan window clip in pixels. A right dock starts with the whole width
+ * eaten on the right, so only the seam (left edge) is visible. A left dock
+ * eats the left side. `revealed` is the open rect.
+ */
+export function seamInsets(width, side, revealed) {
+  const hidden = revealed ? 0 : Math.max(0, width);
+  if (side === "left") return { top: 0, right: 0, bottom: 0, left: hidden, radius: PANEL_RADIUS };
+  return { top: 0, right: hidden, bottom: 0, left: 0, radius: PANEL_RADIUS };
+}
+
+/** Cron column height follows its content and never exceeds 70vh. */
+export function cronShellHeight(contentHeight, viewportHeight, min = 140) {
+  const view = viewportHeight > 0 ? viewportHeight : 800;
+  const max = view * 0.7;
+  const content = Number.isFinite(contentHeight) && contentHeight > 0 ? contentHeight : min;
+  return Math.min(max, Math.max(min, Math.ceil(content)));
+}
+
+/**
+ * Opening another panel, or a later reflow, must not be stored as the user
+ * leaving the tail. Only a real gesture may hold the list off the bottom.
+ * `pin` sticks to the newest message, `remember` keeps a user offset,
+ * `restore` puts back the offset already remembered.
+ */
+export function chatTailAction({ followTail = true, userGesture = false, nearTail = true } = {}) {
+  if (userGesture) return nearTail ? "pin" : "remember";
+  if (followTail === false) return "restore";
+  return "pin";
+}
+
+/**
  * Clip that reveals one shape inside the final box. Pill and orb insets use
  * `--pill-h` / `--pill-w` so a bottom-left anchor starts at
  * `inset(calc(100% - var(--pill-h)) calc(100% - var(--pill-w)) 0 0 round 999px)`.

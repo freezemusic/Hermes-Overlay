@@ -535,6 +535,7 @@ html, body {
   width: min(320px, 86vw);
   height: fit-content;
   max-height: 70vh;
+  overflow: auto;
   --grid-line: rgb(97 97 145 / .06);
 }
 
@@ -542,11 +543,11 @@ html, body {
 
 .cron-list {
   display: flex;
-  flex: 1 1 auto;
+  flex: none;
   flex-direction: column;
   gap: 12px;
   min-height: 0;
-  overflow: auto;
+  overflow: visible;
 }
 
 .cron-cards {
@@ -1887,6 +1888,11 @@ html, body {
   transform: translate(calc(-50% + var(--icon-dx, 0px)), calc(-50% + var(--icon-dy, 0px)));
 }
 
+.morph.is-morphing:not(.is-orb-docked) .morph-fill::after,
+.morph.is-collapsing .morph-fill::after {
+  transform: translate(-50%, -50%);
+}
+
 .morph.is-collapsing .morph-fill::after { transition-duration: 80ms; }
 
 .morph .morph-orb {
@@ -1901,6 +1907,11 @@ html, body {
 .morph[data-state="panel"] .morph-orb {
   pointer-events: none;
   transform: translate(var(--icon-dx, 0px), var(--icon-dy, 0px)) scale(calc(28 / 44));
+}
+
+.morph.is-morphing:not(.is-orb-docked) .morph-orb,
+.morph.is-collapsing .morph-orb {
+  transform: none;
 }
 
 .morph[data-visual="wide"] .morph-orb,
@@ -1954,6 +1965,12 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 
 .open .content {
   opacity: 1;
+}
+
+.morph.is-content-hold .content,
+.morph.is-content-hold .morph-body {
+  opacity: 1;
+  transition: none;
 }
 
 .morph.open:not(.is-collapsing) .morph-body {

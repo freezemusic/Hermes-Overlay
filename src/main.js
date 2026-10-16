@@ -29,6 +29,9 @@ import {
   FRAME_BLEED,
   STACK_GAP,
   tighten,
+  seamInsets,
+  cronShellHeight,
+  chatTailAction,
 } from "./morph.js";
 import { isProfileEnabled, profilesNeedingKeys } from "./roster.js";
 import { orderSessions, previewLine, resolveSession, sessionLabel, unseenMessages } from "./sessions.js";
@@ -247,9 +250,8 @@ function boxSize(id) {
   const vh = window.innerHeight || 800;
   if (id === "kanban") return { w: Math.min(960, vw * 0.8), h: Math.min(vh * 0.8, 760) };
   if (id === "cron") {
-    const max = vh * 0.7;
-    const fitted = state.cronBoxH > 0 ? state.cronBoxH : max;
-    return { w: Math.min(320, vw * 0.86), h: Math.min(max, fitted) };
+    const fitted = state.cronBoxH > 0 ? state.cronBoxH : 140;
+    return { w: Math.min(320, vw * 0.86), h: cronShellHeight(fitted, vh) };
   }
   if (id === "settings") return { w: Math.min(680, vw * 0.92), h: Math.min(vh * 0.86, 760) };
   return { w: PANEL_W, h: PANEL_H };
@@ -406,9 +408,11 @@ function separateOpenShells(shells, extra) {
     return dock;
   });
   const after = separateStackedPanels(before, vh, STACK_GAP + 2 * FRAME_BLEED);
+  let moved = false;
   after.forEach((box, index) => {
     const prev = before[index];
     if (Math.abs(box.top - prev.top) < 0.5 && Math.abs(box.height - prev.height) < 0.5) return;
+    moved = true;
     const shell = prev.shell;
     shell.style.top = `${box.top}px`;
     shell.style.height = `${box.height}px`;
@@ -427,9 +431,11 @@ function separateOpenShells(shells, extra) {
       ay,
     }), visual);
   });
+  if (moved) restickOpenChats();
 }
 
 function layoutShells() {
+  syncCronBox(false);
   const shells = [...document.querySelectorAll(".morph")];
   shells.forEach((shell) => layoutShell(shell));
   separateOpenShells(shells);
@@ -466,118 +472,155 @@ function visibleBox(shell) {
   };
 }
 
+function writeClip(shell, insets) {
+  const fill = shell.querySelector(".morph-fill");
+  shell.style.clipPath = clipPath(insets);
+  if (fill) fill.style.clipPath = clipPath(tighten(insets));
+  shell.dataset.clipTop = String(insets.top);
+  shell.dataset.clipRight = String(insets.right);
+  shell.dataset.clipBottom = String(insets.bottom);
+  shell.dataset.clipLeft = String(insets.left);
+  shell.dataset.clipRadius = String(insets.radius);
+}
+
+function cancelClipAnims(shell) {
+  const fill = shell.querySelector(".morph-fill");
+  shell.getAnimations?.().forEach((anim) => anim.cancel());
+  fill?.getAnimations?.().forEach((anim) => anim.cancel());
+  shell.querySelector(".plan-window")?.getAnimations?.().forEach((anim) => anim.cancel());
+}
+
+/**
+ * Pixel keyframes. A 999px radius stays a stadium while the inset grows, and
+ * WebKitGTK does not interpolate calc() insets, so both the rect and the
+ * corner radius (pill height / 2 → 3px) are plain px and run on the Web
+ * Animations API. The duration is the animation's own clock, with no tail
+ * timeout that would stretch a left or right collapse past 300ms.
+ */
 function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const fill = shell.querySelector(".morph-fill");
-  // calc(100% - var(--pill-h)) does not interpolate into calc(100% - var(--pill-w)).
-  // The pill leg therefore uses the same rectangles as lengths. The panel leg keeps
-  // the calc() start, which does interpolate into inset(0 round 3px).
-  const commit = (state, { pixels = false } = {}) => {
-    const geom = shellGeom(shell);
-    const insets = insetsFor(state, geom);
-    const cronOrb = !pixels && shell.dataset.botId === "cron" && state === "orb";
-    if (cronOrb) {
-      paintClip(shell, insets, state);
-      return insets;
-    }
-    const radius = state === "panel" || state === "tall" ? insets.radius : 999;
-    shell.style.clipPath = pixels ? clipPath({ ...insets, radius }) : revealClip(state, geom);
-    if (fill) fill.style.clipPath = clipPath(tighten({ ...insets, radius: state === "panel" || state === "tall" ? insets.radius : radius }));
-    shell.dataset.clipTop = String(insets.top);
-    shell.dataset.clipRight = String(insets.right);
-    shell.dataset.clipBottom = String(insets.bottom);
-    shell.dataset.clipLeft = String(insets.left);
-    shell.dataset.clipRadius = String(insets.radius);
-    return insets;
-  };
-  const pixels = toState !== "panel";
+  const from = insetsFor(fromState, shellGeom(shell));
+  const to = insetsFor(toState, shellGeom(shell));
   if (shell.dataset.morphToken !== token) return Promise.resolve(false);
-  if (reducedMotion() || !(duration > 0)) {
-    commit(toState);
-    return Promise.resolve(true);
-  }
-  const growClass = toState === "panel" ? "is-growing-panel" : toState === "pill" ? "is-growing-pill" : "";
   shell.classList.remove("is-growing-pill", "is-growing-panel");
   shell.style.transition = "none";
   if (fill) fill.style.transition = "none";
-  commit(fromState, { pixels });
+  cancelClipAnims(shell);
+  if (reducedMotion() || !(duration > 0)) {
+    writeClip(shell, to);
+    return Promise.resolve(true);
+  }
+  writeClip(shell, from);
   void shell.offsetWidth;
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (ok) => {
-      if (settled) return;
-      settled = true;
-      shell.removeEventListener("transitionend", onEnd);
-      window.clearTimeout(timer);
-      if (shell.dataset.morphToken !== token) {
-        resolve(false);
-        return;
-      }
-      shell.classList.remove("is-growing-pill", "is-growing-panel");
-      shell.style.transition = "none";
-      if (fill) fill.style.transition = "none";
-      commit(toState, { pixels: false });
-      resolve(ok);
-    };
-    const onEnd = (event) => {
-      if (event.target !== shell || event.propertyName !== "clip-path") return;
-      finish(true);
-    };
-    shell.addEventListener("transitionend", onEnd);
-    const timer = window.setTimeout(() => finish(true), duration + 80);
-    const transition = `clip-path ${duration}ms ${easing}`;
-    shell.style.transition = transition;
-    if (fill) fill.style.transition = transition;
-    if (growClass) shell.classList.add(growClass);
-    commit(toState, { pixels });
-    const track = () => {
-      if (settled || shell.dataset.morphToken !== token) return;
-      scheduleHitSync();
-      requestAnimationFrame(track);
-    };
+  const timing = { duration, easing, fill: "forwards" };
+  let shellAnim;
+  let fillAnim;
+  try {
+    shellAnim = shell.animate([
+      { clipPath: clipPath(from) },
+      { clipPath: clipPath(to) },
+    ], timing);
+    if (fill) {
+      fillAnim = fill.animate([
+        { clipPath: clipPath(tighten(from)) },
+        { clipPath: clipPath(tighten(to)) },
+      ], timing);
+    }
+  } catch {
+    writeClip(shell, to);
+    return Promise.resolve(shell.dataset.morphToken === token);
+  }
+  if (toState === "panel") shell.classList.add("is-growing-panel");
+  else if (toState === "pill") shell.classList.add("is-growing-pill");
+  const track = () => {
+    if (shell.dataset.morphToken !== token) return;
+    scheduleHitSync();
+    if (!shellAnim || shellAnim.playState === "finished" || shellAnim.playState === "idle") return;
     requestAnimationFrame(track);
+  };
+  requestAnimationFrame(track);
+  return shellAnim.finished.then(() => true, () => false).then((finished) => {
+    if (shell.dataset.morphToken !== token) return false;
+    if (!finished) return false;
+    try { shellAnim.commitStyles(); } catch { /* WebKit without commitStyles */ }
+    try { fillAnim?.commitStyles(); } catch { /* WebKit without commitStyles */ }
+    shellAnim.cancel();
+    fillAnim?.cancel();
+    shell.classList.remove("is-growing-pill", "is-growing-panel");
+    shell.style.transition = "none";
+    if (fill) fill.style.transition = "none";
+    writeClip(shell, to);
+    return true;
   });
 }
 
 function growPlan(shell, token) {
   const plan = shell.querySelector(".plan-window");
   if (!plan || plan.hidden || shell.dataset.planOpen !== "1") return Promise.resolve();
-  if (shell.dataset.morphToken !== token) return Promise.resolve();
+  if (token && shell.dataset.morphToken !== token) return Promise.resolve();
   syncPlanSide(shell);
+  plan.getAnimations?.().forEach((anim) => anim.cancel());
   if (reducedMotion()) {
     plan.style.clipPath = "";
+    plan.classList.remove("is-seam-grow");
     return Promise.resolve();
   }
   const side = shell.dataset.planSide === "left" ? "left" : "right";
-  const start = side === "left" ? "inset(0 0 0 100% round 3px)" : "inset(0 100% 0 0 round 3px)";
   plan.style.transition = "none";
-  plan.style.clipPath = start;
   plan.classList.add("is-seam-grow");
-  void getComputedStyle(plan).clipPath;
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      plan.removeEventListener("transitionend", onEnd);
-      window.clearTimeout(timer);
-      if (shell.dataset.morphToken !== token) {
-        resolve();
-        return;
-      }
-      plan.style.transition = "none";
-      plan.style.clipPath = "";
-      if (!shell.classList.contains("is-morphing")) plan.classList.remove("is-seam-grow");
-      resolve();
-    };
-    const onEnd = (event) => {
-      if (event.target !== plan || event.propertyName !== "clip-path") return;
-      finish();
-    };
-    plan.addEventListener("transitionend", onEnd);
-    const timer = window.setTimeout(finish, PLAN_GROW_MS + 80);
-    plan.style.transition = `clip-path ${PLAN_GROW_MS}ms ${EASE}`;
-    plan.style.clipPath = "inset(0 round 3px)";
+  const width = plan.offsetWidth || plan.getBoundingClientRect().width
+    || Math.min(420, (window.innerWidth || 1280) * 0.42);
+  const from = seamInsets(width, side, false);
+  const to = seamInsets(width, side, true);
+  plan.style.clipPath = clipPath(from);
+  void plan.offsetWidth;
+  let anim;
+  try {
+    anim = plan.animate([
+      { clipPath: clipPath(from) },
+      { clipPath: clipPath(to) },
+    ], { duration: PLAN_GROW_MS, easing: EASE, fill: "forwards" });
+  } catch {
+    plan.style.clipPath = "";
+    return Promise.resolve();
+  }
+  return anim.finished.then(() => true, () => false).then((finished) => {
+    if (token && shell.dataset.morphToken !== token) return;
+    if (!finished) return;
+    try { anim.commitStyles(); } catch { /* WebKit without commitStyles */ }
+    anim.cancel();
+    plan.style.transition = "none";
+    plan.style.clipPath = "";
+    if (!shell.classList.contains("is-morphing")) plan.classList.remove("is-seam-grow");
   });
+}
+
+function releaseContent(shell) {
+  shell.querySelectorAll(".content, .morph-body").forEach((el) => {
+    el.style.transition = "";
+    el.style.opacity = "";
+  });
+}
+
+/** Freeze the fade so a later class change cannot replay opacity from 0. */
+function holdContent(shell) {
+  shell.classList.add("is-content-hold");
+  shell.querySelectorAll(".content, .morph-body").forEach((el) => {
+    el.style.transition = "none";
+    el.style.opacity = "1";
+  });
+}
+
+function resetContent(shell) {
+  shell.dataset.contentOnce = "";
+  shell.classList.remove("open", "is-content-hold");
+  releaseContent(shell);
+}
+
+function revealContent(shell) {
+  if (shell.dataset.contentOnce === "1") return;
+  shell.dataset.contentOnce = "1";
+  shell.classList.add("open");
 }
 
 function settleShell(shell, target) {
@@ -586,13 +629,20 @@ function settleShell(shell, target) {
   shell.style.transition = "none";
   const fill = shell.querySelector(".morph-fill");
   if (fill) fill.style.transition = "none";
+  if (target === "panel") {
+    holdContent(shell);
+    shell.classList.add("is-orb-docked");
+    if (shell.dataset.contentOnce !== "1") revealContent(shell);
+  } else {
+    shell.classList.remove("open", "is-content-hold", "is-orb-docked");
+    shell.dataset.contentOnce = "";
+    releaseContent(shell);
+  }
   paintClip(shell, insetsFor(target, shellGeom(shell)), target);
   shell.classList.remove("is-morphing", "is-collapsing");
   shell.querySelector(".plan-window")?.classList.remove("is-seam-grow");
   shell.dataset.opening = "";
   shell.dataset.intent = "";
-  if (target === "panel") shell.classList.add("open");
-  else shell.classList.remove("open");
   if (target === "orb") {
     shell.querySelectorAll(".center-panel").forEach((panel) => {
       panel.hidden = true;
@@ -600,6 +650,7 @@ function settleShell(shell, target) {
     layoutShell(shell);
   }
   if (target === "panel" && shell.dataset.kind === "bot") stickChat(shell.dataset.botId);
+  if (target === "panel" && shell.dataset.botId === "cron") syncCronBox();
   separateOpenShells([...document.querySelectorAll(".morph")]);
   scheduleHitSync();
 }
@@ -608,6 +659,7 @@ function stopShellTransition(shell) {
   shell.style.transition = "none";
   const fill = shell.querySelector(".morph-fill");
   if (fill) fill.style.transition = "none";
+  cancelClipAnims(shell);
   const plan = shell.querySelector(".plan-window");
   if (plan) {
     plan.style.transition = "none";
@@ -636,8 +688,10 @@ async function runShellMorph(shell, target) {
   if (target === "orb") {
     shell.dataset.intent = "close";
     shell.classList.add("is-collapsing");
-    shell.classList.remove("open");
+    shell.classList.remove("is-orb-docked", "is-content-hold", "open");
+    shell.dataset.contentOnce = "";
     shell.dataset.opening = "";
+    releaseContent(shell);
   } else {
     shell.classList.remove("is-collapsing");
     if (shell.dataset.intent === "close") {
@@ -647,15 +701,17 @@ async function runShellMorph(shell, target) {
     shell.dataset.intent = target === "panel" ? "open" : "preview";
     if (target === "panel") {
       shell.dataset.opening = "panel";
+      shell.classList.remove("is-orb-docked");
       parkFinalBox(shell);
       shell.querySelectorAll(".center-panel").forEach((panel) => {
         panel.hidden = false;
       });
-      shell.classList.remove("open");
+      resetContent(shell);
       void shell.offsetWidth;
     } else {
       shell.dataset.opening = "";
-      shell.classList.remove("open");
+      shell.classList.remove("is-orb-docked");
+      resetContent(shell);
     }
   }
   let current = from;
@@ -665,7 +721,7 @@ async function runShellMorph(shell, target) {
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         if (!alive()) return false;
       }
-      shell.classList.add("open");
+      revealContent(shell);
     }
     if (target !== "orb") markVisual(shell, step.state);
     const ok = await playClip(shell, current, step.state, reducedMotion() ? 0 : step.ms, token, step.ease || EASE);
@@ -679,7 +735,10 @@ async function runShellMorph(shell, target) {
     current = step.state;
   }
   if (!alive()) return false;
-  if (target === "panel") await growPlan(shell, token);
+  if (target === "panel") {
+    shell.classList.add("is-orb-docked");
+    await growPlan(shell, token);
+  }
   if (!alive()) return false;
   settleShell(shell, target);
   return true;
@@ -1049,9 +1108,9 @@ function renderBots() {
     btn.querySelector(".orb-glyph").textContent = bot.short || "";
     btn.querySelector(".bot-label").textContent = bot.name;
     if (!morphing) layoutShell(shell);
-    // Reparenting cancels an in-flight clip-path transition and the shape jumps
-    // to the end while the timer keeps running.
-    if (!morphing || shell.parentElement !== rail) rail.appendChild(shell);
+    // Moving a node that is already in the rail restarts CSS transitions on it,
+    // which replays the content fade and snaps a clip that is still running.
+    if (shell.parentElement !== rail) rail.appendChild(shell);
   });
   renderKanbanOrb();
   renderCronOrb();
@@ -1484,10 +1543,45 @@ function stickChat(id) {
   pinChat(id);
 }
 
-function noteChatScroll(id, chat) {
+function noteChatScroll(id, chat, userGesture = false) {
   const thread = threadFor(id);
-  thread.scrollTop = chat.scrollTop;
-  thread.followTail = chatNearTail(chat);
+  const action = chatTailAction({
+    followTail: thread.followTail !== false,
+    userGesture,
+    nearTail: chatNearTail(chat),
+  });
+  if (action === "remember") {
+    thread.followTail = false;
+    thread.scrollTop = chat.scrollTop;
+    return;
+  }
+  if (action === "restore") {
+    assignChatScroll(chat, thread.scrollTop || 0);
+    return;
+  }
+  thread.followTail = true;
+  pinChat(id);
+}
+
+function armUserScroll(chat) {
+  if (!chat) return;
+  chat.dataset.userScroll = "1";
+  window.clearTimeout(chat._userScrollTimer);
+  chat._userScrollTimer = window.setTimeout(() => {
+    delete chat.dataset.userScroll;
+  }, 400);
+}
+
+function restickOpenChats() {
+  document.querySelectorAll('.morph[data-kind="bot"][data-state="panel"]').forEach((shell) => {
+    if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+    const id = shell.dataset.botId;
+    const thread = threadFor(id);
+    const chat = chatOf(id);
+    if (!chat) return;
+    if (thread.followTail === false) assignChatScroll(chat, thread.scrollTop || 0);
+    else pinChat(id);
+  });
 }
 
 function appendMessage(id, message) {
@@ -1729,13 +1823,24 @@ function wireBotPanel(panel, id) {
     if (sheet && !sheet.hidden) return;
     const chat = role(panel, "chat");
     if (!chat || event.target.closest?.(".chat-messages, .plan-preview, textarea, select")) return;
+    armUserScroll(chat);
     assignChatScroll(chat, chat.scrollTop + event.deltaY);
-    noteChatScroll(id, chat);
+    noteChatScroll(id, chat, true);
   }, { passive: true });
-  role(panel, "chat")?.addEventListener("scroll", (event) => {
+  const chatBox = role(panel, "chat");
+  chatBox?.addEventListener("pointerdown", () => {
+    chatBox.dataset.userScroll = "1";
+  });
+  const endUserScroll = () => armUserScroll(chatBox);
+  chatBox?.addEventListener("pointerup", endUserScroll);
+  chatBox?.addEventListener("pointercancel", endUserScroll);
+  chatBox?.addEventListener("wheel", () => armUserScroll(chatBox), { passive: true });
+  chatBox?.addEventListener("touchstart", () => armUserScroll(chatBox), { passive: true });
+  chatBox?.addEventListener("keydown", () => armUserScroll(chatBox));
+  chatBox?.addEventListener("scroll", (event) => {
     const chat = event.currentTarget;
     if (chat.dataset.programmaticScroll === "1") return;
-    noteChatScroll(id, chat);
+    noteChatScroll(id, chat, chat.dataset.userScroll === "1");
   });
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
   role(panel, "stop")?.addEventListener("click", () => stopActive(id));
@@ -3950,22 +4055,63 @@ function paintCronArcs() {
   });
 }
 
-function syncCronBox() {
+function measureCronContent() {
   const panel = document.getElementById("cron-panel");
+  if (!panel || panel.hidden) return 0;
+  const shell = panel.closest(".morph");
   const list = document.getElementById("cron-list");
-  if (!panel || !list) return;
-  const max = (window.innerHeight || 800) * 0.7;
-  const header = panel.querySelector(".panel-header")?.offsetHeight || 0;
-  const hint = panel.querySelector(":scope > .hint")?.offsetHeight || 0;
-  const empty = document.getElementById("cron-empty");
-  const emptyH = empty && !empty.hidden ? empty.offsetHeight : 0;
-  const next = Math.min(max, Math.max(140, Math.ceil(header + hint + emptyH + list.scrollHeight + 48)));
-  if (Math.abs(next - state.cronBoxH) < 2) return;
-  state.cronBoxH = next;
-  const shell = shellFor("cron");
-  if (shell && !shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")) {
-    layoutShell(shell);
+  const saved = {
+    shellH: shell?.style.height ?? "",
+    position: panel.style.position,
+    inset: panel.style.inset,
+    height: panel.style.height,
+    maxHeight: panel.style.maxHeight,
+    bottom: panel.style.bottom,
+    overflow: panel.style.overflow,
+    listFlex: list?.style.flex ?? "",
+    listOverflow: list?.style.overflow ?? "",
+    listMin: list?.style.minHeight ?? "",
+  };
+  if (shell) shell.style.height = "auto";
+  panel.style.position = "relative";
+  panel.style.inset = "auto";
+  panel.style.height = "fit-content";
+  panel.style.maxHeight = "none";
+  panel.style.bottom = "auto";
+  panel.style.overflow = "visible";
+  if (list) {
+    list.style.flex = "none";
+    list.style.overflow = "visible";
+    list.style.minHeight = "auto";
   }
+  const height = Math.ceil(panel.getBoundingClientRect().height);
+  if (shell) shell.style.height = saved.shellH;
+  panel.style.position = saved.position;
+  panel.style.inset = saved.inset;
+  panel.style.height = saved.height;
+  panel.style.maxHeight = saved.maxHeight;
+  panel.style.bottom = saved.bottom;
+  panel.style.overflow = saved.overflow;
+  if (list) {
+    list.style.flex = saved.listFlex;
+    list.style.overflow = saved.listOverflow;
+    list.style.minHeight = saved.listMin;
+  }
+  return height;
+}
+
+function syncCronBox(retry = true) {
+  const panel = document.getElementById("cron-panel");
+  if (!panel || panel.hidden) return;
+  const next = cronShellHeight(measureCronContent(), window.innerHeight || 800);
+  if (!(Math.abs(next - state.cronBoxH) < 2 && state.cronBoxH > 0)) {
+    state.cronBoxH = next;
+    const shell = shellFor("cron");
+    if (shell && !shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")) {
+      layoutShell(shell);
+    }
+  }
+  if (retry) requestAnimationFrame(() => syncCronBox(false));
 }
 
 function paintCron() {
