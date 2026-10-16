@@ -1977,10 +1977,10 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 
 .content {
   opacity: 0;
-  transition: opacity 160ms linear 320ms;
+  transition: opacity 160ms linear 160ms;
 }
 
-.morph-body { transition: opacity 160ms linear 320ms; }
+.morph-body { transition: opacity 160ms linear 160ms; }
 
 .open .content {
   opacity: 1;

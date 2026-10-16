@@ -76,7 +76,11 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.doesNotMatch(hold, /classList\.add\("is-content-hold"\)/);
   assert.match(mainSrc, /primePanelTail/);
   assert.match(css, /\.content \{[^}]*opacity:\s*0/s);
-  assert.match(css, /\.content \{[^}]*transition:\s*opacity 160ms linear 320ms/s);
+  assert.match(css, /\.content \{[^}]*transition:\s*opacity 160ms linear 160ms/s);
+  assert.match(css, /\.morph-body \{[^}]*transition:\s*opacity 160ms linear 160ms/s);
+  const lock = mainSrc.slice(mainSrc.indexOf("function scheduleContentLock"), mainSrc.indexOf("function primePanelTail"));
+  assert.match(lock, /CONTENT_IN_DELAY_MS \+ CONTENT_IN_MS \+ CONTENT_OPAQUE_LEAD_MS \/ 2/);
+  assert.match(mainSrc, /scheduleContentLock\(shell, token\)/);
   assert.match(css, /\.open \.content \{[^}]*opacity:\s*1/s);
   assert.match(css, /\.morph\.is-collapsing \.content,[\s\S]*?transition:\s*opacity 80ms linear/);
   assert.match(css, /\.morph-pill \{[^}]*height:\s*44px/s);

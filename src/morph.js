@@ -16,7 +16,10 @@ export const PILL_PANEL_MS = 480;
 export const COLLAPSE_MS = 300;
 export const CONTENT_OUT_MS = 80;
 export const CONTENT_IN_MS = 160;
-export const CONTENT_IN_DELAY_MS = PILL_PANEL_MS - CONTENT_IN_MS;
+/** The fade must already be at rest before the panel clip ends. Ending both
+ *  on the same frame makes WebKit paint the fade's from-value once. */
+export const CONTENT_OPAQUE_LEAD_MS = 160;
+export const CONTENT_IN_DELAY_MS = PILL_PANEL_MS - CONTENT_IN_MS - CONTENT_OPAQUE_LEAD_MS;
 export const PLAN_GROW_MS = 240;
 export const STACK_GAP = 12;
 /** HUD corner L sits this far outside the frame. Both sides count toward the visible gap. */

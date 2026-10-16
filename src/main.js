@@ -8,6 +8,9 @@ import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST
 import { latestPlan, noteNewestPlan, planDemoMarkdown, planTask, plansIn } from "./plan.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
+  CONTENT_IN_DELAY_MS,
+  CONTENT_IN_MS,
+  CONTENT_OPAQUE_LEAD_MS,
   EASE,
   ICON,
   ORB,
@@ -581,13 +584,17 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   } else {
     scheduleHitSync();
   }
+  if (toState === "panel") scheduleContentLock(shell, token);
   return whenAnimEnds(shellAnim, duration).then((finished) => {
     if (shell.dataset.morphToken !== token) return false;
+    window.clearTimeout(shell._contentLock);
     if (!finished) return false;
     pauseHitSync();
-    // Inline opacity only. A class that sets opacity or filter here is the
-    // one-frame header dim (contrast dips, then jumps).
-    if (toState === "panel" && !shell.classList.contains("is-collapsing")) holdContent(shell);
+    // Opacity is already inline 1. Writing it again on this frame, beside
+    // the clip-path removal, is the one-frame header dim.
+    if (toState === "panel" && !shell.classList.contains("is-collapsing") && !contentLocked(shell)) {
+      holdContent(shell);
+    }
     holdMotion(shell);
     holdMotion(fill);
     const revealPlan = toState === "panel"
@@ -650,6 +657,19 @@ function armPlanSeam(shell) {
   plan.style.setProperty("overflow", "hidden", "important");
   holdMotion(plan);
   plan.style.clipPath = clipPath(seamInsets(width, side, false));
+}
+
+/** Lock opacity after the fade has painted, and before the clip ends.
+ *  Same clock on every edge. The clip-end turn must not be the one that
+ *  finishes the fade. */
+function scheduleContentLock(shell, token) {
+  window.clearTimeout(shell._contentLock);
+  const lockAt = CONTENT_IN_DELAY_MS + CONTENT_IN_MS + CONTENT_OPAQUE_LEAD_MS / 2;
+  shell._contentLock = window.setTimeout(() => {
+    if (shell.dataset.morphToken !== token) return;
+    if (shell.classList.contains("is-collapsing")) return;
+    holdContent(shell);
+  }, lockAt);
 }
 
 function primePanelTail(shell) {
@@ -782,10 +802,18 @@ function releaseContent(shell) {
   });
 }
 
+function contentLocked(shell) {
+  const nodes = shell.querySelectorAll(".content, .morph-body");
+  return nodes.length > 0 && [...nodes].every((el) => (
+    el.style.opacity === "1" && el.style.getPropertyPriority("transition") === "important"
+  ));
+}
+
 /** Freeze the fade before a class change, so WebKit cannot replay opacity from 0.
  *  Inline only: adding a class here restyles the header for one frame. */
 function holdContent(shell) {
   shell.querySelectorAll(".content, .morph-body").forEach((el) => {
+    if (el.style.opacity === "1" && el.style.getPropertyPriority("transition") === "important") return;
     el.style.opacity = "1";
     el.style.setProperty("transition", "none", "important");
   });
@@ -848,6 +876,7 @@ function settleShell(shell, target) {
 }
 
 function stopShellTransition(shell) {
+  window.clearTimeout(shell._contentLock);
   const fill = shell.querySelector(".morph-fill");
   holdMotion(shell);
   holdMotion(fill);
