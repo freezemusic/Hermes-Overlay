@@ -665,6 +665,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       if (stroke) stroke.style.clipPath = "";
       // none, not inset(-3px): the corner stroke lives on that pixel.
       shell.style.clipPath = "none";
+      if (shell.dataset.planOpen === "1") seamMark("plan-seam:unclip");
       shell.dataset.clipTop = String(to.top);
       shell.dataset.clipRight = String(to.right);
       shell.dataset.clipBottom = String(to.bottom);
@@ -732,34 +733,87 @@ function clearPlanMotion(plan) {
   fit?.getAnimations?.().forEach((anim) => anim.cancel());
   plan.style.transform = "";
   plan.style.opacity = "";
+  plan.style.removeProperty("z-index");
   plan.style.removeProperty("clip-path");
   plan.style.removeProperty("will-change");
   plan.style.removeProperty("pointer-events");
   plan.style.removeProperty("visibility");
+  plan.classList.remove("is-plan-parked");
   if (fit) {
     fit.style.transform = "";
     fit.style.removeProperty("will-change");
   }
 }
 
-/** Lay the plan out and promote a transform layer while it is still invisible.
- *  clip-path on this element is not composited in WebKitGTK: the first paint
- *  of the markdown stalls the main thread for about the whole 240ms, and the
- *  first frame that reaches the screen is already ~70% open. Opacity 0 still
- *  rasterises a will-change:transform layer, and the shell clip hides it
- *  during the panel grow. The animate() turn must not call this. */
-function warmPlanLayer(shell) {
-  const plan = shell.querySelector(".plan-window");
-  if (!plan || shell.dataset.planOpen !== "1") return;
+const seamPhases = [];
+
+function seamMark(name) {
+  const now = performance.now();
+  try { performance.mark(name); } catch { /* duplicate marks are fine */ }
+  const prev = seamPhases.at(-1);
+  const dt = prev ? now - prev.t : 0;
+  seamPhases.push({ name, t: now });
+  const line = `[plan-seam] ${name}${prev ? ` +${dt.toFixed(0)}ms` : ""}`;
+  if (dt > 40) console.warn(line);
+  else console.info(line);
+}
+
+let seamWatchUntil = 0;
+
+function seamWatching() {
+  return performance.now() < seamWatchUntil
+    || !!document.querySelector(".morph.is-plan-seam, .morph.is-plan-arming");
+}
+
+function armSeamWatch(ms = 1600) {
+  seamWatchUntil = Math.max(seamWatchUntil, performance.now() + ms);
+  installSeamWatch();
+}
+
+function installSeamWatch() {
+  if (installSeamWatch.installed) return;
+  installSeamWatch.installed = true;
+  try {
+    const observer = new PerformanceObserver((list) => {
+      if (!seamWatching()) return;
+      for (const entry of list.getEntries()) {
+        console.warn(`[plan-seam] long task ${Math.round(entry.duration)}ms`);
+      }
+    });
+    observer.observe({ type: "longtask", buffered: true });
+  } catch {
+    /* WebKitGTK has no longtask entries. Frame gaps below cover that. */
+  }
+}
+
+function watchSeamFrames() {
+  let last = performance.now();
+  let ticks = 0;
+  const step = (now) => {
+    const gap = now - last;
+    if (gap > 50) console.warn(`[plan-seam] frame gap ${Math.round(gap)}ms`);
+    last = now;
+    ticks += 1;
+    if (ticks < 20 && document.querySelector(".morph.is-plan-seam")) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+/** Sit the full-size plan on top of the panel, under the opaque glass.
+ *  WebKitGTK does not rasterise opacity:0, so the real markdown paint has to
+ *  happen here, during the panel clip, not on the first seam frame. */
+function applyParkedPlan(shell, plan) {
   const fit = ensurePlanFit(plan);
   const origin = seamOrigin(shell);
+  const shift = shell.dataset.planSide === "left" ? "100%" : "-100%";
   plan.hidden = false;
-  plan.classList.add("is-seam-grow");
+  plan.classList.add("is-seam-grow", "is-plan-parked");
   plan.style.setProperty("display", "flex", "important");
   plan.style.setProperty("overflow", "hidden", "important");
   plan.style.visibility = "visible";
   plan.style.pointerEvents = "none";
-  plan.style.opacity = "0";
+  plan.style.opacity = "1";
+  plan.style.zIndex = "-1";
   plan.style.willChange = "transform";
   fit.style.willChange = "transform";
   plan.style.transformOrigin = origin;
@@ -767,15 +821,36 @@ function warmPlanLayer(shell) {
   plan.style.clipPath = "none";
   holdMotion(plan);
   holdMotion(fit);
-  if (plan.dataset.warm === "1") return;
-  plan.style.transform = "scaleX(1)";
+  plan.style.transform = `translateX(${shift})`;
   fit.style.transform = "scaleX(1)";
+  return fit;
+}
+
+function planHostReady(shell) {
+  if (!shell) return false;
+  if (shell.dataset.opening === "panel") return true;
+  return (shell.dataset.visual || shell.dataset.state) === "panel";
+}
+
+/** Lay the plan out and promote a transform layer before the seam clock.
+ *  WebKitGTK does not rasterise opacity:0, so the markdown has to be painted
+ *  at opacity 1 while the opaque glass still covers it. The animate() turn
+ *  must not call this. */
+function warmPlanLayer(shell) {
+  const plan = shell.querySelector(".plan-window");
+  if (!plan || shell.dataset.planOpen !== "1" || !planHostReady(shell)) return;
+  applyParkedPlan(shell, plan);
+  if (plan.dataset.warm === "1") return;
+  armSeamWatch(2000);
+  seamMark("plan-seam:warm");
   void plan.offsetWidth;
-  void fit.offsetWidth;
-  shell.dataset.planWidth = String(Math.round(plan.offsetWidth || 0));
+  const width = Math.round(plan.offsetWidth || 0);
+  if (width < 1) return;
+  shell.dataset.planWidth = String(width);
   plan.dataset.warm = "1";
   requestAnimationFrame(() => {
     plan.dataset.painted = "1";
+    seamMark("plan-seam:warm-painted");
   });
 }
 
@@ -834,16 +909,54 @@ function nextFrame() {
   });
 }
 
-/** Cold path only: the morph path warmed the layer during the 480ms panel
- *  clip, so this returns immediately and does not burn the seam clock. */
-function revealPlanFrame(shell) {
+/** Seam pixels only. No layout read: that belongs in warmPlanLayer, before the clip. */
+function holdSeamVisual(shell) {
   const plan = shell.querySelector(".plan-window");
-  if (!plan || shell.dataset.planOpen !== "1") return Promise.resolve();
-  warmPlanLayer(shell);
-  if (plan.dataset.painted === "1") return Promise.resolve();
-  return nextPaint().then(() => {
-    plan.dataset.painted = "1";
-  });
+  if (!plan) return;
+  const fit = ensurePlanFit(plan);
+  const origin = seamOrigin(shell);
+  plan.classList.remove("is-plan-parked");
+  plan.classList.add("is-seam-grow");
+  plan.style.removeProperty("z-index");
+  plan.style.opacity = "1";
+  plan.style.pointerEvents = "";
+  plan.style.visibility = "visible";
+  plan.style.transformOrigin = origin;
+  fit.style.transformOrigin = origin;
+  plan.style.willChange = "transform";
+  fit.style.willChange = "transform";
+  plan.style.clipPath = "none";
+  plan.style.setProperty("display", "flex", "important");
+  plan.style.setProperty("overflow", "hidden", "important");
+  holdMotion(plan);
+  holdMotion(fit);
+  plan.style.transform = `scaleX(${SEAM_MIN})`;
+  fit.style.transform = `scaleX(${1 / SEAM_MIN})`;
+}
+
+/** Unclip and paint the seam, then start the clock on the painted frame.
+ *  Markdown, hit rects, and chat layout stay outside this gap. */
+async function playPlanSeam(shell, token) {
+  armSeamWatch();
+  seamMark("plan-seam:clip-end");
+  const plan = shell.querySelector(".plan-window");
+  if (!plan || shell.dataset.planOpen !== "1") return;
+  if (token && shell.dataset.morphToken !== token) return;
+  if (plan.dataset.warm !== "1") {
+    console.warn("[plan-seam] layer was not painted before the clip ended");
+  }
+  shell.classList.add("is-plan-seam", "is-plan-arming");
+  pauseHitSync();
+  showPlanHost(shell);
+  await nextPaint();
+  if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
+  holdSeamVisual(shell);
+  await nextPaint();
+  if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
+  shell.classList.remove("is-plan-arming");
+  seamMark("plan-seam:painted");
+  watchSeamFrames();
+  await growPlan(shell, token);
 }
 
 function growPlan(shell, token) {
@@ -860,26 +973,6 @@ function growPlan(shell, token) {
     endPlanSeam(shell);
     return Promise.resolve();
   }
-  const origin = seamOrigin(shell);
-  plan.classList.add("is-seam-grow");
-  plan.style.setProperty("display", "flex", "important");
-  plan.style.setProperty("overflow", "hidden", "important");
-  plan.style.visibility = "visible";
-  plan.style.opacity = "1";
-  plan.style.pointerEvents = "";
-  plan.style.transformOrigin = origin;
-  fit.style.transformOrigin = origin;
-  plan.style.clipPath = "none";
-  plan.style.willChange = "transform";
-  fit.style.willChange = "transform";
-  holdMotion(plan);
-  holdMotion(fit);
-  plan.style.transform = `scaleX(${SEAM_MIN})`;
-  fit.style.transform = `scaleX(${1 / SEAM_MIN})`;
-  showPlanHost(shell);
-  // Block hit publishes for the 240ms. A per-frame input-shape update on the
-  // GTK thread drops compositor frames. The rect was published on the
-  // previous frame, from the layout width, not the scaled box.
   shell.classList.add("is-plan-seam");
   pauseHitSync();
   const { outer, inner } = seamScaleFrames();
@@ -888,13 +981,18 @@ function growPlan(shell, token) {
   try {
     anim = plan.animate(outer, { duration: PLAN_GROW_MS, easing: "linear", fill: "both" });
     fitAnim = fit.animate(inner, { duration: PLAN_GROW_MS, easing: "linear", fill: "both" });
+    const now = document.timeline?.currentTime;
+    if (typeof now === "number") {
+      anim.startTime = now;
+      fitAnim.startTime = now;
+    }
   } catch {
     plan.style.transform = "";
     fit.style.transform = "";
     endPlanSeam(shell);
     return Promise.resolve();
   }
-  // Do not pin the animation clock and do not read layout in this turn.
+  seamMark("plan-seam:clock");
   return whenAnimEnds(anim, PLAN_GROW_MS).then((finished) => {
     const current = !token || shell.dataset.morphToken === token;
     if (current && finished) {
@@ -915,9 +1013,33 @@ function growPlan(shell, token) {
   });
 }
 
+function deferShellWork(shell) {
+  if (!shell) return false;
+  return shell.classList.contains("is-plan-seam")
+    || shell.classList.contains("is-plan-arming")
+    || shell.classList.contains("is-morphing")
+    || shell.classList.contains("is-collapsing");
+}
+
+function flushDeferredChat(shell) {
+  if (!shell) return;
+  if (shell.dataset.chatDirty !== "1" && shell.dataset.planDirty !== "1") return;
+  delete shell.dataset.chatDirty;
+  delete shell.dataset.planDirty;
+  const id = shell.dataset.botId;
+  requestAnimationFrame(() => {
+    if (deferShellWork(shell)) {
+      shell.dataset.chatDirty = "1";
+      return;
+    }
+    renderChat(id);
+  });
+}
+
 function endPlanSeam(shell) {
-  shell.classList.remove("is-plan-seam");
+  shell.classList.remove("is-plan-seam", "is-plan-arming");
   scheduleHitSync();
+  flushDeferredChat(shell);
 }
 
 const GLOW = 140;
@@ -1014,7 +1136,7 @@ function settleShell(shell, target) {
   }
   const plan = shell.querySelector(".plan-window");
   const stroke = shell.querySelector(".morph-stroke");
-  shell.classList.remove("is-morphing", "is-collapsing", "is-plan-seam");
+  shell.classList.remove("is-morphing", "is-collapsing", "is-plan-seam", "is-plan-arming");
   shell.style.background = "";
   shell.style.removeProperty("filter");
   if (fill) fill.style.removeProperty("box-shadow");
@@ -1058,6 +1180,7 @@ function settleShell(shell, target) {
   }
   if (target === "panel" && shell.dataset.kind === "bot") stickChat(shell.dataset.botId);
   if (target === "panel" && shell.dataset.botId === "cron") syncCronBox();
+  flushDeferredChat(shell);
   separateOpenShells([...document.querySelectorAll(".morph")]);
   scheduleHitSync();
 }
@@ -1080,13 +1203,7 @@ function stopShellTransition(shell) {
     // Keep a warmed layer across the open. display:none drops the backing
     // store, and WebKitGTK would rasterise the markdown again at the seam.
     if (plan.dataset.warm === "1" && shell.dataset.planOpen === "1") {
-      plan.style.transform = "scaleX(1)";
-      if (fit) fit.style.transform = "scaleX(1)";
-      plan.style.opacity = "0";
-      plan.style.pointerEvents = "none";
-      plan.classList.add("is-seam-grow");
-      plan.style.setProperty("display", "flex", "important");
-      plan.style.setProperty("overflow", "hidden", "important");
+      applyParkedPlan(shell, plan);
     } else {
       clearPlanMotion(plan);
       plan.style.removeProperty("display");
@@ -1096,7 +1213,7 @@ function stopShellTransition(shell) {
       delete shell.dataset.planWidth;
     }
   }
-  shell.classList.remove("is-growing-pill", "is-growing-panel", "is-orb-moving", "is-content-promoted", "is-plan-seam");
+  shell.classList.remove("is-growing-pill", "is-growing-panel", "is-orb-moving", "is-content-promoted", "is-plan-seam", "is-plan-arming");
 }
 
 async function runShellMorph(shell, target) {
@@ -1152,6 +1269,13 @@ async function runShellMorph(shell, target) {
       resetContent(shell);
     }
   }
+  if (target === "panel" && shell.dataset.planOpen === "1") {
+    if (!shell.dataset.planSide) shell.dataset.planSide = sideFromStyle(shell);
+    warmPlanLayer(shell);
+    armSeamWatch(2000);
+    await nextPaint();
+    if (!alive()) return false;
+  }
   let current = from;
   for (const step of phaseList(shell.dataset.edge || "bottom", from, target)) {
     if (step.state === "panel" && target === "panel") {
@@ -1171,17 +1295,7 @@ async function runShellMorph(shell, target) {
   }
   if (!alive()) return false;
   if (target === "panel" && shell.dataset.planOpen === "1") {
-    await revealPlanFrame(shell);
-    if (!alive()) return false;
-    // Publish the full plan rect, then start the clock on the next frame.
-    // A layout read in the animate() turn freezes a Web Animations timeline
-    // at the frame start. The plan is still opacity 0 for this one frame.
-    shell.classList.add("is-plan-seam");
-    pauseHitSync();
-    flushHits();
-    await nextFrame();
-    if (!alive()) return false;
-    await growPlan(shell, token);
+    await playPlanSeam(shell, token);
   }
   if (!alive()) return false;
   settleShell(shell, target);
@@ -1715,6 +1829,11 @@ function renderCronOrb(options = {}) {
 }
 
 function renderChat(id = state.activeId) {
+  const shell = shellFor(id);
+  if (deferShellWork(shell)) {
+    shell.dataset.chatDirty = "1";
+    return;
+  }
   const panel = panelFor(id);
   if (!panel) return;
   const bot = state.bots.find((b) => b.id === id);
@@ -1777,6 +1896,10 @@ function paintPlan(id) {
   const shell = shellFor(id);
   const section = planWindow(id);
   if (!shell || !section) return;
+  if (shell.classList.contains("is-plan-seam") || shell.classList.contains("is-plan-arming") || (shell.classList.contains("is-morphing") && shell.dataset.planOpen === "1")) {
+    shell.dataset.planDirty = "1";
+    return;
+  }
   const thread = threadFor(id);
   const plans = plansIn(thread.messages);
   noteNewestPlan(thread, plans);
@@ -1831,15 +1954,10 @@ function paintPlan(id) {
   if (open && !morphing && !wasOpen && settledPanel) {
     const token = shell.dataset.morphToken || "";
     warmPlanLayer(shell);
-    void revealPlanFrame(shell).then(() => {
-      shell.classList.add("is-plan-seam");
-      pauseHitSync();
-      flushHits();
-      return nextFrame();
-    }).then(() => growPlan(shell, token));
+    void playPlanSeam(shell, token);
     return;
   }
-  if (open && !wasOpen) warmPlanLayer(shell);
+  if (open && !wasOpen && planHostReady(shell)) warmPlanLayer(shell);
   if (!shell.classList.contains("is-plan-seam")) scheduleHitSync();
 }
 
@@ -2062,6 +2180,11 @@ function restickOpenChats() {
 function appendMessage(id, message) {
   const thread = threadFor(id);
   thread.messages.push(message);
+  const shell = shellFor(id);
+  if (deferShellWork(shell)) {
+    shell.dataset.chatDirty = "1";
+    return;
+  }
   const chat = chatOf(id);
   if (!chat) return;
   chat.appendChild(bubbleEl(message, id));
@@ -2206,9 +2329,9 @@ async function selectBot(id) {
     renderBots();
     return;
   }
-  openBotPanel(id);
   renderBots();
   renderChat(id);
+  openBotPanel(id);
   if (state.mode !== "hermes" || !inTauri()) return;
   const thread = threadFor(id);
   if (thread.loaded || thread.loading) return;
@@ -2417,9 +2540,17 @@ async function loadSoul(id) {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const text = await invoke("read_soul", { profile: id });
-    const current = role(panelFor(id), "soul");
-    if (!current || current.dataset.dirty === "1") return;
-    current.value = text || "";
+    const write = (tries) => {
+      const shell = shellFor(id);
+      if (deferShellWork(shell) && tries < 90) {
+        requestAnimationFrame(() => write(tries + 1));
+        return;
+      }
+      const current = role(panelFor(id), "soul");
+      if (!current || current.dataset.dirty === "1") return;
+      current.value = text || "";
+    };
+    write(0);
   } catch (err) {
     const status = role(panelFor(id), "save-status");
     if (status) status.textContent = String(err);
@@ -2494,6 +2625,11 @@ function ensureLiveBubble(id) {
   if (!live || live.role !== "bot" || !live.live) {
     live = { role: "bot", text: "", live: true };
     thread.messages.push(live);
+    const shell = shellFor(id);
+    if (deferShellWork(shell)) {
+      shell.dataset.chatDirty = "1";
+      return live;
+    }
     const chat = chatOf(id);
     if (chat) {
       const el = bubbleEl(live);
@@ -2505,6 +2641,11 @@ function ensureLiveBubble(id) {
 }
 
 function paintLiveNow(id) {
+  const shell = shellFor(id);
+  if (deferShellWork(shell)) {
+    shell.dataset.chatDirty = "1";
+    return;
+  }
   const chat = chatOf(id);
   if (!chat) return;
   const thread = threadFor(id);
@@ -3776,7 +3917,7 @@ function publishHits() {
 }
 
 function scheduleHitSync() {
-  if (document.querySelector(".morph.is-plan-seam")) return;
+  if (document.querySelector(".morph.is-plan-seam, .morph.is-plan-arming")) return;
   cancelAnimationFrame(hitFrame);
   hitFrame = requestAnimationFrame(publishHits);
 }

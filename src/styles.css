@@ -1097,6 +1097,12 @@ html, body {
   overflow: hidden !important;
 }
 
+/* The parked plan is opacity 1 so WebKitGTK rasterises it. Keep the glass
+   opaque until the seam raises that layer, or the full plan ghosts through. */
+.morph:has(.plan-window.is-plan-parked) .morph-fill {
+  background-color: #f8f8fc;
+}
+
 .chat-block {
   flex: 1;
   min-height: 0;

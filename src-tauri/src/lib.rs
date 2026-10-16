@@ -288,6 +288,8 @@ fn bot_or_err<'a>(cfg: &'a AppConfig, profile: &str) -> Result<&'a BotConfig, St
         .ok_or_else(|| format!("名單冇 profile「{profile}」"))
 }
 
+/// Keyring reads time out off this thread. Sync commands must not call this:
+/// Tauri runs those on the GTK thread.
 fn profile_key(profile: &str) -> Result<String, String> {
     match secrets::get_profile_key(profile)? {
         Lookup::Value(key) if !key.trim().is_empty() => Ok(key),
@@ -586,7 +588,13 @@ fn write_soul(profile: String, text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn save_bot_meta(app: AppHandle, input: SaveBotMeta) -> Result<PublicBot, String> {
+async fn save_bot_meta(app: AppHandle, input: SaveBotMeta) -> Result<PublicBot, String> {
+    tauri::async_runtime::spawn_blocking(move || save_bot_meta_sync(app, input))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn save_bot_meta_sync(app: AppHandle, input: SaveBotMeta) -> Result<PublicBot, String> {
     let profile = input.profile.trim().to_string();
     config::validate_profile(&profile)?;
     let state = app.try_state::<AppState>();
@@ -625,8 +633,7 @@ fn save_bot_meta(app: AppHandle, input: SaveBotMeta) -> Result<PublicBot, String
     Ok(saved)
 }
 
-#[tauri::command]
-fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
+fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
     let path = config_path(&app)?;
     let needs_setup = !path.exists();
     let cfg = config::load(&path)?;
@@ -688,8 +695,23 @@ fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
     })
 }
 
+/// The IPC handler runs on the GTK thread. A locked keyring read has to stay
+/// on the blocking pool so the main loop can still draw orbs and exit.
 #[tauri::command]
-fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, String> {
+async fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || load_public_settings(app))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+#[tauri::command]
+async fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || save_settings_sync(app, input))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, String> {
     let state = app.try_state::<AppState>();
     let _config_write = state.as_ref().map(|state| {
         state
@@ -819,7 +841,7 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
     }
     drop(_config_write);
     drop(state);
-    get_settings(app)
+    load_public_settings(app)
 }
 
 #[tauri::command]
@@ -922,7 +944,7 @@ async fn sync_profiles(
 ) -> Result<PublicSettings, String> {
     let initial = load_config(&app)?;
     if initial.mode() != "hermes" {
-        return get_settings(app);
+        return load_public_settings(app);
     }
     let gateway = initial.gateway_base_url.clone();
     let dashboard = initial.dashboard_base_url.clone();
@@ -976,11 +998,21 @@ async fn sync_profiles(
         }
     }
     drop(guard);
-    get_settings(app)
+    load_public_settings(app)
 }
 
 #[tauri::command]
-fn set_profile_enabled(
+async fn set_profile_enabled(
+    app: AppHandle,
+    profile: String,
+    enabled: bool,
+) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || set_profile_enabled_sync(app, profile, enabled))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn set_profile_enabled_sync(
     app: AppHandle,
     profile: String,
     enabled: bool,
@@ -999,7 +1031,7 @@ fn set_profile_enabled(
     config::set_bot_enabled(&mut cfg.bots, &profile, enabled)?;
     config::save(&path, &cfg)?;
     drop(_guard);
-    get_settings(app)
+    load_public_settings(app)
 }
 
 #[tauri::command]
