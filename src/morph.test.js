@@ -26,6 +26,7 @@ import {
   phaseList,
   dropParkedAnchor,
   fixedOrbPoint,
+  headerSide,
   iconShift,
   placeShell,
   previewBlocked,
@@ -292,27 +293,53 @@ test("clip-path is inset() round and the hairline sits one pixel inside", () => 
   assert.equal(clipPath(insetsFor("panel", g)), "inset(0px 0px 0px 0px round 3px)");
 });
 
-test("the panel icon sits in the header corner on the edge side", () => {
-  const bottomLeft = geom("bottom", 200, 760);
-  const shift = iconShift(bottomLeft.ax, bottomLeft.ay, PANEL_W, PANEL_H);
-  assert.equal(shift.x, 0);
-  assert.equal(bottomLeft.ay + shift.y, ORB / 2);
-  assert.ok(shift.y < 0);
+test("the header slot is the orb centre and the orb does not fly", () => {
+  assert.deepEqual(iconShift(), { x: 0, y: 0 });
+  assert.deepEqual(iconShift(10, 500, PANEL_W, PANEL_H), { x: 0, y: 0 });
 
-  const bottomRight = geom("bottom", 1100, 736);
-  const rightShift = iconShift(bottomRight.ax, bottomRight.ay, PANEL_W, PANEL_H);
-  assert.equal(bottomRight.ax + rightShift.x, PANEL_W - ORB / 2);
-  assert.equal(bottomRight.ay + rightShift.y, ORB / 2);
+  const topLeft = placeShell(200, 40, PANEL_W, PANEL_H, screen.w, screen.h);
+  assert.equal(topLeft.edge, "top");
+  assert.equal(topLeft.header, "top");
+  assert.equal(topLeft.anchor.y, ORB / 2);
+  assert.equal(topLeft.anchor.x, ORB / 2);
+  assert.equal(topLeft.top + topLeft.anchor.y, 40);
 
-  const lowerLeft = geom("left", 40, 640);
-  const leftShift = iconShift(lowerLeft.ax, lowerLeft.ay, PANEL_W, PANEL_H);
-  assert.equal(leftShift.x, 0);
-  assert.equal(lowerLeft.ay + leftShift.y, ORB / 2);
+  const topRight = placeShell(1100, 40, PANEL_W, PANEL_H, screen.w, screen.h);
+  assert.equal(topRight.header, "top");
+  assert.equal(topRight.anchor.x, PANEL_W - ORB / 2);
+  assert.equal(topRight.anchor.y, ORB / 2);
 
-  const top = geom("top", 200, 30);
-  assert.deepEqual(iconShift(top.ax, top.ay, PANEL_W, PANEL_H), { x: 0, y: 0 });
-  const clip = insetsFor("panel", top);
-  assert.equal(containsPoint(clip, PANEL_W, PANEL_H, top.ax, top.ay), true);
+  const side = placeShell(64, 180, PANEL_W, PANEL_H, screen.w, screen.h);
+  assert.equal(side.edge, "left");
+  assert.equal(side.header, "top");
+  assert.equal(side.anchor.x, ORB / 2);
+  assert.equal(side.anchor.y, ORB / 2);
+  assert.ok(side.top + PANEL_H <= screen.h + 0.5);
+
+  const lowSide = placeShell(64, 700, PANEL_W, PANEL_H, screen.w, screen.h);
+  assert.equal(lowSide.edge, "left");
+  assert.equal(lowSide.header, "bottom");
+  assert.equal(lowSide.anchor.x, ORB / 2);
+  assert.equal(lowSide.anchor.y, PANEL_H - ORB / 2);
+  assert.equal(lowSide.top + lowSide.anchor.y, 700);
+  assert.ok(lowSide.top >= -0.5);
+
+  const lowRight = placeShell(1240, 700, PANEL_W, PANEL_H, screen.w, screen.h);
+  assert.equal(lowRight.edge, "right");
+  assert.equal(lowRight.header, "bottom");
+  assert.equal(lowRight.anchor.x, PANEL_W - ORB / 2);
+
+  const bottom = placeShell(1100, 736, PANEL_W, PANEL_H, screen.w, screen.h);
+  assert.equal(bottom.edge, "bottom");
+  assert.equal(bottom.header, "bottom");
+  assert.equal(bottom.anchor.y, PANEL_H - ORB / 2);
+  assert.equal(bottom.anchor.x, PANEL_W - ORB / 2);
+  assert.equal(bottom.top + bottom.anchor.y, 736);
+
+  assert.equal(headerSide({ edge: "bottom", orbY: 100, boxH: PANEL_H, screenH: screen.h }), "bottom");
+  assert.equal(headerSide({ edge: "top", orbY: 700, boxH: PANEL_H, screenH: screen.h }), "top");
+  assert.equal(headerSide({ edge: "right", orbY: 180, boxH: PANEL_H, screenH: screen.h }), "top");
+  assert.equal(headerSide({ edge: "right", orbY: 700, boxH: PANEL_H, screenH: screen.h }), "bottom");
 });
 
 test("a preview cannot cancel a close or replace an open panel", () => {

@@ -37,7 +37,34 @@ export function screenEdge(x, y, width, height) {
   return edges[0][0];
 }
 
-/** Orb centre inside the pre-sized box. Pill width grows toward the screen centre. */
+function panelOverflow(top, boxH, screenH) {
+  const bottom = top + boxH;
+  return Math.max(0, -top) + Math.max(0, bottom - screenH);
+}
+
+/**
+ * Which edge of the panel holds the header orb slot.
+ * Top orbs keep the header on top and grow down. Bottom orbs keep it on
+ * the bottom and grow up. Side orbs grow down unless that would hang off
+ * the screen more than growing up — then the header moves to the bottom.
+ */
+export function headerSide({
+  edge = "bottom",
+  orbY = 0,
+  boxH = PANEL_H,
+  screenH = 800,
+  orb = ORB,
+} = {}) {
+  if (edge === "bottom") return "bottom";
+  if (edge === "top") return "top";
+  const down = panelOverflow(orbY - orb / 2, boxH, screenH);
+  const up = panelOverflow(orbY + orb / 2 - boxH, boxH, screenH);
+  if (down <= 0.5) return "top";
+  if (up < down - 0.5) return "bottom";
+  return "top";
+}
+
+/** Orb centre inside the pre-sized box. That centre is the header slot. */
 export function anchorInBox({
   edge = "bottom",
   orbX = 0,
@@ -50,11 +77,9 @@ export function anchorInBox({
 } = {}) {
   const r = orb / 2;
   const ax = orbX > screenW / 2 ? boxW - r : r;
-  let ay = r;
-  if (edge === "bottom") ay = boxH - r;
-  else if (edge === "top") ay = r;
-  else if (orbY > screenH / 2) ay = boxH - r;
-  return { x: ax, y: ay };
+  const header = headerSide({ edge, orbY, boxH, screenH, orb });
+  const ay = header === "bottom" ? boxH - r : r;
+  return { x: ax, y: ay, header };
 }
 
 export function placeShell(anchorX, anchorY, boxW, boxH, screenW, screenH) {
@@ -70,6 +95,7 @@ export function placeShell(anchorX, anchorY, boxW, boxH, screenW, screenH) {
   });
   return {
     edge,
+    header: anchor.header,
     anchor,
     left: anchorX - anchor.x,
     top: anchorY - anchor.y,
@@ -379,15 +405,11 @@ export function fixedOrbPoint(which, width, height, pad = 42, orb = ORB) {
 }
 
 /**
- * Offset from the clip anchor to the header-corner icon.
- * The anchor itself stays put. Y is always the top of the panel so a
- * bottom or lower-left orb does not sit on the composer. X stays on the
- * screen-edge side (left half → top-left).
+ * The header slot is the orb centre. The orb does not fly, so the shift is
+ * always zero. Scale, when it happens, stays on that centre.
  */
-export function iconShift(ax, ay, boxW, boxH, orb = ORB) {
-  const edgeX = ax > boxW / 2 ? boxW - orb / 2 : orb / 2;
-  const headerY = orb / 2;
-  return { x: edgeX - ax, y: headerY - ay };
+export function iconShift() {
+  return { x: 0, y: 0 };
 }
 
 /** Collapse forgets a dragged park so the next layout uses the edge anchor. */

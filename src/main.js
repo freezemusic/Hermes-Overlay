@@ -354,12 +354,13 @@ function placeShellElement(shell) {
   shell.style.right = "auto";
   shell.style.bottom = "auto";
   shell.dataset.edge = placed.edge;
+  shell.dataset.header = placed.header === "bottom" ? "bottom" : "top";
   shell.dataset.ax = String(placed.anchor.x);
   shell.dataset.ay = String(placed.anchor.y);
   shell.dataset.anchor = placed.anchor.x > placed.width / 2 ? "end" : "start";
   shell.style.setProperty("--ax", `${placed.anchor.x}px`);
   shell.style.setProperty("--ay", `${placed.anchor.y}px`);
-  const shift = iconShift(placed.anchor.x, placed.anchor.y, placed.width, placed.height);
+  const shift = iconShift();
   shell.style.setProperty("--icon-dx", `${shift.x}px`);
   shell.style.setProperty("--icon-dy", `${shift.y}px`);
   shell.style.transformOrigin = `${placed.anchor.x}px ${placed.anchor.y}px`;
@@ -428,10 +429,12 @@ function separateOpenShells(shells, extra) {
     shell.style.top = `${box.top}px`;
     shell.style.height = `${box.height}px`;
     const ax = Number(shell.dataset.ax) || ORB / 2;
-    const ay = box.edge === "bottom" ? box.height - ORB / 2 : box.edge === "top" ? ORB / 2 : Number(shell.dataset.ay) || ORB / 2;
+    const header = shell.dataset.header === "bottom" || box.edge === "bottom" ? "bottom" : "top";
+    const ay = header === "bottom" ? box.height - ORB / 2 : ORB / 2;
+    shell.dataset.header = header;
     shell.dataset.ay = String(ay);
     shell.style.setProperty("--ay", `${ay}px`);
-    const shift = iconShift(ax, ay, prev.width, box.height);
+    const shift = iconShift();
     shell.style.setProperty("--icon-dx", `${shift.x}px`);
     shell.style.setProperty("--icon-dy", `${shift.y}px`);
     const visual = shell.dataset.visual || "panel";
@@ -515,11 +518,6 @@ function holdMotion(el) {
 
 function releaseMotion(el) {
   el?.style.removeProperty("transition");
-}
-
-function pxOf(shell, name) {
-  const n = Number.parseFloat(shell.style.getPropertyValue(name));
-  return Number.isFinite(n) ? n : 0;
 }
 
 function whenAnimEnds(anim, duration) {
@@ -607,7 +605,6 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   let shellAnim;
   let fillAnim;
   let strokeAnim;
-  let orbMove;
   try {
     shellAnim = shell.animate([
       { clipPath: clipPath(shellFrom) },
@@ -615,7 +612,10 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     ], timing);
     if (toState === "panel") {
       playContentIn(shell, duration);
-      orbMove = moveOrbToHeader(shell, token);
+      moveOrbToHeader(shell, token);
+    } else if (toState === "orb") {
+      const fromScale = Number(shell._closingScale) || 1;
+      if (fromScale < 0.98) scaleOrb(shell, token, fromScale, 1, duration, easing);
       if (stroke) {
         strokeAnim = stroke.animate([
           { clipPath: clipPath(from) },
@@ -1042,16 +1042,39 @@ function endPlanSeam(shell) {
   flushDeferredChat(shell);
 }
 
-const GLOW = 140;
+function orbScaleNow(orb) {
+  const value = getComputedStyle(orb).transform;
+  if (!value || value === "none") return 1;
+  const matched = value.match(/matrix\(([^)]+)\)/);
+  if (!matched) return 1;
+  const scale = Number(matched[1].split(",")[0]);
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
 
-/** Same 480ms curve as the panel clip, started in that turn. The parked
- *  header offset is unchanged. Glow opacity is the moving and docked classes. */
+/** Scale about the orb centre. No translate: the header slot is already there.
+ *  The caller owns cancelling the animation once the resting class matches. */
+function scaleOrb(shell, token, from, to, duration, easing) {
+  const orb = shell.querySelector(".morph-orb");
+  if (!orb || (token && shell.dataset.morphToken !== token)) return Promise.resolve(null);
+  if (!(duration > 0) || Math.abs(from - to) < 0.01) return Promise.resolve(null);
+  holdMotion(orb);
+  orb.style.transformOrigin = "center center";
+  try {
+    const anim = orb.animate([
+      { transform: `scale(${from})` },
+      { transform: `scale(${to})` },
+    ], { duration, easing, fill: "forwards" });
+    return whenAnimEnds(anim, duration).then((finished) => (finished ? anim : null));
+  } catch {
+    return Promise.resolve(null);
+  }
+}
+
+/** Same 480ms curve as the panel clip, started in that turn. The centre
+ *  stays on the header slot. Glow opacity is the moving and docked classes. */
 function moveOrbToHeader(shell, token) {
   if (token && shell.dataset.morphToken !== token) return Promise.resolve();
   const orb = shell.querySelector(".morph-orb");
-  const glow = shell.querySelector(".morph-glow");
-  const dx = pxOf(shell, "--icon-dx");
-  const dy = pxOf(shell, "--icon-dy");
   if (!orb || reducedMotion()) {
     shell.classList.remove("is-orb-moving");
     shell.classList.add("is-orb-docked");
@@ -1064,39 +1087,14 @@ function moveOrbToHeader(shell, token) {
     shell.classList.add("is-orb-moving");
     shell.classList.remove("is-orb-docked");
   }
-  holdMotion(orb);
-  holdMotion(glow);
   const scale = ICON / ORB;
-  const timing = { duration: PILL_PANEL_MS, easing: EASE, fill: "forwards" };
-  let orbAnim;
-  let glowAnim;
-  try {
-    orbAnim = orb.animate([
-      { transform: "translate(0px, 0px) scale(1)" },
-      { transform: `translate(${dx}px, ${dy}px) scale(${scale})` },
-    ], timing);
-    if (glow) {
-      const half = GLOW / 2;
-      glowAnim = glow.animate([
-        { transform: `translate(${-half}px, ${-half}px)` },
-        { transform: `translate(${-half + dx}px, ${-half + dy}px)` },
-      ], timing);
-    }
-  } catch {
-    shell.classList.remove("is-orb-moving");
-    shell.classList.add("is-orb-docked");
-    return Promise.resolve();
-  }
-  return whenAnimEnds(orbAnim, PILL_PANEL_MS).then((finished) => {
+  const glow = shell.querySelector(".morph-glow");
+  holdMotion(glow);
+  return scaleOrb(shell, token, 1, scale, PILL_PANEL_MS, EASE).then((anim) => {
     if (token && shell.dataset.morphToken !== token) return;
-    if (!finished) return;
-    try {
-      if (glowAnim && orbAnim.currentTime != null) glowAnim.currentTime = orbAnim.currentTime;
-    } catch { /* already finished */ }
     shell.classList.add("is-orb-docked");
     shell.classList.remove("is-orb-moving");
-    orbAnim.cancel();
-    glowAnim?.cancel();
+    anim?.cancel();
     releaseMotion(orb);
     releaseMotion(glow);
   });
@@ -1219,6 +1217,11 @@ function stopShellTransition(shell) {
 async function runShellMorph(shell, target) {
   if (!shell) return false;
   if (target !== "orb" && shell.dataset.intent === "close") return false;
+  let closingScale = 1;
+  if (target === "orb") {
+    const orb = shell.querySelector(".morph-orb");
+    if (orb) closingScale = orbScaleNow(orb);
+  }
   const token = String((Number(shell.dataset.morphToken) || 0) + 1);
   shell.dataset.morphToken = token;
   shell.getAnimations?.().forEach((anim) => anim.cancel());
@@ -1243,7 +1246,8 @@ async function runShellMorph(shell, target) {
     holdMotion(shell.querySelector(".morph-fill"));
     shell.dataset.intent = "close";
     shell.classList.add("is-collapsing");
-    shell.classList.remove("is-orb-docked", "is-orb-moving", "is-content-hold", "open");
+    shell._closingScale = closingScale;
+    shell.classList.remove("is-orb-moving", "is-content-hold", "open");
     shell.dataset.contentOnce = "";
     shell.dataset.opening = "";
     releaseContent(shell);

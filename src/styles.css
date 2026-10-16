@@ -1951,7 +1951,7 @@ html, body {
 }
 
 .morph.is-orb-docked .morph-glow {
-  transform: translate(calc(-70px + var(--icon-dx, 0px)), calc(-70px + var(--icon-dy, 0px)));
+  transform: translate(-70px, -70px);
 }
 
 .morph.is-morphing:not(.is-orb-docked):not(.is-orb-moving) .morph-glow,
@@ -1989,25 +1989,24 @@ html, body {
   top: calc(var(--ay, 22px) - 22px);
   z-index: 4;
   margin: 0;
+  transform-origin: center center;
 }
 
 .morph.is-orb-docked .morph-orb,
 .morph[data-state="panel"]:not(.is-morphing) .morph-orb {
   pointer-events: none;
-  transform: translate(var(--icon-dx, 0px), var(--icon-dy, 0px)) scale(calc(28 / 44));
+  transform: scale(calc(28 / 44));
 }
 
 .morph.is-morphing:not(.is-orb-docked):not(.is-orb-moving) .morph-orb,
-.morph.is-collapsing .morph-orb {
-  transform: translate(0px, 0px) scale(1);
+.morph.is-collapsing:not(.is-orb-docked) .morph-orb {
+  transform: scale(1);
 }
 
 .morph[data-visual="wide"] .morph-orb,
 .morph[data-visual="tall"] .morph-orb {
   transform: translate(0px, 0px) scale(1);
 }
-
-.morph.is-collapsing .morph-orb { transition: transform 80ms var(--ease-morph); }
 
 html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   pointer-events: none !important;
@@ -2035,6 +2034,30 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 
 .morph[data-anchor="end"] .panel-header,
 .morph[data-anchor="end"] .settings-head { padding-right: 40px; }
+
+/* The header slot is the orb. A bottom slot sits under the composer. */
+.morph[data-header="bottom"] .center-panel {
+  padding-bottom: 0;
+}
+
+.morph[data-header="bottom"] .center-panel > .composer {
+  order: 7;
+}
+
+.morph[data-header="bottom"] .center-panel > .panel-header,
+.morph[data-header="bottom"] .settings-head {
+  order: 8;
+  min-height: 44px;
+  align-items: center;
+}
+
+.morph[data-header="bottom"] #settings-form {
+  padding-bottom: 0;
+}
+
+.morph[data-header="bottom"] .settings-head {
+  margin-top: auto;
+}
 
 .morph-body,
 .morph-pill,
