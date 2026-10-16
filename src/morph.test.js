@@ -17,6 +17,7 @@ import {
   clipPath,
   collapsePhases,
   containsPoint,
+  distributeEdges,
   insetsFor,
   openPhases,
   phaseList,
@@ -42,6 +43,13 @@ test("kanban sits on the top edge and cron on the right", () => {
   assert.equal(cron.x, screen.w - 42 - ORB / 2);
   assert.equal(cron.y, Math.round(screen.h * 0.38));
   assert.equal(fixedOrbPoint("settings", screen.w, screen.h).edge, "bottom");
+  for (const count of [1, 3, 8]) {
+    for (const slot of distributeEdges(count)) {
+      const point = slotPoint(slot.edge, slot.t, screen.w, screen.h, 42, ORB);
+      const dist = Math.hypot(point.x - kanban.x, point.y - kanban.y);
+      assert.ok(dist > ORB, `${count} ${slot.edge} ${dist}`);
+    }
+  }
 });
 
 function geom(edge, orbX, orbY, boxW = PANEL_W, boxH = PANEL_H) {

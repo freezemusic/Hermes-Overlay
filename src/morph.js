@@ -198,6 +198,14 @@ export function phaseList(edge, from, to) {
   return openPhases(edge);
 }
 
+/** Top-edge bots sit either side of centre so they do not cover the kanban orb. */
+function topSlot(index, count) {
+  const half = Math.ceil(count / 2);
+  if (index < half) return ((index + 1) / (half + 1)) * 0.42;
+  const rest = count - half;
+  return 0.58 + ((index - half + 1) / (rest + 1)) * 0.42;
+}
+
 export function distributeEdges(count) {
   const segments = [
     { edge: "top", weight: 1 },
@@ -213,7 +221,10 @@ export function distributeEdges(count) {
     const n = isLast ? remaining : Math.max(1, Math.round((seg.weight / total) * count));
     const take = Math.min(n, remaining);
     remaining -= take;
-    for (let j = 0; j < take; j += 1) slots.push({ edge: seg.edge, t: (j + 1) / (take + 1) });
+    for (let j = 0; j < take; j += 1) {
+      const t = seg.edge === "top" ? topSlot(j, take) : (j + 1) / (take + 1);
+      slots.push({ edge: seg.edge, t });
+    }
   });
   while (remaining > 0) {
     slots.push({ edge: "right", t: 0.5 });
