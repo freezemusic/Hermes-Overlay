@@ -773,7 +773,7 @@ fn schedule_text(value: &Value) -> String {
         Some(Value::String(text)) => text.trim().to_string(),
         Some(Value::Object(map)) => {
             for key in ["display", "expression", "expr"] {
-                if let Some(Value::String(text)) = map.get(*key) {
+                if let Some(Value::String(text)) = map.get(key) {
                     let text = text.trim();
                     if !text.is_empty() {
                         return text.to_string();
