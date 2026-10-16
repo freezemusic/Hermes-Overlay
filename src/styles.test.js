@@ -79,7 +79,12 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(move, /scaleOrb\(shell, token, 1, scale, PILL_PANEL_MS, EASE\)/);
   assert.doesNotMatch(move, /duration: PLAN_GROW_MS/);
   assert.doesNotMatch(move, /style\.opacity|holdContent/);
-  assert.match(mainSrc, /scaleOrb\(shell, token, fromScale, 1, duration, easing\)/);
+  assert.match(mainSrc, /scaleOrb\(shell, token, fromScale, 1, duration, easing, true\)/);
+  assert.match(mainSrc, /function beginBotHistory/);
+  assert.match(mainSrc, /prefetchBotChats\(\)/);
+  assert.match(mainSrc, /rememberPlan\(thread, thread\.messages\)/);
+  assert.doesNotMatch(mainSrc, /orbMove/);
+  assert.match(mainSrc, /shellAnim\.startTime = now/);
   assert.match(css, /\.morph \.morph-orb \{[^}]*transform-origin:\s*center center/s);
   assert.match(css, /\.morph\[data-header="bottom"\] \.center-panel > \.composer \{[^}]*order:\s*7/s);
   assert.match(css, /\.morph\[data-header="bottom"\] \.center-panel > \.panel-header,[\s\S]*order:\s*8/);

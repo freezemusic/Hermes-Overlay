@@ -5,7 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { latestPlan, noteNewestPlan, planDemoMarkdown, planTask, plansIn } from "./plan.js";
+import { latestPlan, noteNewestPlan, planDemoMarkdown, planForPanel, planTask, plansIn, rememberPlan } from "./plan.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
   CONTENT_IN_MS,
@@ -585,9 +585,10 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     return Promise.resolve(true);
   }
   // Drop the pill's 200ms transition before the panel clip. The panel clock
-  // is the WAAPI duration (480ms), and transition-delay stays 0.
+  // is the WAAPI duration (480ms), and transition-delay stays 0. Collapse
+  // skips the layout flush: it was pushing the 300ms clock out by a frame.
   writeClip(shell, from);
-  void shell.offsetWidth;
+  if (toState !== "orb") void shell.offsetWidth;
   shell.style.clipPath = clipPath(shellFrom);
   if (fill) fill.style.clipPath = clipPath(fillFrom);
   if (stroke && toState === "panel") stroke.style.clipPath = clipPath(from);
@@ -615,7 +616,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       moveOrbToHeader(shell, token);
     } else if (toState === "orb") {
       const fromScale = Number(shell._closingScale) || 1;
-      if (fromScale < 0.98) scaleOrb(shell, token, fromScale, 1, duration, easing);
+      if (fromScale < 0.98) scaleOrb(shell, token, fromScale, 1, duration, easing, true);
       if (stroke) {
         strokeAnim = stroke.animate([
           { clipPath: clipPath(from) },
@@ -628,6 +629,14 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
         { clipPath: clipPath(fillFrom) },
         { clipPath: clipPath(fillTo) },
       ], timing);
+    }
+    if (toState === "orb") {
+      const now = document.timeline?.currentTime;
+      if (typeof now === "number") {
+        shellAnim.startTime = now;
+        if (fillAnim) fillAnim.startTime = now;
+        if (strokeAnim) strokeAnim.startTime = now;
+      }
     }
   } catch {
     writeClip(shell, to);
@@ -648,7 +657,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   } else {
     scheduleHitSync();
   }
-  return whenAnimEnds(shellAnim, duration).then(async (finished) => {
+  return whenAnimEnds(shellAnim, duration).then((finished) => {
     if (shell.dataset.morphToken !== token) return false;
     if (!finished) return false;
     pauseHitSync();
@@ -678,7 +687,6 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     shellAnim.cancel();
     fillAnim?.cancel();
     strokeAnim?.cancel();
-    if (orbMove) await orbMove;
     return true;
   });
 }
@@ -724,6 +732,17 @@ function ensurePlanFit(plan) {
 
 function seamOrigin(shell) {
   return shell.dataset.planSide === "left" ? "right center" : "left center";
+}
+
+function hideUnwarmedPlan(shell) {
+  const plan = shell?.querySelector?.(".plan-window");
+  if (plan) {
+    plan.hidden = true;
+    clearPlanMotion(plan);
+    delete plan.dataset.warm;
+    delete plan.dataset.painted;
+  }
+  if (shell) delete shell.dataset.planOpen;
 }
 
 function clearPlanMotion(plan) {
@@ -845,7 +864,11 @@ function warmPlanLayer(shell) {
   seamMark("plan-seam:warm");
   void plan.offsetWidth;
   const width = Math.round(plan.offsetWidth || 0);
-  if (width < 1) return;
+  if (width < 1) {
+    plan.hidden = true;
+    clearPlanMotion(plan);
+    return;
+  }
   shell.dataset.planWidth = String(width);
   plan.dataset.warm = "1";
   requestAnimationFrame(() => {
@@ -942,8 +965,9 @@ async function playPlanSeam(shell, token) {
   const plan = shell.querySelector(".plan-window");
   if (!plan || shell.dataset.planOpen !== "1") return;
   if (token && shell.dataset.morphToken !== token) return;
-  if (plan.dataset.warm !== "1") {
-    console.warn("[plan-seam] layer was not painted before the clip ended");
+  if (plan.dataset.warm !== "1" || !plan.dataset.key) {
+    // No plan raster yet. A seam stub would sit at ~2% until the session arrives.
+    return;
   }
   shell.classList.add("is-plan-seam", "is-plan-arming");
   pauseHitSync();
@@ -1053,7 +1077,7 @@ function orbScaleNow(orb) {
 
 /** Scale about the orb centre. No translate: the header slot is already there.
  *  The caller owns cancelling the animation once the resting class matches. */
-function scaleOrb(shell, token, from, to, duration, easing) {
+function scaleOrb(shell, token, from, to, duration, easing, pinClock = false) {
   const orb = shell.querySelector(".morph-orb");
   if (!orb || (token && shell.dataset.morphToken !== token)) return Promise.resolve(null);
   if (!(duration > 0) || Math.abs(from - to) < 0.01) return Promise.resolve(null);
@@ -1064,6 +1088,10 @@ function scaleOrb(shell, token, from, to, duration, easing) {
       { transform: `scale(${from})` },
       { transform: `scale(${to})` },
     ], { duration, easing, fill: "forwards" });
+    if (pinClock) {
+      const now = document.timeline?.currentTime;
+      if (typeof now === "number") anim.startTime = now;
+    }
     return whenAnimEnds(anim, duration).then((finished) => (finished ? anim : null));
   } catch {
     return Promise.resolve(null);
@@ -1220,7 +1248,8 @@ async function runShellMorph(shell, target) {
   let closingScale = 1;
   if (target === "orb") {
     const orb = shell.querySelector(".morph-orb");
-    if (orb) closingScale = orbScaleNow(orb);
+    if (shell.classList.contains("is-orb-docked")) closingScale = ICON / ORB;
+    else if (orb) closingScale = orbScaleNow(orb);
   }
   const token = String((Number(shell.dataset.morphToken) || 0) + 1);
   shell.dataset.morphToken = token;
@@ -1299,7 +1328,11 @@ async function runShellMorph(shell, target) {
   }
   if (!alive()) return false;
   if (target === "panel" && shell.dataset.planOpen === "1") {
-    await playPlanSeam(shell, token);
+    if (shell.querySelector(".plan-window")?.dataset.warm === "1") {
+      await playPlanSeam(shell, token);
+    } else {
+      hideUnwarmedPlan(shell);
+    }
   }
   if (!alive()) return false;
   settleShell(shell, target);
@@ -1832,6 +1865,11 @@ function renderCronOrb(options = {}) {
   if (options.tick) paintCronArcs();
 }
 
+function chatStamp(thread) {
+  const last = thread.messages[thread.messages.length - 1];
+  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}`;
+}
+
 function renderChat(id = state.activeId) {
   const shell = shellFor(id);
   if (deferShellWork(shell)) {
@@ -1844,9 +1882,6 @@ function renderChat(id = state.activeId) {
   const chat = role(panel, "chat");
   if (!bot || !chat) return;
   const thread = threadFor(bot.id);
-  if (thread.followTail === false) thread.scrollTop = chat.scrollTop;
-  markProgrammaticScroll(chat);
-  chat.innerHTML = "";
   const title = role(panel, "name");
   if (title) title.textContent = bot.name;
   const statusEl = role(panel, "status");
@@ -1864,10 +1899,32 @@ function renderChat(id = state.activeId) {
   if (hint) hint.textContent = hintText();
   paintOrb(role(panel, "avatar"), bot.color, bot.short || "");
   applyBotColor(panel, bot.color);
-  thread.messages.forEach((m) => chat.appendChild(bubbleEl(m, bot.id)));
-  stickChat(id);
-  paintPlan(id);
   paintSessionSelect(id);
+  const stamp = chatStamp(thread);
+  const current = chat.dataset.stamp === stamp && chat.childElementCount === thread.messages.length;
+  const opening = shell && (shell.dataset.visual || shell.dataset.state) === "orb";
+  const revealPlan = shell
+    && shell.dataset.planOpen !== "1"
+    && (shell.dataset.visual || shell.dataset.state) === "panel"
+    && planForPanel(thread);
+  if (revealPlan) {
+    paintPlan(id);
+    if (!current) shell.dataset.chatDirty = "1";
+  } else if (!current && opening && thread.messages.length > 0) {
+    // Bubble markdown waits until the clip and the plan seam have finished.
+    paintPlan(id);
+    shell.dataset.chatDirty = "1";
+  } else if (!current) {
+    if (thread.followTail === false) thread.scrollTop = chat.scrollTop;
+    markProgrammaticScroll(chat);
+    chat.innerHTML = "";
+    thread.messages.forEach((m) => chat.appendChild(bubbleEl(m, bot.id)));
+    chat.dataset.stamp = stamp;
+    stickChat(id);
+    paintPlan(id);
+  } else {
+    paintPlan(id);
+  }
   const stop = role(panel, "stop");
   const send = role(panel, "send");
   if (stop) stop.hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
@@ -1907,9 +1964,9 @@ function paintPlan(id) {
   const thread = threadFor(id);
   const plans = plansIn(thread.messages);
   noteNewestPlan(thread, plans);
-  const newest = plans.at(-1) || null;
-  const focus = plans.find((item) => item.key === thread.planFocus) || newest;
-  const open = !!(focus && thread.planDismissed !== focus.key);
+  rememberPlan(thread, thread.messages);
+  const focus = planForPanel(thread);
+  const open = !!focus;
   const wasOpen = shell.dataset.planOpen === "1";
   section.hidden = !open;
   if (open) shell.dataset.planOpen = "1";
@@ -1944,6 +2001,8 @@ function paintPlan(id) {
         body.dataset.md = html;
         body.innerHTML = html;
         decorateCodeBlocks(body);
+        delete section.dataset.warm;
+        delete section.dataset.painted;
       }
     }
   }
@@ -1951,11 +2010,19 @@ function paintPlan(id) {
     source.hidden = mode !== "source";
     if (mode === "source" && source.textContent !== focus.markdown) source.textContent = focus.markdown;
   }
+  const morphing = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
+  if (morphing) {
+    if (open && !wasOpen) {
+      if (!shell.dataset.planSide) shell.dataset.planSide = sideFromStyle(shell);
+      warmPlanLayer(shell);
+    }
+    shell.dataset.chatDirty = "1";
+    return;
+  }
   syncPlanSide(shell);
   separateOpenShells([...document.querySelectorAll(".morph")]);
-  const morphing = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
   const settledPanel = (shell.dataset.visual || shell.dataset.state) === "panel";
-  if (open && !morphing && !wasOpen && settledPanel) {
+  if (open && !wasOpen && settledPanel) {
     const token = shell.dataset.morphToken || "";
     warmPlanLayer(shell);
     void playPlanSeam(shell, token);
@@ -2192,6 +2259,7 @@ function appendMessage(id, message) {
   const chat = chatOf(id);
   if (!chat) return;
   chat.appendChild(bubbleEl(message, id));
+  chat.dataset.stamp = chatStamp(thread);
   if (thread.followTail !== false) pinChat(id);
   paintPlan(id);
 }
@@ -2221,8 +2289,55 @@ function applyOpened(id, opened) {
   thread.sessionAnchor = Number(opened.session_anchor) || 0;
   thread.sessions = opened.sessions || [];
   thread.loading = false;
+  rememberPlan(thread, thread.messages);
   clearConnectionBanner();
+  const shell = shellFor(id);
+  const animating = shell && (
+    shell.classList.contains("is-morphing")
+    || shell.classList.contains("is-collapsing")
+    || shell.classList.contains("is-plan-seam")
+    || shell.classList.contains("is-plan-arming")
+  );
+  if (animating) {
+    thread.status = "閒置";
+    thread.statusState = "idle";
+    state.busy.delete(id);
+    setStatusText(id, "閒置");
+    const statusEl = role(panelFor(id), "status");
+    if (statusEl) statusEl.dataset.state = "idle";
+    paintSessionSelect(id);
+    if (shell.classList.contains("is-plan-seam") || shell.classList.contains("is-plan-arming")) {
+      shell.dataset.planDirty = "1";
+    } else {
+      paintPlan(id);
+    }
+    shell.dataset.chatDirty = "1";
+    return;
+  }
   setBotStatus(id, "閒置", "idle");
+}
+
+function beginBotHistory(id) {
+  if (state.mode !== "hermes" || !inTauri()) return null;
+  const thread = threadFor(id);
+  if (thread.loaded) return null;
+  if (thread.historyPromise) return thread.historyPromise;
+  window.clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = 0;
+  const token = state.reconnectToken;
+  thread.loading = true;
+  thread.historyPromise = loadBotHistory(id, token).finally(() => {
+    thread.loading = false;
+    thread.historyPromise = null;
+  });
+  return thread.historyPromise;
+}
+
+function prefetchBotChats() {
+  if (state.mode !== "hermes" || !inTauri()) return;
+  for (const bot of state.bots) {
+    beginBotHistory(bot.id)?.catch(() => {});
+  }
 }
 
 async function loadBotHistory(id, token) {
@@ -2333,32 +2448,34 @@ async function selectBot(id) {
     renderBots();
     return;
   }
+  const pending = beginBotHistory(id);
+  if (pending) {
+    const thread = threadFor(id);
+    if (!thread.loaded) {
+      thread.status = "載入對話…";
+      thread.statusState = "busy";
+      state.busy.add(id);
+    }
+  }
   renderBots();
   renderChat(id);
   openBotPanel(id);
-  if (state.mode !== "hermes" || !inTauri()) return;
-  const thread = threadFor(id);
-  if (thread.loaded || thread.loading) return;
-  cancelReconnect();
-  const token = state.reconnectToken;
-  thread.loading = true;
-  setBotStatus(id, "載入對話…", "busy");
+  if (!pending) return;
   try {
-    await loadBotHistory(id, token);
+    await pending;
   } catch (err) {
+    const thread = threadFor(id);
     thread.loaded = false;
     const message = String(err);
     if (gatewayDown(message)) {
       setBotStatus(id, "連線錯誤", "error");
       setBanner(message, "error");
-      armReconnect(id, 0, token);
+      armReconnect(id, 0, state.reconnectToken);
     } else {
       appendMessage(id, { role: "commentary", text: message });
       setBotStatus(id, "連線錯誤", "error");
       setBanner(message, "error");
     }
-  } finally {
-    thread.loading = false;
   }
 }
 
@@ -2391,14 +2508,18 @@ function closeBotPanel(id) {
     if (composerField && panel.contains(composerField)) composerField = null;
   }
   if (shell) void finishClose(shell);
-  renderBots();
+  else renderBots();
 }
 
 async function finishClose(shell) {
-  const closed = await runShellMorph(shell, "orb");
-  if (!closed || !shell.isConnected) return;
-  syncLatch();
-  scheduleHitSync();
+  try {
+    const closed = await runShellMorph(shell, "orb");
+    if (!closed || !shell.isConnected) return;
+    syncLatch();
+    scheduleHitSync();
+  } finally {
+    renderBots();
+  }
 }
 
 function showBotTab(panel, tab) {
@@ -2948,6 +3069,7 @@ function useHermes(settings) {
     setBanner("已連接設定。點頭像載入該 Bot 嘅 Bot Chat。", "ok");
   }
   renderBots();
+  prefetchBotChats();
 }
 
 async function connectHermes(settings) {

@@ -113,3 +113,31 @@ export function latestPlan(messages) {
   const found = plansIn(messages);
   return found.length ? found[found.length - 1] : null;
 }
+
+/** Keep the newest plan for this bot so the next open can paint it before the fetch. */
+export function rememberPlan(thread, messages) {
+  const newest = latestPlan(messages);
+  if (!thread || !newest) return null;
+  thread.planCache = {
+    key: newest.key,
+    title: newest.title,
+    markdown: newest.markdown,
+  };
+  return thread.planCache;
+}
+
+/**
+ * Plan to show for this open. A loaded session with no plan stays closed.
+ * Before that load, the cached plan is the one that can grow with the clip.
+ */
+export function planForPanel(thread) {
+  if (!thread) return null;
+  const plans = plansIn(thread.messages || []);
+  const newest = plans.at(-1) || null;
+  const focus = plans.find((item) => item.key === thread.planFocus) || newest;
+  if (focus) return thread.planDismissed === focus.key ? null : focus;
+  if (thread.loaded) return null;
+  const cached = thread.planCache;
+  if (!cached || thread.planDismissed === cached.key) return null;
+  return cached;
+}

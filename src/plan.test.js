@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { latestPlan, looksLikePlan, noteNewestPlan, planDemoMarkdown, planSource, plansIn, planTask, planTitle, unwrapPlan } from "./plan.js";
+import { latestPlan, looksLikePlan, noteNewestPlan, planDemoMarkdown, planForPanel, planSource, plansIn, planTask, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
 
 test("plan markdown is recognized and a short ack is not", () => {
   const body = planDemoMarkdown("整理設定");
@@ -63,4 +63,24 @@ test("a fenced markdown or plan block is the plan, and a new plan replaces the o
   thread.planFocus = "old";
   assert.equal(noteNewestPlan(thread, [{ key: "old" }, { key: "new" }]), false);
   assert.equal(thread.planFocus, "old");
+});
+
+test("the last plan is cached per bot and used only before the session loads", () => {
+  const markdown = planDemoMarkdown("快取");
+  const thread = { messages: [{ role: "bot", text: markdown }], planDismissed: "" };
+  const cached = rememberPlan(thread, thread.messages);
+  assert.equal(cached.markdown, markdown);
+  assert.equal(planForPanel(thread).key, cached.key);
+  thread.messages = [];
+  thread.loaded = false;
+  assert.equal(planForPanel(thread).markdown, markdown);
+  thread.planDismissed = cached.key;
+  assert.equal(planForPanel(thread), null);
+  thread.planDismissed = "";
+  thread.loaded = true;
+  assert.equal(planForPanel(thread), null);
+  thread.loaded = false;
+  thread.messages = [{ role: "bot", text: planDemoMarkdown("新") }];
+  noteNewestPlan(thread, plansIn(thread.messages));
+  assert.equal(planForPanel(thread).markdown, thread.messages[0].text);
 });
