@@ -124,26 +124,52 @@ pub struct ResolvedSession {
     pub anchor: f64,
 }
 
-/// Highest `last_active`. Equal timestamps keep the smaller id.
-pub fn most_recent_session(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
-    sessions
-        .iter()
-        .max_by(|a, b| match a.last_active.partial_cmp(&b.last_active) {
-            Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Greater,
-            Some(std::cmp::Ordering::Less) => std::cmp::Ordering::Less,
-            _ => b.id.cmp(&a.id),
-        })
+pub fn is_bot_chat_title(title: &str) -> bool {
+    title.trim() == BOT_CHAT_TITLE
 }
 
-/// Latest session by default. An explicit pick sticks until a session is active
-/// after `anchor`, or until that pick disappears.
+/// Higher `last_active` wins. Equal timestamps keep the smaller id.
+fn session_rank(a: &SessionSummary, b: &SessionSummary) -> std::cmp::Ordering {
+    match a.last_active.partial_cmp(&b.last_active) {
+        Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Greater,
+        Some(std::cmp::Ordering::Less) => std::cmp::Ordering::Less,
+        _ => b.id.cmp(&a.id),
+    }
+}
+
+/// Highest `last_active`. Equal timestamps keep the smaller id.
+pub fn most_recent_session(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+    sessions.iter().max_by(|a, b| session_rank(a, b))
+}
+
+/// Most recently active session whose title is exactly `Bot Chat`.
+pub fn most_recent_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+    sessions
+        .iter()
+        .filter(|session| is_bot_chat_title(&session.title))
+        .max_by(|a, b| session_rank(a, b))
+}
+
+/// Bot Chat rows first, then other sessions. Each group is most-recent first.
+pub fn session_menu_order(sessions: &[SessionSummary]) -> Vec<&SessionSummary> {
+    let mut rows: Vec<&SessionSummary> = sessions.iter().collect();
+    rows.sort_by(|a, b| {
+        is_bot_chat_title(&b.title)
+            .cmp(&is_bot_chat_title(&a.title))
+            .then_with(|| session_rank(b, a))
+    });
+    rows
+}
+
+/// Bot Chat by default. An explicit pick sticks until that session disappears.
+/// Cron raising Bot Chat `last_active` must not steal the pick.
 pub fn resolve_session(
     sessions: &[SessionSummary],
     remembered: &str,
     explicit: bool,
     anchor: f64,
 ) -> Option<ResolvedSession> {
-    let latest = most_recent_session(sessions)?;
+    let preferred = most_recent_bot_chat(sessions).or_else(|| most_recent_session(sessions))?;
     let remembered = remembered.trim();
     let picked = if explicit && !remembered.is_empty() {
         sessions.iter().find(|session| session.id == remembered)
@@ -151,24 +177,28 @@ pub fn resolve_session(
         None
     };
     if let Some(picked) = picked {
-        if latest.last_active > anchor && latest.id != picked.id {
-            return Some(ResolvedSession {
-                id: latest.id.clone(),
-                explicit: false,
-                anchor: latest.last_active,
-            });
-        }
+        let newest = most_recent_session(sessions)
+            .map(|session| session.last_active)
+            .unwrap_or(picked.last_active);
         return Some(ResolvedSession {
             id: picked.id.clone(),
             explicit: true,
-            anchor: anchor.max(latest.last_active),
+            anchor: anchor.max(newest),
         });
     }
     Some(ResolvedSession {
-        id: latest.id.clone(),
+        id: preferred.id.clone(),
         explicit: false,
-        anchor: latest.last_active,
+        anchor: preferred.last_active,
     })
+}
+
+/// Suffix of `next` that was not in `seen`. `None` means the transcript diverged.
+pub fn fresh_messages<'a>(seen: &[UiMessage], next: &'a [UiMessage]) -> Option<&'a [UiMessage]> {
+    if next.len() < seen.len() || next[..seen.len()] != *seen {
+        return None;
+    }
+    Some(&next[seen.len()..])
 }
 
 pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
@@ -394,35 +424,30 @@ pub async fn list_sessions(
     Ok(parse_session_list(&value))
 }
 
-pub async fn ensure_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
-    let sessions = list_sessions(http, root, key).await?;
-    if let Some(session) = most_recent_session(&sessions) {
-        return Ok(session.id.clone());
-    }
-    let url = format!("{root}/api/sessions");
-    let create = send(
-        http.post(url)
-            .timeout(Duration::from_secs(20))
-            .json(&serde_json::json!({
-                "title": BOT_CHAT_TITLE,
-                "source": "api_server"
-            })),
-        key,
-    )
-    .await;
-    match create {
-        Ok(resp) => {
-            let value: Value = resp
-                .json()
-                .await
-                .map_err(|e| HermesError::Protocol(format!("建立 session 回應唔係 JSON：{e}")))?;
-            session_id_from_create(&value)
-                .ok_or_else(|| HermesError::Protocol("建立 session 回應冇 id".into()))
-        }
+/// `POST /api/sessions` with `{title: "Bot Chat", source: "api_server"}`, the same
+/// create Hermes Desktop uses. A 400 that names the occupying session returns that id.
+pub async fn create_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
+    match create_session(http, root, key, Some(BOT_CHAT_TITLE)).await {
+        Ok(id) => Ok(id),
         Err(HermesError::Http { status: 400, body }) => {
             conflict_session_id(&body).ok_or(HermesError::Http { status: 400, body })
         }
         Err(err) => Err(err),
+    }
+}
+
+/// Most recently active Bot Chat. If none exists, create one. If create is not
+/// feasible, fall back to the latest session of any title.
+pub async fn ensure_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
+    let sessions = list_sessions(http, root, key).await?;
+    if let Some(session) = most_recent_bot_chat(&sessions) {
+        return Ok(session.id.clone());
+    }
+    match create_bot_chat(http, root, key).await {
+        Ok(id) => Ok(id),
+        Err(err) => most_recent_session(&sessions)
+            .map(|session| session.id.clone())
+            .ok_or(err),
     }
 }
 
@@ -1466,43 +1491,61 @@ mod tests {
         );
     }
 
+    fn summary(id: &str, title: &str, last_active: f64) -> SessionSummary {
+        SessionSummary {
+            id: id.into(),
+            title: title.into(),
+            hidden: None,
+            last_active,
+            preview: String::new(),
+        }
+    }
+
+    fn ui_message(role: &str, text: &str) -> UiMessage {
+        UiMessage {
+            role: role.into(),
+            text: text.into(),
+            tool_name: String::new(),
+        }
+    }
+
     #[test]
-    fn latest_session_is_not_limited_to_bot_chat() {
+    fn bot_chat_is_the_default_session() {
         let sessions = vec![
-            SessionSummary {
-                id: "visible".into(),
-                title: "Bot Chat".into(),
-                hidden: Some(false),
-                last_active: 50.0,
-                preview: String::new(),
-            },
-            SessionSummary {
-                id: "split".into(),
-                title: "_splitLot".into(),
-                hidden: Some(true),
-                last_active: 10.0,
-                preview: String::new(),
-            },
-            SessionSummary {
-                id: "desktop".into(),
-                title: "System Architect".into(),
-                hidden: None,
-                last_active: 99.0,
-                preview: String::new(),
-            },
+            summary("older", "Bot Chat", 50.0),
+            summary("newer", "Bot Chat", 80.0),
+            summary("split", "_splitLot", 10.0),
+            summary("desktop", "System Architect", 200.0),
         ];
         assert_eq!(most_recent_session(&sessions).unwrap().id, "desktop");
-        let stale = resolve_session(&sessions, "split", false, 10.0).unwrap();
-        assert_eq!(stale.id, "desktop");
-        assert!(!stale.explicit);
-        let pinned = resolve_session(&sessions, "split", true, 99.0).unwrap();
+        assert_eq!(most_recent_bot_chat(&sessions).unwrap().id, "newer");
+        let opened = resolve_session(&sessions, "split", false, 10.0).unwrap();
+        assert_eq!(opened.id, "newer");
+        assert!(!opened.explicit);
+        let pinned = resolve_session(&sessions, "split", true, 10.0).unwrap();
         assert_eq!(pinned.id, "split");
         assert!(pinned.explicit);
-        let newer = resolve_session(&sessions, "split", true, 40.0).unwrap();
-        assert_eq!(newer.id, "desktop");
-        assert!(!newer.explicit);
-        assert_eq!(newer.anchor, 99.0);
+        assert_eq!(pinned.anchor, 200.0);
+        let missing = resolve_session(&sessions, "gone", true, 1.0).unwrap();
+        assert_eq!(missing.id, "newer");
+        assert!(!missing.explicit);
         assert!(resolve_session(&[], "split", true, 1.0).is_none());
+        let tied = vec![summary("b", "Bot Chat", 5.0), summary("a", "Bot Chat", 5.0)];
+        assert_eq!(resolve_session(&tied, "", false, 0.0).unwrap().id, "a");
+        let plain = vec![summary("desktop", "System Architect", 99.0), summary("split", "_splitLot", 10.0)];
+        assert_eq!(resolve_session(&plain, "", false, 0.0).unwrap().id, "desktop");
+        assert_eq!(
+            session_menu_order(&sessions)
+                .into_iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["newer", "older", "desktop", "split"]
+        );
+        let seen = vec![ui_message("user", "hi")];
+        let next = vec![ui_message("user", "hi"), ui_message("bot", "cron")];
+        assert_eq!(fresh_messages(&seen, &next).unwrap(), &next[1..]);
+        assert!(fresh_messages(&next, &seen).is_none());
+        assert!(fresh_messages(&seen, &seen).unwrap().is_empty());
     }
 
     #[test]

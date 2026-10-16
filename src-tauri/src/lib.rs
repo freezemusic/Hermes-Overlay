@@ -110,10 +110,17 @@ struct SessionPin {
     anchor: f64,
 }
 
+struct WatchedChat {
+    session_id: String,
+    messages: Vec<hermes::UiMessage>,
+}
+
 struct AppState {
     http: reqwest::Client,
     stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
     sessions: Arc<Mutex<HashMap<String, SessionPin>>>,
+    /// Last Bot Chat transcript seen by the cron poll. Locked only after HTTP awaits.
+    bot_chats: Arc<Mutex<HashMap<String, WatchedChat>>>,
     config_write: Arc<Mutex<()>>,
     command_cache: Mutex<HashMap<String, CommandCacheEntry>>,
     interaction: Arc<interaction::InteractionHub>,
@@ -288,6 +295,129 @@ fn profile_key(profile: &str) -> Result<String, String> {
     }
 }
 
+struct WatchHit {
+    session_id: String,
+    messages: Vec<hermes::UiMessage>,
+}
+
+struct WatchBusy(Arc<AtomicBool>);
+
+impl Drop for WatchBusy {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Poll each enabled profile's Bot Chat. The snapshot lock is taken only after
+/// the HTTP awaits, because a `MutexGuard` is not `Send`.
+fn spawn_bot_chat_watch(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("bot-chat-watch".into())
+        .spawn(move || {
+            let busy = Arc::new(AtomicBool::new(false));
+            loop {
+                if !busy.swap(true, Ordering::AcqRel) {
+                    let app = app.clone();
+                    let busy = Arc::clone(&busy);
+                    tauri::async_runtime::spawn(async move {
+                        let _guard = WatchBusy(busy);
+                        poll_bot_chats(&app).await;
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_secs(3));
+            }
+        })
+        .ok();
+}
+
+async fn poll_bot_chats(app: &AppHandle) {
+    let cfg = match load_config(app) {
+        Ok(cfg) if cfg.mode() == "hermes" => cfg,
+        _ => return,
+    };
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let http = state.http.clone();
+    let watched = Arc::clone(&state.bot_chats);
+    drop(state);
+    let targets: Vec<(String, String, String)> = cfg
+        .bots
+        .iter()
+        .filter(|bot| bot.enabled)
+        .filter_map(|bot| {
+            let key = profile_key(&bot.profile).ok()?;
+            let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+            Some((bot.profile.clone(), root, key))
+        })
+        .collect();
+    for (profile, root, key) in targets {
+        let Ok(hit) = watch_profile(&http, &watched, &profile, &root, &key).await else {
+            continue;
+        };
+        if hit.messages.is_empty() {
+            continue;
+        }
+        emit(
+            app,
+            serde_json::json!({
+                "type": "cron",
+                "profile": profile,
+                "session_id": hit.session_id,
+                "messages": hit.messages,
+            }),
+        );
+    }
+}
+
+async fn watch_profile(
+    http: &reqwest::Client,
+    watched: &Arc<Mutex<HashMap<String, WatchedChat>>>,
+    profile: &str,
+    root: &str,
+    key: &str,
+) -> Result<WatchHit, HermesError> {
+    let sessions = hermes::list_sessions(http, root, key).await?;
+    let session_id = if let Some(session) = hermes::most_recent_bot_chat(&sessions) {
+        session.id.clone()
+    } else {
+        match hermes::create_bot_chat(http, root, key).await {
+            Ok(id) => id,
+            Err(_) => {
+                return Ok(WatchHit {
+                    session_id: String::new(),
+                    messages: Vec::new(),
+                })
+            }
+        }
+    };
+    let messages = hermes::fetch_messages(http, root, key, &session_id).await?;
+    let fresh = {
+        let mut guard = watched.lock().unwrap_or_else(|err| err.into_inner());
+        let fresh = match guard.get(profile) {
+            Some(prev) if prev.session_id == session_id => {
+                match hermes::fresh_messages(&prev.messages, &messages) {
+                    Some(suffix) => suffix.to_vec(),
+                    None => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        };
+        guard.insert(
+            profile.to_string(),
+            WatchedChat {
+                session_id: session_id.clone(),
+                messages,
+            },
+        );
+        fresh
+    };
+    Ok(WatchHit {
+        session_id,
+        messages: fresh,
+    })
+}
+
 fn session_map(state: &AppState) -> std::sync::MutexGuard<'_, HashMap<String, SessionPin>> {
     state.sessions.lock().unwrap_or_else(|err| err.into_inner())
 }
@@ -369,8 +499,8 @@ fn persist_pin(
 }
 
 fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<SessionChoice> {
-    let mut rows: Vec<SessionChoice> = sessions
-        .iter()
+    let mut rows: Vec<SessionChoice> = hermes::session_menu_order(sessions)
+        .into_iter()
         .map(|session| SessionChoice {
             title: {
                 let title = session.title.trim();
@@ -386,12 +516,6 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
             preview: session.preview.clone(),
         })
         .collect();
-    rows.sort_by(|a, b| {
-        b.last_active
-            .partial_cmp(&a.last_active)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.id.cmp(&b.id))
-    });
     if !active.is_empty() && !rows.iter().any(|row| row.id == active) {
         rows.insert(
             0,
@@ -892,13 +1016,30 @@ async fn open_bot(
     emit_status(&app, &profile, "busy", "載入對話…");
     let pin = load_pin(&app, &state, &profile);
     let result = async {
-        let sessions = hermes::list_sessions(&state.http, &root, &key).await?;
+        let mut sessions = hermes::list_sessions(&state.http, &root, &key).await?;
         let resolved = hermes::resolve_session(&sessions, &pin.id, pin.explicit, pin.anchor);
+        let has_bot_chat = sessions
+            .iter()
+            .any(|session| hermes::is_bot_chat_title(&session.title));
         let (session_id, explicit, anchor) = if let Some(resolved) = resolved {
-            (resolved.id, resolved.explicit, resolved.anchor)
+            if resolved.explicit || has_bot_chat {
+                (resolved.id, resolved.explicit, resolved.anchor)
+            } else {
+                match hermes::create_bot_chat(&state.http, &root, &key).await {
+                    Ok(id) => {
+                        if let Ok(fresh) = hermes::list_sessions(&state.http, &root, &key).await {
+                            sessions = fresh;
+                        }
+                        (id, false, 0.0)
+                    }
+                    Err(_) => (resolved.id, false, resolved.anchor),
+                }
+            }
         } else {
-            let id = hermes::create_session(&state.http, &root, &key, Some(config::BOT_CHAT_TITLE))
-                .await?;
+            let id = hermes::create_bot_chat(&state.http, &root, &key).await?;
+            if let Ok(fresh) = hermes::list_sessions(&state.http, &root, &key).await {
+                sessions = fresh;
+            }
             (id, false, 0.0)
         };
         let messages = hermes::fetch_messages(&state.http, &root, &key, &session_id).await?;
@@ -1653,6 +1794,7 @@ pub fn run() {
             http: http_client(),
             stops: Mutex::new(HashMap::new()),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            bot_chats: Arc::new(Mutex::new(HashMap::new())),
             config_write: Arc::new(Mutex::new(())),
             command_cache: Mutex::new(HashMap::new()),
             interaction: Arc::new(interaction::InteractionHub::new()),
@@ -1690,6 +1832,7 @@ pub fn run() {
                 });
             }
             interaction::spawn_poll(app.handle().clone(), hub);
+            spawn_bot_chat_watch(app.handle().clone());
             #[cfg(unix)]
             install_unix_signal_exit(app.handle().clone());
             if let Err(err) = install_escape_hatches(app.handle()) {

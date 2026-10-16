@@ -59,13 +59,14 @@
 
 ## 5. 對話
 
-1. 打開 Bot 面板時，預設必須是該 profile 最近活躍的 session。不限標題，也不優先隱藏的 session。列表為 `{root}/api/sessions?limit=200&include_hidden=true`。
-2. 同分時 `last_active` 較大者勝；仍相同則 id 較小者勝。
-3. 面板內必須有 session 選擇器。使用者選過的 session 要按 Bot 記住，直到使用者再改，或另一條 session 的 `last_active` 嚴格大於選擇當下的水位。
-4. 舊設定若只是存著一條 `Bot Chat` id、而使用者沒有明確選過，打開時必須改跟最新 session，不得停在過期對話。
-5. 只有該 profile 完全沒有 session 時，才建立標題為 `Bot Chat` 的 overlay 專用對話。
-6. `/new` 與 `/branch` 必須把新 session 記成使用者的選擇，不得立刻被「最新」蓋掉。
-7. 送出時若有明確選擇就用該 id。該 id 回 404 時清掉選擇，再解析最新 session。
+1. Hermes 把 cron 輸出寫入每個 profile 標題剛好是 `Bot Chat` 的 session。打開 Bot 面板時，若使用者沒有明確選過其他 session，預設必須是該 profile 最近活躍的 `Bot Chat`。有多條時 `last_active` 較大者勝；仍相同則 id 較小者勝。隱藏的 `Bot Chat` 一樣計算，但不因為隱藏而優先。列表為 `{root}/api/sessions?limit=200&include_hidden=true`。
+2. 完全沒有 `Bot Chat` 時，必須先按 Hermes Desktop 的方式建立：`POST {root}/api/sessions`，內容為 `{ "title": "Bot Chat", "source": "api_server" }`。若 400 寫明標題已被某 session 佔用，就用該 id。只有建立不可行時，才改開最近活躍的任何 session。
+3. 面板必須保留 session 選擇器，其他 session 仍可選。標題為 `Bot Chat` 的列必須排在最頂，其餘再按最近活躍排序。
+4. 使用者明確選過的 session 要按 Bot 記住，直到使用者再改，或該 id 已不在列表／回 404。Bot Chat 因 cron 更新 `last_active`，不得把明確選擇搶走。
+5. 舊設定若只存著 session id、而 `session_explicit` 不是 true，打開時必須改跟最近活躍的 `Bot Chat`，不得停在過期對話。
+6. `/new` 與 `/branch` 必須把新 session 記成使用者的明確選擇，不得立刻被 Bot Chat 蓋掉。
+7. 送出時若有明確選擇就用該 id。該 id 回 404 時清掉選擇，再解析 Bot Chat；沒有就建立，建立不可行才用最新 session。
+8. Overlay 必須輪詢每個已顯示且有金鑰的 profile 的 Bot Chat。新訊息到達後：面板若正開着該 session，訊息必須即時出現在對話，而且不得把面板收成膠囊；光球收起時必須展開預覽膠囊（24 小時 `HH:MM`，約 5 秒）。面板若開着其他 session，新訊息只記在 Bot Chat，不得打亂目前畫面，也不得把面板收成膠囊。
 
 ## 6. 光球顏色與計劃預覽
 

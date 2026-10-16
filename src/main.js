@@ -25,7 +25,7 @@ import {
   tighten,
 } from "./morph.js";
 import { isProfileEnabled, profilesNeedingKeys } from "./roster.js";
-import { resolveSession, sessionLabel } from "./sessions.js";
+import { orderSessions, previewLine, resolveSession, sessionLabel, unseenMessages } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_BOARD,
@@ -1039,7 +1039,7 @@ function paintSessionSelect(id) {
   const select = role(panelFor(id), "session");
   if (!select || document.activeElement === select) return;
   const thread = threadFor(id);
-  const sessions = thread.sessions || [];
+  const sessions = orderSessions(thread.sessions || []);
   const key = JSON.stringify([thread.sessionId, sessions.map((session) => [session.id, session.title, session.hidden])]);
   if (select.dataset.key === key) return;
   select.replaceChildren();
@@ -1437,9 +1437,56 @@ function patchLive(id) {
   painterFor(id).schedule();
 }
 
+function shellBlocksPreview(shell) {
+  if (!shell) return false;
+  return previewBlocked({
+    intent: shell.dataset.intent || "",
+    collapsing: shell.classList.contains("is-collapsing"),
+    opening: shell.dataset.opening || "",
+    visual: shell.dataset.visual || "",
+    state: shell.dataset.state || "",
+  });
+}
+
+function deliverCron(id, payload) {
+  const sessionId = String(payload?.session_id || "").trim();
+  const incoming = (payload?.messages || []).map(presentMessage);
+  if (!id || !sessionId || !incoming.length) return;
+  const thread = threadFor(id);
+  const viewing = thread.sessionId === sessionId;
+  const existing = viewing ? thread.messages : thread.bySession.get(sessionId) || [];
+  const { fresh, settled } = unseenMessages(existing, incoming);
+  if (settled && viewing) {
+    const last = [...thread.messages].reverse().find((message) => message.live && message.role === "bot");
+    if (last) {
+      last.text = settled.text;
+      last.live = false;
+      if (panelFor(id)) renderChat(id);
+    }
+  }
+  if (!fresh.length) return;
+  if (viewing) {
+    for (const message of fresh) appendMessage(id, message);
+  } else {
+    const stored = thread.bySession.get(sessionId) || [];
+    thread.bySession.set(sessionId, stored.concat(fresh.map((message) => ({ ...message }))));
+  }
+  if (shellBlocksPreview(shellFor(id))) return;
+  const text = previewLine(fresh);
+  if (!text) return;
+  thread.unread = true;
+  paintActivity(id);
+  pingOrb(id);
+  showToast(id, { kind: "message", text });
+}
+
 function handleHermes(payload) {
   if (!payload || !payload.profile) return;
   const id = payload.profile;
+  if (payload.type === "cron") {
+    deliverCron(id, payload);
+    return;
+  }
   if (payload.type === "run.started") {
     noteActivity(id, { type: "run.started" });
     return;
@@ -1624,7 +1671,8 @@ function useMock(reason, bannerAction = "") {
   state.bots.forEach((bot) => {
     const thread = threadFor(bot.id);
     const sessions = [
-      { id: `${bot.id}-latest`, title: bot.name, last_active: 200, hidden: false, preview: "" },
+      { id: `${bot.id}-desktop`, title: bot.name, last_active: 200, hidden: false, preview: "" },
+      { id: `${bot.id}-bot-chat`, title: "Bot Chat", last_active: 80, hidden: false, preview: "" },
       { id: `${bot.id}-splitLot`, title: "_splitLot", last_active: 40, hidden: true, preview: "" },
     ];
     const choice = resolveSession(sessions, { id: "", explicit: false, anchor: 0 });
@@ -1635,6 +1683,7 @@ function useMock(reason, bannerAction = "") {
     thread.messages = bot.messages.map((m) => ({ ...m }));
     thread.bySession = new Map([
       [choice.id, thread.messages.map((m) => ({ ...m }))],
+      [`${bot.id}-desktop`, [{ role: "bot", text: "（舊對話）" }]],
       [`${bot.id}-splitLot`, [{ role: "bot", text: "（舊對話）_splitLot" }]],
     ]);
     thread.status = bot.status;
@@ -1666,7 +1715,7 @@ function useHermes(settings) {
   } else if (state.bots.length === 0) {
     setBanner("Gateway 已設定，但未有 Bot。打開設定加入 profile 同金鑰。", "info");
   } else {
-    setBanner("已連接設定。點頭像載入該 Bot 最近嘅對話。", "ok");
+    setBanner("已連接設定。點頭像載入該 Bot 嘅 Bot Chat。", "ok");
   }
   renderBots();
 }
@@ -3175,6 +3224,7 @@ async function boot() {
   window.addEventListener("resize", layoutShells);
   applyInteraction(state.interaction);
   if (!inTauri()) {
+    window.__deliverCron = deliverCron;
     useMock("瀏覽器預覽：離線示範。Gateway 同金鑰只喺桌面版可用。", "settings");
     if (new URLSearchParams(location.search).has("setup")) {
       state.settings = { needs_setup: true, mode: "mock", gateway_base_url: "" };

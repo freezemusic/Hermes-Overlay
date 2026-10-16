@@ -16,10 +16,10 @@ pub struct BotConfig {
     pub base_url: String,
     #[serde(default)]
     pub detail: String,
-    /// Session this profile opens. Empty means follow the latest session on the gateway.
+    /// Session this profile opens. Empty means follow the latest Bot Chat.
     #[serde(default)]
     pub session_id: String,
-    /// User picked `session_id`. A newer `last_active` than `session_anchor` drops the pick.
+    /// User picked `session_id`. Cron activity on Bot Chat does not drop the pick.
     #[serde(default)]
     pub session_explicit: bool,
     /// Highest `last_active` seen when the current session was chosen.
