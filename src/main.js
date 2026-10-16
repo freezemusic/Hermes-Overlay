@@ -40,10 +40,10 @@ import {
   ownerColor,
 } from "./kanban.js";
 import {
-  anyJobRunning,
   CRON_EMPTY,
   CRON_POLL_MS,
-  CRON_UNAVAILABLE,
+  cronGroupNote,
+  cronOrbActive,
   nextRunLabel,
   normalizeCronGroup,
 } from "./cron.js";
@@ -890,7 +890,7 @@ function renderCronOrb() {
   const shell = shellFor("cron");
   const btn = shell?.querySelector(".orb--cron");
   if (!btn) return;
-  const running = anyJobRunning(state.cronGroups);
+  const running = cronOrbActive(state.cronGroups);
   btn.className = ["bot-btn", "morph-orb", "orb--cron", state.cronOpen ? "active" : "", running ? "is-thinking" : ""]
     .filter(Boolean)
     .join(" ");
@@ -3487,10 +3487,12 @@ function mockCronGroups() {
           enabled: true,
           next_run_at: soon,
           state: "scheduled",
+          fire_claim: { at: earlier, by: "host:demo" },
           latest_execution: { status: "running", started_at: earlier },
         },
       ],
     }),
+    normalizeCronGroup({ profile: "quiet", name: "靜音", jobs: [] }),
   ];
 }
 
@@ -3549,10 +3551,11 @@ function paintCron() {
   const list = $("#cron-list");
   if (!empty || !list) return;
   list.replaceChildren();
-  const blocks = (state.cronGroups || []).filter((group) => group.unavailable || (group.jobs || []).length);
+  const blocks = state.cronGroups || [];
   if (!blocks.length) {
     empty.hidden = false;
     empty.textContent = CRON_EMPTY;
+    renderCronOrb();
     scheduleHitSync();
     return;
   }
@@ -3563,10 +3566,11 @@ function paintCron() {
     title.className = "cron-group-title";
     title.textContent = group.name || group.profile || "Bot";
     block.appendChild(title);
-    if (group.unavailable) {
+    const noteText = cronGroupNote(group);
+    if (noteText) {
       const note = document.createElement("p");
       note.className = "cron-meta";
-      note.textContent = group.message || CRON_UNAVAILABLE;
+      note.textContent = noteText;
       block.appendChild(note);
     }
     (group.jobs || []).forEach((job) => {
@@ -3591,6 +3595,7 @@ function paintCron() {
     });
     list.appendChild(block);
   });
+  renderCronOrb();
   scheduleHitSync();
 }
 

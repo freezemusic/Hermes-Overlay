@@ -215,7 +215,12 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.bot-btn \.spinner \{[^}]*border:\s*1px solid transparent/s);
   assert.match(css, /\.bot-btn \.spinner \{[^}]*border-top-color:\s*var\(--bot-60\)/s);
   assert.doesNotMatch(css, /\.bot-btn \.spinner \{[^}]*border:\s*[2-9]px/s);
+  assert.match(css, /\.bot-btn \.spinner \{[^}]*inset:\s*1px/s);
   assert.match(css, /\.is-thinking \.spinner \{[^}]*animation:\s*spin 900ms linear infinite/s);
+  assert.match(main, /cronOrbActive/);
+  assert.match(main, /cronGroupNote/);
+  const cron = readFileSync(new URL("./cron.js", import.meta.url), "utf8");
+  assert.match(cron, /CRON_NONE = "未有排程"/);
   assert.match(css, /\.chat-messages\.streaming \.bubble\.bot\[data-live\]::after \{[^}]*infinite/s);
   assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)/);
   assert.match(css, /\.is-thinking \.bot-status \.spinner::before \{[^}]*content:\s*"···"/s);

@@ -797,8 +797,26 @@ fn execution_status(value: &Value) -> String {
         .to_string()
 }
 
+/// Hermes stamps `fire_claim` on the job (and sometimes the execution) for the whole run.
+fn fire_claim_live(value: &Value) -> bool {
+    match value.get("fire_claim") {
+        Some(Value::Object(map)) => !map.is_empty(),
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        _ => false,
+    }
+}
+
 fn job_is_running(value: &Value, state: &str) -> bool {
     if state.eq_ignore_ascii_case("running") || value.get("running").and_then(Value::as_bool) == Some(true)
+    {
+        return true;
+    }
+    if fire_claim_live(value) {
+        return true;
+    }
+    if value
+        .get("latest_execution")
+        .is_some_and(fire_claim_live)
     {
         return true;
     }
@@ -1783,10 +1801,20 @@ mod tests {
                     "finished_at": "2026-10-16T08:00:00Z",
                     "started_at": "2026-10-16T07:59:00Z"
                 }
+            }, {
+                "id": "live",
+                "name": "進行中",
+                "enabled": true,
+                "state": "scheduled",
+                "fire_claim": { "at": "2026-10-16T12:00:00Z", "by": "host:abc" },
+                "latest_execution": {
+                    "status": "running",
+                    "started_at": "2026-10-16T12:00:01Z"
+                }
             }]
         }));
         assert!(!parsed.unavailable);
-        assert_eq!(parsed.jobs.len(), 4);
+        assert_eq!(parsed.jobs.len(), 5);
         assert_eq!(parsed.jobs[0].schedule, "每日 09:00");
         assert!(parsed.jobs[0].running);
         assert!(parsed.jobs[0].enabled);
@@ -1800,6 +1828,17 @@ mod tests {
         assert_eq!(parsed.jobs[2].last_run_at, "2026-10-16T11:30:00Z");
         assert!(!parsed.jobs[3].running);
         assert_eq!(parsed.jobs[3].last_run_at, "2026-10-16T08:00:00Z");
+        assert!(parsed.jobs[4].running);
+        assert_eq!(parsed.jobs[4].last_run_at, "2026-10-16T12:00:01Z");
+        let claimed_only = parse_cron_list(&json!({
+            "jobs": [{
+                "id": "fence",
+                "name": "只靠 fire_claim",
+                "state": "scheduled",
+                "latest_execution": { "status": "completed", "fire_claim": "host:abc" }
+            }]
+        }));
+        assert!(claimed_only.jobs[0].running);
         let missing = parse_cron_list(&json!({ "jobs": [], "cron_unavailable": true }));
         assert!(missing.unavailable);
         assert!(missing.jobs.is_empty());

@@ -2,6 +2,7 @@
 
 export const CRON_POLL_MS = 5_000;
 export const CRON_EMPTY = "未有排程工作。";
+export const CRON_NONE = "未有排程";
 export const CRON_UNAVAILABLE = "呢個 Bot 未有排程。";
 
 export function scheduleLabel(job) {
@@ -45,14 +46,46 @@ export function nextRunLabel(value, now = new Date()) {
 }
 
 function executionStatus(job) {
-  return String(job?.latest_execution?.status || "").toLowerCase();
+  const status = job?.latest_execution?.status;
+  return String(status || "").trim().toLowerCase();
+}
+
+/** A live Hermes fire claim means this job is in a run, even while `state` stays `scheduled`. */
+export function fireClaimLive(value) {
+  if (!value || typeof value !== "object") return false;
+  const claim = value.fire_claim;
+  if (claim && typeof claim === "object") return Object.keys(claim).length > 0;
+  return typeof claim === "string" && claim.trim().length > 0;
 }
 
 export function jobRunning(job) {
   if (job?.running === true) return true;
   if (String(job?.state || "").toLowerCase() === "running") return true;
+  if (fireClaimLive(job) || fireClaimLive(job?.latest_execution)) return true;
   const status = executionStatus(job);
   return status === "running" || status === "claimed";
+}
+
+/** A finish inside the poll gap still counts, so a short run is not invisible until the next idle poll. */
+export function recentRun(job, now = new Date(), windowMs = CRON_POLL_MS) {
+  const date = parseRunTime(lastRunValue(job));
+  if (!date) return false;
+  const age = now.getTime() - date.getTime();
+  return age <= windowMs && age >= -windowMs;
+}
+
+export function cronOrbActive(groups, now = new Date(), windowMs = CRON_POLL_MS) {
+  return (groups || []).some((group) => (group?.jobs || []).some((job) => (
+    jobRunning(job) || recentRun(job, now, windowMs)
+  )));
+}
+
+/** Empty lists stay on the panel. A missing cron API is a different sentence. */
+export function cronGroupNote(group) {
+  if (!group) return "";
+  if (group.unavailable) return group.message || CRON_UNAVAILABLE;
+  if (!(group.jobs || []).length) return CRON_NONE;
+  return "";
 }
 
 /** Last run is `last_run_at`, then `last_run`, then the latest execution. */

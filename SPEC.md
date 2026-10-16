@@ -133,9 +133,9 @@
 ## 12. 排程工作
 
 1. 必須有一粒排程光球，停在螢幕右緣、高度約 38%。字形是「時」。它不是 Bot 光球，右鍵不得隱藏。
-2. 它遵守第 1 節的光球規則。有任何工作的 `state` 為 `running`、`running` 為 true，或 `latest_execution.status` 為 `running`／`claimed` 時，必須顯示第 10.6 條的 1px 思考圈。閒置時不得空轉。
-3. 打開後是一欄面板（尺寸見第 2.4 條），用第 2 節的變形。列出每個已顯示 profile 的排程，按 Bot 分組。
+2. 它遵守第 1 節的光球規則。有任何工作的 `state` 為 `running`、`running` 為 true、`fire_claim` 有內容，或 `latest_execution.status` 為 `running`／`claimed`（`state` 仍是 `scheduled` 也算）時，必須顯示第 10.6 條的 1px 思考圈。思考圈畫在光球可見範圍內，不得被變形的 `clip-path` 裁走。輪詢約每 5 秒一次；若 `last_run_at`（或其後備時間）落在這一輪輪詢窗內，光球仍要亮，避免短過輪詢間隔的工作完全看不到。每次輪詢結果都要重畫光球的進行中樣式。閒置時不得空轉。
+3. 打開後是一欄面板（尺寸見第 2.4 條），用第 2 節的變形。列出每個已顯示 profile 的排程，按 Bot 分組。沒有工作的 profile 也要列出。
 4. 資料來自該 profile 的 gateway `GET {root}/api/jobs?include_disabled=true`（Bearer 金鑰）。`default` 的 `{root}` 是 gateway 本身；其他 profile 是 `{gateway}/p/<profile>`。`/api/jobs` 回 404 時才可以再試 `GET {root}/api/crons`。不得改呼叫 dashboard 的 `/api/cron/jobs`。HTTP 404（兩條都沒有）或 501 顯示「呢個 Bot 未有排程。」，不得虛構工作。每列顯示名稱、schedule、啟用或停用、下次執行、以及進行中或上次執行。時間用 24 小時 `HH:MM`；跨日則 `YYYY-MM-DD HH:MM`。上次執行取 `last_run_at`，否則 `last_run`，否則 `latest_execution.finished_at`，否則 `started_at`。
 5. 第一版只供查看，不得在 overlay 開關工作。提示必須是「只供查看。開關留喺 Hermes。」
-6. 完全沒有工作時顯示「未有排程工作。」該 profile 沒有排程 API（HTTP 404 或 `cron_unavailable`）時顯示「呢個 Bot 未有排程。」連線失敗不得虛構工作。瀏覽器預覽可以顯示示範工作；已連接的 Hermes 不得。
+6. 完全沒有 profile 時顯示「未有排程工作。」某個已顯示 profile 的工作列表是空的時，該組仍要出現，並顯示「未有排程」，不得整組省略。該 profile 沒有排程 API（HTTP 404 或 `cron_unavailable`）時顯示「呢個 Bot 未有排程。」連線失敗不得虛構工作。瀏覽器預覽可以顯示示範工作；已連接的 Hermes 不得。
 7. 面板遵守第 1 節的面板規則。關閉按鈕有第 1.7 條的例外。

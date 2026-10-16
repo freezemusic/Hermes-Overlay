@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CRON_NONE,
+  CRON_POLL_MS,
   CRON_UNAVAILABLE,
   anyJobRunning,
+  cronGroupNote,
+  cronOrbActive,
   jobRunning,
   lastRunValue,
   nextRunLabel,
   normalizeCronGroup,
+  recentRun,
   scheduleLabel,
 } from "./cron.js";
 
@@ -72,4 +77,47 @@ test("a claimed execution counts as running and keeps the last run", () => {
   assert.equal(group.jobs[1].running, false);
   assert.equal(group.jobs[1].last_run_at, "2026-10-16T09:00:00Z");
   assert.equal(anyJobRunning([group]), true);
+});
+
+test("a scheduled job with latest_execution.status running lights the orb", () => {
+  const now = new Date("2026-10-16T12:00:13Z");
+  const live = {
+    id: "live",
+    name: "進行中",
+    state: "scheduled",
+    enabled: true,
+    fire_claim: { at: "2026-10-16T12:00:00Z", by: "host:abc" },
+    latest_execution: { status: "running", started_at: "2026-10-16T12:00:01Z" },
+  };
+  assert.equal(jobRunning(live), true);
+  const group = normalizeCronGroup({ profile: "coder", name: "程式夥伴", jobs: [live] });
+  assert.equal(group.jobs[0].running, true);
+  assert.equal(cronOrbActive([group], now), true);
+  const finished = normalizeCronGroup({
+    jobs: [{
+      id: "short",
+      name: "短工作",
+      state: "scheduled",
+      last_run_at: new Date(now.getTime() - 2000).toISOString(),
+      latest_execution: { status: "completed", finished_at: new Date(now.getTime() - 2000).toISOString() },
+    }],
+  });
+  assert.equal(finished.jobs[0].running, false);
+  assert.equal(recentRun(finished.jobs[0], now, CRON_POLL_MS), true);
+  assert.equal(cronOrbActive([finished], now), true);
+  const idle = normalizeCronGroup({
+    jobs: [{
+      id: "old",
+      name: "舊工作",
+      state: "scheduled",
+      last_run_at: new Date(now.getTime() - 60_000).toISOString(),
+      latest_execution: { status: "completed" },
+    }],
+  });
+  assert.equal(cronOrbActive([idle], now), false);
+  const empty = normalizeCronGroup({ profile: "quiet", name: "靜音", jobs: [] });
+  assert.equal(empty.unavailable, false);
+  assert.equal(cronGroupNote(empty), CRON_NONE);
+  assert.equal(cronGroupNote({ unavailable: true, jobs: [], message: CRON_UNAVAILABLE }), CRON_UNAVAILABLE);
+  assert.equal(cronGroupNote(group), "");
 });
