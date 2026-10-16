@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  COLLAPSE_EASE,
   COLLAPSE_MS,
   CONTENT_IN_DELAY_MS,
   CONTENT_IN_MS,
   CONTENT_OUT_MS,
   EASE,
+  PLAN_GROW_MS,
   ICON,
   ORB,
   ORB_PILL_MS,
@@ -29,6 +31,7 @@ import {
   previewBlocked,
   FRAME_BLEED,
   includePlan,
+  revealClip,
   separateStackedPanels,
   screenEdge,
   slotPoint,
@@ -79,12 +82,15 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(PANEL_RADIUS, 3);
   assert.equal(ORB_PILL_MS, 200);
   assert.equal(PILL_PANEL_MS, 480);
-  assert.equal(COLLAPSE_MS, 360);
-  assert.equal(CONTENT_OUT_MS, 100);
+  assert.equal(COLLAPSE_MS, 300);
+  assert.equal(CONTENT_OUT_MS, 80);
   assert.equal(CONTENT_IN_MS, 160);
   assert.equal(CONTENT_IN_DELAY_MS, 320);
+  assert.equal(PLAN_GROW_MS, 240);
   assert.equal(EASE, "cubic-bezier(.2,.8,.2,1)");
+  assert.equal(COLLAPSE_EASE, "cubic-bezier(.4,0,1,1)");
   assert.doesNotMatch(EASE, /spring/i);
+  assert.doesNotMatch(COLLAPSE_EASE, /spring/i);
 });
 
 test("the anchor stays on the orb centre and the shell does not move between shapes", () => {
@@ -147,15 +153,34 @@ test("pill to panel grows out of the orb corner on every edge", () => {
   assert.equal(insetsFor("pill", left).left, 0);
   const right = geom("right", 1200, 200);
   assert.equal(insetsFor("pill", right).right, 0);
+
+  const bottomLeft = geom("bottom", 80, 736);
+  assert.equal(
+    revealClip("pill", bottomLeft),
+    "inset(calc(100% - var(--pill-h)) calc(100% - var(--pill-w)) 0 0 round 999px)",
+  );
+  assert.equal(revealClip("panel", bottomLeft), "inset(0 round 3px)");
+  assert.equal(
+    revealClip("pill", geom("bottom", 1100, 736)),
+    "inset(calc(100% - var(--pill-h)) 0 0 calc(100% - var(--pill-w)) round 999px)",
+  );
+  assert.equal(
+    revealClip("pill", geom("top", 80, 40)),
+    "inset(0 calc(100% - var(--pill-w)) calc(100% - var(--pill-h)) 0 round 999px)",
+  );
+  assert.equal(
+    revealClip("orb", bottomLeft),
+    "inset(calc(100% - var(--pill-h)) calc(100% - var(--pill-h)) 0 0 round 999px)",
+  );
 });
 
-test("collapse reverses and stays within 360ms with content fading first", () => {
+test("collapse is one 300ms ease-in and content fades inside that window", () => {
   for (const edge of ["left", "right", "top", "bottom"]) {
     const steps = collapsePhases(edge, "panel");
-    assert.deepEqual(steps.map((step) => step.state), ["pill", "orb"]);
-    const shape = steps.reduce((sum, step) => sum + step.ms, 0);
-    assert.equal(shape + CONTENT_OUT_MS, COLLAPSE_MS);
-    assert.ok(shape + CONTENT_OUT_MS <= 360);
+    assert.deepEqual(steps.map((step) => step.state), ["orb"]);
+    assert.equal(steps[0].ms, COLLAPSE_MS);
+    assert.equal(steps[0].ease, COLLAPSE_EASE);
+    assert.ok(CONTENT_OUT_MS < steps[0].ms);
   }
   assert.equal(collapsePhases("bottom", "pill").reduce((sum, step) => sum + step.ms, 0), ORB_PILL_MS);
   assert.equal(openPhases("top").reduce((sum, step) => sum + step.ms, 0), ORB_PILL_MS + PILL_PANEL_MS);

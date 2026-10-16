@@ -6,7 +6,9 @@
    hover/press 120–200ms, no scale bounce;
    the orb, pill, and panel are one shell. Clip-path inset() morphs the shape.
    Orb→pill 200ms, pill→panel 480ms, cubic-bezier(.2,.8,.2,1), no spring.
-   Collapse reverses in ≤360ms. prefers-reduced-motion fades opacity.
+   Click chains the pill into the panel; hover rests on the pill.
+   Collapse is 300ms cubic-bezier(.4,0,1,1); content fades in the first 80ms.
+   prefers-reduced-motion fades opacity.
    CJK stays untracked — uppercase and letter-spacing only under :lang(en). */
 
 @font-face {
@@ -1062,6 +1064,10 @@ html, body {
   display: none;
 }
 
+.morph .plan-window.is-seam-grow {
+  display: flex;
+}
+
 .chat-block {
   flex: 1;
   min-height: 0;
@@ -1719,6 +1725,8 @@ html, body {
 }
 
 .morph {
+  --pill-h: 44px;
+  --pill-w: 320px;
   position: absolute;
   background: var(--nous-blue);
   color: var(--text);
@@ -1736,6 +1744,22 @@ html, body {
 
 .morph.is-morphing {
   will-change: clip-path, transform, opacity;
+}
+
+.morph.is-growing-pill {
+  transition: clip-path 200ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.morph.is-growing-pill .morph-fill {
+  transition: clip-path 200ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.morph.is-growing-panel {
+  transition: clip-path 480ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.morph.is-growing-panel .morph-fill {
+  transition: clip-path 480ms cubic-bezier(.2, .8, .2, 1);
 }
 
 .morph[data-state="orb"][data-hit-id] {
@@ -1826,6 +1850,11 @@ html, body {
 
 .morph.is-collapsing {
   pointer-events: none;
+  transition: clip-path 300ms cubic-bezier(.4, 0, 1, 1);
+}
+
+.morph.is-collapsing .morph-fill {
+  transition: clip-path 300ms cubic-bezier(.4, 0, 1, 1);
 }
 
 .morph-fill {
@@ -1908,29 +1937,40 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 .morph[data-anchor="end"] .settings-head { padding-right: 40px; }
 
 .morph-body,
-.morph-pill {
+.morph-pill,
+.content {
   opacity: 0;
   pointer-events: none;
 }
 
 .morph-pill { transition: opacity var(--dur-1) linear var(--dur-1); }
 
+.content {
+  opacity: 0;
+  transition: opacity 160ms linear 320ms;
+}
+
 .morph-body { transition: opacity 160ms linear 320ms; }
 
-.morph[data-state="panel"]:not(.is-collapsing) .morph-body,
-.morph[data-state="pill"]:not(.is-collapsing) .morph-pill {
+.open .content {
   opacity: 1;
 }
 
-.morph[data-state="panel"]:not(.is-collapsing) .morph-body {
+.morph.open:not(.is-collapsing) .morph-body {
+  opacity: 1;
   pointer-events: auto;
 }
 
+.morph[data-state="pill"]:not(.is-collapsing):not([data-opening="panel"]) .morph-pill {
+  opacity: 1;
+}
+
 .morph.is-collapsing .morph-body,
+.morph.is-collapsing .content,
 .morph.is-collapsing .morph-pill {
   opacity: 0;
   pointer-events: none;
-  transition: opacity 100ms linear;
+  transition: opacity 80ms linear;
 }
 
 .morph-pill {

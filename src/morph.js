@@ -13,17 +13,17 @@ export const PANEL_RADIUS = 3;
 export const HAIRLINE = 1;
 export const ORB_PILL_MS = 200;
 export const PILL_PANEL_MS = 480;
-export const COLLAPSE_MS = 360;
-export const CONTENT_OUT_MS = 100;
+export const COLLAPSE_MS = 300;
+export const CONTENT_OUT_MS = 80;
 export const CONTENT_IN_MS = 160;
 export const CONTENT_IN_DELAY_MS = PILL_PANEL_MS - CONTENT_IN_MS;
+export const PLAN_GROW_MS = 240;
 export const STACK_GAP = 12;
 /** HUD corner L sits this far outside the frame. Both sides count toward the visible gap. */
 export const FRAME_BLEED = 3;
 export const EASE = "cubic-bezier(.2,.8,.2,1)";
+export const COLLAPSE_EASE = "cubic-bezier(.4,0,1,1)";
 export const PREVIEW_MS = 5_000;
-
-const SHAPE_MS = COLLAPSE_MS - CONTENT_OUT_MS;
 
 export function screenEdge(x, y, width, height) {
   const edges = [
@@ -145,6 +145,32 @@ export function clipPath(insets) {
   return `inset(${n(insets.top)}px ${n(insets.right)}px ${n(insets.bottom)}px ${n(insets.left)}px round ${n(insets.radius)}px)`;
 }
 
+/**
+ * Clip that reveals one shape inside the final box. Pill and orb insets use
+ * `--pill-h` / `--pill-w` so a bottom-left anchor starts at
+ * `inset(calc(100% - var(--pill-h)) calc(100% - var(--pill-w)) 0 0 round 999px)`.
+ * The other three corners swap the zero sides. The panel ends at `inset(0 round 3px)`.
+ */
+export function revealClip(state, geom) {
+  const insets = insetsFor(state, geom);
+  if (state === "panel") return "inset(0 round 3px)";
+  const boxW = geom.boxW;
+  const boxH = geom.boxH;
+  const spanW = boxW - insets.left - insets.right;
+  const spanH = boxH - insets.top - insets.bottom;
+  const pillW = geom.pillW || PILL_W;
+  const side = (px, span, axis) => {
+    if (px <= 0.5) return "0";
+    if (axis === "y" && Math.abs(span - ORB) < 0.6) return "calc(100% - var(--pill-h))";
+    if (axis === "x" && Math.abs(span - ORB) < 0.6) return "calc(100% - var(--pill-h))";
+    if (axis === "x" && Math.abs(span - pillW) < 0.6) return "calc(100% - var(--pill-w))";
+    const n = Math.round(px * 100) / 100;
+    return `${n}px`;
+  };
+  const round = state === "tall" ? "3px" : "999px";
+  return `inset(${side(insets.top, spanH, "y")} ${side(insets.right, spanW, "x")} ${side(insets.bottom, spanH, "y")} ${side(insets.left, spanW, "x")} round ${round})`;
+}
+
 export function visibleSize(insets, boxW, boxH) {
   return {
     w: boxW - insets.left - insets.right,
@@ -160,28 +186,26 @@ export function containsPoint(insets, boxW, boxH, x, y) {
 }
 
 /**
- * Orb → pill, then one 480ms clip from that pill to the panel.
- * The panel inset shrinks toward zero, so the glass grows out of the
- * orb's corner instead of fading a full-height slab into view.
+ * Orb → pill (200ms), then one 480ms clip from that pill to the panel.
+ * A click chains the two. Hover stops after the pill.
  */
 export function openPhases() {
   return [
-    { state: "pill", ms: ORB_PILL_MS },
-    { state: "panel", ms: PILL_PANEL_MS },
+    { state: "pill", ms: ORB_PILL_MS, ease: EASE },
+    { state: "panel", ms: PILL_PANEL_MS, ease: EASE },
   ];
 }
 
-/** Reverse of the open path. Shape time is 260ms; content fade is separate. */
+/**
+ * One clip back to the orb. Content fades in the first 80ms of the same
+ * 300ms, so the fade does not add time and there is no pill rest on close.
+ */
 export function collapsePhases(_edge, from = "panel") {
   if (from === "orb") return [];
   if (from === "pill" || from === "wide" || from === "tall") {
-    return [{ state: "orb", ms: Math.min(ORB_PILL_MS, SHAPE_MS) }];
+    return [{ state: "orb", ms: ORB_PILL_MS, ease: COLLAPSE_EASE }];
   }
-  const step = Math.floor(SHAPE_MS / 2);
-  return [
-    { state: "pill", ms: step },
-    { state: "orb", ms: SHAPE_MS - step },
-  ];
+  return [{ state: "orb", ms: COLLAPSE_MS, ease: COLLAPSE_EASE }];
 }
 
 function rangesOverlap(a0, a1, b0, b1) {
@@ -252,11 +276,12 @@ export function separateStackedPanels(boxes, screenH, gap = STACK_GAP) {
 export function phaseList(edge, from, to) {
   if (to === "orb") return collapsePhases(edge, from);
   if (to === "pill") {
-    if (from === "pill" || from === "orb") return from === "pill" ? [] : [{ state: "pill", ms: ORB_PILL_MS }];
-    return collapsePhases(edge, from).filter((step) => step.state === "pill" || step.state === "orb").slice(0, 1);
+    if (from === "pill") return [];
+    if (from === "orb") return [{ state: "pill", ms: ORB_PILL_MS, ease: EASE }];
+    return [{ state: "pill", ms: ORB_PILL_MS, ease: COLLAPSE_EASE }];
   }
   if (from === "panel") return [];
-  if (from === "wide" || from === "tall") return [{ state: "panel", ms: PILL_PANEL_MS / 2 }];
+  if (from === "wide" || from === "tall") return [{ state: "panel", ms: PILL_PANEL_MS / 2, ease: EASE }];
   if (from === "pill") return openPhases(edge).slice(1);
   return openPhases(edge);
 }

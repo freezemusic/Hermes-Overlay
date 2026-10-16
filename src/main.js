@@ -8,11 +8,11 @@ import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST
 import { latestPlan, noteNewestPlan, planDemoMarkdown, planTask, plansIn } from "./plan.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
-  CONTENT_OUT_MS,
   EASE,
   ORB,
   PANEL_H,
   PANEL_W,
+  PLAN_GROW_MS,
   clipPath,
   distributeEdges,
   fixedOrbPoint,
@@ -22,6 +22,7 @@ import {
   dropParkedAnchor,
   placeShell,
   previewBlocked,
+  revealClip,
   separateStackedPanels,
   includePlan,
   slotPoint,
@@ -270,8 +271,8 @@ function anchorPoint(id) {
 /** Room outside the cron orb for the tick ring and the 14px+4px running glow. */
 const CRON_ORB_BLEED = 32;
 
-function paintClip(shell, insets) {
-  const cronOrb = shell.dataset.botId === "cron" && (shell.dataset.visual || shell.dataset.state) === "orb";
+function paintClip(shell, insets, visual = shell.dataset.visual || shell.dataset.state || "orb") {
+  const cronOrb = shell.dataset.botId === "cron" && visual === "orb";
   const outer = cronOrb
     ? {
       top: insets.top - CRON_ORB_BLEED,
@@ -280,8 +281,8 @@ function paintClip(shell, insets) {
       left: insets.left - CRON_ORB_BLEED,
       radius: insets.radius + CRON_ORB_BLEED,
     }
-    : insets;
-  shell.style.clipPath = clipPath(outer);
+    : null;
+  shell.style.clipPath = outer ? clipPath(outer) : revealClip(visual, shellGeom(shell));
   const fill = shell.querySelector(".morph-fill");
   if (fill) fill.style.clipPath = clipPath(tighten(insets));
   shell.dataset.clipTop = String(insets.top);
@@ -326,9 +327,7 @@ function rememberAnchor(shell) {
   state.anchors[id] = { x: box.left + ax, y: box.top + ay, placed: true };
 }
 
-function layoutShell(shell) {
-  if (!shell || shell.classList.contains("is-morphing")) return;
-  if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return;
+function placeShellElement(shell) {
   const id = shell.dataset.botId;
   const size = boxSize(id);
   const point = anchorPoint(id);
@@ -351,18 +350,34 @@ function layoutShell(shell) {
   shell.style.setProperty("--icon-dx", `${shift.x}px`);
   shell.style.setProperty("--icon-dy", `${shift.y}px`);
   shell.style.transformOrigin = `${placed.anchor.x}px ${placed.anchor.y}px`;
-  const visual = shell.dataset.visual || "orb";
   syncPlanSide(shell);
+  return placed;
+}
+
+function layoutShell(shell) {
+  if (!shell || shell.classList.contains("is-morphing")) return;
+  if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return;
+  const placed = placeShellElement(shell);
+  const visual = shell.dataset.visual || "orb";
   paintClip(shell, insetsFor(visual, {
     boxW: placed.width,
     boxH: placed.height,
     ax: placed.anchor.x,
     ay: placed.anchor.y,
-  }));
+  }), visual);
 }
 
-function separateOpenShells(shells) {
+/** Final top/height before a clip, so the open does not slide the box at the end. */
+function parkFinalBox(shell) {
+  placeShellElement(shell);
+  separateOpenShells([...document.querySelectorAll(".morph")], shell);
+  const visual = shell.dataset.visual || shell.dataset.state || "orb";
+  paintClip(shell, insetsFor(visual, shellGeom(shell)), visual);
+}
+
+function separateOpenShells(shells, extra) {
   const open = shells.filter((shell) => {
+    if (shell === extra) return true;
     if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return false;
     if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return false;
     return (shell.dataset.visual || shell.dataset.state) === "panel";
@@ -379,13 +394,13 @@ function separateOpenShells(shells) {
       edge: shell.dataset.edge || "",
     };
     const plan = shell.querySelector(".plan-window");
-    const planOpen = plan
-      && !plan.hidden
-      && shell.dataset.planOpen === "1";
+    const planOpen = plan && shell.dataset.planOpen === "1";
     if (!planOpen) return box;
+    const dockedWidth = plan.offsetWidth || plan.getBoundingClientRect().width
+      || Math.min(420, (window.innerWidth || 1280) * 0.42);
     const dock = includePlan(box, {
       side: shell.dataset.planSide === "left" ? "left" : "right",
-      width: plan.offsetWidth || plan.getBoundingClientRect().width,
+      width: dockedWidth,
     });
     dock.shell = shell;
     return dock;
@@ -404,12 +419,13 @@ function separateOpenShells(shells) {
     const shift = iconShift(ax, ay, prev.width, box.height);
     shell.style.setProperty("--icon-dx", `${shift.x}px`);
     shell.style.setProperty("--icon-dy", `${shift.y}px`);
-    paintClip(shell, insetsFor(shell.dataset.visual || "panel", {
+    const visual = shell.dataset.visual || "panel";
+    paintClip(shell, insetsFor(visual, {
       boxW: prev.width,
       boxH: box.height,
       ax,
       ay,
-    }));
+    }), visual);
   });
 }
 
@@ -450,47 +466,133 @@ function visibleBox(shell) {
   };
 }
 
-function playClip(shell, fromInsets, toInsets, duration, token) {
+function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const fill = shell.querySelector(".morph-fill");
-  if (reducedMotion() || !(duration > 0) || typeof shell.animate !== "function") {
-    if (shell.dataset.morphToken !== token) return Promise.resolve(false);
-    paintClip(shell, toInsets);
+  // calc(100% - var(--pill-h)) does not interpolate into calc(100% - var(--pill-w)).
+  // The pill leg therefore uses the same rectangles as lengths. The panel leg keeps
+  // the calc() start, which does interpolate into inset(0 round 3px).
+  const commit = (state, { pixels = false } = {}) => {
+    const geom = shellGeom(shell);
+    const insets = insetsFor(state, geom);
+    const cronOrb = !pixels && shell.dataset.botId === "cron" && state === "orb";
+    if (cronOrb) {
+      paintClip(shell, insets, state);
+      return insets;
+    }
+    const radius = state === "panel" || state === "tall" ? insets.radius : 999;
+    shell.style.clipPath = pixels ? clipPath({ ...insets, radius }) : revealClip(state, geom);
+    if (fill) fill.style.clipPath = clipPath(tighten({ ...insets, radius: state === "panel" || state === "tall" ? insets.radius : radius }));
+    shell.dataset.clipTop = String(insets.top);
+    shell.dataset.clipRight = String(insets.right);
+    shell.dataset.clipBottom = String(insets.bottom);
+    shell.dataset.clipLeft = String(insets.left);
+    shell.dataset.clipRadius = String(insets.radius);
+    return insets;
+  };
+  const pixels = toState !== "panel";
+  if (shell.dataset.morphToken !== token) return Promise.resolve(false);
+  if (reducedMotion() || !(duration > 0)) {
+    commit(toState);
     return Promise.resolve(true);
   }
-  shell.classList.add("is-morphing");
-  const anim = shell.animate(
-    [{ clipPath: clipPath(fromInsets) }, { clipPath: clipPath(toInsets) }],
-    { duration, easing: EASE, fill: "forwards" },
-  );
-  const animFill = fill?.animate(
-    [{ clipPath: clipPath(tighten(fromInsets)) }, { clipPath: clipPath(tighten(toInsets)) }],
-    { duration, easing: EASE, fill: "forwards" },
-  );
-  const track = () => {
-    if (shell.dataset.morphToken !== token || !shell.classList.contains("is-morphing")) return;
-    scheduleHitSync();
+  const growClass = toState === "panel" ? "is-growing-panel" : toState === "pill" ? "is-growing-pill" : "";
+  shell.classList.remove("is-growing-pill", "is-growing-panel");
+  shell.style.transition = "none";
+  if (fill) fill.style.transition = "none";
+  commit(fromState, { pixels });
+  void shell.offsetWidth;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      shell.removeEventListener("transitionend", onEnd);
+      window.clearTimeout(timer);
+      if (shell.dataset.morphToken !== token) {
+        resolve(false);
+        return;
+      }
+      shell.classList.remove("is-growing-pill", "is-growing-panel");
+      shell.style.transition = "none";
+      if (fill) fill.style.transition = "none";
+      commit(toState, { pixels: false });
+      resolve(ok);
+    };
+    const onEnd = (event) => {
+      if (event.target !== shell || event.propertyName !== "clip-path") return;
+      finish(true);
+    };
+    shell.addEventListener("transitionend", onEnd);
+    const timer = window.setTimeout(() => finish(true), duration + 80);
+    const transition = `clip-path ${duration}ms ${easing}`;
+    shell.style.transition = transition;
+    if (fill) fill.style.transition = transition;
+    if (growClass) shell.classList.add(growClass);
+    commit(toState, { pixels });
+    const track = () => {
+      if (settled || shell.dataset.morphToken !== token) return;
+      scheduleHitSync();
+      requestAnimationFrame(track);
+    };
     requestAnimationFrame(track);
-  };
-  requestAnimationFrame(track);
-  return anim.finished.then(() => {
-    if (shell.dataset.morphToken !== token) return false;
-    paintClip(shell, toInsets);
-    anim.cancel();
-    animFill?.cancel();
-    return true;
-  }).catch(() => false);
+  });
 }
 
-function wait(ms) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+function growPlan(shell, token) {
+  const plan = shell.querySelector(".plan-window");
+  if (!plan || plan.hidden || shell.dataset.planOpen !== "1") return Promise.resolve();
+  if (shell.dataset.morphToken !== token) return Promise.resolve();
+  syncPlanSide(shell);
+  if (reducedMotion()) {
+    plan.style.clipPath = "";
+    return Promise.resolve();
+  }
+  const side = shell.dataset.planSide === "left" ? "left" : "right";
+  const start = side === "left" ? "inset(0 0 0 100% round 3px)" : "inset(0 100% 0 0 round 3px)";
+  plan.style.transition = "none";
+  plan.style.clipPath = start;
+  plan.classList.add("is-seam-grow");
+  void getComputedStyle(plan).clipPath;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      plan.removeEventListener("transitionend", onEnd);
+      window.clearTimeout(timer);
+      if (shell.dataset.morphToken !== token) {
+        resolve();
+        return;
+      }
+      plan.style.transition = "none";
+      plan.style.clipPath = "";
+      if (!shell.classList.contains("is-morphing")) plan.classList.remove("is-seam-grow");
+      resolve();
+    };
+    const onEnd = (event) => {
+      if (event.target !== plan || event.propertyName !== "clip-path") return;
+      finish();
+    };
+    plan.addEventListener("transitionend", onEnd);
+    const timer = window.setTimeout(finish, PLAN_GROW_MS + 80);
+    plan.style.transition = `clip-path ${PLAN_GROW_MS}ms ${EASE}`;
+    plan.style.clipPath = "inset(0 round 3px)";
+  });
 }
 
 function settleShell(shell, target) {
   markVisual(shell, target);
-  paintClip(shell, insetsFor(target, shellGeom(shell)));
+  shell.classList.remove("is-growing-pill", "is-growing-panel");
+  shell.style.transition = "none";
+  const fill = shell.querySelector(".morph-fill");
+  if (fill) fill.style.transition = "none";
+  paintClip(shell, insetsFor(target, shellGeom(shell)), target);
   shell.classList.remove("is-morphing", "is-collapsing");
+  shell.querySelector(".plan-window")?.classList.remove("is-seam-grow");
   shell.dataset.opening = "";
   shell.dataset.intent = "";
+  if (target === "panel") shell.classList.add("open");
+  else shell.classList.remove("open");
   if (target === "orb") {
     shell.querySelectorAll(".center-panel").forEach((panel) => {
       panel.hidden = true;
@@ -502,12 +604,26 @@ function settleShell(shell, target) {
   scheduleHitSync();
 }
 
+function stopShellTransition(shell) {
+  shell.style.transition = "none";
+  const fill = shell.querySelector(".morph-fill");
+  if (fill) fill.style.transition = "none";
+  const plan = shell.querySelector(".plan-window");
+  if (plan) {
+    plan.style.transition = "none";
+    plan.style.clipPath = "";
+    plan.classList.remove("is-seam-grow");
+  }
+  shell.classList.remove("is-growing-pill", "is-growing-panel");
+}
+
 async function runShellMorph(shell, target) {
   if (!shell) return false;
   if (target !== "orb" && shell.dataset.intent === "close") return false;
   const token = String((Number(shell.dataset.morphToken) || 0) + 1);
   shell.dataset.morphToken = token;
   shell.getAnimations?.().forEach((anim) => anim.cancel());
+  stopShellTransition(shell);
   const alive = () => shell.dataset.morphToken === token && shell.isConnected;
   const from = shell.dataset.visual || shell.dataset.state || "orb";
   window.clearTimeout(shell._pillTimer);
@@ -520,9 +636,8 @@ async function runShellMorph(shell, target) {
   if (target === "orb") {
     shell.dataset.intent = "close";
     shell.classList.add("is-collapsing");
+    shell.classList.remove("open");
     shell.dataset.opening = "";
-    if (!reducedMotion()) await wait(CONTENT_OUT_MS);
-    if (!alive()) return false;
   } else {
     shell.classList.remove("is-collapsing");
     if (shell.dataset.intent === "close") {
@@ -532,17 +647,28 @@ async function runShellMorph(shell, target) {
     shell.dataset.intent = target === "panel" ? "open" : "preview";
     if (target === "panel") {
       shell.dataset.opening = "panel";
+      parkFinalBox(shell);
       shell.querySelectorAll(".center-panel").forEach((panel) => {
         panel.hidden = false;
       });
+      shell.classList.remove("open");
+      void shell.offsetWidth;
+    } else {
+      shell.dataset.opening = "";
+      shell.classList.remove("open");
     }
   }
   let current = from;
   for (const step of phaseList(shell.dataset.edge || "bottom", from, target)) {
-    const fromInsets = insetsFor(current, shellGeom(shell));
-    const toInsets = insetsFor(step.state, shellGeom(shell));
-    markVisual(shell, step.state);
-    const ok = await playClip(shell, fromInsets, toInsets, reducedMotion() ? 0 : step.ms, token);
+    if (step.state === "panel" && target === "panel") {
+      if (from === "pill") {
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (!alive()) return false;
+      }
+      shell.classList.add("open");
+    }
+    if (target !== "orb") markVisual(shell, step.state);
+    const ok = await playClip(shell, current, step.state, reducedMotion() ? 0 : step.ms, token, step.ease || EASE);
     if (!ok || !alive()) {
       if (alive() && target === "orb") {
         settleShell(shell, "orb");
@@ -552,6 +678,8 @@ async function runShellMorph(shell, target) {
     }
     current = step.state;
   }
+  if (!alive()) return false;
+  if (target === "panel") await growPlan(shell, token);
   if (!alive()) return false;
   settleShell(shell, target);
   return true;
@@ -793,7 +921,7 @@ function mountBotPanel(shell, id) {
   const plan = fragment.querySelector(".plan-window");
   panel.dataset.botId = id;
   panel.dataset.panelKey = id;
-  panel.classList.add("morph-body");
+  panel.classList.add("morph-body", "content");
   panel.hidden = true;
   const slash = role(panel, "slash");
   if (slash) slash.dataset.hitId = `slash:${id}`;
@@ -865,7 +993,7 @@ function ensureChromeShell(panel, id, glyph, label, orbClass) {
   name.textContent = label;
   btn.appendChild(name);
   btn.querySelector(".orb-glyph").textContent = glyph;
-  panel.classList.add("morph-body");
+  panel.classList.add("morph-body", "content");
   panel.hidden = true;
   panel.removeAttribute("data-hit-id");
   const close = panel.querySelector("#btn-settings-close, #btn-kanban-close, #btn-cron-close");
@@ -901,6 +1029,7 @@ function renderBots() {
   });
   state.bots.forEach((bot) => {
     const shell = ensureBotShell(bot);
+    const morphing = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
     const btn = shell.querySelector(".morph-orb");
     const thread = threadFor(bot.id);
     const keepEnter = btn.classList.contains("orb-enter") && bot.id === state.activeId;
@@ -919,8 +1048,10 @@ function renderBots() {
     btn.title = bot.name;
     btn.querySelector(".orb-glyph").textContent = bot.short || "";
     btn.querySelector(".bot-label").textContent = bot.name;
-    layoutShell(shell);
-    rail.appendChild(shell);
+    if (!morphing) layoutShell(shell);
+    // Reparenting cancels an in-flight clip-path transition and the shape jumps
+    // to the end while the timer keeps running.
+    if (!morphing || shell.parentElement !== rail) rail.appendChild(shell);
   });
   renderKanbanOrb();
   renderCronOrb();
@@ -1113,7 +1244,7 @@ function planWindow(id) {
 
 function syncPlanSide(shell) {
   const plan = shell?.querySelector?.(".plan-window");
-  if (!shell || !plan || plan.hidden) return;
+  if (!shell || !plan) return;
   const box = shell.getBoundingClientRect();
   const width = Math.min(420, (window.innerWidth || 1280) * 0.42);
   const roomRight = (window.innerWidth || 1280) - box.right;
@@ -1137,6 +1268,7 @@ function paintPlan(id) {
   const newest = plans.at(-1) || null;
   const focus = plans.find((item) => item.key === thread.planFocus) || newest;
   const open = !!(focus && thread.planDismissed !== focus.key);
+  const wasOpen = shell.dataset.planOpen === "1";
   section.hidden = !open;
   if (open) shell.dataset.planOpen = "1";
   else delete shell.dataset.planOpen;
@@ -1172,6 +1304,8 @@ function paintPlan(id) {
   }
   syncPlanSide(shell);
   separateOpenShells([...document.querySelectorAll(".morph")]);
+  const morphing = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
+  if (open && !wasOpen && !morphing) void growPlan(shell, shell.dataset.morphToken || "");
   scheduleHitSync();
 }
 
