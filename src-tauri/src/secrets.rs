@@ -217,9 +217,9 @@ mod tests {
     fn a_slow_keyring_read_returns_before_the_prompt_can_hang_the_app() {
         let _guard = super::TEST_KEYRING.lock().unwrap_or_else(|err| err.into_inner());
         let started = std::time::Instant::now();
-        let result = run_keyring(Duration::from_millis(40), || {
+        let result: Result<String, String> = run_keyring(Duration::from_millis(40), || {
             thread::sleep(Duration::from_millis(400));
-            Ok::<_, String>("secret".into())
+            Ok("secret".to_string())
         });
         assert!(
             started.elapsed() < Duration::from_millis(250),
@@ -229,7 +229,8 @@ mod tests {
         let err = result.expect_err("slow read");
         assert!(err.contains("鑰匙圈錯誤"), "{err}");
         let again = std::time::Instant::now();
-        let blocked = run_keyring(Duration::from_millis(80), || Ok::<_, String>("later".into()));
+        let blocked: Result<String, String> =
+            run_keyring(Duration::from_millis(80), || Ok("later".to_string()));
         assert!(
             again.elapsed() < Duration::from_millis(200),
             "a queued read waited on the stuck prompt: {:?}",
@@ -242,7 +243,8 @@ mod tests {
     #[test]
     fn a_fast_keyring_read_returns_the_value() {
         let _guard = super::TEST_KEYRING.lock().unwrap_or_else(|err| err.into_inner());
-        let result = run_keyring(Duration::from_millis(200), || Ok::<_, String>("ok".into()));
+        let result: Result<String, String> =
+            run_keyring(Duration::from_millis(200), || Ok("ok".to_string()));
         assert_eq!(result.expect("fast read"), "ok");
     }
 
