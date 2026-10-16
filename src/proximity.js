@@ -45,10 +45,35 @@ export function opacityForDistance(distance, fadeDistance, minOpacity, enabled) 
   return minOpacity + (1 - minOpacity) * (distance / fadeDistance);
 }
 
-/** An element marked solid (modifier target or latched panel) is full opacity at any distance. */
+/** Distance fade helper. Hover no longer calls this; modifier transparency uses minOpacity directly. */
 export function elementOpacity({ solid, distance, fadeDistance, minOpacity, fadeEnabled }) {
   if (solid) return 1;
   return opacityForDistance(distance, fadeDistance, minOpacity, fadeEnabled);
+}
+
+/** Message-preview pills. They are not orbs and not panels. */
+export function isPillHit(rect) {
+  return String(rect?.id || "").startsWith("pill:");
+}
+
+/** Close buttons stay clickable on the first press, even while the modifier is held. */
+export function isCloseHit(rect) {
+  return String(rect?.id || "").startsWith("close:");
+}
+
+/** Panels wash out while the modifier is held. Orbs, pills, close buttons, and toasts are not panels. */
+export function isPanelHit(rect) {
+  if (!rect || isPillHit(rect) || isCloseHit(rect) || isOrbHit(rect)) return false;
+  const id = String(rect.id || "");
+  if (id.startsWith("toast:")) return false;
+  return true;
+}
+
+/** Bot, settings, and kanban orbs. Round hits and `bot:` ids both count. */
+export function isOrbHit(rect) {
+  if (!rect || isPillHit(rect) || isCloseHit(rect)) return false;
+  if (rect.round) return true;
+  return String(rect.id || "").startsWith("bot:");
 }
 
 /** CSS pixels around a hit rect that still count as under the cursor. */
@@ -82,8 +107,14 @@ function preferHit(candidate, current) {
 }
 
 /**
- * Modifier solids only the element under the cursor.
- * Latched ids stay solid and capture only while the cursor is over them.
+ * Panels stay opaque and capture the cursor. Holding the modifier washes every
+ * panel out and captures none of them.
+ * Orbs stay faded and click-through. Only the orb under or near the cursor
+ * turns solid and clickable while the modifier is held.
+ * A message-preview pill stays visually solid. It captures only while the
+ * modifier is held over it. A close button stays solid and captures whenever
+ * the cursor is over it, including while the modifier is held. Toasts stay
+ * visually solid and are clickable only when the modifier is up.
  */
 export function elementStates({
   held = false,
@@ -91,30 +122,30 @@ export function elementStates({
   cursor = null,
   rects = [],
   margin = HIT_MARGIN_PX,
-  fadeDistance = 120,
   minOpacity = 0.18,
-  fadeEnabled = true,
 } = {}) {
   const under = elementUnderCursor(cursor, rects, margin, latchedIds);
+  const floor = Number.isFinite(minOpacity) ? minOpacity : 0.18;
   return rects.map((rect) => {
-    const latched = latchedIds.includes(rect.id);
-    const targeted = held && under === rect.id;
-    const distance = cursor ? distanceToHit(cursor.x, cursor.y, rect) : fadeDistance;
-    const opacity =
-      cursor == null
-        ? 1
-        : elementOpacity({
-            solid: latched || targeted,
-            distance,
-            fadeDistance,
-            minOpacity,
-            fadeEnabled,
-          });
-    return {
-      id: rect.id,
-      opacity,
-      capture: under === rect.id && (held || latched),
-    };
+    const here = !!cursor && under === rect.id;
+    if (isCloseHit(rect)) {
+      return { id: rect.id, opacity: 1, capture: here };
+    }
+    if (isPillHit(rect)) {
+      return { id: rect.id, opacity: 1, capture: here && held };
+    }
+    if (isOrbHit(rect)) {
+      const awake = here && held;
+      return { id: rect.id, opacity: awake ? 1 : floor, capture: awake };
+    }
+    if (isPanelHit(rect)) {
+      return {
+        id: rect.id,
+        opacity: cursor && held ? floor : 1,
+        capture: here && !held,
+      };
+    }
+    return { id: rect.id, opacity: 1, capture: here && !held };
   });
 }
 
@@ -245,6 +276,57 @@ export function modifierMatches(kind, key) {
   if (kind === "shift") return key === "Shift";
   if (kind === "alt") return key === "Alt";
   return key === "Control";
+}
+
+/** A lone modifier arms after this, so a Ctrl+C / Ctrl+V chord cannot flash the HUD. */
+export const MODIFIER_ARM_MS = 100;
+
+/**
+ * Copy and paste stay at the resting frame. That includes the tail after C or V
+ * is released while Ctrl is still down. A lone modifier arms after MODIFIER_ARM_MS.
+ */
+export function modifierEngages({
+  modifier = "ctrl",
+  keys = [],
+  now = 0,
+  armedAt = null,
+  suppressed = false,
+} = {}) {
+  const down = keys.some((key) => modifierMatches(modifier, key));
+  if (!down) return { held: false, armedAt: null, suppressed: false };
+  const copyPaste = modifier !== "shift"
+    && modifier !== "alt"
+    && keys.some((key) => key === "c" || key === "C" || key === "v" || key === "V");
+  if (copyPaste) return { held: false, armedAt: null, suppressed: true };
+  if (suppressed) return { held: false, armedAt: null, suppressed: true };
+  const start = armedAt == null ? now : armedAt;
+  return {
+    held: now - start >= MODIFIER_ARM_MS,
+    armedAt: start,
+    suppressed: false,
+  };
+}
+
+/**
+ * Modifier changes must not drop the first keys typed into a focused composer.
+ * `remember` keeps the field. `type` leaves the event on the focused field.
+ * `insert` writes the character when focus was lost before this keydown.
+ */
+export function composerKeyAction({
+  key = "",
+  ctrlKey = false,
+  altKey = false,
+  metaKey = false,
+  activeIsComposer = false,
+  composerConnected = false,
+} = {}) {
+  if (key === "Control" || key === "Shift" || key === "Alt" || key === "Meta") {
+    return "remember";
+  }
+  if (!composerConnected) return "ignore";
+  if (ctrlKey || altKey || metaKey) return "ignore";
+  if (key.length !== 1) return "ignore";
+  return activeIsComposer ? "type" : "insert";
 }
 
 export function modifierLabel(kind) {

@@ -24,6 +24,11 @@ description = "Load a bot chat transcript."
 commands.allow = ["open_bot"]
 
 [[permission]]
+identifier = "allow-select-session"
+description = "Pin one Hermes session for a profile."
+commands.allow = ["select_session"]
+
+[[permission]]
 identifier = "allow-send-chat"
 description = "Stream a chat turn."
 commands.allow = ["send_chat"]
@@ -54,6 +59,11 @@ description = "Move or edit an overlay-slash kanban task."
 commands.allow = ["patch_kanban_task"]
 
 [[permission]]
+identifier = "allow-list-cron-jobs"
+description = "Read Hermes scheduled jobs for each shown profile."
+commands.allow = ["list_cron_jobs"]
+
+[[permission]]
 identifier = "allow-set-hit-rects"
 description = "Report overlay element rectangles for proximity fade."
 commands.allow = ["set_hit_rects"]
@@ -77,3 +87,28 @@ commands.allow = ["arm_pin_close_guard"]
 identifier = "allow-quit-app"
 description = "Quit the overlay from the Settings 結束 button."
 commands.allow = ["quit_app"]
+
+[[permission]]
+identifier = "allow-read-soul"
+description = "Read one bot profile SOUL.md."
+commands.allow = ["read_soul"]
+
+[[permission]]
+identifier = "allow-write-soul"
+description = "Write one bot profile SOUL.md."
+commands.allow = ["write_soul"]
+
+[[permission]]
+identifier = "allow-save-bot-meta"
+description = "Save one bot display name and detail."
+commands.allow = ["save_bot_meta"]
+
+[[permission]]
+identifier = "allow-sync-profiles"
+description = "Discover Hermes profiles into the roster without inventing API keys."
+commands.allow = ["sync_profiles"]
+
+[[permission]]
+identifier = "allow-set-profile-enabled"
+description = "Show or hide one roster profile without deleting its key."
+commands.allow = ["set_profile_enabled"]

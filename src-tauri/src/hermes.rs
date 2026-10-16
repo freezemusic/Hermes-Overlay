@@ -58,6 +58,8 @@ pub struct DiscoveredProfile {
     pub profile: String,
     pub display_name: String,
     pub detail: String,
+    /// Raw Hermes color from `color`, `bot_color`, or `ui_meta.hermes-bots.color`.
+    pub color: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -115,23 +117,88 @@ pub fn route_root(gateway: &str, profile: &str, bot_base: &str) -> String {
     }
 }
 
-pub fn find_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
-    let mut matches: Vec<&SessionSummary> = sessions
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedSession {
+    pub id: String,
+    pub explicit: bool,
+    pub anchor: f64,
+}
+
+pub fn is_bot_chat_title(title: &str) -> bool {
+    title.trim() == BOT_CHAT_TITLE
+}
+
+/// Higher `last_active` wins. Equal timestamps keep the smaller id.
+fn session_rank(a: &SessionSummary, b: &SessionSummary) -> std::cmp::Ordering {
+    match a.last_active.partial_cmp(&b.last_active) {
+        Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Greater,
+        Some(std::cmp::Ordering::Less) => std::cmp::Ordering::Less,
+        _ => b.id.cmp(&a.id),
+    }
+}
+
+/// Highest `last_active`. Equal timestamps keep the smaller id.
+pub fn most_recent_session(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+    sessions.iter().max_by(|a, b| session_rank(a, b))
+}
+
+/// Most recently active session whose title is exactly `Bot Chat`.
+pub fn most_recent_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+    sessions
         .iter()
-        .filter(|s| s.title == BOT_CHAT_TITLE)
-        .collect();
-    if matches.is_empty() {
+        .filter(|session| is_bot_chat_title(&session.title))
+        .max_by(|a, b| session_rank(a, b))
+}
+
+/// Bot Chat rows first, then other sessions. Each group is most-recent first.
+pub fn session_menu_order(sessions: &[SessionSummary]) -> Vec<&SessionSummary> {
+    let mut rows: Vec<&SessionSummary> = sessions.iter().collect();
+    rows.sort_by(|a, b| {
+        is_bot_chat_title(&b.title)
+            .cmp(&is_bot_chat_title(&a.title))
+            .then_with(|| session_rank(b, a))
+    });
+    rows
+}
+
+/// Bot Chat by default. An explicit pick sticks until that session disappears.
+/// Cron raising Bot Chat `last_active` must not steal the pick.
+pub fn resolve_session(
+    sessions: &[SessionSummary],
+    remembered: &str,
+    explicit: bool,
+    anchor: f64,
+) -> Option<ResolvedSession> {
+    let preferred = most_recent_bot_chat(sessions).or_else(|| most_recent_session(sessions))?;
+    let remembered = remembered.trim();
+    let picked = if explicit && !remembered.is_empty() {
+        sessions.iter().find(|session| session.id == remembered)
+    } else {
+        None
+    };
+    if let Some(picked) = picked {
+        let newest = most_recent_session(sessions)
+            .map(|session| session.last_active)
+            .unwrap_or(picked.last_active);
+        return Some(ResolvedSession {
+            id: picked.id.clone(),
+            explicit: true,
+            anchor: anchor.max(newest),
+        });
+    }
+    Some(ResolvedSession {
+        id: preferred.id.clone(),
+        explicit: false,
+        anchor: preferred.last_active,
+    })
+}
+
+/// Suffix of `next` that was not in `seen`. `None` means the transcript diverged.
+pub fn fresh_messages<'a>(seen: &[UiMessage], next: &'a [UiMessage]) -> Option<&'a [UiMessage]> {
+    if next.len() < seen.len() || next[..seen.len()] != *seen {
         return None;
     }
-    matches.sort_by(|a, b| {
-        let rank = |s: &&SessionSummary| if s.hidden == Some(true) { 0 } else { 1 };
-        rank(a).cmp(&rank(b)).then_with(|| {
-            b.last_active
-                .partial_cmp(&a.last_active)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    });
-    matches.into_iter().next()
+    Some(&next[seen.len()..])
 }
 
 pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
@@ -348,7 +415,7 @@ pub async fn list_sessions(
     root: &str,
     key: &str,
 ) -> Result<Vec<SessionSummary>, HermesError> {
-    let url = format!("{root}/api/sessions?limit=200&title=Bot%20Chat&include_hidden=true");
+    let url = format!("{root}/api/sessions?limit=200&include_hidden=true");
     let resp = send(http.get(url).timeout(Duration::from_secs(20)), key).await?;
     let value: Value = resp
         .json()
@@ -357,35 +424,30 @@ pub async fn list_sessions(
     Ok(parse_session_list(&value))
 }
 
-pub async fn ensure_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
-    let sessions = list_sessions(http, root, key).await?;
-    if let Some(session) = find_bot_chat(&sessions) {
-        return Ok(session.id.clone());
-    }
-    let url = format!("{root}/api/sessions");
-    let create = send(
-        http.post(url)
-            .timeout(Duration::from_secs(20))
-            .json(&serde_json::json!({
-                "title": BOT_CHAT_TITLE,
-                "source": "api_server"
-            })),
-        key,
-    )
-    .await;
-    match create {
-        Ok(resp) => {
-            let value: Value = resp
-                .json()
-                .await
-                .map_err(|e| HermesError::Protocol(format!("建立 session 回應唔係 JSON：{e}")))?;
-            session_id_from_create(&value)
-                .ok_or_else(|| HermesError::Protocol("建立 session 回應冇 id".into()))
-        }
+/// `POST /api/sessions` with `{title: "Bot Chat", source: "api_server"}`, the same
+/// create Hermes Desktop uses. A 400 that names the occupying session returns that id.
+pub async fn create_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
+    match create_session(http, root, key, Some(BOT_CHAT_TITLE)).await {
+        Ok(id) => Ok(id),
         Err(HermesError::Http { status: 400, body }) => {
             conflict_session_id(&body).ok_or(HermesError::Http { status: 400, body })
         }
         Err(err) => Err(err),
+    }
+}
+
+/// Most recently active Bot Chat. If none exists, create one. If create is not
+/// feasible, fall back to the latest session of any title.
+pub async fn ensure_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
+    let sessions = list_sessions(http, root, key).await?;
+    if let Some(session) = most_recent_bot_chat(&sessions) {
+        return Ok(session.id.clone());
+    }
+    match create_bot_chat(http, root, key).await {
+        Ok(id) => Ok(id),
+        Err(err) => most_recent_session(&sessions)
+            .map(|session| session.id.clone())
+            .ok_or(err),
     }
 }
 
@@ -675,6 +737,310 @@ pub fn parse_kanban_board(value: &Value, board: &str) -> KanbanBoard {
     }
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CronJob {
+    pub id: String,
+    pub name: String,
+    pub schedule: String,
+    pub enabled: bool,
+    pub next_run_at: String,
+    pub last_run_at: String,
+    pub running: bool,
+    /// Live execution start, else claim time. Empty when this job is not in a run.
+    pub started_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CronList {
+    pub jobs: Vec<CronJob>,
+    pub unavailable: bool,
+    pub message: String,
+}
+
+fn json_time(value: &Value, key: &str) -> String {
+    match value.get(key) {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Number(number)) => number.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn schedule_text(value: &Value) -> String {
+    if let Some(text) = value.get("schedule_display").and_then(Value::as_str) {
+        let text = text.trim();
+        if !text.is_empty() {
+            return text.to_string();
+        }
+    }
+    match value.get("schedule") {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Object(map)) => {
+            for key in ["display", "expression", "expr"] {
+                if let Some(Value::String(text)) = map.get(key) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        return text.to_string();
+                    }
+                }
+            }
+            String::new()
+        }
+        _ => String::new(),
+    }
+}
+
+fn execution_status(value: &Value) -> String {
+    value
+        .get("latest_execution")
+        .and_then(|item| item.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// Hermes stamps `fire_claim` on the job (and sometimes the execution) for the whole run.
+fn fire_claim_live(value: &Value) -> bool {
+    match value.get("fire_claim") {
+        Some(Value::Object(map)) => !map.is_empty(),
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        _ => false,
+    }
+}
+
+fn job_is_running(value: &Value, state: &str) -> bool {
+    if state.eq_ignore_ascii_case("running") || value.get("running").and_then(Value::as_bool) == Some(true)
+    {
+        return true;
+    }
+    if fire_claim_live(value) {
+        return true;
+    }
+    if value
+        .get("latest_execution")
+        .is_some_and(fire_claim_live)
+    {
+        return true;
+    }
+    let status = execution_status(value);
+    status.eq_ignore_ascii_case("running") || status.eq_ignore_ascii_case("claimed")
+}
+
+fn last_run_text(value: &Value) -> String {
+    for key in ["last_run_at", "last_run"] {
+        let text = json_time(value, key);
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    let Some(exec) = value.get("latest_execution") else {
+        return String::new();
+    };
+    let finished = json_time(exec, "finished_at");
+    if !finished.is_empty() {
+        return finished;
+    }
+    json_time(exec, "started_at")
+}
+
+/// `started_at` once the attempt is running, otherwise `claimed_at`, otherwise the fire claim.
+fn run_start_text(value: &Value) -> String {
+    if let Some(exec) = value.get("latest_execution").filter(|item| item.is_object()) {
+        let status = exec
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let live = status.is_empty() || status == "running" || status == "claimed";
+        if live {
+            for key in ["started_at", "start", "claimed_at", "claim_time"] {
+                let text = json_time(exec, key);
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+        }
+        if let Some(claim) = exec.get("fire_claim").filter(|item| item.is_object()) {
+            for key in ["started_at", "claimed_at", "at"] {
+                let text = json_time(claim, key);
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+        }
+    }
+    if let Some(claim) = value.get("fire_claim").filter(|item| item.is_object()) {
+        for key in ["started_at", "claimed_at", "at"] {
+            let text = json_time(claim, key);
+            if !text.is_empty() {
+                return text;
+            }
+        }
+    }
+    for key in ["started_at", "claimed_at"] {
+        let text = json_time(value, key);
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    String::new()
+}
+
+fn cron_job_from(value: &Value) -> Option<CronJob> {
+    let id = json_string(value, "id");
+    let name = json_string(value, "name");
+    if id.is_empty() && name.is_empty() {
+        return None;
+    }
+    let state = json_string(value, "state");
+    let enabled = match value.get("enabled").and_then(Value::as_bool) {
+        Some(flag) => flag,
+        None => !state.eq_ignore_ascii_case("paused"),
+    };
+    Some(CronJob {
+        id: if id.is_empty() { name.clone() } else { id },
+        name: if name.is_empty() {
+            "未命名".into()
+        } else {
+            name
+        },
+        schedule: schedule_text(value),
+        enabled,
+        next_run_at: {
+            let next = json_time(value, "next_run_at");
+            if next.is_empty() {
+                json_time(value, "next_run")
+            } else {
+                next
+            }
+        },
+        last_run_at: last_run_text(value),
+        running: job_is_running(value, &state),
+        started_at: if job_is_running(value, &state) {
+            run_start_text(value)
+        } else {
+            String::new()
+        },
+    })
+}
+
+fn unavailable_cron() -> CronList {
+    CronList {
+        jobs: Vec::new(),
+        unavailable: true,
+        message: "呢個 Bot 未有排程。".into(),
+    }
+}
+
+/// Hermes 0.21.6 lists jobs at `/api/jobs`. `/api/crons` is only a fallback.
+pub fn cron_jobs_url(root: &str) -> String {
+    format!(
+        "{}/api/jobs?include_disabled=true",
+        root.trim_end_matches('/')
+    )
+}
+
+pub fn cron_legacy_url(root: &str) -> String {
+    format!("{}/api/crons", root.trim_end_matches('/'))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CronFetchStep {
+    Parse,
+    TryFallback,
+    Unavailable,
+    Error,
+}
+
+/// 404 on the jobs route may try `/api/crons`. 404 there, or 501, is an empty list.
+fn cron_fetch_step(status: u16, primary: bool) -> CronFetchStep {
+    if (200..300).contains(&status) {
+        return CronFetchStep::Parse;
+    }
+    if status == 404 && primary {
+        return CronFetchStep::TryFallback;
+    }
+    if status == 404 || status == 501 {
+        return CronFetchStep::Unavailable;
+    }
+    CronFetchStep::Error
+}
+
+/// `GET /api/jobs` for one profile. `cron_unavailable` is an empty list, not an error.
+pub fn parse_cron_list(value: &Value) -> CronList {
+    if value.get("cron_unavailable").and_then(Value::as_bool) == Some(true) {
+        return unavailable_cron();
+    }
+    let items = if let Some(list) = value.as_array() {
+        list
+    } else if let Some(list) = value.get("jobs").and_then(Value::as_array) {
+        list
+    } else {
+        return CronList {
+            jobs: Vec::new(),
+            unavailable: false,
+            message: String::new(),
+        };
+    };
+    CronList {
+        jobs: items.iter().filter_map(cron_job_from).collect(),
+        unavailable: false,
+        message: String::new(),
+    }
+}
+
+enum CronFetchBody {
+    Parsed(CronList),
+    Fallback,
+}
+
+async fn fetch_cron_url(
+    http: &Client,
+    url: &str,
+    key: &str,
+    primary: bool,
+) -> Result<CronFetchBody, HermesError> {
+    let resp = authed(http.get(url).timeout(Duration::from_secs(8)), key)
+        .send()
+        .await
+        .map_err(map_reqwest)?;
+    let status = resp.status().as_u16();
+    match cron_fetch_step(status, primary) {
+        CronFetchStep::Parse => {
+            let value: Value = resp.json().await.map_err(|err| {
+                HermesError::Protocol(format!("cron 回應唔係 JSON：{err}"))
+            })?;
+            Ok(CronFetchBody::Parsed(parse_cron_list(&value)))
+        }
+        CronFetchStep::TryFallback => Ok(CronFetchBody::Fallback),
+        CronFetchStep::Unavailable => Ok(CronFetchBody::Parsed(unavailable_cron())),
+        CronFetchStep::Error => {
+            let body = resp.text().await.unwrap_or_default();
+            Err(HermesError::Http {
+                status,
+                body: clip(&body, 200),
+            })
+        }
+    }
+}
+
+pub async fn fetch_cron_jobs(
+    http: &Client,
+    root: &str,
+    key: &str,
+) -> Result<CronList, HermesError> {
+    match fetch_cron_url(http, &cron_jobs_url(root), key, true).await? {
+        CronFetchBody::Parsed(list) => Ok(list),
+        CronFetchBody::Fallback => {
+            match fetch_cron_url(http, &cron_legacy_url(root), key, false).await? {
+                CronFetchBody::Parsed(list) => Ok(list),
+                CronFetchBody::Fallback => Ok(unavailable_cron()),
+            }
+        }
+    }
+}
+
 pub fn kanban_patch_body(status: &str, assignee: &str, priority: &str, title: &str) -> Value {
     let mut body = serde_json::Map::new();
     if !status.trim().is_empty() {
@@ -920,15 +1286,48 @@ pub async fn lock_session_model(
     Ok(())
 }
 
+pub fn profiles_from_health_body(body: &str) -> Vec<DiscoveredProfile> {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    if value.get("profiles").and_then(Value::as_array).is_none() {
+        return Vec::new();
+    }
+    parse_dashboard_profiles(&value)
+}
+
+pub async fn profiles_from_gateway_health(http: &Client, gateway: &str) -> Vec<DiscoveredProfile> {
+    let url = format!("{}/health", gateway.trim_end_matches('/'));
+    let Ok(resp) = http.get(url).timeout(Duration::from_secs(8)).send().await else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(body) = resp.text().await else {
+        return Vec::new();
+    };
+    profiles_from_health_body(&body)
+}
+
 pub async fn list_dashboard_profiles(
     http: &Client,
     dashboard: &str,
     token: Option<&str>,
 ) -> Result<Vec<DiscoveredProfile>, HermesError> {
+    list_dashboard_profiles_timeout(http, dashboard, token, Duration::from_secs(15)).await
+}
+
+pub async fn list_dashboard_profiles_timeout(
+    http: &Client,
+    dashboard: &str,
+    token: Option<&str>,
+    timeout: Duration,
+) -> Result<Vec<DiscoveredProfile>, HermesError> {
     let url = format!("{}/api/profiles", dashboard.trim_end_matches('/'));
     let mut req = http
         .get(url)
-        .timeout(Duration::from_secs(15))
+        .timeout(timeout)
         .header("Accept", "application/json");
     if let Some(token) = token.map(str::trim).filter(|t| !t.is_empty()) {
         req = req.header("X-Hermes-Session-Token", token);
@@ -991,9 +1390,35 @@ pub fn parse_dashboard_profiles(value: &Value) -> Vec<DiscoveredProfile> {
             profile,
             display_name,
             detail,
+            color: json_profile_color(&item),
         });
     }
     out
+}
+
+fn json_text(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn json_profile_color(item: &Value) -> String {
+    let direct = json_text(item.get("color"));
+    if !direct.is_empty() {
+        return direct;
+    }
+    let bot = json_text(item.get("bot_color"));
+    if !bot.is_empty() {
+        return bot;
+    }
+    let nested = item
+        .get("ui_meta")
+        .and_then(|ui| ui.get("hermes-bots").or_else(|| ui.get("hermes_bots")))
+        .and_then(|bots| bots.get("color"));
+    json_text(nested)
 }
 
 pub async fn stream_turn<F>(
@@ -1370,32 +1795,173 @@ mod tests {
         );
     }
 
+    fn summary(id: &str, title: &str, last_active: f64) -> SessionSummary {
+        SessionSummary {
+            id: id.into(),
+            title: title.into(),
+            hidden: None,
+            last_active,
+            preview: String::new(),
+        }
+    }
+
+    fn ui_message(role: &str, text: &str) -> UiMessage {
+        UiMessage {
+            role: role.into(),
+            text: text.into(),
+            tool_name: String::new(),
+        }
+    }
+
     #[test]
-    fn prefers_hidden_bot_chat() {
+    fn cron_list_reads_schedule_enabled_and_running() {
+        let parsed = parse_cron_list(&json!({
+            "jobs": [{
+                "id": "brief",
+                "name": "每日摘要",
+                "schedule": { "kind": "cron", "expr": "0 9 * * *", "display": "每日 09:00" },
+                "enabled": true,
+                "state": "running",
+                "next_run_at": "2026-10-16T09:00:00Z"
+            }, {
+                "id": "quiet",
+                "name": "停用",
+                "schedule_display": "every 2h",
+                "enabled": false,
+                "state": "paused",
+                "next_run_at": 1712000000,
+                "last_run_at": "2026-10-15T10:00:00Z"
+            }, {
+                "id": "claimed",
+                "name": "檢查測試",
+                "schedule": { "kind": "cron", "expr": "*/30 * * * *" },
+                "enabled": true,
+                "state": "scheduled",
+                "next_run_at": "2026-10-16T12:00:00Z",
+                "latest_execution": {
+                    "status": "claimed",
+                    "started_at": "2026-10-16T11:30:00Z"
+                }
+            }, {
+                "id": "done",
+                "name": "上次先",
+                "enabled": true,
+                "state": "scheduled",
+                "latest_execution": {
+                    "status": "completed",
+                    "finished_at": "2026-10-16T08:00:00Z",
+                    "started_at": "2026-10-16T07:59:00Z"
+                }
+            }, {
+                "id": "live",
+                "name": "進行中",
+                "enabled": true,
+                "state": "scheduled",
+                "fire_claim": { "at": "2026-10-16T12:00:00Z", "by": "host:abc" },
+                "latest_execution": {
+                    "status": "running",
+                    "started_at": "2026-10-16T12:00:01Z"
+                }
+            }]
+        }));
+        assert!(!parsed.unavailable);
+        assert_eq!(parsed.jobs.len(), 5);
+        assert_eq!(parsed.jobs[0].schedule, "每日 09:00");
+        assert!(parsed.jobs[0].running);
+        assert!(parsed.jobs[0].enabled);
+        assert_eq!(parsed.jobs[1].schedule, "every 2h");
+        assert!(!parsed.jobs[1].enabled);
+        assert!(!parsed.jobs[1].running);
+        assert_eq!(parsed.jobs[1].next_run_at, "1712000000");
+        assert_eq!(parsed.jobs[1].last_run_at, "2026-10-15T10:00:00Z");
+        assert!(parsed.jobs[2].running);
+        assert_eq!(parsed.jobs[2].schedule, "*/30 * * * *");
+        assert_eq!(parsed.jobs[2].last_run_at, "2026-10-16T11:30:00Z");
+        assert!(!parsed.jobs[3].running);
+        assert_eq!(parsed.jobs[3].last_run_at, "2026-10-16T08:00:00Z");
+        assert!(parsed.jobs[4].running);
+        assert_eq!(parsed.jobs[4].last_run_at, "2026-10-16T12:00:01Z");
+        assert_eq!(parsed.jobs[4].started_at, "2026-10-16T12:00:01Z");
+        assert_eq!(parsed.jobs[2].started_at, "2026-10-16T11:30:00Z");
+        assert_eq!(parsed.jobs[3].started_at, "");
+        let claimed_at = parse_cron_list(&json!({
+            "jobs": [{
+                "id": "claim-time",
+                "name": "只得 claim",
+                "state": "scheduled",
+                "latest_execution": { "status": "claimed", "claimed_at": "2026-10-16T12:00:00Z" }
+            }]
+        }));
+        assert!(claimed_at.jobs[0].running);
+        assert_eq!(claimed_at.jobs[0].started_at, "2026-10-16T12:00:00Z");
+        let claimed_only = parse_cron_list(&json!({
+            "jobs": [{
+                "id": "fence",
+                "name": "只靠 fire_claim",
+                "state": "scheduled",
+                "latest_execution": { "status": "completed", "fire_claim": "host:abc" }
+            }]
+        }));
+        assert!(claimed_only.jobs[0].running);
+        let missing = parse_cron_list(&json!({ "jobs": [], "cron_unavailable": true }));
+        assert!(missing.unavailable);
+        assert!(missing.jobs.is_empty());
+        assert_eq!(
+            cron_jobs_url("http://127.0.0.1:8642/"),
+            "http://127.0.0.1:8642/api/jobs?include_disabled=true"
+        );
+        assert_eq!(
+            cron_jobs_url("http://127.0.0.1:8642/p/coder"),
+            "http://127.0.0.1:8642/p/coder/api/jobs?include_disabled=true"
+        );
+        assert_eq!(
+            cron_legacy_url("http://127.0.0.1:8642/p/coder/"),
+            "http://127.0.0.1:8642/p/coder/api/crons"
+        );
+        assert_eq!(cron_fetch_step(200, true), CronFetchStep::Parse);
+        assert_eq!(cron_fetch_step(404, true), CronFetchStep::TryFallback);
+        assert_eq!(cron_fetch_step(404, false), CronFetchStep::Unavailable);
+        assert_eq!(cron_fetch_step(501, true), CronFetchStep::Unavailable);
+        assert_eq!(cron_fetch_step(500, false), CronFetchStep::Error);
+    }
+
+    #[test]
+    fn bot_chat_is_the_default_session() {
         let sessions = vec![
-            SessionSummary {
-                id: "visible".into(),
-                title: "Bot Chat".into(),
-                hidden: Some(false),
-                last_active: 50.0,
-                preview: String::new(),
-            },
-            SessionSummary {
-                id: "hidden".into(),
-                title: "Bot Chat".into(),
-                hidden: Some(true),
-                last_active: 10.0,
-                preview: String::new(),
-            },
-            SessionSummary {
-                id: "other".into(),
-                title: "notes".into(),
-                hidden: None,
-                last_active: 99.0,
-                preview: String::new(),
-            },
+            summary("older", "Bot Chat", 50.0),
+            summary("newer", "Bot Chat", 80.0),
+            summary("split", "_splitLot", 10.0),
+            summary("desktop", "System Architect", 200.0),
         ];
-        assert_eq!(find_bot_chat(&sessions).unwrap().id, "hidden");
+        assert_eq!(most_recent_session(&sessions).unwrap().id, "desktop");
+        assert_eq!(most_recent_bot_chat(&sessions).unwrap().id, "newer");
+        let opened = resolve_session(&sessions, "split", false, 10.0).unwrap();
+        assert_eq!(opened.id, "newer");
+        assert!(!opened.explicit);
+        let pinned = resolve_session(&sessions, "split", true, 10.0).unwrap();
+        assert_eq!(pinned.id, "split");
+        assert!(pinned.explicit);
+        assert_eq!(pinned.anchor, 200.0);
+        let missing = resolve_session(&sessions, "gone", true, 1.0).unwrap();
+        assert_eq!(missing.id, "newer");
+        assert!(!missing.explicit);
+        assert!(resolve_session(&[], "split", true, 1.0).is_none());
+        let tied = vec![summary("b", "Bot Chat", 5.0), summary("a", "Bot Chat", 5.0)];
+        assert_eq!(resolve_session(&tied, "", false, 0.0).unwrap().id, "a");
+        let plain = vec![summary("desktop", "System Architect", 99.0), summary("split", "_splitLot", 10.0)];
+        assert_eq!(resolve_session(&plain, "", false, 0.0).unwrap().id, "desktop");
+        assert_eq!(
+            session_menu_order(&sessions)
+                .into_iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["newer", "older", "desktop", "split"]
+        );
+        let seen = vec![ui_message("user", "hi")];
+        let next = vec![ui_message("user", "hi"), ui_message("bot", "cron")];
+        assert_eq!(fresh_messages(&seen, &next).unwrap(), &next[1..]);
+        assert!(fresh_messages(&next, &seen).is_none());
+        assert!(fresh_messages(&seen, &seen).unwrap().is_empty());
     }
 
     #[test]
@@ -1444,6 +2010,24 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].display_name, "資料搜查");
         assert_eq!(found[0].detail, "搜尋");
+        assert_eq!(found[0].color, "");
+        assert!(profiles_from_health_body("ok").is_empty());
+        assert!(profiles_from_health_body(r#"{"status":"ok"}"#).is_empty());
+        let health = profiles_from_health_body(
+            r#"{"status":"ok","profiles":[{"profile":"coder","description":"程式"}]}"#,
+        );
+        assert_eq!(health.len(), 1);
+        assert_eq!(health[0].profile, "coder");
+        assert_eq!(health[0].detail, "程式");
+        assert_eq!(health[0].color, "");
+        let colored = parse_dashboard_profiles(&json!({"profiles":[
+            {"name":"planner","color":"hsl(326 68% 58%)"},
+            {"name":"coder","bot_color":"#ABC"},
+            {"name":"writer","ui_meta":{"hermes-bots":{"color":"rgb(10, 20, 30)"}}}
+        ]}));
+        assert_eq!(colored[0].color, "hsl(326 68% 58%)");
+        assert_eq!(colored[1].color, "#ABC");
+        assert_eq!(colored[2].color, "rgb(10, 20, 30)");
     }
 
     fn oneshot(status: &str, content_type: &str, body: &str) -> String {
@@ -1473,7 +2057,7 @@ mod tests {
         let http = Client::new();
         let sessions = list_sessions(&http, &base, "test-key").await.unwrap();
         assert_eq!(sessions[0].id, "abc");
-        assert_eq!(find_bot_chat(&sessions).unwrap().id, "abc");
+        assert_eq!(most_recent_session(&sessions).unwrap().id, "abc");
     }
 
     #[tokio::test]

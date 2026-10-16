@@ -1,12 +1,14 @@
-//! Rainmeter-style hit testing: click-through by default, proximity fade, and a
-//! held modifier that solids only the element under the cursor.
+//! Hit testing. Panels stay opaque and capture the cursor until the modifier is held.
+//! Orbs stay faded and click-through until the modifier is held over that orb.
 
 use crate::config::InteractionConfig;
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, AtomicPtr};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Debug, Clone)]
@@ -50,6 +52,45 @@ pub fn platform_supports_global_input() -> bool {
     {
         true
     }
+}
+
+/// Lone modifier wait. Shorter than the 120ms hover motion, long enough that
+/// Ctrl+C / Ctrl+V is sampled before the HUD changes.
+pub const MODIFIER_ARM: Duration = Duration::from_millis(100);
+
+pub fn copy_paste_chord(keys: &[Keycode], modifier: &str) -> bool {
+    if modifier == "shift" || modifier == "alt" {
+        return false;
+    }
+    keys.iter()
+        .any(|key| matches!(key, Keycode::C | Keycode::V))
+}
+
+/// Copy and paste stay at rest, including after C or V lifts while Ctrl is held.
+/// A lone modifier becomes active after [`MODIFIER_ARM`].
+pub fn modifier_engages(
+    keys: &[Keycode],
+    modifier: &str,
+    now: Instant,
+    armed_at: &mut Option<Instant>,
+    suppressed: &mut bool,
+) -> bool {
+    if !modifier_held(keys, modifier) {
+        *armed_at = None;
+        *suppressed = false;
+        return false;
+    }
+    if copy_paste_chord(keys, modifier) {
+        *armed_at = None;
+        *suppressed = true;
+        return false;
+    }
+    if *suppressed {
+        *armed_at = None;
+        return false;
+    }
+    let start = armed_at.get_or_insert(now);
+    now.saturating_duration_since(*start) >= MODIFIER_ARM
 }
 
 pub fn modifier_held(keys: &[Keycode], modifier: &str) -> bool {
@@ -97,6 +138,7 @@ pub fn distance_to_rect(px: f64, py: f64, rect: &HitRect) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn opacity_for_distance(
     distance: f64,
     fade_distance: f64,
@@ -189,10 +231,82 @@ fn id_listed(ids: &[String], id: &str) -> bool {
     ids.iter().any(|item| item == id)
 }
 
-/// Per-element Rainmeter frame.
-/// Holding the modifier solids and captures only the element under the cursor.
-/// Latched ids stay solid; they capture only while the cursor is over that element.
-/// A missing cursor does not capture and does not change fade.
+/// Message-preview pills are neither orbs nor panels.
+pub fn is_pill_hit(rect: &HitRect) -> bool {
+    rect.id.starts_with("pill:")
+}
+
+/// Close buttons capture on the first press, even while the modifier is held.
+pub fn is_close_hit(rect: &HitRect) -> bool {
+    rect.id.starts_with("close:")
+}
+
+/// Open panels and close buttons stay in the OS hit region the whole time they
+/// are on screen. Orbs are left out, so they stay click-through until the
+/// modifier is held over them.
+pub fn immediate_hit_rects(held: bool, rects: &[HitRect]) -> Vec<HitRect> {
+    rects
+        .iter()
+        .filter(|rect| {
+            if rect.w < 1.0 || rect.h < 1.0 {
+                return false;
+            }
+            if is_close_hit(rect) {
+                return true;
+            }
+            !held && is_panel_hit(rect)
+        })
+        .cloned()
+        .collect()
+}
+
+/// OS input region: panels that are already open, plus whatever the hover poll
+/// is currently capturing (an orb under the modifier, a preview pill).
+pub fn os_input_rects(held: bool, rects: &[HitRect], frames: &[ElementFrame]) -> Vec<HitRect> {
+    let mut out = immediate_hit_rects(held, rects);
+    for frame in frames {
+        if !frame.capture || out.iter().any(|item| item.id == frame.id) {
+            continue;
+        }
+        if let Some(rect) = rects.iter().find(|item| item.id == frame.id) {
+            if rect.w >= 1.0 && rect.h >= 1.0 {
+                out.push(rect.clone());
+            }
+        }
+    }
+    out
+}
+
+pub fn css_point_hits(rects: &[HitRect], x: f64, y: f64) -> bool {
+    rects.iter().any(|rect| {
+        x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
+    })
+}
+
+/// Round avatars, pills, close buttons, and toasts are not panels. Everything else is a panel.
+pub fn is_panel_hit(rect: &HitRect) -> bool {
+    if is_pill_hit(rect) || is_close_hit(rect) || is_orb_hit(rect) {
+        return false;
+    }
+    !rect.id.starts_with("toast:")
+}
+
+/// Bot, settings, and kanban orbs. A round hit or a `bot:` id both count.
+pub fn is_orb_hit(rect: &HitRect) -> bool {
+    if is_pill_hit(rect) || is_close_hit(rect) {
+        return false;
+    }
+    rect.round || rect.id.starts_with("bot:")
+}
+
+/// Per-element frame.
+/// Panels are opaque and captured until the modifier is held, then they wash out
+/// and capture nothing. Orbs stay at `min_opacity` and click-through until the
+/// modifier is held over that orb, which turns it solid and clickable.
+/// A message-preview pill stays visually solid and captures only while the
+/// modifier is held over it. A close button stays solid and captures whenever
+/// the cursor is over it, including while the modifier is held. Toasts stay
+/// visually solid. A missing cursor does not capture.
 pub fn interaction_frame(
     held: bool,
     latched_ids: &[String],
@@ -206,14 +320,24 @@ pub fn interaction_frame(
     rects
         .iter()
         .map(|rect| {
-            let latched = id_listed(latched_ids, &rect.id);
-            let targeted = held && under.as_deref() == Some(rect.id.as_str());
-            let forced = latched || targeted;
-            let opacity = match cursor {
-                Some((x, y)) => element_opacity(forced, distance_to_hit(x, y, rect), cfg),
-                None => 1.0,
+            let here = cursor.is_some() && under.as_deref() == Some(rect.id.as_str());
+            let (opacity, capture) = if is_close_hit(rect) {
+                (1.0, here)
+            } else if is_pill_hit(rect) {
+                (1.0, here && held)
+            } else if is_orb_hit(rect) {
+                let awake = here && held;
+                (if awake { 1.0 } else { cfg.min_opacity }, awake)
+            } else if is_panel_hit(rect) {
+                let opacity = if cursor.is_some() && held {
+                    cfg.min_opacity
+                } else {
+                    1.0
+                };
+                (opacity, here && !held)
+            } else {
+                (1.0, here && !held)
             };
-            let capture = under.as_deref() == Some(rect.id.as_str()) && (held || latched);
             ElementFrame {
                 id: rect.id.clone(),
                 opacity: round_opacity(opacity),
@@ -524,7 +648,8 @@ mod native_popup {
     }
 }
 
-/// A forced element (modifier target or latched panel) is full opacity at any distance.
+/// Distance fade kept for the unit test. Live frames do not call it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn element_opacity(solid: bool, distance: f64, cfg: &InteractionConfig) -> f64 {
     if solid {
         return 1.0;
@@ -542,6 +667,152 @@ struct OpacityItem {
     id: String,
     opacity: f64,
     capture: bool,
+}
+
+static RECOVER_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
+
+/// Cover the monitor. `center` plus `maximized` can leave a borderless window at
+/// the configured 1280×800, and a later position change restores that size.
+pub fn place_overlay(window: &tauri::WebviewWindow) {
+    let _ = window.set_always_on_top(true);
+    #[cfg(windows)]
+    if cover_windows_monitor(window) {
+        let _ = window.set_focus();
+        return;
+    }
+    let _ = window.maximize();
+    let _ = window.set_focus();
+}
+
+/// A cold start that stayed at the config size is not covering the monitor.
+pub fn recover_startup_size(window: &tauri::WebviewWindow, width: u32, height: u32) {
+    if RECOVER_ATTEMPTS.load(Ordering::Relaxed) >= 4 {
+        return;
+    }
+    let Some((mon_w, mon_h)) = monitor_size(window) else {
+        return;
+    };
+    if width + 8 >= mon_w && height + 8 >= mon_h {
+        return;
+    }
+    let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
+    let fallback_w = (1280.0 * scale).round() as u32;
+    let fallback_h = (800.0 * scale).round() as u32;
+    if width.abs_diff(fallback_w) <= 4 && height.abs_diff(fallback_h) <= 4 {
+        RECOVER_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+        place_overlay(window);
+    }
+}
+
+fn monitor_size(window: &tauri::WebviewWindow) -> Option<(u32, u32)> {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())?;
+    let size = monitor.size();
+    Some((size.width, size.height))
+}
+
+#[cfg(windows)]
+fn cover_windows_monitor(window: &tauri::WebviewWindow) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct WinRect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+    #[repr(C)]
+    struct MonitorInfo {
+        cb_size: u32,
+        rc_monitor: WinRect,
+        rc_work: WinRect,
+        flags: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
+        fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MonitorInfo) -> i32;
+        fn GetWindowLongW(hwnd: *mut c_void, index: i32) -> i32;
+        fn SetWindowLongW(hwnd: *mut c_void, index: i32, value: i32) -> i32;
+        fn SetWindowPos(
+            hwnd: *mut c_void,
+            insert_after: *mut c_void,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else {
+        return false;
+    };
+    let hwnd = win.hwnd.get() as *mut c_void;
+    if hwnd.is_null() {
+        return false;
+    }
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, 2);
+        if monitor.is_null() {
+            return false;
+        }
+        let mut info = MonitorInfo {
+            cb_size: std::mem::size_of::<MonitorInfo>() as u32,
+            rc_monitor: WinRect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            rc_work: WinRect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            flags: 0,
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return false;
+        }
+        const GWL_STYLE: i32 = -16;
+        const WS_MAXIMIZE: i32 = 0x0100_0000;
+        let style = GetWindowLongW(hwnd, GWL_STYLE);
+        if style & WS_MAXIMIZE != 0 {
+            SetWindowLongW(hwnd, GWL_STYLE, style & !WS_MAXIMIZE);
+        }
+        let width = info.rc_monitor.right - info.rc_monitor.left;
+        let height = info.rc_monitor.bottom - info.rc_monitor.top;
+        if width <= 0 || height <= 0 {
+            return false;
+        }
+        const SWP_SHOWWINDOW: u32 = 0x0040;
+        const SWP_FRAMECHANGED: u32 = 0x0020;
+        SetWindowPos(
+            hwnd,
+            (-1isize) as *mut c_void,
+            info.rc_monitor.left,
+            info.rc_monitor.top,
+            width,
+            height,
+            SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+        ) != 0
+    }
+}
+
+#[cfg(not(windows))]
+fn cover_windows_monitor(_window: &tauri::WebviewWindow) -> bool {
+    false
 }
 
 pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
@@ -572,6 +843,9 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
         };
         let mut last_signature = String::new();
         let mut ignoring: Option<bool> = None;
+        let mut region_signature = String::new();
+        let mut arm_at: Option<Instant> = None;
+        let mut chord_suppressed = false;
         let mut focus_probe = FocusProbe::open();
         let mut other_samples = 0u8;
         let mut closed_popup_for_other = false;
@@ -591,7 +865,13 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .clone();
-            let held = modifier_held(&device.get_keys(), &cfg.modifier);
+            let held = modifier_engages(
+                &device.get_keys(),
+                &cfg.modifier,
+                Instant::now(),
+                &mut arm_at,
+                &mut chord_suppressed,
+            );
             let rects = hub
                 .rects
                 .lock()
@@ -599,12 +879,15 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 .clone();
             let cursor = cursor_in_view(&window, &device);
             let frames = interaction_frame(held, &latched_ids, cursor, &rects, HIT_MARGIN_PX, &cfg);
-            let ignore = !frames.iter().any(|item| item.capture);
-            if ignoring != Some(ignore) {
-                if window.set_ignore_cursor_events(ignore).is_ok() {
-                    ignoring = Some(ignore);
-                }
-            }
+            sync_os_hit_region(
+                &app,
+                &window,
+                held,
+                &rects,
+                &frames,
+                &mut ignoring,
+                &mut region_signature,
+            );
             let items: Vec<OpacityItem> = frames
                 .iter()
                 .map(|item| OpacityItem {
@@ -623,6 +906,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 if !closed_popup_for_other && option_menu_is_open() {
                     if window.set_ignore_cursor_events(true).is_ok() {
                         ignoring = Some(true);
+                        region_signature.clear();
                     }
                     let app_handle = app.clone();
                     let _ = app.run_on_main_thread(move || {
@@ -658,6 +942,258 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 }),
             );
         }
+    });
+}
+
+fn sync_os_hit_region(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+    held: bool,
+    rects: &[HitRect],
+    frames: &[ElementFrame],
+    ignoring: &mut Option<bool>,
+    region_signature: &mut String,
+) {
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        let region = os_input_rects(held, rects, frames);
+        let origin = window.inner_position().ok();
+        let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+        let (origin_x, origin_y) = origin
+            .map(|point| (f64::from(point.x), f64::from(point.y)))
+            .unwrap_or((0.0, 0.0));
+        let signature = format!(
+            "{origin_x:.0},{origin_y:.0},{scale:.2}|{}",
+            region
+                .iter()
+                .map(|rect| {
+                    format!(
+                        "{}:{:.0},{:.0},{:.0},{:.0}",
+                        rect.id, rect.x, rect.y, rect.w, rect.h
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(";")
+        );
+        if signature == *region_signature {
+            return;
+        }
+        *region_signature = signature;
+        #[cfg(windows)]
+        {
+            remember_hit_region(&region, origin_x, origin_y, scale);
+            let empty = region.is_empty();
+            if *ignoring != Some(empty) {
+                queue_windows_hit_style(app, empty);
+                *ignoring = Some(empty);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            apply_linux_input_shape(app, &region, scale);
+            *ignoring = Some(region.is_empty());
+        }
+        let _ = window;
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = (app, held, rects, region_signature);
+        let ignore = !frames.iter().any(|item| item.capture);
+        if *ignoring != Some(ignore) && window.set_ignore_cursor_events(ignore).is_ok() {
+            *ignoring = Some(ignore);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct HitRegionCache {
+    rects: Vec<HitRect>,
+    origin_x: f64,
+    origin_y: f64,
+    scale: f64,
+}
+
+#[cfg(windows)]
+fn hit_region_cache() -> &'static Mutex<HitRegionCache> {
+    static CACHE: OnceLock<Mutex<HitRegionCache>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        Mutex::new(HitRegionCache {
+            rects: Vec::new(),
+            origin_x: 0.0,
+            origin_y: 0.0,
+            scale: 1.0,
+        })
+    })
+}
+
+#[cfg(windows)]
+fn remember_hit_region(rects: &[HitRect], origin_x: f64, origin_y: f64, scale: f64) {
+    let mut cache = hit_region_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    cache.rects = rects.to_vec();
+    cache.origin_x = origin_x;
+    cache.origin_y = origin_y;
+    cache.scale = if scale > 0.0 { scale } else { 1.0 };
+}
+
+#[cfg(windows)]
+fn queue_windows_hit_style(app: &AppHandle, transparent: bool) {
+    let app = app.clone();
+    let handle = app.clone();
+    let _ = handle.run_on_main_thread(move || {
+        let Some(window) = app.get_webview_window("main") else {
+            return;
+        };
+        let Some(hwnd) = window_hwnd(&window) else {
+            return;
+        };
+        install_hit_proc(hwnd);
+        set_window_transparent(hwnd, transparent);
+    });
+}
+
+#[cfg(windows)]
+fn window_hwnd(window: &tauri::WebviewWindow) -> Option<*mut std::ffi::c_void> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = window.window_handle().ok()?;
+    let RawWindowHandle::Win32(win) = handle.as_raw() else {
+        return None;
+    };
+    let hwnd = win.hwnd.get() as *mut std::ffi::c_void;
+    if hwnd.is_null() {
+        None
+    } else {
+        Some(hwnd)
+    }
+}
+
+#[cfg(windows)]
+fn install_hit_proc(hwnd: *mut std::ffi::c_void) {
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.load(Ordering::Relaxed) {
+        return;
+    }
+    const GWLP_WNDPROC: i32 = -4;
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowLongPtrW(hwnd: *mut std::ffi::c_void, index: i32, new_proc: isize) -> isize;
+    }
+    let previous = unsafe {
+        SetWindowLongPtrW(
+            hwnd,
+            GWLP_WNDPROC,
+            hit_window_proc as *const std::ffi::c_void as isize,
+        )
+    };
+    if previous == 0 {
+        return;
+    }
+    HIT_PROC_PREVIOUS.store(previous as *mut std::ffi::c_void, Ordering::Relaxed);
+    INSTALLED.store(true, Ordering::Relaxed);
+}
+
+#[cfg(windows)]
+fn set_window_transparent(hwnd: *mut std::ffi::c_void, transparent: bool) {
+    const GWL_EXSTYLE: i32 = -20;
+    const WS_EX_TRANSPARENT: i32 = 0x0000_0020;
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowLongW(hwnd: *mut std::ffi::c_void, index: i32) -> i32;
+        fn SetWindowLongW(hwnd: *mut std::ffi::c_void, index: i32, value: i32) -> i32;
+    }
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        let next = if transparent {
+            style | WS_EX_TRANSPARENT
+        } else {
+            style & !WS_EX_TRANSPARENT
+        };
+        if next != style {
+            SetWindowLongW(hwnd, GWL_EXSTYLE, next);
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn hit_window_proc(
+    hwnd: *mut std::ffi::c_void,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    const WM_NCHITTEST: u32 = 0x0084;
+    const HTTRANSPARENT: isize = -1;
+    if msg == WM_NCHITTEST {
+        let cache = hit_region_cache()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let x = (lparam as u16) as i16 as f64;
+        let y = ((lparam >> 16) as u16) as i16 as f64;
+        let scale = if cache.scale > 0.0 { cache.scale } else { 1.0 };
+        let css_x = (x - cache.origin_x) / scale;
+        let css_y = (y - cache.origin_y) / scale;
+        let hit = css_point_hits(&cache.rects, css_x, css_y);
+        drop(cache);
+        if !hit {
+            return HTTRANSPARENT;
+        }
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn CallWindowProcW(
+            prev: *mut std::ffi::c_void,
+            hwnd: *mut std::ffi::c_void,
+            msg: u32,
+            wparam: usize,
+            lparam: isize,
+        ) -> isize;
+    }
+    let previous = HIT_PROC_PREVIOUS.load(Ordering::Relaxed);
+    if previous.is_null() {
+        return 0;
+    }
+    unsafe { CallWindowProcW(previous, hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(windows)]
+static HIT_PROC_PREVIOUS: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+#[cfg(target_os = "linux")]
+fn apply_linux_input_shape(app: &AppHandle, rects: &[HitRect], scale: f64) {
+    let rects = rects.to_vec();
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let app = app.clone();
+    let handle = app.clone();
+    let _ = handle.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        let Some(window) = app.get_webview_window("main") else {
+            return;
+        };
+        let Ok(gtk_window) = window.gtk_window() else {
+            return;
+        };
+        let Some(gdk_window) = gtk_window.window() else {
+            return;
+        };
+        let pixels: Vec<gtk::cairo::RectangleInt> = rects
+            .iter()
+            .filter(|rect| rect.w >= 1.0 && rect.h >= 1.0)
+            .map(|rect| {
+                gtk::cairo::RectangleInt::new(
+                    (rect.x * scale).floor() as i32,
+                    (rect.y * scale).floor() as i32,
+                    ((rect.w * scale).ceil() as i32).max(1),
+                    ((rect.h * scale).ceil() as i32).max(1),
+                )
+            })
+            .collect();
+        let region = if pixels.is_empty() {
+            gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, 1, 1))
+        } else {
+            gtk::cairo::Region::create_rectangles(&pixels)
+        };
+        gdk_window.input_shape_combine_region(&region, 0, 0);
     });
 }
 
@@ -1107,7 +1643,7 @@ mod tests {
                 w: 40.0,
                 h: 40.0,
                 z: 0,
-                round: false,
+                round: true,
             },
             HitRect {
                 id: "b".into(),
@@ -1116,7 +1652,7 @@ mod tests {
                 w: 40.0,
                 h: 40.0,
                 z: 0,
-                round: false,
+                round: true,
             },
             HitRect {
                 id: "center".into(),
@@ -1159,46 +1695,49 @@ mod tests {
     }
 
     #[test]
-    fn modifier_far_from_elements_changes_nothing_and_does_not_capture() {
+    fn modifier_far_from_elements_does_not_capture_or_fade() {
         let rects = bots();
         let cfg = fade_cfg();
         let far = Some((1000.0, 1000.0));
         let held = interaction_frame(true, &[], far, &rects, HIT_MARGIN_PX, &cfg);
         let idle = interaction_frame(false, &[], far, &rects, HIT_MARGIN_PX, &cfg);
-        assert_eq!(held, idle);
         assert!(held.iter().all(|item| !item.capture));
-        assert!(held.iter().all(|item| (item.opacity - 1.0).abs() < 0.001));
+        assert!(idle.iter().all(|item| !item.capture));
+        assert!((frame_of(&held, "a").opacity - 0.18).abs() < 0.001);
+        assert!((frame_of(&held, "center").opacity - 0.18).abs() < 0.001);
+        assert!((frame_of(&idle, "a").opacity - 0.18).abs() < 0.001);
+        assert!((frame_of(&idle, "center").opacity - 1.0).abs() < 0.001);
 
         let outside_margin = Some((70.0, 20.0));
-        let near = interaction_frame(true, &[], outside_margin, &rects, HIT_MARGIN_PX, &cfg);
-        let faded = interaction_frame(false, &[], outside_margin, &rects, HIT_MARGIN_PX, &cfg);
-        assert_eq!(near, faded);
-        assert!(frame_of(&near, "a").opacity < 1.0);
+        let near = interaction_frame(false, &[], outside_margin, &rects, HIT_MARGIN_PX, &cfg);
+        assert!((frame_of(&near, "a").opacity - 0.18).abs() < 0.001);
         assert!(!frame_of(&near, "a").capture);
+        assert!((frame_of(&near, "center").opacity - 1.0).abs() < 0.001);
     }
 
     #[test]
-    fn modifier_solids_only_the_element_under_the_cursor() {
+    fn unheld_captures_the_element_under_the_cursor_and_modifier_washes_panels() {
         let rects = bots();
         let cfg = fade_cfg();
-        let over_a = interaction_frame(true, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
-        assert_eq!(frame_of(&over_a, "a").opacity, 1.0);
-        assert!(frame_of(&over_a, "a").capture);
-        assert!(frame_of(&over_a, "b").opacity < 1.0);
+        let over_a = interaction_frame(false, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!((frame_of(&over_a, "a").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&over_a, "a").capture);
+        assert!((frame_of(&over_a, "b").opacity - 0.18).abs() < 0.001);
         assert!(!frame_of(&over_a, "b").capture);
-        assert!(frame_of(&over_a, "center").opacity < 1.0);
+        assert_eq!(frame_of(&over_a, "center").opacity, 1.0);
         assert!(!frame_of(&over_a, "center").capture);
-        assert_eq!(over_a.iter().filter(|item| item.capture).count(), 1);
+        assert_eq!(over_a.iter().filter(|item| item.capture).count(), 0);
 
-        let over_b = interaction_frame(true, &[], Some((120.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
-        assert!(frame_of(&over_b, "a").opacity < 1.0);
-        assert!(!frame_of(&over_b, "a").capture);
-        assert_eq!(frame_of(&over_b, "b").opacity, 1.0);
-        assert!(frame_of(&over_b, "b").capture);
-        assert_eq!(over_b.iter().filter(|item| item.capture).count(), 1);
+        let held = interaction_frame(true, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&held, "a").capture);
+        assert_eq!(frame_of(&held, "a").opacity, 1.0);
+        assert!(!frame_of(&held, "b").capture);
+        assert!((frame_of(&held, "b").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&held, "center").capture);
+        assert!((frame_of(&held, "center").opacity - 0.18).abs() < 0.001);
 
         let over_center =
-            interaction_frame(true, &[], Some((40.0, 100.0)), &rects, HIT_MARGIN_PX, &cfg);
+            interaction_frame(false, &[], Some((40.0, 100.0)), &rects, HIT_MARGIN_PX, &cfg);
         assert_eq!(frame_of(&over_center, "center").opacity, 1.0);
         assert!(frame_of(&over_center, "center").capture);
         assert!(!frame_of(&over_center, "a").capture);
@@ -1206,7 +1745,7 @@ mod tests {
     }
 
     #[test]
-    fn latched_panel_stays_solid_and_captures_only_itself() {
+    fn panel_stays_opaque_when_the_cursor_is_on_another_element() {
         let rects = bots();
         let cfg = fade_cfg();
         let latched = vec!["center".to_string()];
@@ -1214,8 +1753,8 @@ mod tests {
         let away = interaction_frame(false, &latched, cursor_on_a, &rects, HIT_MARGIN_PX, &cfg);
         assert_eq!(frame_of(&away, "center").opacity, 1.0);
         assert!(!frame_of(&away, "center").capture);
-        assert!(frame_of(&away, "a").opacity < 1.0);
-        assert!(away.iter().all(|item| !item.capture));
+        assert!((frame_of(&away, "a").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&away, "a").capture);
 
         let over_center = interaction_frame(
             false,
@@ -1228,19 +1767,14 @@ mod tests {
         assert!(frame_of(&over_center, "center").capture);
         assert!(!frame_of(&over_center, "a").capture);
         assert!(!frame_of(&over_center, "b").capture);
+        assert_eq!(frame_of(&over_center, "center").opacity, 1.0);
     }
 
     #[test]
-    fn capture_follows_the_padded_rect_only_while_held() {
+    fn capture_follows_the_padded_rect_until_the_modifier_is_held() {
         let rects = [rect()];
         let cfg = fade_cfg();
-        let inside =
-            interaction_frame(true, &[], Some((110.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
-        let padded =
-            interaction_frame(true, &[], Some((152.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
-        let outside =
-            interaction_frame(true, &[], Some((170.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
-        let unheld = interaction_frame(
+        let inside = interaction_frame(
             false,
             &[],
             Some((110.0, 110.0)),
@@ -1248,12 +1782,29 @@ mod tests {
             HIT_MARGIN_PX,
             &cfg,
         );
-        let missing = interaction_frame(true, &[], None, &rects, HIT_MARGIN_PX, &cfg);
+        let padded = interaction_frame(
+            false,
+            &[],
+            Some((152.0, 110.0)),
+            &rects,
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        let outside = interaction_frame(
+            false,
+            &[],
+            Some((170.0, 110.0)),
+            &rects,
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        let held = interaction_frame(true, &[], Some((110.0, 110.0)), &rects, HIT_MARGIN_PX, &cfg);
+        let missing = interaction_frame(false, &[], None, &rects, HIT_MARGIN_PX, &cfg);
         assert!(inside[0].capture && inside[0].opacity == 1.0);
         assert!(padded[0].capture && padded[0].opacity == 1.0);
-        assert!(!outside[0].capture && outside[0].opacity < 1.0);
-        assert!(!unheld[0].capture && unheld[0].opacity < 1.0);
-        assert!(!missing[0].capture);
+        assert!(!outside[0].capture && (outside[0].opacity - 1.0).abs() < 0.001);
+        assert!(!held[0].capture && (held[0].opacity - 0.18).abs() < 0.001);
+        assert!(!missing[0].capture && missing[0].opacity == 1.0);
     }
 
     fn overlap_panels() -> Vec<HitRect> {
@@ -1301,9 +1852,14 @@ mod tests {
         assert!(frame_of(&only_settings, "settings").capture);
         assert!(!frame_of(&only_settings, "center").capture);
 
-        let by_z = interaction_frame(true, &[], strip, &rects, HIT_MARGIN_PX, &cfg);
+        let by_z = interaction_frame(false, &[], strip, &rects, HIT_MARGIN_PX, &cfg);
         assert!(frame_of(&by_z, "settings").capture);
         assert!(!frame_of(&by_z, "center").capture);
+        assert_eq!(frame_of(&by_z, "center").opacity, 1.0);
+
+        let passed = interaction_frame(true, &[], strip, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(passed.iter().all(|item| !item.capture));
+        assert!(passed.iter().all(|item| item.opacity < 1.0));
 
         let latched_center = interaction_frame(
             false,
@@ -1336,7 +1892,7 @@ mod tests {
         assert!(corner > HIT_MARGIN_PX);
 
         let inside = interaction_frame(
-            true,
+            false,
             &[],
             Some((50.0, 50.0)),
             &[orb.clone()],
@@ -1344,7 +1900,7 @@ mod tests {
             &cfg,
         );
         let padded = interaction_frame(
-            true,
+            false,
             &[],
             Some((110.0, 50.0)),
             &[orb.clone()],
@@ -1352,29 +1908,268 @@ mod tests {
             &cfg,
         );
         let bbox_corner = interaction_frame(
-            true,
+            false,
             &[],
             Some((100.0, 100.0)),
             &[orb.clone()],
             HIT_MARGIN_PX,
             &cfg,
         );
-        assert!(inside[0].capture);
-        assert!(padded[0].capture && padded[0].opacity == 1.0);
+        assert!(!inside[0].capture);
+        assert!((inside[0].opacity - 0.18).abs() < 0.001);
+        assert!(!padded[0].capture);
+        assert!((padded[0].opacity - 0.18).abs() < 0.001);
+        let held_orb = interaction_frame(
+            true,
+            &[],
+            Some((110.0, 50.0)),
+            &[orb.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(held_orb[0].capture && held_orb[0].opacity == 1.0);
         assert!(!bbox_corner[0].capture);
-        assert!(bbox_corner[0].opacity < 1.0);
+        assert!((bbox_corner[0].opacity - 0.18).abs() < 0.001);
 
         let mut square = orb;
         square.round = false;
         let square_corner = interaction_frame(
-            true,
+            false,
             &[],
             Some((100.0, 100.0)),
+            &[square.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(square_corner[0].capture && square_corner[0].opacity == 1.0);
+        let held_panel = interaction_frame(
+            true,
+            &[],
+            Some((50.0, 50.0)),
             &[square],
             HIT_MARGIN_PX,
             &cfg,
         );
-        assert!(square_corner[0].capture);
+        assert!(!held_panel[0].capture);
+        assert!((held_panel[0].opacity - 0.18).abs() < 0.001);
+    }
+
+    #[test]
+    fn settings_and_kanban_orbs_stay_faded_until_the_modifier_is_held() {
+        let cfg = fade_cfg();
+        let rects = vec![
+            HitRect {
+                id: "bot:settings".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 40.0,
+                z: 0,
+                round: true,
+            },
+            HitRect {
+                id: "bot:kanban".into(),
+                x: 80.0,
+                y: 0.0,
+                w: 40.0,
+                h: 40.0,
+                z: 0,
+                round: true,
+            },
+        ];
+        let idle = interaction_frame(false, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(is_orb_hit(&rects[0]) && is_orb_hit(&rects[1]));
+        assert!(!frame_of(&idle, "bot:settings").capture);
+        assert!((frame_of(&idle, "bot:settings").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&idle, "bot:kanban").capture);
+        let held = interaction_frame(true, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&held, "bot:settings").capture);
+        assert_eq!(frame_of(&held, "bot:settings").opacity, 1.0);
+        assert!(!frame_of(&held, "bot:kanban").capture);
+        assert!((frame_of(&held, "bot:kanban").opacity - 0.18).abs() < 0.001);
+    }
+
+    #[test]
+    fn preview_pill_stays_solid_until_the_modifier_is_held() {
+        let cfg = fade_cfg();
+        let rects = vec![
+            HitRect {
+                id: "pill:a".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 320.0,
+                h: 44.0,
+                z: 40,
+                round: false,
+            },
+            HitRect {
+                id: "panel:a".into(),
+                x: 0.0,
+                y: 80.0,
+                w: 420.0,
+                h: 560.0,
+                z: 4,
+                round: false,
+            },
+        ];
+        assert!(is_pill_hit(&rects[0]));
+        assert!(!is_orb_hit(&rects[0]));
+        assert!(!is_panel_hit(&rects[0]));
+        let idle = interaction_frame(false, &[], Some((40.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(frame_of(&idle, "pill:a").opacity, 1.0);
+        assert!(!frame_of(&idle, "pill:a").capture);
+        assert_eq!(frame_of(&idle, "panel:a").opacity, 1.0);
+        let held = interaction_frame(true, &[], Some((40.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(frame_of(&held, "pill:a").opacity, 1.0);
+        assert!(frame_of(&held, "pill:a").capture);
+        assert!((frame_of(&held, "panel:a").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&held, "panel:a").capture);
+    }
+
+    #[test]
+    fn close_button_captures_while_the_modifier_is_held() {
+        let cfg = fade_cfg();
+        let rects = vec![
+            HitRect {
+                id: "panel:a".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 420.0,
+                h: 560.0,
+                z: 4,
+                round: false,
+            },
+            HitRect {
+                id: "close:a".into(),
+                x: 300.0,
+                y: 8.0,
+                w: 100.0,
+                h: 80.0,
+                z: 44,
+                round: false,
+            },
+        ];
+        assert!(is_close_hit(&rects[1]));
+        assert!(!is_panel_hit(&rects[1]));
+        assert!(!is_orb_hit(&rects[1]));
+        let over = Some((340.0, 40.0));
+        let held = interaction_frame(true, &[], over, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&held, "close:a").capture);
+        assert_eq!(frame_of(&held, "close:a").opacity, 1.0);
+        assert!(!frame_of(&held, "panel:a").capture);
+        assert!((frame_of(&held, "panel:a").opacity - 0.18).abs() < 0.001);
+        let idle = interaction_frame(false, &[], over, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&idle, "close:a").capture);
+        assert!(!frame_of(&idle, "panel:a").capture);
+        let away = interaction_frame(true, &[], Some((20.0, 200.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(!frame_of(&away, "close:a").capture);
+        assert!(!frame_of(&away, "panel:a").capture);
+    }
+
+    #[test]
+    fn open_panel_is_hit_testable_before_the_cursor_arrives() {
+        let cfg = fade_cfg();
+        let rects = vec![
+            HitRect {
+                id: "bot:a".into(),
+                x: 0.0,
+                y: 700.0,
+                w: 44.0,
+                h: 44.0,
+                z: 1,
+                round: true,
+            },
+            HitRect {
+                id: "panel:a".into(),
+                x: 80.0,
+                y: 40.0,
+                w: 420.0,
+                h: 560.0,
+                z: 4,
+                round: false,
+            },
+            HitRect {
+                id: "close:a".into(),
+                x: 460.0,
+                y: 20.0,
+                w: 80.0,
+                h: 80.0,
+                z: 44,
+                round: false,
+            },
+        ];
+        let far = interaction_frame(false, &[], Some((900.0, 900.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(!frame_of(&far, "panel:a").capture);
+        let region = os_input_rects(false, &rects, &far);
+        assert!(css_point_hits(&region, 100.0, 80.0));
+        assert!(css_point_hits(&region, 470.0, 40.0));
+        assert!(!css_point_hits(&region, 10.0, 710.0));
+        assert!(!css_point_hits(&region, 900.0, 900.0));
+        assert!(!region.iter().any(|rect| rect.id == "bot:a"));
+        let held_far = interaction_frame(true, &[], Some((900.0, 900.0)), &rects, HIT_MARGIN_PX, &cfg);
+        let passed = os_input_rects(true, &rects, &held_far);
+        assert!(!css_point_hits(&passed, 100.0, 80.0));
+        assert!(css_point_hits(&passed, 470.0, 40.0));
+        assert!(!passed.iter().any(|rect| rect.id == "bot:a"));
+        let over_orb = interaction_frame(true, &[], Some((10.0, 710.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&over_orb, "bot:a").capture);
+        let armed = os_input_rects(true, &rects, &over_orb);
+        assert!(armed.iter().any(|rect| rect.id == "bot:a"));
+        assert!(css_point_hits(&armed, 10.0, 710.0));
+        assert!(!css_point_hits(&armed, 100.0, 80.0));
+    }
+
+    #[test]
+    fn ctrl_c_and_ctrl_v_do_not_engage_the_modifier() {
+        let mut armed = None;
+        let mut suppressed = false;
+        let now = Instant::now();
+        let copy = [Keycode::LControl, Keycode::C];
+        assert!(!modifier_engages(
+            &copy,
+            "ctrl",
+            now,
+            &mut armed,
+            &mut suppressed
+        ));
+        assert!(suppressed);
+        let tail = [Keycode::LControl];
+        assert!(!modifier_engages(
+            &tail,
+            "ctrl",
+            now + Duration::from_millis(300),
+            &mut armed,
+            &mut suppressed
+        ));
+        assert!(suppressed);
+        assert!(!modifier_engages(
+            &[],
+            "ctrl",
+            now + Duration::from_millis(400),
+            &mut armed,
+            &mut suppressed
+        ));
+        assert!(!suppressed);
+
+        let early = modifier_engages(&tail, "ctrl", now, &mut armed, &mut suppressed);
+        assert!(!early);
+        let armed_now = modifier_engages(
+            &tail,
+            "ctrl",
+            now + MODIFIER_ARM,
+            &mut armed,
+            &mut suppressed,
+        );
+        assert!(armed_now);
+        let paste = [Keycode::RControl, Keycode::V];
+        assert!(!modifier_engages(
+            &paste,
+            "ctrl",
+            now,
+            &mut armed,
+            &mut suppressed
+        ));
+        assert!(suppressed);
     }
 
     #[test]

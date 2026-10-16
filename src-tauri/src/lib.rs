@@ -103,10 +103,24 @@ struct CommandCacheEntry {
     commands: Vec<hermes::OverlayCommand>,
 }
 
+#[derive(Clone)]
+struct SessionPin {
+    id: String,
+    explicit: bool,
+    anchor: f64,
+}
+
+struct WatchedChat {
+    session_id: String,
+    messages: Vec<hermes::UiMessage>,
+}
+
 struct AppState {
     http: reqwest::Client,
     stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    sessions: Arc<Mutex<HashMap<String, String>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionPin>>>,
+    /// Last Bot Chat transcript seen by the cron poll. Locked only after HTTP awaits.
+    bot_chats: Arc<Mutex<HashMap<String, WatchedChat>>>,
     config_write: Arc<Mutex<()>>,
     command_cache: Mutex<HashMap<String, CommandCacheEntry>>,
     interaction: Arc<interaction::InteractionHub>,
@@ -140,6 +154,7 @@ struct PublicBot {
     base_url: String,
     detail: String,
     has_key: bool,
+    enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -164,6 +179,15 @@ struct PublicSettings {
 }
 
 #[derive(Deserialize)]
+struct SaveBotMeta {
+    profile: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    detail: String,
+}
+
+#[derive(Deserialize)]
 struct SaveBot {
     profile: String,
     #[serde(default)]
@@ -178,6 +202,12 @@ struct SaveBot {
     key: String,
     #[serde(default)]
     clear_key: bool,
+    #[serde(default = "default_bot_enabled")]
+    enabled: bool,
+}
+
+fn default_bot_enabled() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -222,7 +252,19 @@ struct ProbeReport {
 struct OpenedChat {
     profile: String,
     session_id: String,
+    session_explicit: bool,
+    session_anchor: f64,
     messages: Vec<hermes::UiMessage>,
+    sessions: Vec<SessionChoice>,
+}
+
+#[derive(Serialize)]
+struct SessionChoice {
+    id: String,
+    title: String,
+    last_active: f64,
+    hidden: bool,
+    preview: String,
 }
 
 #[derive(Serialize)]
@@ -246,6 +288,8 @@ fn bot_or_err<'a>(cfg: &'a AppConfig, profile: &str) -> Result<&'a BotConfig, St
         .ok_or_else(|| format!("名單冇 profile「{profile}」"))
 }
 
+/// Keyring reads time out off this thread. Sync commands must not call this:
+/// Tauri runs those on the GTK thread.
 fn profile_key(profile: &str) -> Result<String, String> {
     match secrets::get_profile_key(profile)? {
         Lookup::Value(key) if !key.trim().is_empty() => Ok(key),
@@ -253,42 +297,186 @@ fn profile_key(profile: &str) -> Result<String, String> {
     }
 }
 
-fn session_map(state: &AppState) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
+struct WatchHit {
+    session_id: String,
+    messages: Vec<hermes::UiMessage>,
+}
+
+struct WatchBusy(Arc<AtomicBool>);
+
+impl Drop for WatchBusy {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Poll each enabled profile's Bot Chat. The snapshot lock is taken only after
+/// the HTTP awaits, because a `MutexGuard` is not `Send`.
+fn spawn_bot_chat_watch(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("bot-chat-watch".into())
+        .spawn(move || {
+            let busy = Arc::new(AtomicBool::new(false));
+            loop {
+                if !busy.swap(true, Ordering::AcqRel) {
+                    let app = app.clone();
+                    let busy = Arc::clone(&busy);
+                    tauri::async_runtime::spawn(async move {
+                        let _guard = WatchBusy(busy);
+                        poll_bot_chats(&app).await;
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_secs(3));
+            }
+        })
+        .ok();
+}
+
+async fn poll_bot_chats(app: &AppHandle) {
+    let cfg = match load_config(app) {
+        Ok(cfg) if cfg.mode() == "hermes" => cfg,
+        _ => return,
+    };
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let http = state.http.clone();
+    let watched = Arc::clone(&state.bot_chats);
+    drop(state);
+    let targets: Vec<(String, String, String)> = cfg
+        .bots
+        .iter()
+        .filter(|bot| bot.enabled)
+        .filter_map(|bot| {
+            let key = profile_key(&bot.profile).ok()?;
+            let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+            Some((bot.profile.clone(), root, key))
+        })
+        .collect();
+    for (profile, root, key) in targets {
+        let Ok(hit) = watch_profile(&http, &watched, &profile, &root, &key).await else {
+            continue;
+        };
+        if hit.messages.is_empty() {
+            continue;
+        }
+        emit(
+            app,
+            serde_json::json!({
+                "type": "cron",
+                "profile": profile,
+                "session_id": hit.session_id,
+                "messages": hit.messages,
+            }),
+        );
+    }
+}
+
+async fn watch_profile(
+    http: &reqwest::Client,
+    watched: &Arc<Mutex<HashMap<String, WatchedChat>>>,
+    profile: &str,
+    root: &str,
+    key: &str,
+) -> Result<WatchHit, HermesError> {
+    let sessions = hermes::list_sessions(http, root, key).await?;
+    let session_id = if let Some(session) = hermes::most_recent_bot_chat(&sessions) {
+        session.id.clone()
+    } else {
+        match hermes::create_bot_chat(http, root, key).await {
+            Ok(id) => id,
+            Err(_) => {
+                return Ok(WatchHit {
+                    session_id: String::new(),
+                    messages: Vec::new(),
+                })
+            }
+        }
+    };
+    let messages = hermes::fetch_messages(http, root, key, &session_id).await?;
+    let fresh = {
+        let mut guard = watched.lock().unwrap_or_else(|err| err.into_inner());
+        let fresh = match guard.get(profile) {
+            Some(prev) if prev.session_id == session_id => {
+                match hermes::fresh_messages(&prev.messages, &messages) {
+                    Some(suffix) => suffix.to_vec(),
+                    None => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        };
+        guard.insert(
+            profile.to_string(),
+            WatchedChat {
+                session_id: session_id.clone(),
+                messages,
+            },
+        );
+        fresh
+    };
+    Ok(WatchHit {
+        session_id,
+        messages: fresh,
+    })
+}
+
+fn session_map(state: &AppState) -> std::sync::MutexGuard<'_, HashMap<String, SessionPin>> {
     state.sessions.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 fn cached_session(state: &AppState, profile: &str) -> Option<String> {
-    session_map(state).get(profile).cloned()
+    session_map(state)
+        .get(profile)
+        .map(|pin| pin.id.clone())
+        .filter(|id| !id.is_empty())
 }
 
-fn remember_session(app: &AppHandle, state: &AppState, profile: &str, id: &str) {
-    persist_session(app, &state.sessions, &state.config_write, profile, id);
+fn load_pin(app: &AppHandle, state: &AppState, profile: &str) -> SessionPin {
+    if let Some(pin) = session_map(state).get(profile).cloned() {
+        return pin;
+    }
+    let cfg = load_config(app).ok();
+    let bot = cfg.as_ref().and_then(|cfg| cfg.bot(profile));
+    SessionPin {
+        id: bot.map(|bot| bot.session_id.clone()).unwrap_or_default(),
+        explicit: bot.map(|bot| bot.session_explicit).unwrap_or(false),
+        anchor: bot.map(|bot| bot.session_anchor).unwrap_or(0.0),
+    }
+}
+
+fn remember_pin(app: &AppHandle, state: &AppState, profile: &str, pin: SessionPin) {
+    persist_pin(app, &state.sessions, &state.config_write, profile, pin);
 }
 
 fn active_session(app: &AppHandle, state: &AppState, profile: &str) -> Option<String> {
-    let stored = load_config(app)
-        .ok()
-        .and_then(|cfg| cfg.bot(profile).map(|bot| bot.session_id.clone()))
-        .unwrap_or_default();
-    let memory = cached_session(state, profile);
-    config::preferred_session(memory.as_deref(), &stored).map(str::to_string)
+    let pin = load_pin(app, state, profile);
+    if pin.id.trim().is_empty() {
+        None
+    } else {
+        Some(pin.id)
+    }
 }
 
-fn persist_session(
+fn persist_pin(
     app: &AppHandle,
-    sessions: &Mutex<HashMap<String, String>>,
+    sessions: &Mutex<HashMap<String, SessionPin>>,
     config_write: &Mutex<()>,
     profile: &str,
-    id: &str,
+    pin: SessionPin,
 ) {
     let _write = config_write.lock().unwrap_or_else(|err| err.into_inner());
-    let id = id.trim();
+    let id = pin.id.trim().to_string();
+    let pin = SessionPin {
+        explicit: pin.explicit && !id.is_empty(),
+        anchor: if id.is_empty() { 0.0 } else { pin.anchor },
+        id,
+    };
     {
         let mut map = sessions.lock().unwrap_or_else(|err| err.into_inner());
-        if id.is_empty() {
+        if pin.id.is_empty() {
             map.remove(profile);
         } else {
-            map.insert(profile.to_string(), id.to_string());
+            map.insert(profile.to_string(), pin.clone());
         }
     }
     let Ok(path) = config_path(app) else {
@@ -300,11 +488,49 @@ fn persist_session(
     let Some(bot) = cfg.bot_mut(profile) else {
         return;
     };
-    if bot.session_id == id {
+    if bot.session_id == pin.id
+        && bot.session_explicit == pin.explicit
+        && bot.session_anchor == pin.anchor
+    {
         return;
     }
-    bot.session_id = id.to_string();
+    bot.session_id = pin.id;
+    bot.session_explicit = pin.explicit;
+    bot.session_anchor = pin.anchor;
     let _ = config::save(&path, &cfg);
+}
+
+fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<SessionChoice> {
+    let mut rows: Vec<SessionChoice> = hermes::session_menu_order(sessions)
+        .into_iter()
+        .map(|session| SessionChoice {
+            title: {
+                let title = session.title.trim();
+                if title.is_empty() {
+                    session.id.clone()
+                } else {
+                    title.to_string()
+                }
+            },
+            id: session.id.clone(),
+            last_active: session.last_active,
+            hidden: session.hidden.unwrap_or(false),
+            preview: session.preview.clone(),
+        })
+        .collect();
+    if !active.is_empty() && !rows.iter().any(|row| row.id == active) {
+        rows.insert(
+            0,
+            SessionChoice {
+                id: active.to_string(),
+                title: config::BOT_CHAT_TITLE.to_string(),
+                last_active: 0.0,
+                hidden: false,
+                preview: String::new(),
+            },
+        );
+    }
+    rows
 }
 
 fn replace_stop(state: &AppState, profile: &str) -> Arc<AtomicBool> {
@@ -332,8 +558,82 @@ fn emit_status(app: &AppHandle, profile: &str, state_name: &str, detail: &str) {
     );
 }
 
+fn hermes_home_dir() -> std::path::PathBuf {
+    if let Ok(value) = std::env::var("HERMES_HOME") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return std::path::PathBuf::from(trimmed);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home).join(".hermes")
+}
+
 #[tauri::command]
-fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
+fn read_soul(profile: String) -> Result<String, String> {
+    let path = config::soul_path(profile.trim(), &hermes_home_dir())?;
+    if !path.is_file() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(&path).map_err(|err| format!("讀唔到 SOUL.md：{err}"))
+}
+
+#[tauri::command]
+fn write_soul(profile: String, text: String) -> Result<(), String> {
+    let path = config::soul_path(profile.trim(), &hermes_home_dir())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("開唔到 SOUL 目錄：{err}"))?;
+    }
+    std::fs::write(&path, text).map_err(|err| format!("寫唔到 SOUL.md：{err}"))
+}
+
+#[tauri::command]
+async fn save_bot_meta(app: AppHandle, input: SaveBotMeta) -> Result<PublicBot, String> {
+    tauri::async_runtime::spawn_blocking(move || save_bot_meta_sync(app, input))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn save_bot_meta_sync(app: AppHandle, input: SaveBotMeta) -> Result<PublicBot, String> {
+    let profile = input.profile.trim().to_string();
+    config::validate_profile(&profile)?;
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    let mut cfg = config::load(&path)?;
+    let bot = cfg
+        .bot_mut(&profile)
+        .ok_or_else(|| format!("名單冇 profile「{profile}」"))?;
+    let name = input.display_name.trim();
+    bot.display_name = if name.is_empty() {
+        profile.clone()
+    } else {
+        name.to_string()
+    };
+    bot.detail = input.detail.trim().to_string();
+    let has_key = match secrets::get_profile_key(&profile) {
+        Ok(Lookup::Value(key)) => !key.trim().is_empty(),
+        _ => false,
+    };
+    let saved = PublicBot {
+        profile: bot.profile.clone(),
+        display_name: bot.display_name.clone(),
+        color: bot.color.clone(),
+        base_url: bot.base_url.clone(),
+        detail: bot.detail.clone(),
+        has_key,
+        enabled: bot.enabled,
+    };
+    config::save(&path, &cfg)?;
+    Ok(saved)
+}
+
+fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
     let path = config_path(&app)?;
     let needs_setup = !path.exists();
     let cfg = config::load(&path)?;
@@ -362,6 +662,7 @@ fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
             base_url: bot.base_url.clone(),
             detail: bot.detail.clone(),
             has_key,
+            enabled: bot.enabled,
         });
     }
     let has_dashboard_token = match secrets::get_dashboard_token() {
@@ -394,8 +695,23 @@ fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
     })
 }
 
+/// The IPC handler runs on the GTK thread. A locked keyring read has to stay
+/// on the blocking pool so the main loop can still draw orbs and exit.
 #[tauri::command]
-fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, String> {
+async fn get_settings(app: AppHandle) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || load_public_settings(app))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+#[tauri::command]
+async fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || save_settings_sync(app, input))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, String> {
     let state = app.try_state::<AppState>();
     let _config_write = state.as_ref().map(|state| {
         state
@@ -435,14 +751,20 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
             }
         };
         let base_url = config::normalize_http_base(&bot.base_url, true)?;
-        let previous_id = previous
-            .bot(&profile)
-            .map(|bot| bot.session_id.as_str())
-            .unwrap_or("");
-        let session_id = config::session_to_keep(
-            memory_sessions.get(&profile).map(String::as_str),
-            previous_id,
-        );
+        let previous_bot = previous.bot(&profile);
+        let previous_id = previous_bot
+            .map(|bot| bot.session_id.clone())
+            .unwrap_or_default();
+        let pin = memory_sessions.get(&profile);
+        let session_id = config::session_to_keep(pin.map(|pin| pin.id.as_str()), &previous_id);
+        let session_explicit = pin.map(|pin| pin.explicit).unwrap_or_else(|| {
+            previous_bot
+                .map(|bot| bot.session_explicit)
+                .unwrap_or(false)
+        });
+        let session_anchor = pin
+            .map(|pin| pin.anchor)
+            .unwrap_or_else(|| previous_bot.map(|bot| bot.session_anchor).unwrap_or(0.0));
         bots.push(BotConfig {
             color: config::normalize_color(&bot.color, &profile),
             detail: bot.detail.trim().to_string(),
@@ -450,6 +772,9 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
             display_name,
             base_url,
             session_id,
+            session_explicit,
+            session_anchor,
+            enabled: bot.enabled,
         });
     }
 
@@ -497,7 +822,14 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
         for bot in &cfg.bots {
             let id = bot.session_id.trim();
             if !id.is_empty() {
-                map.insert(bot.profile.clone(), id.to_string());
+                map.insert(
+                    bot.profile.clone(),
+                    SessionPin {
+                        id: id.to_string(),
+                        explicit: bot.session_explicit,
+                        anchor: bot.session_anchor,
+                    },
+                );
             }
         }
         drop(map);
@@ -509,7 +841,7 @@ fn save_settings(app: AppHandle, input: SaveSettings) -> Result<PublicSettings, 
     }
     drop(_config_write);
     drop(state);
-    get_settings(app)
+    load_public_settings(app)
 }
 
 #[tauri::command]
@@ -595,13 +927,111 @@ async fn discover_profiles(
         .filter_map(|item| {
             config::validate_profile(&item.profile).ok()?;
             Some(DiscoveredBot {
-                color: config::color_for(&item.profile),
+                color: config::parse_hermes_color(&item.color)
+                    .unwrap_or_else(|| config::color_for(&item.profile)),
                 profile: item.profile,
                 display_name: item.display_name,
                 detail: item.detail,
             })
         })
         .collect())
+}
+
+#[tauri::command]
+async fn sync_profiles(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PublicSettings, String> {
+    let initial = load_config(&app)?;
+    if initial.mode() != "hermes" {
+        return load_public_settings(app);
+    }
+    let gateway = initial.gateway_base_url.clone();
+    let dashboard = initial.dashboard_base_url.clone();
+    // Discover outside the write lock. std::sync::MutexGuard is not Send,
+    // so holding it across these awaits makes the command future unsendable.
+    let mut hints = Vec::new();
+    for item in hermes::profiles_from_gateway_health(&state.http, &gateway).await {
+        hints.push(config::ProfileHint {
+            profile: item.profile,
+            display_name: item.display_name,
+            detail: item.detail,
+            color: item.color,
+        });
+    }
+    let token = match secrets::get_dashboard_token() {
+        Ok(Lookup::Value(value)) if !value.trim().is_empty() => Some(value),
+        _ => None,
+    };
+    if let Some(token) = token.as_deref() {
+        if let Ok(found) = hermes::list_dashboard_profiles_timeout(
+            &state.http,
+            &dashboard,
+            Some(token),
+            std::time::Duration::from_secs(4),
+        )
+        .await
+        {
+            for item in found {
+                hints.push(config::ProfileHint {
+                    profile: item.profile,
+                    display_name: item.display_name,
+                    detail: item.detail,
+                    color: item.color,
+                });
+            }
+        }
+    }
+    hints.extend(config::local_hermes_profiles(&hermes_home_dir()));
+
+    let guard = state
+        .config_write
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let path = config_path(&app)?;
+    let mut cfg = config::load(&path)?;
+    if cfg.mode() == "hermes" {
+        let before = cfg.bots.clone();
+        config::merge_discovered_profiles(&mut cfg.bots, &hints);
+        if cfg.bots != before {
+            config::save(&path, &cfg)?;
+        }
+    }
+    drop(guard);
+    load_public_settings(app)
+}
+
+#[tauri::command]
+async fn set_profile_enabled(
+    app: AppHandle,
+    profile: String,
+    enabled: bool,
+) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || set_profile_enabled_sync(app, profile, enabled))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn set_profile_enabled_sync(
+    app: AppHandle,
+    profile: String,
+    enabled: bool,
+) -> Result<PublicSettings, String> {
+    let profile = profile.trim().to_string();
+    config::validate_profile(&profile)?;
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    let mut cfg = config::load(&path)?;
+    config::set_bot_enabled(&mut cfg.bots, &profile, enabled)?;
+    config::save(&path, &cfg)?;
+    drop(_guard);
+    load_public_settings(app)
 }
 
 #[tauri::command]
@@ -616,29 +1046,57 @@ async fn open_bot(
     let key = profile_key(&profile)?;
     let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
     emit_status(&app, &profile, "busy", "載入對話…");
-    let cached = active_session(&app, &state, &profile);
+    let pin = load_pin(&app, &state, &profile);
     let result = async {
-        if let Some(session_id) = cached {
-            match hermes::fetch_messages(&state.http, &root, &key, &session_id).await {
-                Ok(messages) => return Ok((session_id, messages)),
-                Err(HermesError::Http { status: 404, .. }) => {
-                    persist_session(&app, &state.sessions, &state.config_write, &profile, "");
+        let mut sessions = hermes::list_sessions(&state.http, &root, &key).await?;
+        let resolved = hermes::resolve_session(&sessions, &pin.id, pin.explicit, pin.anchor);
+        let has_bot_chat = sessions
+            .iter()
+            .any(|session| hermes::is_bot_chat_title(&session.title));
+        let (session_id, explicit, anchor) = if let Some(resolved) = resolved {
+            if resolved.explicit || has_bot_chat {
+                (resolved.id, resolved.explicit, resolved.anchor)
+            } else {
+                match hermes::create_bot_chat(&state.http, &root, &key).await {
+                    Ok(id) => {
+                        if let Ok(fresh) = hermes::list_sessions(&state.http, &root, &key).await {
+                            sessions = fresh;
+                        }
+                        (id, false, 0.0)
+                    }
+                    Err(_) => (resolved.id, false, resolved.anchor),
                 }
-                Err(err) => return Err(err),
             }
-        }
-        let session_id = hermes::ensure_bot_chat(&state.http, &root, &key).await?;
+        } else {
+            let id = hermes::create_bot_chat(&state.http, &root, &key).await?;
+            if let Ok(fresh) = hermes::list_sessions(&state.http, &root, &key).await {
+                sessions = fresh;
+            }
+            (id, false, 0.0)
+        };
         let messages = hermes::fetch_messages(&state.http, &root, &key, &session_id).await?;
-        Ok::<_, HermesError>((session_id, messages))
+        Ok::<_, HermesError>((session_id, explicit, anchor, messages, sessions))
     }
     .await;
     match result {
-        Ok((session_id, messages)) => {
-            remember_session(&app, &state, &profile, &session_id);
+        Ok((session_id, explicit, anchor, messages, sessions)) => {
+            remember_pin(
+                &app,
+                &state,
+                &profile,
+                SessionPin {
+                    id: session_id.clone(),
+                    explicit,
+                    anchor,
+                },
+            );
             emit_status(&app, &profile, "idle", "閒置");
             Ok(OpenedChat {
+                sessions: session_choices(&sessions, &session_id),
                 profile,
                 session_id,
+                session_explicit: explicit,
+                session_anchor: anchor,
                 messages,
             })
         }
@@ -648,6 +1106,54 @@ async fn open_bot(
             Err(message)
         }
     }
+}
+
+#[tauri::command]
+async fn select_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    session_id: String,
+) -> Result<OpenedChat, String> {
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("未揀對話".into());
+    }
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?;
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let sessions = hermes::list_sessions(&state.http, &root, &key)
+        .await
+        .map_err(|err| explain(&err))?;
+    if !sessions.iter().any(|session| session.id == session_id) {
+        return Err("搵唔到呢個對話".into());
+    }
+    let anchor = hermes::most_recent_session(&sessions)
+        .map(|session| session.last_active)
+        .unwrap_or(0.0);
+    let messages = hermes::fetch_messages(&state.http, &root, &key, &session_id)
+        .await
+        .map_err(|err| explain(&err))?;
+    remember_pin(
+        &app,
+        &state,
+        &profile,
+        SessionPin {
+            id: session_id.clone(),
+            explicit: true,
+            anchor,
+        },
+    );
+    Ok(OpenedChat {
+        sessions: session_choices(&sessions, &session_id),
+        profile,
+        session_id,
+        session_explicit: true,
+        session_anchor: anchor,
+        messages,
+    })
 }
 
 #[tauri::command]
@@ -670,7 +1176,12 @@ async fn send_chat(
     let http = state.http.clone();
     let session_cache = Arc::clone(&state.sessions);
     let config_write = Arc::clone(&state.config_write);
-    let cached = active_session(&app, &state, &profile);
+    let pin = load_pin(&app, &state, &profile);
+    let cached = if pin.explicit && !pin.id.trim().is_empty() {
+        Some(pin.id)
+    } else {
+        None
+    };
     emit_status(&app, &profile, "busy", "思考中…");
 
     tauri::async_runtime::spawn(async move {
@@ -679,7 +1190,17 @@ async fn send_chat(
                 id
             } else {
                 let id = hermes::ensure_bot_chat(&http, &root, &key).await?;
-                persist_session(&app, &session_cache, &config_write, &profile, &id);
+                persist_pin(
+                    &app,
+                    &session_cache,
+                    &config_write,
+                    &profile,
+                    SessionPin {
+                        id: id.clone(),
+                        explicit: false,
+                        anchor: 0.0,
+                    },
+                );
                 id
             };
             let first =
@@ -688,9 +1209,29 @@ async fn send_chat(
                 })
                 .await;
             if matches!(first, Err(HermesError::Http { status: 404, .. })) {
-                persist_session(&app, &session_cache, &config_write, &profile, "");
+                persist_pin(
+                    &app,
+                    &session_cache,
+                    &config_write,
+                    &profile,
+                    SessionPin {
+                        id: String::new(),
+                        explicit: false,
+                        anchor: 0.0,
+                    },
+                );
                 session_id = hermes::ensure_bot_chat(&http, &root, &key).await?;
-                persist_session(&app, &session_cache, &config_write, &profile, &session_id);
+                persist_pin(
+                    &app,
+                    &session_cache,
+                    &config_write,
+                    &profile,
+                    SessionPin {
+                        id: session_id.clone(),
+                        explicit: false,
+                        anchor: 0.0,
+                    },
+                );
                 hermes::stream_turn(&http, &root, &key, &session_id, &text, &stop, |event| {
                     dispatch_turn(&app, &profile, event)
                 })
@@ -990,6 +1531,72 @@ async fn patch_kanban_task(
         .map_err(|err| hermes::kanban_move_error(&err))
 }
 
+#[derive(Serialize)]
+struct CronProfileOut {
+    profile: String,
+    name: String,
+    jobs: Vec<hermes::CronJob>,
+    unavailable: bool,
+    message: String,
+}
+
+#[tauri::command]
+async fn list_cron_jobs(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<CronProfileOut>, String> {
+    let cfg = load_config(&app)?;
+    if cfg.mode() != "hermes" {
+        return Ok(Vec::new());
+    }
+    let gateway = cfg.gateway_base_url.clone();
+    let bots: Vec<BotConfig> = cfg
+        .bots
+        .iter()
+        .filter(|bot| bot.enabled)
+        .cloned()
+        .collect();
+    let mut out = Vec::new();
+    for bot in bots {
+        let name = if bot.display_name.trim().is_empty() {
+            bot.profile.clone()
+        } else {
+            bot.display_name.clone()
+        };
+        let key = match profile_key(&bot.profile) {
+            Ok(key) => key,
+            Err(err) => {
+                out.push(CronProfileOut {
+                    profile: bot.profile,
+                    name,
+                    jobs: Vec::new(),
+                    unavailable: true,
+                    message: err,
+                });
+                continue;
+            }
+        };
+        let root = hermes::route_root(&gateway, &bot.profile, &bot.base_url);
+        match hermes::fetch_cron_jobs(&state.http, &root, &key).await {
+            Ok(list) => out.push(CronProfileOut {
+                profile: bot.profile,
+                name,
+                jobs: list.jobs,
+                unavailable: list.unavailable,
+                message: list.message,
+            }),
+            Err(err) => out.push(CronProfileOut {
+                profile: bot.profile,
+                name,
+                jobs: Vec::new(),
+                unavailable: true,
+                message: explain(&err),
+            }),
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Deserialize)]
 struct ClientCommandIn {
     profile: String,
@@ -1049,7 +1656,7 @@ async fn client_command(
             let session_id = hermes::create_session(&state.http, &root, &key, title)
                 .await
                 .map_err(|err| explain(&err))?;
-            remember_session(&app, &state, &input.profile, &session_id);
+            pin_explicit(&app, &state, &input.profile, &root, &key, &session_id).await;
             Ok(ClientCommandOut {
                 command,
                 notice: format!("新 session {session_id}"),
@@ -1102,7 +1709,7 @@ async fn client_command(
                 }
                 Err(err) => return Err(explain(&err)),
             };
-            remember_session(&app, &state, &input.profile, &forked);
+            pin_explicit(&app, &state, &input.profile, &root, &key, &forked).await;
             Ok(ClientCommandOut {
                 command,
                 notice: format!("已分支做 {forked}"),
@@ -1182,14 +1789,51 @@ async fn session_for_client(
     root: &str,
     key: &str,
 ) -> Result<String, String> {
-    if let Some(id) = active_session(app, state, profile) {
-        return Ok(id);
+    let pin = load_pin(app, state, profile);
+    if pin.explicit && !pin.id.trim().is_empty() {
+        return Ok(pin.id);
     }
     let id = hermes::ensure_bot_chat(&state.http, root, key)
         .await
         .map_err(|err| explain(&err))?;
-    remember_session(app, state, profile, &id);
+    remember_pin(
+        app,
+        state,
+        profile,
+        SessionPin {
+            id: id.clone(),
+            explicit: false,
+            anchor: 0.0,
+        },
+    );
     Ok(id)
+}
+
+async fn pin_explicit(
+    app: &AppHandle,
+    state: &AppState,
+    profile: &str,
+    root: &str,
+    key: &str,
+    id: &str,
+) {
+    let anchor = hermes::list_sessions(&state.http, root, key)
+        .await
+        .ok()
+        .and_then(|sessions| {
+            hermes::most_recent_session(&sessions).map(|session| session.last_active)
+        })
+        .unwrap_or(0.0);
+    remember_pin(
+        app,
+        state,
+        profile,
+        SessionPin {
+            id: id.to_string(),
+            explicit: true,
+            anchor,
+        },
+    );
 }
 
 async fn replace_missing_session(
@@ -1199,11 +1843,30 @@ async fn replace_missing_session(
     root: &str,
     key: &str,
 ) -> Result<String, String> {
-    persist_session(app, &state.sessions, &state.config_write, profile, "");
+    persist_pin(
+        app,
+        &state.sessions,
+        &state.config_write,
+        profile,
+        SessionPin {
+            id: String::new(),
+            explicit: false,
+            anchor: 0.0,
+        },
+    );
     let id = hermes::ensure_bot_chat(&state.http, root, key)
         .await
         .map_err(|err| explain(&err))?;
-    remember_session(app, state, profile, &id);
+    remember_pin(
+        app,
+        state,
+        profile,
+        SessionPin {
+            id: id.clone(),
+            explicit: false,
+            anchor: 0.0,
+        },
+    );
     Ok(id)
 }
 
@@ -1229,6 +1892,7 @@ pub fn run() {
             http: http_client(),
             stops: Mutex::new(HashMap::new()),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            bot_chats: Arc::new(Mutex::new(HashMap::new())),
             config_write: Arc::new(Mutex::new(())),
             command_cache: Mutex::new(HashMap::new()),
             interaction: Arc::new(interaction::InteractionHub::new()),
@@ -1244,18 +1908,29 @@ pub fn run() {
                     .unwrap_or_else(|err| err.into_inner()) = cfg.interaction;
             }
             let hub = Arc::clone(&app.state::<AppState>().interaction);
-            interaction::spawn_poll(app.handle().clone(), hub);
             if let Some(window) = app.get_webview_window("main") {
+                // 無邊框透明視窗喺未顯示時會跳過 SW_MAXIMIZE，再加 center 就停喺 1280×800。
+                interaction::place_overlay(&window);
                 interaction::install_option_menu_hook(&window);
+                let placed = window.clone();
                 // 置頂之後約 1 秒先拒絕 CloseRequested。過咗就俾 Alt+F4 / wmctrl -c 結束。
-                window.on_window_event(|event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                window.on_window_event(move |event| match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
                         if interaction::refuse_window_close() {
                             api.prevent_close();
                         }
                     }
+                    tauri::WindowEvent::Resized(size) => {
+                        interaction::recover_startup_size(&placed, size.width, size.height);
+                    }
+                    tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                        interaction::place_overlay(&placed);
+                    }
+                    _ => {}
                 });
             }
+            interaction::spawn_poll(app.handle().clone(), hub);
+            spawn_bot_chat_watch(app.handle().clone());
             #[cfg(unix)]
             install_unix_signal_exit(app.handle().clone());
             if let Err(err) = install_escape_hatches(app.handle()) {
@@ -1268,18 +1943,25 @@ pub fn run() {
             save_settings,
             probe_gateway,
             discover_profiles,
+            sync_profiles,
+            set_profile_enabled,
             open_bot,
+            select_session,
             send_chat,
             stop_chat,
             list_commands,
             client_command,
             get_kanban_board,
             patch_kanban_task,
+            list_cron_jobs,
             set_hit_rects,
             set_interaction_latch,
             focus_owner,
             arm_pin_close_guard,
-            quit_app
+            quit_app,
+            read_soul,
+            write_soul,
+            save_bot_meta
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
