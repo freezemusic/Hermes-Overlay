@@ -27,6 +27,7 @@ import {
   iconShift,
   placeShell,
   previewBlocked,
+  includePlan,
   separateStackedPanels,
   screenEdge,
   slotPoint,
@@ -184,6 +185,20 @@ test("open top and bottom panels keep a 12px gap", () => {
   ], screenH, 12);
   assert.equal(side[0].top, 40);
   assert.equal(side[1].height, 500);
+  const withPlan = includePlan(
+    { top: 40, height: 400, left: 40, width: 420, edge: "top" },
+    { side: "right", width: 420 },
+  );
+  assert.equal(withPlan.left, 40);
+  assert.equal(withPlan.width, 839);
+  assert.equal(withPlan.height, 400);
+  const docked = separateStackedPanels([
+    withPlan,
+    { top: 440, height: 400, left: 500, width: 420, edge: "bottom" },
+  ], screenH, 12);
+  assert.ok(docked[1].top - (docked[0].top + docked[0].height) >= 12);
+  assert.ok(docked[0].height >= 160);
+  assert.ok(docked[1].height >= 160);
 });
 
 test("clip-path is inset() round and the hairline sits one pixel inside", () => {

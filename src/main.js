@@ -23,6 +23,7 @@ import {
   placeShell,
   previewBlocked,
   separateStackedPanels,
+  includePlan,
   slotPoint,
   STACK_GAP,
   tighten,
@@ -50,6 +51,7 @@ import {
   cronProgress,
   nextRunLabel,
   normalizeCronGroup,
+  pruneRunMarks,
 } from "./cron.js";
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 import { SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
@@ -88,6 +90,7 @@ import {
   modifierLabel,
   modifierMatches,
   modifierEngages,
+  composerKeyAction,
   MODIFIER_ARM_MS,
   nextDropdownOpen,
   selectKeyOpensDropdown,
@@ -263,15 +266,18 @@ function anchorPoint(id) {
   return slotPoint(slot.edge, slot.t, vw, vh, pad, ORB);
 }
 
+/** Room outside the cron orb for the tick ring and the 14px+4px running glow. */
+const CRON_ORB_BLEED = 32;
+
 function paintClip(shell, insets) {
   const cronOrb = shell.dataset.botId === "cron" && (shell.dataset.visual || shell.dataset.state) === "orb";
   const outer = cronOrb
     ? {
-      top: insets.top - 3,
-      right: insets.right - 3,
-      bottom: insets.bottom - 3,
-      left: insets.left - 3,
-      radius: insets.radius + 3,
+      top: insets.top - CRON_ORB_BLEED,
+      right: insets.right - CRON_ORB_BLEED,
+      bottom: insets.bottom - CRON_ORB_BLEED,
+      left: insets.left - CRON_ORB_BLEED,
+      radius: insets.radius + CRON_ORB_BLEED,
     }
     : insets;
   shell.style.clipPath = clipPath(outer);
@@ -362,14 +368,27 @@ function separateOpenShells(shells) {
   });
   if (open.length < 2) return;
   const vh = window.innerHeight || 800;
-  const before = open.map((shell) => ({
-    shell,
-    top: Number.parseFloat(shell.style.top) || 0,
-    height: Number.parseFloat(shell.style.height) || 0,
-    left: Number.parseFloat(shell.style.left) || 0,
-    width: Number.parseFloat(shell.style.width) || 0,
-    edge: shell.dataset.edge || "",
-  }));
+  const before = open.map((shell) => {
+    const box = {
+      shell,
+      top: Number.parseFloat(shell.style.top) || 0,
+      height: Number.parseFloat(shell.style.height) || 0,
+      left: Number.parseFloat(shell.style.left) || 0,
+      width: Number.parseFloat(shell.style.width) || 0,
+      edge: shell.dataset.edge || "",
+    };
+    const plan = shell.querySelector(".plan-window");
+    const planOpen = plan
+      && !plan.hidden
+      && shell.dataset.planOpen === "1";
+    if (!planOpen) return box;
+    const dock = includePlan(box, {
+      side: shell.dataset.planSide === "left" ? "left" : "right",
+      width: plan.offsetWidth || plan.getBoundingClientRect().width,
+    });
+    dock.shell = shell;
+    return dock;
+  });
   const after = separateStackedPanels(before, vh, STACK_GAP);
   after.forEach((box, index) => {
     const prev = before[index];
@@ -652,6 +671,7 @@ const state = {
   cronBoxH: 0,
   cronBurst: false,
   cronSeenRun: new Set(),
+  cronRunMarks: new Map(),
   cronPrimed: false,
   toastSeq: 0,
 };
@@ -1015,7 +1035,8 @@ function renderCronOrb(options = {}) {
   const shell = shellFor("cron");
   const btn = shell?.querySelector(".orb--cron");
   if (!btn) return;
-  const face = cronOrbFace(state.cronGroups);
+  pruneRunMarks(state.cronGroups, state.cronRunMarks);
+  const face = cronOrbFace(state.cronGroups, new Date(), state.cronRunMarks);
   if (!options.tick && noteCronTransition(state.cronGroups) && face.mode !== "failed" && !state.cronBurst) {
     state.cronBurst = true;
     window.setTimeout(() => {
@@ -1149,6 +1170,7 @@ function paintPlan(id) {
     if (mode === "source" && source.textContent !== focus.markdown) source.textContent = focus.markdown;
   }
   syncPlanSide(shell);
+  separateOpenShells([...document.querySelectorAll(".morph")]);
   scheduleHitSync();
 }
 
@@ -1535,6 +1557,7 @@ function closeBotPanel(id) {
   if (panel) {
     const active = document.activeElement;
     if (active && panel.contains(active)) active.blur();
+    if (composerField && panel.contains(composerField)) composerField = null;
   }
   if (shell) void finishClose(shell);
   renderBots();
@@ -2685,7 +2708,82 @@ function topOpenPanel() {
   return shells[0]?.querySelector(".center-panel") || null;
 }
 
+let composerField = null;
+
+function composerHostOpen(field) {
+  if (!field || !field.isConnected) return false;
+  const shell = field.closest(".morph");
+  if (!shell) return field.closest("#settings") != null;
+  if (shell.classList.contains("is-collapsing")) return false;
+  return shell.dataset.state === "panel" || shell.dataset.opening === "panel";
+}
+
+function rememberComposer() {
+  const active = document.activeElement;
+  if (!isTextField(active)) return;
+  if (!active.closest?.(".morph, #settings")) return;
+  composerField = active;
+}
+
+function restoreComposer() {
+  const field = composerField;
+  if (!composerHostOpen(field)) return;
+  if (document.activeElement === field) return;
+  const start = field.selectionStart;
+  const end = field.selectionEnd;
+  field.focus({ preventScroll: true });
+  if (start != null && typeof field.setSelectionRange === "function") {
+    try { field.setSelectionRange(start, end ?? start); } catch { /* number inputs */ }
+  }
+}
+
+function insertComposerKey(field, key) {
+  const start = field.selectionStart ?? field.value.length;
+  const end = field.selectionEnd ?? start;
+  field.value = `${field.value.slice(0, start)}${key}${field.value.slice(end)}`;
+  const caret = start + key.length;
+  if (typeof field.setSelectionRange === "function") field.setSelectionRange(caret, caret);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function setupComposer() {
+  window.addEventListener("keydown", (event) => {
+    const action = composerKeyAction({
+      key: event.key,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+      activeIsComposer: !!composerField && (document.activeElement === composerField || event.target === composerField),
+      composerConnected: composerHostOpen(composerField),
+    });
+    if (action === "remember") {
+      rememberComposer();
+      return;
+    }
+    if (action === "insert" && composerField) {
+      restoreComposer();
+      if (event.target !== composerField) {
+        insertComposerKey(composerField, event.key);
+        event.preventDefault();
+      }
+    }
+  }, true);
+  window.addEventListener("keyup", (event) => {
+    const action = composerKeyAction({
+      key: event.key,
+      composerConnected: composerHostOpen(composerField) || isTextField(document.activeElement),
+    });
+    if (action !== "remember") return;
+    rememberComposer();
+    restoreComposer();
+    flushHits();
+  });
+  document.addEventListener("focusin", (event) => {
+    if (isTextField(event.target)) rememberComposer();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (composerField && !composerField.contains(event.target)) composerField = null;
+  }, true);
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     const menu = $("#orb-menu");

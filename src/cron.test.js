@@ -139,7 +139,31 @@ test("a running job reports elapsed time and a progress fraction", () => {
     running: true,
   };
   assert.equal(runningLabel(running, now), "行緊 00:42");
+  assert.equal(runningLabel(running, new Date("2026-10-16T12:00:43Z")), "行緊 00:43");
   assert.equal(cronProgress(running, now), 42 / (30 * 60 + 42));
+  const claimed = {
+    id: "claimed",
+    running: true,
+    state: "scheduled",
+    latest_execution: { status: "claimed", claimed_at: "2026-10-16T12:00:00Z" },
+  };
+  assert.equal(runningLabel(claimed, now), "行緊 00:42");
+  const normalized = normalizeCronGroup({ jobs: [claimed] });
+  assert.equal(normalized.jobs[0].started_at, "2026-10-16T12:00:00Z");
+  assert.equal(runningLabel(normalized.jobs[0], now), "行緊 00:42");
+  const marks = new Map();
+  const claimedAt = {
+    id: "lease",
+    running: true,
+    fire_claim: { at: "2026-10-16T12:00:00Z" },
+    latest_execution: { status: "completed", started_at: "2026-10-16T11:00:00Z" },
+  };
+  assert.equal(runningLabel(claimedAt, new Date("2026-10-16T12:00:00Z"), marks), "行緊 00:00");
+  const heartbeat = {
+    ...claimedAt,
+    fire_claim: { at: "2026-10-16T12:01:00Z" },
+  };
+  assert.equal(runningLabel(heartbeat, new Date("2026-10-16T12:01:00Z"), marks), "行緊 01:00");
   const unknown = { ...running, next_run_at: "" };
   assert.equal(cronProgress(unknown, now), null);
   const face = cronOrbFace([{ jobs: [running] }], now);

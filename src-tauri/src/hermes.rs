@@ -746,6 +746,8 @@ pub struct CronJob {
     pub next_run_at: String,
     pub last_run_at: String,
     pub running: bool,
+    /// Live execution start, else claim time. Empty when this job is not in a run.
+    pub started_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -841,6 +843,50 @@ fn last_run_text(value: &Value) -> String {
     json_time(exec, "started_at")
 }
 
+/// `started_at` once the attempt is running, otherwise `claimed_at`, otherwise the fire claim.
+fn run_start_text(value: &Value) -> String {
+    if let Some(exec) = value.get("latest_execution").filter(|item| item.is_object()) {
+        let status = exec
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let live = status.is_empty() || status == "running" || status == "claimed";
+        if live {
+            for key in ["started_at", "start", "claimed_at", "claim_time"] {
+                let text = json_time(exec, key);
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+        }
+        if let Some(claim) = exec.get("fire_claim").filter(|item| item.is_object()) {
+            for key in ["started_at", "claimed_at", "at"] {
+                let text = json_time(claim, key);
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+        }
+    }
+    if let Some(claim) = value.get("fire_claim").filter(|item| item.is_object()) {
+        for key in ["started_at", "claimed_at", "at"] {
+            let text = json_time(claim, key);
+            if !text.is_empty() {
+                return text;
+            }
+        }
+    }
+    for key in ["started_at", "claimed_at"] {
+        let text = json_time(value, key);
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    String::new()
+}
+
 fn cron_job_from(value: &Value) -> Option<CronJob> {
     let id = json_string(value, "id");
     let name = json_string(value, "name");
@@ -871,6 +917,11 @@ fn cron_job_from(value: &Value) -> Option<CronJob> {
         },
         last_run_at: last_run_text(value),
         running: job_is_running(value, &state),
+        started_at: if job_is_running(value, &state) {
+            run_start_text(value)
+        } else {
+            String::new()
+        },
     })
 }
 
@@ -1830,6 +1881,19 @@ mod tests {
         assert_eq!(parsed.jobs[3].last_run_at, "2026-10-16T08:00:00Z");
         assert!(parsed.jobs[4].running);
         assert_eq!(parsed.jobs[4].last_run_at, "2026-10-16T12:00:01Z");
+        assert_eq!(parsed.jobs[4].started_at, "2026-10-16T12:00:01Z");
+        assert_eq!(parsed.jobs[2].started_at, "2026-10-16T11:30:00Z");
+        assert_eq!(parsed.jobs[3].started_at, "");
+        let claimed_at = parse_cron_list(&json!({
+            "jobs": [{
+                "id": "claim-time",
+                "name": "只得 claim",
+                "state": "scheduled",
+                "latest_execution": { "status": "claimed", "claimed_at": "2026-10-16T12:00:00Z" }
+            }]
+        }));
+        assert!(claimed_at.jobs[0].running);
+        assert_eq!(claimed_at.jobs[0].started_at, "2026-10-16T12:00:00Z");
         let claimed_only = parse_cron_list(&json!({
             "jobs": [{
                 "id": "fence",

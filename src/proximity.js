@@ -307,6 +307,28 @@ export function modifierEngages({
   };
 }
 
+/**
+ * Modifier changes must not drop the first keys typed into a focused composer.
+ * `remember` keeps the field. `type` leaves the event on the focused field.
+ * `insert` writes the character when focus was lost before this keydown.
+ */
+export function composerKeyAction({
+  key = "",
+  ctrlKey = false,
+  altKey = false,
+  metaKey = false,
+  activeIsComposer = false,
+  composerConnected = false,
+} = {}) {
+  if (key === "Control" || key === "Shift" || key === "Alt" || key === "Meta") {
+    return "remember";
+  }
+  if (!composerConnected) return "ignore";
+  if (ctrlKey || altKey || metaKey) return "ignore";
+  if (key.length !== 1) return "ignore";
+  return activeIsComposer ? "type" : "insert";
+}
+
 export function modifierLabel(kind) {
   if (kind === "shift") return "Shift";
   if (kind === "alt") return "Alt";

@@ -187,6 +187,26 @@ function rangesOverlap(a0, a1, b0, b1) {
 }
 
 /**
+ * A docked plan window shares the panel's vertical span and sticks out
+ * one side. Collision uses this wider box so the 12px gap includes the plan.
+ */
+export function includePlan(box, plan) {
+  const next = {
+    top: box.top,
+    height: box.height,
+    left: box.left,
+    width: box.width,
+    edge: box.edge || "",
+  };
+  if (!plan || !(plan.width > 0)) return next;
+  const overlap = Number.isFinite(plan.overlap) ? plan.overlap : 1;
+  const extra = Math.max(0, plan.width - overlap);
+  if (plan.side === "left") next.left -= extra;
+  next.width += extra;
+  return next;
+}
+
+/**
  * Open top and bottom panels must keep at least `gap` pixels between their
  * boxes. Neither panel is closed. A top anchor stays on the top edge of its
  * box; a bottom anchor stays on the bottom edge.

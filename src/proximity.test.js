@@ -16,6 +16,7 @@ import {
   inkFor,
   latchedElementIds,
   linuxAltWarning,
+  composerKeyAction,
   modifierMatches,
   modifierEngages,
   MODIFIER_ARM_MS,
@@ -213,6 +214,27 @@ test("a message preview pill stays solid and click-through until the modifier is
 test("light swatches use dark ink", () => {
   assert.equal(inkFor("#f2f200"), "#1a1a1a");
   assert.equal(inkFor("#0000f2"), "#f5f5f5");
+});
+
+test("a composer keeps the next key after the modifier comes up", () => {
+  assert.equal(composerKeyAction({ key: "Control", composerConnected: true }), "remember");
+  assert.equal(composerKeyAction({
+    key: "a",
+    composerConnected: true,
+    activeIsComposer: true,
+  }), "type");
+  assert.equal(composerKeyAction({
+    key: "a",
+    composerConnected: true,
+    activeIsComposer: false,
+  }), "insert");
+  assert.equal(composerKeyAction({
+    key: "a",
+    ctrlKey: true,
+    composerConnected: true,
+    activeIsComposer: false,
+  }), "ignore");
+  assert.equal(composerKeyAction({ key: "a", composerConnected: false }), "ignore");
 });
 
 test("modifier keys", () => {

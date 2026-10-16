@@ -106,10 +106,30 @@ export function jobFailed(job) {
   return status === "failed" || status === "error" || status === "failure";
 }
 
-function runStartValue(job) {
-  if (!job) return "";
-  if (job.started_at) return job.started_at;
-  return job.latest_execution?.started_at || "";
+function objectTime(value, keys) {
+  if (!value || typeof value !== "object") return "";
+  for (const key of keys) {
+    if (value[key]) return value[key];
+  }
+  return "";
+}
+
+/** Live run start: execution start, else the claim time. `fire_claim.at` is only a fallback. */
+export function runStartValue(job) {
+  const exec = job?.latest_execution;
+  if (exec && typeof exec === "object") {
+    const status = String(exec.status || "").trim().toLowerCase();
+    const live = !status || status === "running" || status === "claimed";
+    if (live) {
+      const fromExec = objectTime(exec, ["started_at", "start", "claimed_at", "claim_time"]);
+      if (fromExec) return fromExec;
+    }
+    const nested = objectTime(exec.fire_claim, ["started_at", "claimed_at", "at"]);
+    if (nested) return nested;
+  }
+  const fromClaim = objectTime(job?.fire_claim, ["started_at", "claimed_at", "at"]);
+  if (fromClaim) return fromClaim;
+  return objectTime(job, ["started_at", "claimed_at"]);
 }
 
 /** Fraction of a known run, or null when the duration cannot be computed. */
@@ -125,14 +145,40 @@ export function cronProgress(job, now = new Date()) {
   return Math.max(0, Math.min(1, p));
 }
 
-/** 「行緊 00:42」 from the current run's start. */
-export function runningLabel(job, now = new Date()) {
-  const start = parseRunTime(runStartValue(job));
-  const elapsed = start ? Math.max(0, now.getTime() - start.getTime()) : 0;
+/**
+ * 「行緊 00:42」 from the current run's start.
+ * `marks` keeps the earliest start for a job id so a refreshed claim time
+ * cannot rewind the clock, and a missing timestamp still advances each tick.
+ */
+export function runningLabel(job, now = new Date(), marks = null) {
+  const id = String(job?.id || "");
+  const parsed = parseRunTime(runStartValue(job));
+  let ms = parsed ? parsed.getTime() : null;
+  if (marks && id) {
+    const prev = marks.get(id);
+    if (ms == null) ms = prev ?? now.getTime();
+    else if (prev != null && prev < ms) ms = prev;
+    marks.set(id, ms);
+  }
+  const elapsed = ms == null ? 0 : Math.max(0, now.getTime() - ms);
   const total = Math.floor(elapsed / 1000);
   const mm = String(Math.floor(total / 60)).padStart(2, "0");
   const ss = String(total % 60).padStart(2, "0");
   return `行緊 ${mm}:${ss}`;
+}
+
+/** Drop remembered starts once those jobs are no longer running. */
+export function pruneRunMarks(groups, marks) {
+  if (!marks) return;
+  const live = new Set();
+  (groups || []).forEach((group) => {
+    (group?.jobs || []).forEach((job) => {
+      if (jobRunning(job)) live.add(String(job?.id || ""));
+    });
+  });
+  [...marks.keys()].forEach((id) => {
+    if (!live.has(id)) marks.delete(id);
+  });
 }
 
 export function soonestNextLabel(groups, now = new Date()) {
@@ -149,7 +195,7 @@ export function soonestNextLabel(groups, now = new Date()) {
 }
 
 /** Idle tick, a static arc, a spinning segment, or a failed arc. */
-export function cronOrbFace(groups, now = new Date()) {
+export function cronOrbFace(groups, now = new Date(), marks = null) {
   const jobs = (groups || []).flatMap((group) => group?.jobs || []);
   const running = jobs.find((job) => jobRunning(job));
   if (running) {
@@ -157,7 +203,7 @@ export function cronOrbFace(groups, now = new Date()) {
     return {
       mode: p == null ? "spin" : "progress",
       p: p == null ? 0 : p,
-      label: runningLabel(running, now),
+      label: runningLabel(running, now, marks),
     };
   }
   const failed = jobs.find((job) => jobFailed(job));
@@ -181,7 +227,7 @@ function jobFrom(raw, index) {
     enabled: jobEnabled(raw),
     next_run_at: raw.next_run_at ?? raw.next_run ?? "",
     last_run_at: lastRunValue(raw),
-    started_at: raw.latest_execution?.started_at || raw.started_at || "",
+    started_at: runStartValue(raw) || "",
     status: executionStatus(raw) || String(raw.state || "").trim().toLowerCase(),
     running: jobRunning(raw),
   };

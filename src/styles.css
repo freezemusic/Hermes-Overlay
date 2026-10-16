@@ -335,14 +335,19 @@ html, body {
   text-shadow: none;
 }
 
+.bot-btn.orb--cron {
+  contain: none;
+  overflow: visible;
+}
+
 .bot-btn.orb--cron::before {
   inset: -3px;
   z-index: 2;
   opacity: 1;
   transform: none;
   background: repeating-conic-gradient(rgba(97, 97, 145, .55) 0 2deg, transparent 2deg 30deg);
-  -webkit-mask: radial-gradient(circle, transparent calc(100% - 3px), #000 calc(100% - 3px));
-  mask: radial-gradient(circle, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  -webkit-mask: radial-gradient(circle closest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  mask: radial-gradient(circle closest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
   animation: none;
 }
 
@@ -361,8 +366,8 @@ html, body {
   opacity: 0;
   animation: none;
   background: conic-gradient(#0000f2 calc(var(--p, 0) * 1turn), rgba(0, 0, 242, .12) 0);
-  -webkit-mask: radial-gradient(circle, transparent calc(100% - 2px), #000 calc(100% - 2px));
-  mask: radial-gradient(circle, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  -webkit-mask: radial-gradient(circle closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  mask: radial-gradient(circle closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
 }
 
 .bot-btn.orb--cron.is-progress::after,
@@ -572,7 +577,7 @@ html, body {
 
 .cron-name {
   margin: 0;
-  color: #000091;
+  color: #10102a;
   font: 600 13px/1.3 var(--font-body);
 }
 
@@ -640,6 +645,12 @@ html, body {
 }
 
 .hud-corner { z-index: 6; }
+.cron-panel > .hud-corner {
+  display: block;
+  width: 8px;
+  height: 8px;
+  z-index: 8;
+}
 .hud-corner.tl { top: 0; left: 0; border-right: 0; border-bottom: 0; }
 .hud-corner.tr { top: 0; right: 0; border-left: 0; border-bottom: 0; }
 .hud-corner.bl { bottom: 0; left: 0; border-right: 0; border-top: 0; }
@@ -1720,6 +1731,7 @@ html, body {
 
 .morph[data-bot-id="cron"][data-state="orb"] {
   background: transparent;
+  overflow: visible;
 }
 
 .morph[data-bot-id="cron"][data-state="orb"][data-hit-id] {
@@ -2030,6 +2042,12 @@ html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is
 
 html.overlay-passthrough .overlay-root [data-hit-id^="close:"],
 html.overlay-passthrough .overlay-root [data-hit-id^="close:"] * {
+  pointer-events: auto !important;
+}
+
+/* A focused composer stays hittable across a modifier press so the first
+   keys after release are not dropped on a blurred, click-through field. */
+html.overlay-passthrough .morph[data-state="panel"] :is(input, textarea):focus {
   pointer-events: auto !important;
 }
 

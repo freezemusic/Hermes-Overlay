@@ -177,6 +177,11 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.morph\[data-plan-side="left"\] \.plan-window \{[^}]*right:\s*calc\(100% - 1px\)/s);
   assert.match(css, /\.orb--cron \{[^}]*--bot-rgb:\s*97 97 145/s);
   assert.match(css, /\.cron-panel \{[^}]*width:\s*min\(320px, 86vw\)/s);
+  assert.match(css, /radial-gradient\(circle closest-side,\s*transparent calc\(100% - 3px\)/);
+  assert.match(css, /radial-gradient\(circle closest-side,\s*transparent calc\(100% - 2px\)/);
+  assert.match(css, /\.morph\[data-bot-id="cron"\]\[data-state="orb"\] \{[^}]*overflow:\s*visible/s);
+  assert.match(css, /\.cron-name \{[^}]*color:\s*#10102a/s);
+  assert.match(html, /id="cron-panel"[\s\S]{0,500}class="hud-corner br"/);
   assert.match(css, /\.cron-group-title \{[^}]*color:\s*var\(--nous-blue\)/s);
   assert.match(css, /\.cron-group-title \{[^}]*text-transform:\s*none/s);
   assert.match(html, /id="cron-panel"/);
@@ -189,6 +194,9 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(main, /睇計劃/);
   assert.match(main, /noteNewestPlan/);
   assert.match(main, /dropParkedAnchor/);
+  assert.match(main, /includePlan/);
+  assert.match(main, /composerKeyAction/);
+  assert.match(main, /CRON_ORB_BLEED/);
   assert.match(main, /上次 /);
   assert.doesNotMatch(main.slice(main.indexOf("function closeKanban"), main.indexOf("function startKanbanPoll")), /stopKanbanPoll/);
   const hermes = readFileSync(new URL("../src-tauri/src/hermes.rs", import.meta.url), "utf8");
