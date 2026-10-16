@@ -1679,6 +1679,13 @@ html.overlay-passthrough .overlay-root * { pointer-events: none !important; }
 html.overlay-passthrough .overlay-root [data-hit-capture],
 html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: auto !important; }
 
+html.overlay-passthrough .morph[data-state="panel"] .morph-pill,
+html.overlay-passthrough .morph[data-state="orb"] .morph-pill,
+.morph[data-state="panel"] .morph-pill,
+.morph[data-state="orb"] .morph-pill {
+  pointer-events: none !important;
+}
+
 @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes ping { from { transform: scale(1); opacity: 0.6; } to { transform: scale(2.2); opacity: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
