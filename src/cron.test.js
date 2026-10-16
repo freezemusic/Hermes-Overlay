@@ -7,10 +7,14 @@ import {
   anyJobRunning,
   cronGroupNote,
   cronOrbActive,
+  cronOrbFace,
+  cronProgress,
+  jobFailed,
   jobRunning,
   lastRunValue,
   nextRunLabel,
   normalizeCronGroup,
+  runningLabel,
   recentRun,
   scheduleLabel,
 } from "./cron.js";
@@ -120,4 +124,38 @@ test("a scheduled job with latest_execution.status running lights the orb", () =
   assert.equal(cronGroupNote(empty), CRON_NONE);
   assert.equal(cronGroupNote({ unavailable: true, jobs: [], message: CRON_UNAVAILABLE }), CRON_UNAVAILABLE);
   assert.equal(cronGroupNote(group), "");
+});
+
+test("a running job reports elapsed time and a progress fraction", () => {
+  const now = new Date("2026-10-16T12:00:42Z");
+  const running = {
+    id: "live",
+    name: "進行中",
+    enabled: true,
+    state: "scheduled",
+    next_run_at: "2026-10-16T12:30:42Z",
+    started_at: "2026-10-16T12:00:00Z",
+    latest_execution: { status: "running", started_at: "2026-10-16T12:00:00Z" },
+    running: true,
+  };
+  assert.equal(runningLabel(running, now), "行緊 00:42");
+  assert.equal(cronProgress(running, now), 42 / (30 * 60 + 42));
+  const unknown = { ...running, next_run_at: "" };
+  assert.equal(cronProgress(unknown, now), null);
+  const face = cronOrbFace([{ jobs: [running] }], now);
+  assert.equal(face.mode, "progress");
+  assert.equal(face.label, "行緊 00:42");
+  const spin = cronOrbFace([{ jobs: [unknown] }], now);
+  assert.equal(spin.mode, "spin");
+  const failed = normalizeCronGroup({
+    jobs: [{ id: "bad", name: "失敗", state: "scheduled", latest_execution: { status: "failed" } }],
+  });
+  assert.equal(jobFailed(failed.jobs[0]), true);
+  assert.equal(cronOrbFace([failed], now).mode, "failed");
+  const next = new Date(2026, 9, 16, 18, 5, 0);
+  const idle = cronOrbFace([{
+    jobs: [{ enabled: true, next_run_at: next.toISOString(), running: false, state: "scheduled" }],
+  }], next);
+  assert.equal(idle.mode, "idle");
+  assert.equal(idle.label, "18:05");
 });

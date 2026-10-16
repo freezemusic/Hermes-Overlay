@@ -82,9 +82,11 @@
           <header class="panel-header plan-head">
             <h2 class="plan-title" data-role="plan-title">計劃</h2>
             <div class="panel-actions">
-              <button type="button" class="plan-toggle" data-role="plan-preview-mode" aria-pressed="true">預覽</button>
-              <button type="button" class="plan-toggle" data-role="plan-source-mode" aria-pressed="false">原文</button>
-              <button type="button" class="icon-btn danger" data-role="plan-close">關閉計劃視窗</button>
+              <div class="plan-segment" role="group" aria-label="計劃顯示">
+                <button type="button" class="plan-toggle" data-role="plan-preview-mode" aria-pressed="true">預覽</button>
+                <button type="button" class="plan-toggle" data-role="plan-source-mode" aria-pressed="false">原文</button>
+              </div>
+              <button type="button" class="plan-close" data-role="plan-close" aria-label="關閉計劃視窗">✕</button>
             </div>
           </header>
           <div class="plan-body" data-role="plan-body"></div>
@@ -197,6 +199,7 @@
       </aside>
 
       <div id="orb-hover-label" class="orb-hover-label" hidden></div>
+      <div id="cron-readout" class="cron-readout" hidden></div>
       <div id="orb-menu" class="orb-menu" data-interactive data-hit-id="orb-menu" hidden>
         <button type="button" id="orb-menu-hide" class="orb-menu-btn">隱藏呢個 Bot</button>
       </div>

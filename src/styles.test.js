@@ -171,10 +171,10 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.bot-btn::before,[\s\S]*?rgb\(var\(--bot-rgb\) \/ \.55\)/);
   assert.match(css, /\.plan-window \{[^}]*border:\s*1px solid var\(--nous-blue\)/s);
   assert.match(css, /\.plan-window \{[^}]*border-radius:\s*var\(--r-panel\)/s);
-  assert.match(css, /\.plan-window \{[^}]*background:\s*rgb\(247 248 248 \/ \.96\)/s);
+  assert.match(css, /\.plan-window \{[^}]*rgba\(248,\s*248,\s*252,\s*\.92\)/s);
   assert.match(css, /\.morph\[data-state="panel"\]\[data-plan-open="1"\]:not\(\.is-morphing\):not\(\.is-collapsing\) \{[^}]*overflow:\s*visible/s);
-  assert.match(css, /\.morph \.plan-window \{[^}]*left:\s*calc\(100% \+ 8px\)/s);
-  assert.match(css, /\.morph\[data-plan-side="left"\] \.plan-window \{[^}]*right:\s*calc\(100% \+ 8px\)/s);
+  assert.match(css, /\.morph \.plan-window \{[^}]*left:\s*calc\(100% - 1px\)/s);
+  assert.match(css, /\.morph\[data-plan-side="left"\] \.plan-window \{[^}]*right:\s*calc\(100% - 1px\)/s);
   assert.match(css, /\.orb--cron \{[^}]*--bot-rgb:\s*97 97 145/s);
   assert.match(css, /\.cron-panel \{[^}]*width:\s*min\(320px, 86vw\)/s);
   assert.match(css, /\.cron-group-title \{[^}]*color:\s*var\(--nous-blue\)/s);
@@ -194,7 +194,7 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   const hermes = readFileSync(new URL("../src-tauri/src/hermes.rs", import.meta.url), "utf8");
   assert.match(hermes, /\/api\/jobs\?include_disabled=true/);
   assert.match(hermes, /\/api\/crons/);
-  assert.match(css, /\.plan-title \{[^}]*color:\s*#000091/s);
+  assert.match(css, /\.plan-title \{[^}]*color:\s*#0000f2/s);
   assert.match(css, /\.plan-title \{[^}]*text-transform:\s*none/s);
   assert.match(css, /\.plan-body \{[^}]*color:\s*#1a1a1a/s);
   assert.match(css, /\.plan-body pre \{[^}]*background:\s*#000/s);
@@ -231,7 +231,7 @@ test("idle document.getAnimations has no infinite iterations", () => {
   assert.ok(selectors.length >= 2, selectors.join(" | "));
   for (const selector of selectors) {
     for (const part of selector.split(",")) {
-      assert.match(part, /\.is-thinking|\.streaming/, part);
+      assert.match(part, /\.is-thinking|\.is-running|\.streaming/, part);
     }
   }
   const dom = new JSDOM(`<!doctype html><style>${css}</style><body>

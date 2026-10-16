@@ -22,7 +22,9 @@ import {
   dropParkedAnchor,
   placeShell,
   previewBlocked,
+  separateStackedPanels,
   slotPoint,
+  STACK_GAP,
   tighten,
 } from "./morph.js";
 import { isProfileEnabled, profilesNeedingKeys } from "./roster.js";
@@ -44,6 +46,8 @@ import {
   CRON_POLL_MS,
   cronGroupNote,
   cronOrbActive,
+  cronOrbFace,
+  cronProgress,
   nextRunLabel,
   normalizeCronGroup,
 } from "./cron.js";
@@ -237,7 +241,11 @@ function boxSize(id) {
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
   if (id === "kanban") return { w: Math.min(960, vw * 0.8), h: Math.min(vh * 0.8, 760) };
-  if (id === "cron") return { w: Math.min(320, vw * 0.86), h: Math.min(vh * 0.7, 640) };
+  if (id === "cron") {
+    const max = vh * 0.7;
+    const fitted = state.cronBoxH > 0 ? state.cronBoxH : max;
+    return { w: Math.min(320, vw * 0.86), h: Math.min(max, fitted) };
+  }
   if (id === "settings") return { w: Math.min(680, vw * 0.92), h: Math.min(vh * 0.86, 760) };
   return { w: PANEL_W, h: PANEL_H };
 }
@@ -256,7 +264,17 @@ function anchorPoint(id) {
 }
 
 function paintClip(shell, insets) {
-  shell.style.clipPath = clipPath(insets);
+  const cronOrb = shell.dataset.botId === "cron" && (shell.dataset.visual || shell.dataset.state) === "orb";
+  const outer = cronOrb
+    ? {
+      top: insets.top - 3,
+      right: insets.right - 3,
+      bottom: insets.bottom - 3,
+      left: insets.left - 3,
+      radius: insets.radius + 3,
+    }
+    : insets;
+  shell.style.clipPath = clipPath(outer);
   const fill = shell.querySelector(".morph-fill");
   if (fill) fill.style.clipPath = clipPath(tighten(insets));
   shell.dataset.clipTop = String(insets.top);
@@ -336,8 +354,49 @@ function layoutShell(shell) {
   }));
 }
 
+function separateOpenShells(shells) {
+  const open = shells.filter((shell) => {
+    if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return false;
+    if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return false;
+    return (shell.dataset.visual || shell.dataset.state) === "panel";
+  });
+  if (open.length < 2) return;
+  const vh = window.innerHeight || 800;
+  const before = open.map((shell) => ({
+    shell,
+    top: Number.parseFloat(shell.style.top) || 0,
+    height: Number.parseFloat(shell.style.height) || 0,
+    left: Number.parseFloat(shell.style.left) || 0,
+    width: Number.parseFloat(shell.style.width) || 0,
+    edge: shell.dataset.edge || "",
+  }));
+  const after = separateStackedPanels(before, vh, STACK_GAP);
+  after.forEach((box, index) => {
+    const prev = before[index];
+    if (Math.abs(box.top - prev.top) < 0.5 && Math.abs(box.height - prev.height) < 0.5) return;
+    const shell = prev.shell;
+    shell.style.top = `${box.top}px`;
+    shell.style.height = `${box.height}px`;
+    const ax = Number(shell.dataset.ax) || ORB / 2;
+    const ay = box.edge === "bottom" ? box.height - ORB / 2 : box.edge === "top" ? ORB / 2 : Number(shell.dataset.ay) || ORB / 2;
+    shell.dataset.ay = String(ay);
+    shell.style.setProperty("--ay", `${ay}px`);
+    const shift = iconShift(ax, ay, prev.width, box.height);
+    shell.style.setProperty("--icon-dx", `${shift.x}px`);
+    shell.style.setProperty("--icon-dy", `${shift.y}px`);
+    paintClip(shell, insetsFor(shell.dataset.visual || "panel", {
+      boxW: prev.width,
+      boxH: box.height,
+      ax,
+      ay,
+    }));
+  });
+}
+
 function layoutShells() {
-  document.querySelectorAll(".morph").forEach((shell) => layoutShell(shell));
+  const shells = [...document.querySelectorAll(".morph")];
+  shells.forEach((shell) => layoutShell(shell));
+  separateOpenShells(shells);
   scheduleHitSync();
 }
 
@@ -419,6 +478,7 @@ function settleShell(shell, target) {
     layoutShell(shell);
   }
   if (target === "panel" && shell.dataset.kind === "bot") stickChat(shell.dataset.botId);
+  separateOpenShells([...document.querySelectorAll(".morph")]);
   scheduleHitSync();
 }
 
@@ -520,6 +580,7 @@ function bindPanelDrag(panel) {
       state.dragHitId = "";
       rememberAnchor(host);
       layoutShell(host);
+      separateOpenShells([...document.querySelectorAll(".morph")]);
       flushHits();
     };
     header.addEventListener("pointermove", move);
@@ -587,6 +648,11 @@ const state = {
   cronOpen: false,
   cronGroups: [],
   cronTimer: 0,
+  cronClock: 0,
+  cronBoxH: 0,
+  cronBurst: false,
+  cronSeenRun: new Set(),
+  cronPrimed: false,
   toastSeq: 0,
 };
 
@@ -838,6 +904,7 @@ function renderBots() {
   renderKanbanOrb();
   renderCronOrb();
   renderSettingsOrb();
+  separateOpenShells([...document.querySelectorAll(".morph")]);
   scheduleHitSync();
 }
 
@@ -885,20 +952,98 @@ function renderKanbanOrb() {
   layoutShell(shell);
 }
 
-function renderCronOrb() {
+function noteCronTransition(groups) {
+  const running = new Set();
+  (groups || []).forEach((group) => {
+    (group.jobs || []).forEach((job) => {
+      if (job.running) running.add(job.id);
+    });
+  });
+  if (!state.cronPrimed) {
+    state.cronPrimed = true;
+    state.cronSeenRun = running;
+    return running.size === 0 && cronOrbActive(groups);
+  }
+  let finished = false;
+  state.cronSeenRun.forEach((id) => {
+    if (!running.has(id)) finished = true;
+  });
+  state.cronSeenRun = running;
+  return finished;
+}
+
+function placeCronReadout(shell, face) {
+  const label = document.getElementById("cron-readout");
+  const btn = shell?.querySelector(".orb--cron");
+  if (!label || !btn) return;
+  const text = face?.label || "";
+  const show = !!text && (shell.dataset.visual || shell.dataset.state) === "orb";
+  if (!show) {
+    label.hidden = true;
+    label.textContent = "";
+    return;
+  }
+  label.hidden = false;
+  label.textContent = text;
+  label.classList.toggle("is-live", face.mode === "spin" || face.mode === "progress");
+  const box = btn.getBoundingClientRect();
+  const width = label.offsetWidth;
+  const height = label.offsetHeight;
+  const center = window.innerWidth / 2;
+  const towardLeft = box.left + box.width / 2 > center;
+  let left = towardLeft ? box.left - width - 8 : box.right + 8;
+  let top = box.top + box.height / 2 - height / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+  top = Math.max(8, Math.min(top, window.innerHeight - height - 8));
+  label.style.left = `${Math.round(left)}px`;
+  label.style.top = `${Math.round(top)}px`;
+}
+
+function syncCronClock(face) {
+  const live = face.mode === "spin" || face.mode === "progress";
+  if (live && !state.cronClock) {
+    state.cronClock = window.setInterval(() => renderCronOrb({ tick: true }), 1000);
+  }
+  if (!live && state.cronClock) {
+    window.clearInterval(state.cronClock);
+    state.cronClock = 0;
+  }
+}
+
+function renderCronOrb(options = {}) {
   ensureChrome();
   const shell = shellFor("cron");
   const btn = shell?.querySelector(".orb--cron");
   if (!btn) return;
-  const running = cronOrbActive(state.cronGroups);
-  btn.className = ["bot-btn", "morph-orb", "orb--cron", state.cronOpen ? "active" : "", running ? "is-thinking" : ""]
-    .filter(Boolean)
-    .join(" ");
+  const face = cronOrbFace(state.cronGroups);
+  if (!options.tick && noteCronTransition(state.cronGroups) && face.mode !== "failed" && !state.cronBurst) {
+    state.cronBurst = true;
+    window.setTimeout(() => {
+      state.cronBurst = false;
+      btn.classList.remove("is-done");
+    }, 400);
+  }
+  const live = face.mode === "spin" || face.mode === "progress";
+  shell.classList.toggle("is-cron-live", live);
+  shell.classList.toggle("is-cron-fail", face.mode === "failed");
+  const classes = ["bot-btn", "morph-orb", "orb--cron"];
+  if (state.cronOpen) classes.push("active");
+  if (face.mode === "spin") classes.push("is-running");
+  if (face.mode === "progress") classes.push("is-progress");
+  if (face.mode === "failed") classes.push("is-failed");
+  if (state.cronBurst) classes.push("is-done");
+  btn.className = classes.join(" ");
+  if (face.mode === "progress" || face.mode === "failed") btn.style.setProperty("--p", String(face.p));
+  else btn.style.removeProperty("--p");
   applyBotColor(shell, NOUS.neutral);
   applyBotColor(btn, NOUS.neutral);
-  btn.setAttribute("aria-label", running ? "排程工作進行中" : "排程工作");
-  btn.title = running ? "排程工作進行中" : "排程工作";
-  layoutShell(shell);
+  const caption = live ? "排程工作進行中" : face.mode === "failed" ? "排程工作失敗" : "排程工作";
+  btn.setAttribute("aria-label", caption);
+  btn.title = caption;
+  if (!options.tick) layoutShell(shell);
+  placeCronReadout(shell, face);
+  syncCronClock(face);
+  if (options.tick) paintCronArcs();
 }
 
 function renderChat(id = state.activeId) {
@@ -950,7 +1095,7 @@ function syncPlanSide(shell) {
   const box = shell.getBoundingClientRect();
   const width = Math.min(420, (window.innerWidth || 1280) * 0.42);
   const roomRight = (window.innerWidth || 1280) - box.right;
-  shell.dataset.planSide = roomRight >= width + 8 ? "right" : "left";
+  shell.dataset.planSide = roomRight >= width ? "right" : "left";
 }
 
 function openPlanWindow(id, key) {
@@ -2835,7 +2980,8 @@ function applyFrames(frames, interactiveAll = false) {
 function paintOrbLabel() {
   const label = document.getElementById("orb-hover-label");
   if (!label) return;
-  const shells = [...document.querySelectorAll('.morph[data-state="orb"][data-hit-capture]')];
+  const shells = [...document.querySelectorAll('.morph[data-state="orb"][data-hit-capture]')]
+    .filter((item) => item.dataset.botId !== "cron");
   let shell = shells.length === 1 ? shells[0] : null;
   if (shells.length > 1) {
     shell = shells.find((item) => {
@@ -3488,7 +3634,7 @@ function mockCronGroups() {
           next_run_at: soon,
           state: "scheduled",
           fire_claim: { at: earlier, by: "host:demo" },
-          latest_execution: { status: "running", started_at: earlier },
+          latest_execution: { status: "running", started_at: new Date(Date.now() - 42 * 1000).toISOString() },
         },
       ],
     }),
@@ -3516,15 +3662,16 @@ function openCron() {
     applyBotColor(shell, NOUS.neutral);
     applyBotColor(panel, NOUS.neutral);
     window.clearTimeout(shell._pillTimer);
+    paintCron();
     if (opening) {
       raisePanel(shell);
       void runShellMorph(shell, "panel");
     } else {
       raisePanel(shell);
+      syncCronBox();
     }
   }
   renderBots();
-  paintCron();
   refreshCron();
 }
 
@@ -3546,6 +3693,48 @@ function closeCron() {
   scheduleHitSync();
 }
 
+function cronStatusMark(job) {
+  if (job.running) {
+    const mark = document.createElement("span");
+    mark.className = "cron-arc";
+    mark.dataset.jobId = job.id;
+    const p = cronProgress(job);
+    mark.style.setProperty("--p", String(p == null ? 0.25 : p));
+    return mark;
+  }
+  const dot = document.createElement("span");
+  dot.className = job.enabled ? "cron-dot is-on" : "cron-dot is-off";
+  return dot;
+}
+
+function paintCronArcs() {
+  const jobs = (state.cronGroups || []).flatMap((group) => group.jobs || []);
+  document.querySelectorAll(".cron-arc").forEach((mark) => {
+    const job = jobs.find((item) => item.id === mark.dataset.jobId);
+    if (!job) return;
+    const p = cronProgress(job);
+    mark.style.setProperty("--p", String(p == null ? 0.25 : p));
+  });
+}
+
+function syncCronBox() {
+  const panel = document.getElementById("cron-panel");
+  const list = document.getElementById("cron-list");
+  if (!panel || !list) return;
+  const max = (window.innerHeight || 800) * 0.7;
+  const header = panel.querySelector(".panel-header")?.offsetHeight || 0;
+  const hint = panel.querySelector(":scope > .hint")?.offsetHeight || 0;
+  const empty = document.getElementById("cron-empty");
+  const emptyH = empty && !empty.hidden ? empty.offsetHeight : 0;
+  const next = Math.min(max, Math.max(140, Math.ceil(header + hint + emptyH + list.scrollHeight + 48)));
+  if (Math.abs(next - state.cronBoxH) < 2) return;
+  state.cronBoxH = next;
+  const shell = shellFor("cron");
+  if (shell && !shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")) {
+    layoutShell(shell);
+  }
+}
+
 function paintCron() {
   const empty = $("#cron-empty");
   const list = $("#cron-list");
@@ -3555,7 +3744,9 @@ function paintCron() {
   if (!blocks.length) {
     empty.hidden = false;
     empty.textContent = CRON_EMPTY;
+    empty.classList.add("cron-note");
     renderCronOrb();
+    syncCronBox();
     scheduleHitSync();
     return;
   }
@@ -3569,33 +3760,44 @@ function paintCron() {
     const noteText = cronGroupNote(group);
     if (noteText) {
       const note = document.createElement("p");
-      note.className = "cron-meta";
+      note.className = "cron-note";
       note.textContent = noteText;
       block.appendChild(note);
     }
+    const cards = document.createElement("div");
+    cards.className = "cron-cards";
     (group.jobs || []).forEach((job) => {
       const row = document.createElement("article");
-      row.className = job.running ? "cron-job is-running" : "cron-job";
+      row.className = "cron-job";
+      const copy = document.createElement("div");
+      copy.className = "cron-card-copy";
       const name = document.createElement("p");
       name.className = "cron-name";
       name.textContent = job.name;
-      const meta = document.createElement("p");
-      meta.className = "cron-meta";
+      const expr = document.createElement("p");
+      expr.className = "cron-expr";
+      expr.textContent = job.schedule || "";
+      const time = document.createElement("p");
+      time.className = "cron-time";
       const bits = [];
-      if (job.schedule) bits.push(job.schedule);
-      bits.push(job.enabled ? "啟用" : "停用");
       const next = nextRunLabel(job.next_run_at);
       if (next) bits.push(`下次 ${next}`);
       if (job.running) bits.push("進行中");
       const last = nextRunLabel(job.last_run_at);
       if (last) bits.push(`上次 ${last}`);
-      meta.textContent = bits.join(" · ");
-      row.append(name, meta);
-      block.appendChild(row);
+      time.textContent = bits.join(" · ");
+      const tag = document.createElement("span");
+      tag.className = job.enabled ? "cron-tag is-on" : "cron-tag";
+      tag.textContent = job.enabled ? "啟用" : "停用";
+      copy.append(name, expr, time, tag);
+      row.append(copy, cronStatusMark(job));
+      cards.appendChild(row);
     });
+    if (cards.childElementCount) block.appendChild(cards);
     list.appendChild(block);
   });
   renderCronOrb();
+  syncCronBox();
   scheduleHitSync();
 }
 
@@ -3629,7 +3831,9 @@ function startCronPoll() {
 
 function stopCronPoll() {
   window.clearInterval(state.cronTimer);
+  window.clearInterval(state.cronClock);
   state.cronTimer = 0;
+  state.cronClock = 0;
 }
 
 function startWatchers() {

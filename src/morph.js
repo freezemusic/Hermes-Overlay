@@ -15,7 +15,9 @@ export const ORB_PILL_MS = 200;
 export const PILL_PANEL_MS = 480;
 export const COLLAPSE_MS = 360;
 export const CONTENT_OUT_MS = 100;
-export const CONTENT_IN_MS = 120;
+export const CONTENT_IN_MS = 160;
+export const CONTENT_IN_DELAY_MS = PILL_PANEL_MS - CONTENT_IN_MS;
+export const STACK_GAP = 12;
 export const EASE = "cubic-bezier(.2,.8,.2,1)";
 export const PREVIEW_MS = 5_000;
 
@@ -155,35 +157,74 @@ export function containsPoint(insets, boxW, boxH, x, y) {
     && y <= boxH - insets.bottom + 0.01;
 }
 
-/** Orb → pill, then the two panel phases. Durations sum to 200 + 480. */
-export function openPhases(edge) {
-  const mid = edge === "left" || edge === "right" ? "wide" : "tall";
-  const half = PILL_PANEL_MS / 2;
+/**
+ * Orb → pill, then one 480ms clip from that pill to the panel.
+ * The panel inset shrinks toward zero, so the glass grows out of the
+ * orb's corner instead of fading a full-height slab into view.
+ */
+export function openPhases() {
   return [
     { state: "pill", ms: ORB_PILL_MS },
-    { state: mid, ms: half },
-    { state: "panel", ms: half },
+    { state: "panel", ms: PILL_PANEL_MS },
   ];
 }
 
 /** Reverse of the open path. Shape time is 260ms; content fade is separate. */
-export function collapsePhases(edge, from = "panel") {
+export function collapsePhases(_edge, from = "panel") {
   if (from === "orb") return [];
-  if (from === "pill") return [{ state: "orb", ms: Math.min(ORB_PILL_MS, SHAPE_MS) }];
-  if (from === "wide" || from === "tall") {
-    const step = Math.floor(SHAPE_MS / 2);
-    return [
-      { state: "pill", ms: step },
-      { state: "orb", ms: SHAPE_MS - step },
-    ];
+  if (from === "pill" || from === "wide" || from === "tall") {
+    return [{ state: "orb", ms: Math.min(ORB_PILL_MS, SHAPE_MS) }];
   }
-  const mid = edge === "left" || edge === "right" ? "wide" : "tall";
-  const step = Math.floor(SHAPE_MS / 3);
+  const step = Math.floor(SHAPE_MS / 2);
   return [
-    { state: mid, ms: step },
     { state: "pill", ms: step },
-    { state: "orb", ms: SHAPE_MS - step * 2 },
+    { state: "orb", ms: SHAPE_MS - step },
   ];
+}
+
+function rangesOverlap(a0, a1, b0, b1) {
+  return Math.min(a1, b1) - Math.max(a0, b0) > 0;
+}
+
+/**
+ * Open top and bottom panels must keep at least `gap` pixels between their
+ * boxes. Neither panel is closed. A top anchor stays on the top edge of its
+ * box; a bottom anchor stays on the bottom edge.
+ */
+export function separateStackedPanels(boxes, screenH, gap = STACK_GAP) {
+  const next = (boxes || []).map((box) => ({
+    top: box.top,
+    height: box.height,
+    left: box.left,
+    width: box.width,
+    edge: box.edge || "",
+  }));
+  const order = next.map((_, index) => index).sort((i, j) => next[i].top - next[j].top || i - j);
+  const minH = 160;
+  for (let pass = 0; pass < next.length; pass += 1) {
+    for (let n = 0; n < order.length - 1; n += 1) {
+      const a = next[order[n]];
+      const b = next[order[n + 1]];
+      if (!rangesOverlap(a.left, a.left + a.width, b.left, b.left + b.width)) continue;
+      const space = b.top - (a.top + a.height);
+      if (space >= gap) continue;
+      let deficit = gap - space;
+      const up = Math.min(Math.max(0, a.top), deficit);
+      a.top -= up;
+      deficit -= up;
+      const down = Math.min(Math.max(0, screenH - (b.top + b.height)), deficit);
+      b.top += down;
+      deficit -= down;
+      if (deficit <= 0) continue;
+      const aShrink = Math.min(Math.max(0, a.height - minH), deficit);
+      a.height -= aShrink;
+      deficit -= aShrink;
+      const bShrink = Math.min(Math.max(0, b.height - minH), deficit);
+      b.top += bShrink;
+      b.height -= bShrink;
+    }
+  }
+  return next;
 }
 
 export function phaseList(edge, from, to) {

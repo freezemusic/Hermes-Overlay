@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   COLLAPSE_MS,
+  CONTENT_IN_DELAY_MS,
   CONTENT_IN_MS,
   CONTENT_OUT_MS,
   EASE,
@@ -26,6 +27,7 @@ import {
   iconShift,
   placeShell,
   previewBlocked,
+  separateStackedPanels,
   screenEdge,
   slotPoint,
   tighten,
@@ -77,7 +79,8 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(PILL_PANEL_MS, 480);
   assert.equal(COLLAPSE_MS, 360);
   assert.equal(CONTENT_OUT_MS, 100);
-  assert.equal(CONTENT_IN_MS, 120);
+  assert.equal(CONTENT_IN_MS, 160);
+  assert.equal(CONTENT_IN_DELAY_MS, 320);
   assert.equal(EASE, "cubic-bezier(.2,.8,.2,1)");
   assert.doesNotMatch(EASE, /spring/i);
 });
@@ -117,37 +120,70 @@ test("orb to pill extends horizontally toward the screen centre", () => {
   assert.equal(visibleSize(leftPill, PANEL_W, PANEL_H).w, PILL_W);
 });
 
-test("pill to panel grows perpendicular to the edge", () => {
-  const side = geom("left", 64, 200);
-  assert.deepEqual(openPhases("left").map((step) => step.state), ["pill", "wide", "panel"]);
-  assert.deepEqual(openPhases("right").map((step) => step.state), ["pill", "wide", "panel"]);
-  const wide = insetsFor("wide", side);
-  assert.deepEqual(visibleSize(wide, PANEL_W, PANEL_H), { w: PANEL_W, h: ORB });
-  assert.equal(wide.radius, ORB / 2);
-
-  const vertical = geom("bottom", 1100, 736);
-  assert.deepEqual(openPhases("bottom").map((step) => step.state), ["pill", "tall", "panel"]);
-  assert.deepEqual(openPhases("top").map((step) => step.state), ["pill", "tall", "panel"]);
-  const tall = insetsFor("tall", vertical);
-  assert.deepEqual(visibleSize(tall, PANEL_W, PANEL_H), { w: PILL_W, h: PANEL_H });
-  const panel = insetsFor("panel", vertical);
+test("pill to panel grows out of the orb corner on every edge", () => {
+  for (const edge of ["left", "right", "top", "bottom"]) {
+    assert.deepEqual(openPhases(edge).map((step) => step.state), ["pill", "panel"]);
+    assert.equal(openPhases(edge)[1].ms, PILL_PANEL_MS);
+  }
+  const bottom = geom("bottom", 1100, 736);
+  const pill = insetsFor("pill", bottom);
+  const panel = insetsFor("panel", bottom);
+  assert.equal(pill.bottom, 0);
+  assert.equal(pill.right, 0);
+  assert.ok(pill.top > panel.top);
   assert.deepEqual(visibleSize(panel, PANEL_W, PANEL_H), { w: PANEL_W, h: PANEL_H });
   assert.equal(panel.radius, PANEL_RADIUS);
   assert.ok(panel.radius <= 3);
+  assert.equal(containsPoint(pill, PANEL_W, PANEL_H, bottom.ax, bottom.ay), true);
+  assert.equal(containsPoint(panel, PANEL_W, PANEL_H, bottom.ax, bottom.ay), true);
+
+  const top = geom("top", 200, 40);
+  const topPill = insetsFor("pill", top);
+  assert.equal(topPill.top, 0);
+  assert.equal(topPill.left, 0);
+  const left = geom("left", 64, 200);
+  assert.equal(insetsFor("pill", left).left, 0);
+  const right = geom("right", 1200, 200);
+  assert.equal(insetsFor("pill", right).right, 0);
 });
 
 test("collapse reverses and stays within 360ms with content fading first", () => {
   for (const edge of ["left", "right", "top", "bottom"]) {
     const steps = collapsePhases(edge, "panel");
-    const mid = edge === "left" || edge === "right" ? "wide" : "tall";
-    assert.deepEqual(steps.map((step) => step.state), [mid, "pill", "orb"]);
+    assert.deepEqual(steps.map((step) => step.state), ["pill", "orb"]);
     const shape = steps.reduce((sum, step) => sum + step.ms, 0);
     assert.equal(shape + CONTENT_OUT_MS, COLLAPSE_MS);
     assert.ok(shape + CONTENT_OUT_MS <= 360);
   }
   assert.equal(collapsePhases("bottom", "pill").reduce((sum, step) => sum + step.ms, 0), ORB_PILL_MS);
   assert.equal(openPhases("top").reduce((sum, step) => sum + step.ms, 0), ORB_PILL_MS + PILL_PANEL_MS);
-  assert.deepEqual(phaseList("left", "pill", "panel").map((step) => step.state), ["wide", "panel"]);
+  assert.deepEqual(phaseList("left", "pill", "panel").map((step) => step.state), ["panel"]);
+  assert.equal(phaseList("bottom", "pill", "panel")[0].ms, PILL_PANEL_MS);
+});
+
+test("open top and bottom panels keep a 12px gap", () => {
+  const screenH = 900;
+  const separated = separateStackedPanels([
+    { top: 42, height: 560, left: 400, width: 420, edge: "top" },
+    { top: 298, height: 560, left: 430, width: 420, edge: "bottom" },
+  ], screenH, 12);
+  const upper = separated[0];
+  const lower = separated[1];
+  assert.ok(lower.top - (upper.top + upper.height) >= 12);
+  assert.equal(upper.top, 0);
+  assert.equal(lower.top + lower.height, 900);
+  const clear = separateStackedPanels([
+    { top: 40, height: 200, left: 10, width: 100, edge: "top" },
+    { top: 400, height: 200, left: 10, width: 100, edge: "bottom" },
+  ], screenH, 12);
+  assert.equal(clear[0].top, 40);
+  assert.equal(clear[1].top, 400);
+  const side = separateStackedPanels([
+    { top: 40, height: 500, left: 0, width: 100, edge: "left" },
+    { top: 40, height: 500, left: 400, width: 100, edge: "right" },
+  ], screenH, 12);
+  assert.equal(side[0].top, 40);
+  assert.equal(side[1].height, 500);
 });
 
 test("clip-path is inset() round and the hairline sits one pixel inside", () => {

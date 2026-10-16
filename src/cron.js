@@ -101,6 +101,70 @@ export function anyJobRunning(groups) {
   return (groups || []).some((group) => (group?.jobs || []).some((job) => jobRunning(job)));
 }
 
+export function jobFailed(job) {
+  const status = String(job?.status || job?.latest_execution?.status || job?.state || "").trim().toLowerCase();
+  return status === "failed" || status === "error" || status === "failure";
+}
+
+function runStartValue(job) {
+  if (!job) return "";
+  if (job.started_at) return job.started_at;
+  return job.latest_execution?.started_at || "";
+}
+
+/** Fraction of a known run, or null when the duration cannot be computed. */
+export function cronProgress(job, now = new Date()) {
+  if (!jobRunning(job)) return null;
+  const start = parseRunTime(runStartValue(job));
+  const next = parseRunTime(job?.next_run_at);
+  if (!start || !next) return null;
+  const span = next.getTime() - start.getTime();
+  if (!(span > 1000)) return null;
+  const p = (now.getTime() - start.getTime()) / span;
+  if (!Number.isFinite(p) || p < 0) return null;
+  return Math.max(0, Math.min(1, p));
+}
+
+/** 「行緊 00:42」 from the current run's start. */
+export function runningLabel(job, now = new Date()) {
+  const start = parseRunTime(runStartValue(job));
+  const elapsed = start ? Math.max(0, now.getTime() - start.getTime()) : 0;
+  const total = Math.floor(elapsed / 1000);
+  const mm = String(Math.floor(total / 60)).padStart(2, "0");
+  const ss = String(total % 60).padStart(2, "0");
+  return `行緊 ${mm}:${ss}`;
+}
+
+export function soonestNextLabel(groups, now = new Date()) {
+  let best = null;
+  (groups || []).forEach((group) => {
+    (group?.jobs || []).forEach((job) => {
+      if (!job?.enabled || jobRunning(job)) return;
+      const date = parseRunTime(job.next_run_at);
+      if (!date) return;
+      if (!best || date < best) best = date;
+    });
+  });
+  return best ? nextRunLabel(best, now) : "";
+}
+
+/** Idle tick, a static arc, a spinning segment, or a failed arc. */
+export function cronOrbFace(groups, now = new Date()) {
+  const jobs = (groups || []).flatMap((group) => group?.jobs || []);
+  const running = jobs.find((job) => jobRunning(job));
+  if (running) {
+    const p = cronProgress(running, now);
+    return {
+      mode: p == null ? "spin" : "progress",
+      p: p == null ? 0 : p,
+      label: runningLabel(running, now),
+    };
+  }
+  const failed = jobs.find((job) => jobFailed(job));
+  if (failed) return { mode: "failed", p: 1, label: soonestNextLabel(groups, now) };
+  return { mode: "idle", p: 0, label: soonestNextLabel(groups, now) };
+}
+
 function jobEnabled(raw) {
   if (typeof raw?.enabled === "boolean") return raw.enabled;
   return String(raw?.state || "").toLowerCase() !== "paused";
@@ -117,6 +181,8 @@ function jobFrom(raw, index) {
     enabled: jobEnabled(raw),
     next_run_at: raw.next_run_at ?? raw.next_run ?? "",
     last_run_at: lastRunValue(raw),
+    started_at: raw.latest_execution?.started_at || raw.started_at || "",
+    status: executionStatus(raw) || String(raw.state || "").trim().toLowerCase(),
     running: jobRunning(raw),
   };
 }
