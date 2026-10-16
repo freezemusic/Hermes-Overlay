@@ -2393,6 +2393,11 @@ function paintLocalProximity(rects) {
 }
 
 function setupProximity() {
+  window.addEventListener("contextmenu", (event) => {
+    const orb = event.target.closest?.(".bot-btn");
+    if (orb && modifierHeld(event)) return;
+    event.preventDefault();
+  });
   document.addEventListener("pointerdown", (event) => {
     const panel = event.target.closest?.(".center-panel");
     if (panel && !panel.classList.contains("is-closing")) raisePanel(panel);
