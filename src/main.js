@@ -14,6 +14,7 @@ import {
   ORB,
   PANEL_H,
   PANEL_W,
+  PILL_PANEL_MS,
   PLAN_GROW_MS,
   clipPath,
   distributeEdges,
@@ -31,7 +32,6 @@ import {
   FRAME_BLEED,
   STACK_GAP,
   tighten,
-  seamInsets,
   cronShellHeight,
   chatTailAction,
 } from "./morph.js";
@@ -535,10 +535,23 @@ function whenAnimEnds(anim, duration) {
  * Animations API. The duration is the animation's own clock, with no tail
  * timeout that would stretch a left or right collapse past 300ms.
  */
+function bleedInsets(insets, px) {
+  return {
+    top: insets.top - px,
+    right: insets.right - px,
+    bottom: insets.bottom - px,
+    left: insets.left - px,
+    radius: insets.radius,
+  };
+}
+
 function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const fill = shell.querySelector(".morph-fill");
   const from = insetsFor(fromState, shellGeom(shell));
   const to = insetsFor(toState, shellGeom(shell));
+  const shellTo = toState === "panel" ? bleedInsets(to, FRAME_BLEED) : to;
+  const fillFrom = toState === "panel" ? from : tighten(from);
+  const fillTo = toState === "panel" ? to : tighten(to);
   if (shell.dataset.morphToken !== token) return Promise.resolve(false);
   shell.classList.remove("is-growing-pill", "is-growing-panel");
   holdMotion(shell);
@@ -546,33 +559,49 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   cancelClipAnims(shell);
   if (reducedMotion() || !(duration > 0)) {
     writeClip(shell, to);
-    if (toState === "panel") playContentIn(shell, 0);
+    if (toState === "panel") {
+      playContentIn(shell, 0);
+      return moveOrbToHeader(shell, token).then(() => shell.dataset.morphToken === token);
+    }
     return Promise.resolve(true);
   }
+  // Drop the pill's 200ms transition before the panel clip. The panel clock
+  // is the WAAPI duration (480ms), and transition-delay stays 0.
   writeClip(shell, from);
   void shell.offsetWidth;
+  shell.style.setProperty("transition", "none", "important");
+  shell.style.setProperty("transition-delay", "0s", "important");
+  fill?.style.setProperty("transition", "none", "important");
+  fill?.style.setProperty("transition-delay", "0s", "important");
+  if (toState === "panel") shell.classList.add("is-growing-panel");
+  else if (toState === "pill") shell.classList.add("is-growing-pill");
   const timing = { duration, easing, fill: "forwards" };
   let shellAnim;
   let fillAnim;
+  let orbMove;
   try {
     shellAnim = shell.animate([
       { clipPath: clipPath(from) },
-      { clipPath: clipPath(to) },
+      { clipPath: clipPath(shellTo) },
     ], timing);
-    if (toState === "panel") playContentIn(shell, duration);
+    if (toState === "panel") {
+      playContentIn(shell, duration);
+      orbMove = moveOrbToHeader(shell, token);
+    }
     if (fill) {
       fillAnim = fill.animate([
-        { clipPath: clipPath(tighten(from)) },
-        { clipPath: clipPath(tighten(to)) },
+        { clipPath: clipPath(fillFrom) },
+        { clipPath: clipPath(fillTo) },
       ], timing);
     }
   } catch {
     writeClip(shell, to);
-    if (toState === "panel") playContentIn(shell, 0);
+    if (toState === "panel") {
+      playContentIn(shell, 0);
+      return moveOrbToHeader(shell, token).then(() => shell.dataset.morphToken === token);
+    }
     return Promise.resolve(shell.dataset.morphToken === token);
   }
-  if (toState === "panel") shell.classList.add("is-growing-panel");
-  else if (toState === "pill") shell.classList.add("is-growing-pill");
   if (toState !== "orb") {
     const track = () => {
       if (shell.dataset.morphToken !== token) return;
@@ -584,7 +613,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   } else {
     scheduleHitSync();
   }
-  return whenAnimEnds(shellAnim, duration).then((finished) => {
+  return whenAnimEnds(shellAnim, duration).then(async (finished) => {
     if (shell.dataset.morphToken !== token) return false;
     if (!finished) return false;
     pauseHitSync();
@@ -592,12 +621,9 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     // or transition here restarts it and drops the seam's first frame.
     holdMotion(shell);
     holdMotion(fill);
-    const revealPlan = toState === "panel"
-      && shell.dataset.planOpen === "1"
-      && !shell.classList.contains("is-collapsing");
-    if (revealPlan) {
+    if (toState === "panel") {
       const fillEl = shell.querySelector(".morph-fill");
-      if (fillEl) fillEl.style.clipPath = clipPath(tighten(to));
+      if (fillEl) fillEl.style.clipPath = clipPath(to);
       shell.style.clipPath = "none";
       shell.dataset.clipTop = String(to.top);
       shell.dataset.clipRight = String(to.right);
@@ -610,6 +636,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     shell.classList.remove("is-growing-pill", "is-growing-panel");
     shellAnim.cancel();
     fillAnim?.cancel();
+    if (orbMove) await orbMove;
     return true;
   });
 }
@@ -637,6 +664,14 @@ function showPlanHost(shell) {
   if (fill && !fill.style.clipPath) fill.style.clipPath = "inset(0px 0px 0px 0px round 3px)";
 }
 
+/** Fully closed on the docked side, then fully open.
+ *  inset(0 100% 0 0) → inset(0), written as percentages on every side so
+ *  WebKit interpolates and the first frame is 0% of the plan's own box. */
+function planClipPath(side, open) {
+  if (open) return "inset(0% 0% 0% 0%)";
+  return side === "left" ? "inset(0% 0% 0% 100%)" : "inset(0% 100% 0% 0%)";
+}
+
 /** Park the seam while the panel clip is still covering it, before content
  *  fades in. The handoff must not flip display, filter, or measure. */
 function armPlanSeam(shell) {
@@ -644,14 +679,12 @@ function armPlanSeam(shell) {
   if (!plan || shell.dataset.planOpen !== "1") return;
   const side = shell.dataset.planSide === "left" ? "left" : sideFromStyle(shell);
   shell.dataset.planSide = side;
-  const width = planWidthPx();
-  shell.dataset.seamWidth = String(width);
   plan.hidden = false;
   plan.classList.add("is-seam-grow");
   plan.style.setProperty("display", "flex", "important");
   plan.style.setProperty("overflow", "hidden", "important");
   holdMotion(plan);
-  plan.style.clipPath = clipPath(seamInsets(width, side, false));
+  plan.style.clipPath = planClipPath(side, false);
 }
 
 function cancelContentIn(shell) {
@@ -708,24 +741,21 @@ function growPlan(shell, token) {
     holdMotion(plan);
     showPlanHost(shell);
     const side = shell.dataset.planSide === "left" ? "left" : "right";
-    const width = planWidthPx();
-    shell.dataset.seamWidth = String(width);
-    plan.style.clipPath = clipPath(seamInsets(width, side, false));
+    plan.style.clipPath = planClipPath(side, false);
   } else if (shell.style.clipPath !== "none") {
     shell.style.clipPath = "none";
   }
   const side = shell.dataset.planSide === "left" ? "left" : "right";
-  const width = Number(shell.dataset.seamWidth) || planWidthPx();
-  const from = seamInsets(width, side, false);
-  const to = seamInsets(width, side, true);
+  const from = planClipPath(side, false);
+  const to = planClipPath(side, true);
   let anim;
   try {
     anim = plan.animate([
-      { clipPath: clipPath(from) },
-      { clipPath: clipPath(to) },
+      { clipPath: from },
+      { clipPath: to },
     ], { duration: PLAN_GROW_MS, easing: EASE, fill: "forwards" });
   } catch {
-    plan.style.clipPath = clipPath(to);
+    plan.style.clipPath = to;
     return Promise.resolve();
   }
   // Do not pin the animation clock. A layout flush freezes the timeline at
@@ -734,7 +764,7 @@ function growPlan(shell, token) {
   return whenAnimEnds(anim, PLAN_GROW_MS).then((finished) => {
     if (token && shell.dataset.morphToken !== token) return;
     if (!finished) return;
-    plan.style.clipPath = clipPath(to);
+    plan.style.clipPath = to;
     anim.cancel();
     holdMotion(plan);
   });
@@ -742,7 +772,8 @@ function growPlan(shell, token) {
 
 const GLOW = 140;
 
-/** After the panel clip, slide the orb (and its glow) to the header corner. */
+/** Same 480ms curve as the panel clip, started in that turn. The parked
+ *  header offset is unchanged. Glow opacity is the moving and docked classes. */
 function moveOrbToHeader(shell, token) {
   if (token && shell.dataset.morphToken !== token) return Promise.resolve();
   const orb = shell.querySelector(".morph-orb");
@@ -764,7 +795,7 @@ function moveOrbToHeader(shell, token) {
   holdMotion(orb);
   holdMotion(glow);
   const scale = ICON / ORB;
-  const timing = { duration: PLAN_GROW_MS, easing: EASE, fill: "forwards" };
+  const timing = { duration: PILL_PANEL_MS, easing: EASE, fill: "forwards" };
   let orbAnim;
   let glowAnim;
   try {
@@ -784,7 +815,7 @@ function moveOrbToHeader(shell, token) {
     shell.classList.add("is-orb-docked");
     return Promise.resolve();
   }
-  return whenAnimEnds(orbAnim, PLAN_GROW_MS).then((finished) => {
+  return whenAnimEnds(orbAnim, PILL_PANEL_MS).then((finished) => {
     if (token && shell.dataset.morphToken !== token) return;
     if (!finished) return;
     try {
@@ -927,10 +958,6 @@ async function runShellMorph(shell, target) {
   let current = from;
   for (const step of phaseList(shell.dataset.edge || "bottom", from, target)) {
     if (step.state === "panel" && target === "panel") {
-      if (from === "pill") {
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        if (!alive()) return false;
-      }
       revealContent(shell);
       primePanelTail(shell);
     }
@@ -946,8 +973,10 @@ async function runShellMorph(shell, target) {
     current = step.state;
   }
   if (!alive()) return false;
-  if (target === "panel") {
-    await Promise.all([growPlan(shell, token), moveOrbToHeader(shell, token)]);
+  if (target === "panel" && shell.dataset.planOpen === "1") {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    if (!alive()) return false;
+    await growPlan(shell, token);
   }
   if (!alive()) return false;
   settleShell(shell, target);

@@ -1753,19 +1753,19 @@ html, body {
 }
 
 .morph.is-growing-pill {
-  transition: clip-path 200ms cubic-bezier(.2, .8, .2, 1);
+  transition: clip-path 200ms cubic-bezier(.2, .8, .2, 1) 0s;
 }
 
 .morph.is-growing-pill .morph-fill {
-  transition: clip-path 200ms cubic-bezier(.2, .8, .2, 1);
+  transition: clip-path 200ms cubic-bezier(.2, .8, .2, 1) 0s;
 }
 
 .morph.is-growing-panel {
-  transition: clip-path 480ms cubic-bezier(.2, .8, .2, 1);
+  transition: clip-path 480ms cubic-bezier(.2, .8, .2, 1) 0s;
 }
 
 .morph.is-growing-panel .morph-fill {
-  transition: clip-path 480ms cubic-bezier(.2, .8, .2, 1);
+  transition: clip-path 480ms cubic-bezier(.2, .8, .2, 1) 0s;
 }
 
 .morph[data-state="orb"][data-hit-id] {
@@ -1821,6 +1821,7 @@ html, body {
   overflow: visible;
   background: transparent;
   filter: none;
+  box-shadow: none;
 }
 
 .morph.is-morphing[data-kind="bot"][data-state="panel"] .morph-fill {
@@ -1910,6 +1911,15 @@ html, body {
   will-change: transform;
 }
 
+.morph.is-orb-moving .morph-glow {
+  opacity: 0.4;
+}
+
+.morph.is-orb-docked .morph-glow {
+  opacity: 1;
+  transition: none;
+}
+
 .morph.is-orb-moving .morph-orb {
   contain: none;
 }
@@ -1961,6 +1971,7 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  overflow: visible;
 }
 
 .morph .active-avatar { display: none; }
