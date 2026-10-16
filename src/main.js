@@ -8,9 +8,7 @@ import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST
 import { latestPlan, noteNewestPlan, planDemoMarkdown, planTask, plansIn } from "./plan.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
-  CONTENT_IN_DELAY_MS,
   CONTENT_IN_MS,
-  CONTENT_OPAQUE_LEAD_MS,
   EASE,
   ICON,
   ORB,
@@ -548,7 +546,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   cancelClipAnims(shell);
   if (reducedMotion() || !(duration > 0)) {
     writeClip(shell, to);
-    if (toState === "panel") holdContent(shell);
+    if (toState === "panel") playContentIn(shell, 0);
     return Promise.resolve(true);
   }
   writeClip(shell, from);
@@ -561,6 +559,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       { clipPath: clipPath(from) },
       { clipPath: clipPath(to) },
     ], timing);
+    if (toState === "panel") playContentIn(shell, duration);
     if (fill) {
       fillAnim = fill.animate([
         { clipPath: clipPath(tighten(from)) },
@@ -569,6 +568,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     }
   } catch {
     writeClip(shell, to);
+    if (toState === "panel") playContentIn(shell, 0);
     return Promise.resolve(shell.dataset.morphToken === token);
   }
   if (toState === "panel") shell.classList.add("is-growing-panel");
@@ -584,17 +584,12 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   } else {
     scheduleHitSync();
   }
-  if (toState === "panel") scheduleContentLock(shell, token);
   return whenAnimEnds(shellAnim, duration).then((finished) => {
     if (shell.dataset.morphToken !== token) return false;
-    window.clearTimeout(shell._contentLock);
     if (!finished) return false;
     pauseHitSync();
-    // Opacity is already inline 1. Writing it again on this frame, beside
-    // the clip-path removal, is the one-frame header dim.
-    if (toState === "panel" && !shell.classList.contains("is-collapsing") && !contentLocked(shell)) {
-      holdContent(shell);
-    }
+    // The content fade is the WAAPI started with this clip. Writing opacity
+    // or transition here restarts it and drops the seam's first frame.
     holdMotion(shell);
     holdMotion(fill);
     const revealPlan = toState === "panel"
@@ -659,17 +654,31 @@ function armPlanSeam(shell) {
   plan.style.clipPath = clipPath(seamInsets(width, side, false));
 }
 
-/** Lock opacity after the fade has painted, and before the clip ends.
- *  Same clock on every edge. The clip-end turn must not be the one that
- *  finishes the fade. */
-function scheduleContentLock(shell, token) {
-  window.clearTimeout(shell._contentLock);
-  const lockAt = CONTENT_IN_DELAY_MS + CONTENT_IN_MS + CONTENT_OPAQUE_LEAD_MS / 2;
-  shell._contentLock = window.setTimeout(() => {
-    if (shell.dataset.morphToken !== token) return;
-    if (shell.classList.contains("is-collapsing")) return;
-    holdContent(shell);
-  }, lockAt);
+function cancelContentIn(shell) {
+  shell.querySelectorAll(".content, .morph-body").forEach((el) => {
+    el.getAnimations?.().forEach((anim) => {
+      if (anim.id === "content-in") anim.cancel();
+    });
+  });
+}
+
+/** One opacity animation, started in the same turn as the panel clip.
+ *  No delay and no later inline opacity: a delay makes WebKitGTK replay from 0. */
+function playContentIn(shell, duration) {
+  const nodes = [...shell.querySelectorAll(".content, .morph-body")];
+  cancelContentIn(shell);
+  const frames = duration > 0
+    ? [{ opacity: 0 }, { opacity: 1 }]
+    : [{ opacity: 1 }, { opacity: 1 }];
+  const timing = {
+    duration: duration > 0 ? CONTENT_IN_MS : 1,
+    easing: "linear",
+    fill: "forwards",
+    id: "content-in",
+  };
+  nodes.forEach((el) => {
+    try { el.animate(frames, timing); } catch { /* .open keeps the resting opacity */ }
+  });
 }
 
 function primePanelTail(shell) {
@@ -778,44 +787,23 @@ function moveOrbToHeader(shell, token) {
   return whenAnimEnds(orbAnim, PLAN_GROW_MS).then((finished) => {
     if (token && shell.dataset.morphToken !== token) return;
     if (!finished) return;
-    const end = `translate(${dx}px, ${dy}px) scale(${scale})`;
-    orb.style.transform = end;
-    if (glow) {
-      const half = GLOW / 2;
-      glow.style.transform = `translate(${-half + dx}px, ${-half + dy}px)`;
-    }
-    orbAnim.cancel();
-    glowAnim?.cancel();
+    try {
+      if (glowAnim && orbAnim.currentTime != null) glowAnim.currentTime = orbAnim.currentTime;
+    } catch { /* already finished */ }
     shell.classList.add("is-orb-docked");
     shell.classList.remove("is-orb-moving");
-    orb.style.transform = "";
-    if (glow) glow.style.transform = "";
+    orbAnim.cancel();
+    glowAnim?.cancel();
     releaseMotion(orb);
     releaseMotion(glow);
   });
 }
 
 function releaseContent(shell) {
+  cancelContentIn(shell);
   shell.querySelectorAll(".content, .morph-body").forEach((el) => {
     el.style.removeProperty("transition");
     el.style.removeProperty("opacity");
-  });
-}
-
-function contentLocked(shell) {
-  const nodes = shell.querySelectorAll(".content, .morph-body");
-  return nodes.length > 0 && [...nodes].every((el) => (
-    el.style.opacity === "1" && el.style.getPropertyPriority("transition") === "important"
-  ));
-}
-
-/** Freeze the fade before a class change, so WebKit cannot replay opacity from 0.
- *  Inline only: adding a class here restyles the header for one frame. */
-function holdContent(shell) {
-  shell.querySelectorAll(".content, .morph-body").forEach((el) => {
-    if (el.style.opacity === "1" && el.style.getPropertyPriority("transition") === "important") return;
-    el.style.opacity = "1";
-    el.style.setProperty("transition", "none", "important");
   });
 }
 
@@ -836,7 +824,6 @@ function settleShell(shell, target) {
   shell.classList.remove("is-growing-pill", "is-growing-panel");
   const fill = shell.querySelector(".morph-fill");
   if (target === "panel") {
-    holdContent(shell);
     if (!shell.classList.contains("is-orb-moving")) shell.classList.add("is-orb-docked");
     if (shell.dataset.contentOnce !== "1") revealContent(shell);
   } else {
@@ -876,7 +863,6 @@ function settleShell(shell, target) {
 }
 
 function stopShellTransition(shell) {
-  window.clearTimeout(shell._contentLock);
   const fill = shell.querySelector(".morph-fill");
   holdMotion(shell);
   holdMotion(fill);

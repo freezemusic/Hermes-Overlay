@@ -5,7 +5,6 @@ import {
   COLLAPSE_MS,
   CONTENT_IN_DELAY_MS,
   CONTENT_IN_MS,
-  CONTENT_OPAQUE_LEAD_MS,
   CONTENT_OUT_MS,
   EASE,
   PLAN_GROW_MS,
@@ -89,9 +88,8 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(COLLAPSE_MS, 300);
   assert.equal(CONTENT_OUT_MS, 80);
   assert.equal(CONTENT_IN_MS, 160);
-  assert.equal(CONTENT_OPAQUE_LEAD_MS, 160);
-  assert.equal(CONTENT_IN_DELAY_MS, 160);
-  assert.equal(CONTENT_IN_DELAY_MS + CONTENT_IN_MS + CONTENT_OPAQUE_LEAD_MS, PILL_PANEL_MS);
+  assert.equal(CONTENT_IN_DELAY_MS, 0);
+  assert.ok(CONTENT_IN_MS < PILL_PANEL_MS);
   assert.equal(PLAN_GROW_MS, 240);
   assert.equal(EASE, "cubic-bezier(.2,.8,.2,1)");
   assert.equal(COLLAPSE_EASE, "cubic-bezier(.4,0,1,1)");
