@@ -15,6 +15,8 @@ import {
   latchedElementIds,
   linuxAltWarning,
   modifierMatches,
+  modifierEngages,
+  MODIFIER_ARM_MS,
   nextOrbPulse,
   nextDropdownOpen,
   pinToggle,
@@ -171,6 +173,51 @@ test("modifier keys", () => {
   assert.equal(modifierMatches("ctrl", "Shift"), false);
   assert.equal(modifierMatches("shift", "Shift"), true);
   assert.equal(modifierMatches("alt", "Alt"), true);
+});
+
+test("ctrl+c and ctrl+v do not flash the overlay", () => {
+  const copy = modifierEngages({
+    modifier: "ctrl",
+    keys: ["Control", "c"],
+    now: 500,
+    armedAt: 0,
+    suppressed: false,
+  });
+  assert.equal(copy.held, false);
+  assert.equal(copy.suppressed, true);
+  const tail = modifierEngages({
+    modifier: "ctrl",
+    keys: ["Control"],
+    now: 800,
+    armedAt: copy.armedAt,
+    suppressed: copy.suppressed,
+  });
+  assert.equal(tail.held, false);
+  assert.equal(tail.suppressed, true);
+  const up = modifierEngages({
+    modifier: "ctrl",
+    keys: [],
+    now: 900,
+    armedAt: tail.armedAt,
+    suppressed: tail.suppressed,
+  });
+  assert.equal(up.held, false);
+  assert.equal(up.suppressed, false);
+
+  const early = modifierEngages({ modifier: "ctrl", keys: ["Control"], now: 1000 });
+  assert.equal(early.held, false);
+  assert.equal(early.armedAt, 1000);
+  const armed = modifierEngages({
+    modifier: "ctrl",
+    keys: ["Control"],
+    now: 1000 + MODIFIER_ARM_MS,
+    armedAt: early.armedAt,
+  });
+  assert.equal(armed.held, true);
+  const paste = modifierEngages({ modifier: "ctrl", keys: ["Control", "v"], now: 2000, armedAt: 0 });
+  assert.equal(paste.held, false);
+  const shift = modifierEngages({ modifier: "shift", keys: ["Shift", "c"], now: 200, armedAt: 0 });
+  assert.equal(shift.held, true);
 });
 
 test("interactive lock names one panel and follows window focus", () => {

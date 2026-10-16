@@ -259,6 +259,35 @@ export function modifierMatches(kind, key) {
   return key === "Control";
 }
 
+/** A lone modifier arms after this, so a Ctrl+C / Ctrl+V chord cannot flash the HUD. */
+export const MODIFIER_ARM_MS = 100;
+
+/**
+ * Copy and paste stay at the resting frame. That includes the tail after C or V
+ * is released while Ctrl is still down. A lone modifier arms after MODIFIER_ARM_MS.
+ */
+export function modifierEngages({
+  modifier = "ctrl",
+  keys = [],
+  now = 0,
+  armedAt = null,
+  suppressed = false,
+} = {}) {
+  const down = keys.some((key) => modifierMatches(modifier, key));
+  if (!down) return { held: false, armedAt: null, suppressed: false };
+  const copyPaste = modifier !== "shift"
+    && modifier !== "alt"
+    && keys.some((key) => key === "c" || key === "C" || key === "v" || key === "V");
+  if (copyPaste) return { held: false, armedAt: null, suppressed: true };
+  if (suppressed) return { held: false, armedAt: null, suppressed: true };
+  const start = armedAt == null ? now : armedAt;
+  return {
+    held: now - start >= MODIFIER_ARM_MS,
+    armedAt: start,
+    suppressed: false,
+  };
+}
+
 export function modifierLabel(kind) {
   if (kind === "shift") return "Shift";
   if (kind === "alt") return "Alt";

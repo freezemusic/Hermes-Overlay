@@ -6,6 +6,8 @@
 
 未填 gateway 位址時，畫面用內置 mock Bot，可以離線睇版面。填咗位址就改由名單上嘅 profile 排邊框頭像；連唔到會顯示錯誤，唔會靜靜雞退返去 mock。
 
+需求以根目錄 [SPEC.md](SPEC.md) 為準。改程式之前先讀，並逐條核對受影響嘅條文。見 [AGENTS.md](AGENTS.md)。
+
 ## 安裝 / Install
 
 由 [GitHub Releases](https://github.com/freezemusic/Hermes-Overlay/releases) 下載草稿或已發佈嘅安裝檔。而家嘅 build **未簽名**。`macOSPrivateApi` 開住先至透明，所以呢個 app **入唔到 Mac App Store**。

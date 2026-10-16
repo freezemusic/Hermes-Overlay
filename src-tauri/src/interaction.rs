@@ -6,7 +6,7 @@ use device_query::{DeviceQuery, DeviceState, Keycode};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Debug, Clone)]
@@ -50,6 +50,45 @@ pub fn platform_supports_global_input() -> bool {
     {
         true
     }
+}
+
+/// Lone modifier wait. Shorter than the 120ms hover motion, long enough that
+/// Ctrl+C / Ctrl+V is sampled before the HUD changes.
+pub const MODIFIER_ARM: Duration = Duration::from_millis(100);
+
+pub fn copy_paste_chord(keys: &[Keycode], modifier: &str) -> bool {
+    if modifier == "shift" || modifier == "alt" {
+        return false;
+    }
+    keys.iter()
+        .any(|key| matches!(key, Keycode::C | Keycode::V))
+}
+
+/// Copy and paste stay at rest, including after C or V lifts while Ctrl is held.
+/// A lone modifier becomes active after [`MODIFIER_ARM`].
+pub fn modifier_engages(
+    keys: &[Keycode],
+    modifier: &str,
+    now: Instant,
+    armed_at: &mut Option<Instant>,
+    suppressed: &mut bool,
+) -> bool {
+    if !modifier_held(keys, modifier) {
+        *armed_at = None;
+        *suppressed = false;
+        return false;
+    }
+    if copy_paste_chord(keys, modifier) {
+        *armed_at = None;
+        *suppressed = true;
+        return false;
+    }
+    if *suppressed {
+        *armed_at = None;
+        return false;
+    }
+    let start = armed_at.get_or_insert(now);
+    now.saturating_duration_since(*start) >= MODIFIER_ARM
 }
 
 pub fn modifier_held(keys: &[Keycode], modifier: &str) -> bool {
@@ -740,6 +779,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
         };
         let mut last_signature = String::new();
         let mut ignoring: Option<bool> = None;
+        let mut arm_at: Option<Instant> = None;
+        let mut chord_suppressed = false;
         let mut focus_probe = FocusProbe::open();
         let mut other_samples = 0u8;
         let mut closed_popup_for_other = false;
@@ -759,7 +800,13 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .clone();
-            let held = modifier_held(&device.get_keys(), &cfg.modifier);
+            let held = modifier_engages(
+                &device.get_keys(),
+                &cfg.modifier,
+                Instant::now(),
+                &mut arm_at,
+                &mut chord_suppressed,
+            );
             let rects = hub
                 .rects
                 .lock()
@@ -1619,6 +1666,59 @@ mod tests {
         assert_eq!(frame_of(&held, "bot:settings").opacity, 1.0);
         assert!(!frame_of(&held, "bot:kanban").capture);
         assert!((frame_of(&held, "bot:kanban").opacity - 0.18).abs() < 0.001);
+    }
+
+    #[test]
+    fn ctrl_c_and_ctrl_v_do_not_engage_the_modifier() {
+        let mut armed = None;
+        let mut suppressed = false;
+        let now = Instant::now();
+        let copy = [Keycode::LControl, Keycode::C];
+        assert!(!modifier_engages(
+            &copy,
+            "ctrl",
+            now,
+            &mut armed,
+            &mut suppressed
+        ));
+        assert!(suppressed);
+        let tail = [Keycode::LControl];
+        assert!(!modifier_engages(
+            &tail,
+            "ctrl",
+            now + Duration::from_millis(300),
+            &mut armed,
+            &mut suppressed
+        ));
+        assert!(suppressed);
+        assert!(!modifier_engages(
+            &[],
+            "ctrl",
+            now + Duration::from_millis(400),
+            &mut armed,
+            &mut suppressed
+        ));
+        assert!(!suppressed);
+
+        let early = modifier_engages(&tail, "ctrl", now, &mut armed, &mut suppressed);
+        assert!(!early);
+        let armed_now = modifier_engages(
+            &tail,
+            "ctrl",
+            now + MODIFIER_ARM,
+            &mut armed,
+            &mut suppressed,
+        );
+        assert!(armed_now);
+        let paste = [Keycode::RControl, Keycode::V];
+        assert!(!modifier_engages(
+            &paste,
+            "ctrl",
+            now,
+            &mut armed,
+            &mut suppressed
+        ));
+        assert!(suppressed);
     }
 
     #[test]

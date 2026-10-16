@@ -56,6 +56,8 @@ import {
   nextOrbPulse,
   modifierLabel,
   modifierMatches,
+  modifierEngages,
+  MODIFIER_ARM_MS,
   nextDropdownOpen,
   selectKeyOpensDropdown,
   BLUR_RELEASE_MS,
@@ -2376,10 +2378,29 @@ function queryOsFocus() {
     .catch(() => {});
 }
 
+const modifierArm = { at: null, suppressed: false, timer: 0 };
+
+function engagedModifier(now = performance.now()) {
+  const next = modifierEngages({
+    modifier: state.interaction.modifier,
+    keys: [...state.heldKeys],
+    now,
+    armedAt: modifierArm.at,
+    suppressed: modifierArm.suppressed,
+  });
+  modifierArm.at = next.armedAt;
+  modifierArm.suppressed = next.suppressed;
+  window.clearTimeout(modifierArm.timer);
+  if (!next.held && next.armedAt != null) {
+    modifierArm.timer = window.setTimeout(() => paintLocalProximity(), MODIFIER_ARM_MS - (now - next.armedAt));
+  }
+  return next.held;
+}
+
 function paintLocalProximity(rects) {
   const list = rects || collectHits();
   const cfg = state.interaction;
-  const held = [...state.heldKeys].some((key) => modifierMatches(state.interaction.modifier, key));
+  const held = engagedModifier();
   const frames = elementStates({
     held,
     latchedIds: state.latchedIds,
