@@ -867,6 +867,28 @@ html, body {
   transform-origin: left center;
 }
 
+.plan-raster {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+  transform-origin: left center;
+}
+
+.plan-raster canvas,
+.plan-raster img {
+  display: block;
+  pointer-events: none;
+  transform-origin: left center;
+}
+
+.morph[data-plan-side="left"] .plan-raster,
+.morph[data-plan-side="left"] .plan-raster canvas,
+.morph[data-plan-side="left"] .plan-raster img {
+  transform-origin: right center;
+}
+
 .plan-chip {
   display: inline-flex;
   margin-top: 6px;
@@ -1047,8 +1069,8 @@ html, body {
 
 .plan-window::before { display: none; }
 
-/* Resting transform is none. Growth reveals by widening this box from 0.
-   The inner .plan-fit stays at the final width. Do not scale or clip it. */
+/* Resting transform is none. Growth keeps this box at the final width and
+   reveals a pre-rasterised bitmap with scaleX only. Do not animate width. */
 .morph .plan-window {
   position: absolute;
   left: 100%;
@@ -1860,6 +1882,20 @@ html, body {
   visibility: visible;
 }
 
+.morph.is-morphing[data-state="panel"] .morph-stroke,
+.morph[data-state="panel"] .morph-stroke {
+  visibility: visible;
+}
+
+/* Paper color stays for the whole open panel. Losing it when
+   is-growing-panel drops rebuilds the glass, and the left title washes
+   about five frames later. */
+.morph[data-state="panel"] .morph-fill,
+.morph.is-morphing[data-state="panel"] .morph-fill,
+.morph[data-kind="bot"][data-state="panel"] .morph-fill {
+  background-color: #f8f8fc;
+}
+
 .morph[data-state="orb"][data-hit-id] {
   opacity: var(--hit-opacity, 0.18);
 }
@@ -2026,6 +2062,15 @@ html, body {
 .morph.is-orb-docked .morph-glow {
   opacity: 1;
   transition: none;
+}
+
+/* Dropping is-orb-moving must not evict the header layer. The left orb
+   sits on the title, and that eviction washes the panel a few frames later. */
+.morph.is-orb-docked .morph-orb,
+.morph.is-orb-docked .morph-glow,
+.morph[data-state="panel"] .morph-orb,
+.morph[data-state="panel"] .morph-glow {
+  will-change: transform;
 }
 
 .morph.is-orb-moving .morph-orb {

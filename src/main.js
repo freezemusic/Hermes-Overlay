@@ -16,7 +16,7 @@ import {
   PANEL_W,
   PILL_PANEL_MS,
   PLAN_GROW_MS,
-  seamWidthPx,
+  seamScaleAt,
   clipPath,
   distributeEdges,
   fixedOrbPoint,
@@ -600,7 +600,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   if (toState !== "orb") void shell.offsetWidth;
   shell.style.clipPath = clipPath(shellFrom);
   if (fill) fill.style.clipPath = clipPath(fillFrom);
-  if (stroke && toState === "panel") stroke.style.clipPath = clipPath(from);
+  if (stroke && toState === "panel") stroke.style.clipPath = clipPath(to);
   if (toState === "panel") {
     shell.style.background = "transparent";
     shell.style.setProperty("overflow", "visible", "important");
@@ -707,7 +707,9 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     shell.dataset.clipBottom = String(shellTo.bottom);
     shell.dataset.clipLeft = String(shellTo.left);
     shell.dataset.clipRadius = String(shellTo.radius);
-    shell.classList.remove("is-growing-pill", "is-growing-panel");
+    // Keep is-growing-panel. Dropping it here changes the fill color and
+    // hides the stroke; that rebuild presents about five frames after settle.
+    shell.classList.remove("is-growing-pill");
     debugLog("clip-hold", `bot=${shell.dataset.botId || ""} mode=final`);
     return true;
   });
@@ -789,7 +791,9 @@ function ensurePlanFit(plan) {
   if (ready) return ready;
   const fit = document.createElement("div");
   fit.className = "plan-fit";
-  const moving = [...plan.childNodes].filter((node) => !node.classList?.contains("hud-corner"));
+  const moving = [...plan.childNodes].filter((node) => (
+    !node.classList?.contains("hud-corner") && !node.classList?.contains("plan-raster")
+  ));
   fit.append(...moving);
   plan.append(fit);
   return fit;
@@ -1139,8 +1143,8 @@ function applyParkedPlan(shell, plan) {
   plan.style.pointerEvents = "none";
   plan.style.opacity = "1";
   plan.style.zIndex = "-1";
-  plan.style.willChange = "width";
-  fit.style.removeProperty("will-change");
+  plan.style.willChange = "transform";
+  fit.style.willChange = "transform";
   plan.style.transformOrigin = origin;
   fit.style.transformOrigin = origin;
   plan.style.removeProperty("clip-path");
@@ -1161,7 +1165,7 @@ function lockPlanBox(shell, plan) {
   if (height > 0) plan.style.height = `${height}px`;
   plan.style.setProperty("overflow", "hidden", "important");
   plan.dataset.sizeLock = "1";
-  if (seamPhase(plan) !== "grown") plan.style.width = "0px";
+  plan.style.width = `${width}px`;
   const fit = ensurePlanFit(plan);
   fit.style.overflow = "hidden";
   fit.style.flex = "none";
@@ -1203,6 +1207,183 @@ function planHostReady(shell) {
   return (shell.dataset.visual || shell.dataset.state) === "panel";
 }
 
+function planRasterHost(plan) {
+  return plan?.querySelector?.(":scope > .plan-raster") || null;
+}
+
+function ensurePlanRaster(plan) {
+  const ready = planRasterHost(plan);
+  if (ready) return ready;
+  const host = document.createElement("div");
+  host.className = "plan-raster";
+  host.setAttribute("aria-hidden", "true");
+  plan.append(host);
+  return host;
+}
+
+function fontFaceCss() {
+  let text = "";
+  const sheets = document.styleSheets;
+  if (!sheets) return text;
+  for (const sheet of sheets) {
+    let rules;
+    try { rules = sheet.cssRules; } catch { continue; }
+    if (!rules) continue;
+    for (const rule of rules) {
+      if (rule.type === CSSRule.FONT_FACE_RULE) text += `${rule.cssText}\n`;
+    }
+  }
+  return text.replace(/<\/style/gi, "<\\/style");
+}
+
+const RASTER_PROPS = [
+  "display", "position", "box-sizing", "width", "height", "min-width", "max-width",
+  "margin", "padding", "border", "border-radius", "background", "background-color",
+  "color", "font", "font-family", "font-size", "font-weight", "line-height",
+  "letter-spacing", "white-space", "text-align", "overflow", "flex", "flex-direction",
+  "align-items", "justify-content", "gap", "list-style", "text-decoration",
+];
+
+function inlinePaintStyles(source, clone) {
+  const view = source.ownerDocument?.defaultView;
+  if (!view?.getComputedStyle) return;
+  const walk = (from, to) => {
+    if (from.nodeType !== 1 || to.nodeType !== 1) return;
+    let computed;
+    try { computed = view.getComputedStyle(from); } catch { computed = null; }
+    if (computed) {
+      const bits = [];
+      for (const name of RASTER_PROPS) {
+        const value = computed.getPropertyValue(name);
+        if (value) bits.push(`${name}:${value}`);
+      }
+      const prev = to.getAttribute("style") || "";
+      to.setAttribute("style", `${bits.join(";")};${prev}`);
+    }
+    const fromKids = [...from.children];
+    const toKids = [...to.children];
+    for (let i = 0; i < fromKids.length && i < toKids.length; i += 1) walk(fromKids[i], toKids[i]);
+  };
+  walk(source, clone);
+}
+
+function rasterInk(ctx, width, height) {
+  let ink = 0;
+  try {
+    const sample = ctx.getImageData(0, 0, width, height).data;
+    for (let i = 3; i < sample.length; i += 64) {
+      if (sample[i] > 12) ink += 1;
+    }
+  } catch {
+    return -1;
+  }
+  return ink;
+}
+
+function styleRasterBox(node, width, height) {
+  node.style.width = `${width}px`;
+  node.style.height = `${height}px`;
+  node.style.pointerEvents = "none";
+}
+
+/** Snapshot the parked plan while the panel clip still covers it.
+ *  A blank canvas is discarded so the seam never reveals an empty bitmap. */
+function capturePlanRaster(plan) {
+  if (!plan || plan.dataset.raster || plan._rasterTask) return;
+  const fit = planFitEl(plan);
+  const shell = plan.closest?.(".morph");
+  const width = Math.round(Number(shell?.dataset.planWidth) || plan.offsetWidth || 0);
+  const height = Math.round(Number(shell?.dataset.planHeight) || plan.offsetHeight || 0);
+  if (!fit || width < 2 || height < 2 || typeof XMLSerializer !== "function") {
+    plan.dataset.raster = "live";
+    return;
+  }
+  plan._rasterTask = 1;
+  const canvas = document.createElement("canvas");
+  canvas.className = "plan-raster-bmp";
+  let svg = "";
+  try {
+    const clone = fit.cloneNode(true);
+    inlinePaintStyles(fit, clone);
+    clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+    const faces = fontFaceCss();
+    const body = new XMLSerializer().serializeToString(clone);
+    svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+  <foreignObject x="0" y="0" width="${width}" height="${height}">
+    <div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;overflow:hidden;visibility:visible;background:#f8f8fc">
+      ${faces ? `<style>${faces}</style>` : ""}
+      ${body}
+    </div>
+  </foreignObject>
+</svg>`;
+  } catch {
+    plan.dataset.raster = "live";
+    plan._rasterTask = 0;
+    debugLog("plan-raster", "serialize-failed");
+    return;
+  }
+  const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  let settled = false;
+  const finish = (mode, reason) => {
+    if (settled) return;
+    settled = true;
+    URL.revokeObjectURL(url);
+    plan.dataset.raster = mode;
+    plan._rasterTask = 0;
+    debugLog("plan-raster", reason);
+  };
+  const drawBitmap = (source, allowImage) => {
+    if (!canvas || !plan.isConnected) {
+      finish("live", "detached");
+      return "live";
+    }
+    canvas.width = width;
+    canvas.height = height;
+    let tainted = false;
+    try {
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(source, 0, 0, width, height);
+      const ink = rasterInk(ctx, width, height);
+      if (ink > 0) {
+        if (seamPhase(plan) === "growing" || seamPhase(plan) === "grown") {
+          finish("live", "late");
+          return "live";
+        }
+        const host = ensurePlanRaster(plan);
+        host.textContent = "";
+        host.append(canvas);
+        styleRasterBox(canvas, width, height);
+        finish("1", `ok w=${width} h=${height} ink=${ink}`);
+        return "ok";
+      }
+    } catch {
+      tainted = true;
+    }
+    // An unverified image is not shown. A blank bitmap would hide the live plan.
+    if (!allowImage) return "retry";
+    finish("live", tainted ? `tainted w=${width} h=${height}` : `blank w=${width} h=${height}`);
+    return "live";
+  };
+  const loadImage = () => {
+    const img = new Image();
+    img.onload = () => drawBitmap(img, true);
+    img.onerror = () => finish("live", "error");
+    img.src = url;
+  };
+  if (typeof createImageBitmap === "function") {
+    createImageBitmap(blob).then((bitmap) => {
+      const result = drawBitmap(bitmap, false);
+      bitmap.close?.();
+      if (result === "retry") loadImage();
+    }).catch(() => loadImage());
+    return;
+  }
+  loadImage();
+}
+
 /** Lay the plan out and promote a transform layer before the seam clock.
  *  WebKitGTK does not rasterise opacity:0, so the markdown has to be painted
  *  at opacity 1 while the opaque glass still covers it. The animate() turn
@@ -1229,14 +1410,18 @@ function warmPlanLayer(shell) {
   fit.style.width = `${width}px`;
   fit.style.height = "100%";
   fit.style.alignSelf = shell.dataset.planSide === "left" ? "flex-end" : "flex-start";
-  plan.style.width = "0px";
+  plan.style.width = `${width}px`;
   plan.style.removeProperty("transform");
   fit.style.removeProperty("transform");
-  plan.style.willChange = "width";
+  plan.style.willChange = "transform";
   plan.dataset.warm = "1";
   requestAnimationFrame(() => {
-    plan.dataset.painted = "1";
-    seamMark("plan-seam:warm-painted");
+    requestAnimationFrame(() => {
+      if (!plan.isConnected) return;
+      plan.dataset.painted = "1";
+      seamMark("plan-seam:warm-painted");
+      capturePlanRaster(plan);
+    });
   });
 }
 
@@ -1258,19 +1443,19 @@ function cancelContentIn(shell) {
   });
 }
 
-/** Opacity rides the clip's own clock. It reaches 1 at 160ms and stays there
- *  until the clip ends, so the 160ms finish cannot replay from 0 on the left title. */
+/** Opacity reaches 1 at 160ms. The running clock is four times the clip so
+ *  WebKit does not release the fill a few frames after settle. */
 function playContentIn(shell, duration) {
   const nodes = [...shell.querySelectorAll(".content, .morph-body")];
   cancelContentIn(shell);
   nodes.forEach((el) => holdMotion(el));
   shell.querySelectorAll(".morph-pill, .panel-header, .morph-orb").forEach((el) => holdMotion(el));
-  const fadeAt = duration > 0 ? Math.min(1, CONTENT_IN_MS / duration) : 1;
+  const fadeAt = duration > 0 ? Math.min(1, CONTENT_IN_MS / duration / 4) : 1;
   const frames = duration > 0
     ? [{ opacity: 0, offset: 0 }, { opacity: 1, offset: fadeAt }, { opacity: 1, offset: 1 }]
     : [{ opacity: 1 }, { opacity: 1 }];
   const timing = {
-    duration: duration > 0 ? duration : 1,
+    duration: duration > 0 ? duration * 4 : 1,
     easing: "linear",
     fill: "forwards",
     id: "content-in",
@@ -1319,8 +1504,8 @@ function holdSeamVisual(shell) {
   plan.style.visibility = "hidden";
   plan.style.transformOrigin = origin;
   fit.style.transformOrigin = origin;
-  plan.style.willChange = "width";
-  fit.style.removeProperty("will-change");
+  plan.style.willChange = "transform";
+  fit.style.willChange = "transform";
   plan.style.removeProperty("clip-path");
   plan.style.setProperty("display", "flex", "important");
   plan.style.setProperty("overflow", "hidden", "important");
@@ -1376,11 +1561,6 @@ function stopSeamClock(plan) {
   plan._seamFrame = 0;
 }
 
-/** Wrapper width only. The markdown stays at the final width inside it. */
-function writeSeamWidth(plan, full, t) {
-  plan.style.width = `${seamWidthPx(full, t)}px`;
-}
-
 function pinContentOpacity(shell) {
   shell?.querySelectorAll(".content, .morph-body").forEach((el) => {
     el.style.opacity = "1";
@@ -1401,6 +1581,9 @@ function growPlan(shell, token) {
   plan.dataset.seamFlight = flight;
   setSeamPhase(plan, "growing");
   if (reducedMotion()) {
+    const parked = planRasterHost(plan);
+    if (parked) parked.style.visibility = "hidden";
+    fit.style.visibility = "visible";
     lockPlanRevealed(plan);
     plan.style.removeProperty("display");
     plan.classList.remove("is-seam-grow");
@@ -1410,29 +1593,61 @@ function growPlan(shell, token) {
   shell.classList.add("is-plan-seam");
   pauseHitSync();
   stopSeamClock(plan);
-  // Width stays 0 while hidden. The inner box is already the final width,
-  // so each painted step only reveals a new strip.
+  // The wrapper stays at the final width. Only a transform moves, so the
+  // shell is not laid out again on every frame.
   const side = shell.dataset.planSide === "left" ? "left" : "right";
+  const origin = seamOrigin(shell);
   const full = Number(shell.dataset.planWidth) || planWidthPx();
   fit.style.flex = "none";
   fit.style.width = `${Math.round(full)}px`;
   fit.style.height = "100%";
   fit.style.alignSelf = side === "left" ? "flex-end" : "flex-start";
-  fit.style.removeProperty("transform");
-  fit.style.removeProperty("will-change");
-  plan.style.removeProperty("transform");
+  fit.style.transformOrigin = origin;
+  plan.style.transformOrigin = origin;
   plan.style.removeProperty("clip-path");
-  plan.style.willChange = "width";
-  plan.style.width = "0px";
+  plan.style.width = `${Math.round(full)}px`;
+  plan.style.pointerEvents = "";
   pinContentOpacity(shell);
+  const paintScale = (node, bmp, t) => {
+    const scale = seamScaleAt(t);
+    node.style.transform = `scaleX(${scale})`;
+    if (bmp) bmp.style.transform = `scaleX(${1 / scale})`;
+  };
   const run = new Promise((resolve) => {
     let elapsed = 0;
     let last = 0;
     let calm = 0;
+    let outer = plan;
+    let inner = fit;
+    let host = null;
+    let bmp = null;
     const alive = () => {
       if (!plan.isConnected || plan.dataset.seamFlight !== flight) return false;
       if (token && shell.dataset.morphToken !== token) return false;
       return true;
+    };
+    const bindScale = () => {
+      host = planRasterHost(plan);
+      const ready = plan.dataset.raster === "1" || plan.dataset.raster === "img";
+      bmp = ready ? host?.querySelector("canvas, img") : null;
+      if (bmp && host) {
+        outer = host;
+        inner = bmp;
+        fit.style.visibility = "hidden";
+        host.style.visibility = "visible";
+        host.style.pointerEvents = "none";
+        host.style.willChange = "transform";
+        bmp.style.willChange = "transform";
+        host.style.transformOrigin = origin;
+        bmp.style.transformOrigin = origin;
+        plan.style.willChange = "auto";
+      } else {
+        outer = plan;
+        inner = fit;
+        plan.style.willChange = "transform";
+        fit.style.willChange = "transform";
+        fit.style.visibility = "visible";
+      }
     };
     // Two short gaps mean the compositor is presenting again. A long gap
     // resets the count and does not advance the 240ms curve.
@@ -1455,18 +1670,16 @@ function growPlan(shell, token) {
         plan._seamFrame = requestAnimationFrame(awaitCalm);
         return;
       }
-      // The hidden width is already 0. The first visible sample is a short
-      // step so the opening frame shows growth and 30fps does not open on
-      // the steep part of the curve.
-      plan.style.removeProperty("transform");
-      fit.style.removeProperty("transform");
-      plan.style.willChange = "width";
+      // Still hidden. The first visible sample is 12ms on the curve, about
+      // 20%, so the opening frame is never a 0 or 1 percent hold.
+      bindScale();
+      plan.style.transform = "none";
       const FIRST_PAINT_MS = 12;
       elapsed = FIRST_PAINT_MS;
-      writeSeamWidth(plan, full, elapsed / PLAN_GROW_MS);
+      paintScale(outer, inner, elapsed / PLAN_GROW_MS);
       plan.classList.remove("is-plan-parked");
       plan.style.visibility = "visible";
-      seamLog("anim-start", `flight=${flight} mode=raf width=${plan.style.width} calm=2`);
+      seamLog("anim-start", `flight=${flight} mode=raf raster=${plan.dataset.raster || "live"} scale=${outer.style.transform} calm=2`);
       seamMark("plan-seam:clock");
       last = now;
       plan._seamFrame = requestAnimationFrame(step);
@@ -1484,16 +1697,23 @@ function growPlan(shell, token) {
       elapsed += delta;
       const t = elapsed / PLAN_GROW_MS;
       if (t >= 1) {
-        writeSeamWidth(plan, full, 1);
-        seamLog("anim-finish", `flight=${flight} mode=raf width=${plan.style.width}`);
+        paintScale(outer, inner, 1);
+        fit.style.visibility = "visible";
+        if (host) host.style.pointerEvents = "none";
+        seamLog("anim-finish", `flight=${flight} mode=raf raster=${plan.dataset.raster || "live"} scale=1`);
         holdFreeze(shell, FREEZE_AFTER_GROW_MS);
         holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
         setSeamPhase(plan, "grown", { dom: false });
         armQuietFlush(shell);
+        if (host && bmp) {
+          requestAnimationFrame(() => {
+            if (plan.isConnected && seamPhase(plan) === "grown") host.style.visibility = "hidden";
+          });
+        }
         resolve(true);
         return;
       }
-      writeSeamWidth(plan, full, t);
+      paintScale(outer, inner, t);
       plan._seamFrame = requestAnimationFrame(step);
     };
     plan._seamFrame = requestAnimationFrame(awaitCalm);
@@ -1620,7 +1840,7 @@ function applyQueuedShell(shell, tag) {
   const parts = deferredParts(shell);
   debugLog("queued-apply", `bot=${shell.dataset.botId || ""} tag=${tag} ${parts}`);
   pinRestingNodes(shell);
-  shell.classList.remove("is-morphing", "is-plan-seam", "is-plan-arming");
+  shell.classList.remove("is-morphing", "is-plan-seam", "is-plan-arming", "is-growing-panel");
   delete shell.dataset.chatDirty;
   delete shell.dataset.planDirty;
   renderChat(shell.dataset.botId, { inplace: true, tag, resting: true });
@@ -1766,6 +1986,16 @@ async function growAfterPaint(shell, token) {
   await playPlanSeam(shell, token);
 }
 
+function logSettleLater(shell) {
+  framesLater(5, () => {
+    if (!shell?.isConnected) return;
+    debugLog(
+      "settle-later",
+      `bot=${shell.dataset.botId || ""} edge=${shell.dataset.edge || ""} side=${shell.dataset.planSide || ""} clip=${shell.dataset.clipRadius ? "kept" : "empty"} growing=${shell.classList.contains("is-growing-panel") ? 1 : 0}`,
+    );
+  });
+}
+
 /** Settle is bookkeeping only. Class, opacity, visibility, transition, and
  *  clip writes here race the last growth frame and wash the panel. The clip
  *  completion already committed the resting inline styles. */
@@ -1783,6 +2013,7 @@ function settleShell(shell, target) {
     `target=${target} bot=${shell.dataset.botId || ""} dom=0 edge=${shell.dataset.edge || ""} side=${shell.dataset.planSide || ""} clip=${shell.dataset.clipRadius ? "kept" : "empty"}`,
   );
   debugLog("settle-defer", `bot=${shell.dataset.botId || ""} ${deferredParts(shell)}`);
+  logSettleLater(shell);
   framesLater(2, () => {
     if (!shell.isConnected) return;
     shell._settleGate = 0;
