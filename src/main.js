@@ -16,6 +16,7 @@ import {
   PANEL_W,
   PILL_PANEL_MS,
   PLAN_GROW_MS,
+  seamEase,
   seamScaleAt,
   clipPath,
   distributeEdges,
@@ -745,16 +746,25 @@ function sideFromStyle(shell) {
   return roomRight >= planWidthPx() ? "right" : "left";
 }
 
-/** Widen the held clip over the plan. Left and right share this path: only
- *  the outward edge changes, and the clip animation stays. The plan is still
- *  hidden, so the panel pixels stay the same and the clip layer is not removed. */
-function holdPlanClip(shell) {
-  if (!shell || shell.dataset.planOpen !== "1") return;
+/** Shell clip that reveals `t` of the plan (0..1 through seamEase).
+ *  The plan box stays full size. Only this outward inset changes, which is
+ *  the same clip-path the panel open already presents frame by frame. */
+function planRevealClip(shell, t) {
+  const reveal = t <= 0 ? 0 : t >= 1 ? 1 : seamEase(t);
   const base = bleedInsets(insetsFor("panel", shellGeom(shell)), FRAME_BLEED + HAIRLINE);
-  const extra = planWidthPx() + FRAME_BLEED + HAIRLINE;
-  if (shell.dataset.planSide === "left") base.left = -extra;
-  else base.right = -extra;
-  const value = clipPath(base);
+  const extra = (Number(shell.dataset.planWidth) || planWidthPx()) + FRAME_BLEED + HAIRLINE;
+  const shown = extra * reveal;
+  if (shell.dataset.planSide === "left") base.left = -shown;
+  else base.right = -shown;
+  return { value: clipPath(base), insets: base, reveal };
+}
+
+/** Widen the held clip over the plan. Left and right share this path: only
+ *  the outward edge changes, and the clip animation stays. */
+function holdPlanClip(shell, reveal = 1) {
+  if (!shell || shell.dataset.planOpen !== "1") return;
+  const clip = planRevealClip(shell, reveal);
+  const { value, insets: base } = clip;
   const anim = shell._clipHold;
   if (anim?.effect?.setKeyframes) {
     try {
@@ -767,7 +777,7 @@ function holdPlanClip(shell) {
   shell.dataset.clipBottom = String(base.bottom);
   shell.dataset.clipLeft = String(base.left);
   shell.dataset.clipRadius = String(base.radius);
-  debugLog("clip-hold", `bot=${shell.dataset.botId || ""} mode=widen side=${shell.dataset.planSide || "right"}`);
+  debugLog("clip-hold", `bot=${shell.dataset.botId || ""} mode=widen side=${shell.dataset.planSide || "right"} reveal=${clip.reveal.toFixed(3)}`);
 }
 
 /** The plan sits outside the shell box. Keep the clip layer and stretch it
@@ -776,7 +786,6 @@ function showPlanHost(shell) {
   shell.style.setProperty("overflow", "visible", "important");
   shell.style.background = "transparent";
   shell.style.setProperty("filter", "none", "important");
-  holdPlanClip(shell);
   const fill = shell.querySelector(".morph-fill");
   if (fill && !fill.style.clipPath) fill.style.clipPath = "inset(0px 0px 0px 0px round 3px)";
 }
@@ -1139,7 +1148,7 @@ function applyParkedPlan(shell, plan) {
   plan.classList.add("is-seam-grow", "is-plan-parked");
   plan.style.setProperty("display", "flex", "important");
   plan.style.setProperty("overflow", "hidden", "important");
-  plan.style.visibility = "hidden";
+  plan.style.visibility = "visible";
   plan.style.pointerEvents = "none";
   plan.style.opacity = "1";
   plan.style.zIndex = "-1";
@@ -1339,6 +1348,10 @@ function capturePlanRaster(plan) {
       finish("live", "detached");
       return "live";
     }
+    if (seamPhase(plan) === "growing" || seamPhase(plan) === "grown") {
+      finish("live", "late");
+      return "live";
+    }
     canvas.width = width;
     canvas.height = height;
     let tainted = false;
@@ -1348,10 +1361,6 @@ function capturePlanRaster(plan) {
       ctx.drawImage(source, 0, 0, width, height);
       const ink = rasterInk(ctx, width, height);
       if (ink > 0) {
-        if (seamPhase(plan) === "growing" || seamPhase(plan) === "grown") {
-          finish("live", "late");
-          return "live";
-        }
         const host = ensurePlanRaster(plan);
         host.textContent = "";
         host.append(canvas);
@@ -1411,9 +1420,8 @@ function warmPlanLayer(shell) {
   fit.style.height = "100%";
   fit.style.alignSelf = shell.dataset.planSide === "left" ? "flex-end" : "flex-start";
   plan.style.width = `${width}px`;
-  plan.style.removeProperty("transform");
-  fit.style.removeProperty("transform");
   plan.style.willChange = "transform";
+  fit.style.willChange = "transform";
   plan.dataset.warm = "1";
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
@@ -1498,10 +1506,14 @@ function holdSeamVisual(shell) {
   }
   if (seamPhase(plan) !== "grown") plan.classList.add("is-seam-grow");
   plan.classList.add("is-plan-parked");
-  plan.style.removeProperty("z-index");
   plan.style.opacity = "1";
-  plan.style.pointerEvents = "";
-  plan.style.visibility = "hidden";
+  plan.style.pointerEvents = "none";
+  plan.style.visibility = "visible";
+  plan.style.zIndex = "-1";
+  if (!plan.style.transform) {
+    const shift = shell.dataset.planSide === "left" ? "100%" : "-100%";
+    plan.style.transform = `translateX(${shift})`;
+  }
   plan.style.transformOrigin = origin;
   fit.style.transformOrigin = origin;
   plan.style.willChange = "transform";
@@ -1551,7 +1563,6 @@ async function playPlanSeam(shell, token) {
   seamLog("sliver-painted", getComputedStyle(plan).transform);
   shell.classList.remove("is-plan-arming");
   seamMark("plan-seam:painted");
-  watchSeamFrames();
   await growPlan(shell, token);
 }
 
@@ -1565,6 +1576,77 @@ function pinContentOpacity(shell) {
   shell?.querySelectorAll(".content, .morph-body").forEach((el) => {
     el.style.opacity = "1";
   });
+}
+
+/** One yield after the starter clip is written. rAF during the old growth
+ *  loop fired without a GTK present; a timeout lets that present happen
+ *  before the clock moves. */
+function paintFlush(shell, tag) {
+  return new Promise((resolve) => {
+    const armed = performance.now();
+    const motion = shell._motion || "";
+    const quiet = Math.round(clockAt(shell, "quiet") - armed);
+    const freeze = Math.round(clockAt(shell, "freeze") - armed);
+    setTimeout(() => {
+      const flushed = performance.now();
+      seamLog(
+        "present-flush",
+        `${tag} armed=${armed.toFixed(1)} flushed=${flushed.toFixed(1)} gap=${(flushed - armed).toFixed(1)} motion=${motion} quiet=${quiet} freeze=${freeze}`,
+      );
+      resolve(flushed);
+    }, 0);
+  });
+}
+
+/** Hold the shell clip on one sample of the curve. The plan node is not
+ *  scaled: v53 showed every plan-local animation (rAF scale, width, snapshot)
+ *  stay off-screen for the whole clock, then catch up in three frames.
+ *  The shell clip is the animation the panel open already presents. */
+function seekSeamClip(shell, atMs) {
+  const from = planRevealClip(shell, 0).value;
+  const to = planRevealClip(shell, 1).value;
+  const held = planRevealClip(shell, atMs / PLAN_GROW_MS).value;
+  let anim = shell._clipHold;
+  holdMotion(shell);
+  if (!anim?.effect) {
+    try {
+      anim = shell.animate([
+        { clipPath: from },
+        { clipPath: to },
+      ], { duration: PLAN_GROW_MS, easing: EASE, fill: "forwards" });
+      shell._clipHold = anim;
+    } catch {
+      shell.style.clipPath = held;
+      return null;
+    }
+  } else {
+    try {
+      anim.effect.updateTiming({ duration: PLAN_GROW_MS, easing: EASE, fill: "forwards" });
+      anim.effect.setKeyframes([
+        { clipPath: from, offset: 0 },
+        { clipPath: to, offset: 1 },
+      ]);
+    } catch { /* inline clip still shows the starter */ }
+  }
+  try {
+    anim.pause();
+    anim.currentTime = atMs;
+  } catch { /* static clip below */ }
+  shell.style.clipPath = held;
+  void getComputedStyle(shell).clipPath;
+  return anim;
+}
+
+function playSeamClip(anim, atMs) {
+  if (!anim) return Promise.resolve(false);
+  const now = document.timeline?.currentTime;
+  try {
+    anim.play();
+    if (typeof now === "number") anim.startTime = now - atMs;
+  } catch {
+    return Promise.resolve(false);
+  }
+  return whenAnimEnds(anim, PLAN_GROW_MS);
 }
 
 function growPlan(shell, token) {
@@ -1584,6 +1666,10 @@ function growPlan(shell, token) {
     const parked = planRasterHost(plan);
     if (parked) parked.style.visibility = "hidden";
     fit.style.visibility = "visible";
+    plan.style.transform = "none";
+    plan.style.visibility = "visible";
+    plan.classList.remove("is-plan-parked");
+    holdPlanClip(shell, 1);
     lockPlanRevealed(plan);
     plan.style.removeProperty("display");
     plan.classList.remove("is-seam-grow");
@@ -1593,8 +1679,8 @@ function growPlan(shell, token) {
   shell.classList.add("is-plan-seam");
   pauseHitSync();
   stopSeamClock(plan);
-  // The wrapper stays at the final width. Only a transform moves, so the
-  // shell is not laid out again on every frame.
+  // Full-size plan, already painted under the glass. The shell clip is the
+  // only thing that moves, so the markdown layer is not rebuilt per frame.
   const side = shell.dataset.planSide === "left" ? "left" : "right";
   const origin = seamOrigin(shell);
   const full = Number(shell.dataset.planWidth) || planWidthPx();
@@ -1603,121 +1689,53 @@ function growPlan(shell, token) {
   fit.style.height = "100%";
   fit.style.alignSelf = side === "left" ? "flex-end" : "flex-start";
   fit.style.transformOrigin = origin;
+  fit.style.transform = "none";
+  fit.style.visibility = "visible";
+  fit.style.willChange = "transform";
   plan.style.transformOrigin = origin;
+  plan.style.transform = "none";
   plan.style.removeProperty("clip-path");
   plan.style.width = `${Math.round(full)}px`;
-  plan.style.pointerEvents = "";
+  plan.style.pointerEvents = "none";
+  plan.style.visibility = "visible";
+  plan.style.zIndex = "";
+  plan.style.willChange = "transform";
+  plan.classList.remove("is-plan-parked");
   pinContentOpacity(shell);
-  const paintScale = (node, bmp, t) => {
-    const scale = seamScaleAt(t);
-    node.style.transform = `scaleX(${scale})`;
-    if (bmp) bmp.style.transform = `scaleX(${1 / scale})`;
+  const FIRST_PAINT_MS = 12;
+  const alive = () => {
+    if (!plan.isConnected || plan.dataset.seamFlight !== flight) return false;
+    if (token && shell.dataset.morphToken !== token) return false;
+    return true;
   };
-  const run = new Promise((resolve) => {
-    let elapsed = 0;
-    let last = 0;
-    let calm = 0;
-    let outer = plan;
-    let inner = fit;
-    let host = null;
-    let bmp = null;
-    const alive = () => {
-      if (!plan.isConnected || plan.dataset.seamFlight !== flight) return false;
-      if (token && shell.dataset.morphToken !== token) return false;
-      return true;
+  const run = (async () => {
+    const anim = seekSeamClip(shell, FIRST_PAINT_MS);
+    const first = seamScaleAt(FIRST_PAINT_MS / PLAN_GROW_MS);
+    seamLog("anim-start", `flight=${flight} mode=clip raster=${plan.dataset.raster || "live"} reveal=${first.toFixed(3)}`);
+    seamMark("plan-seam:clock");
+    await paintFlush(shell, "starter");
+    if (!alive()) return false;
+    const started = performance.now();
+    const sample = (i) => {
+      if (!alive() || seamPhase(plan) === "grown") return;
+      const wall = performance.now() - started;
+      const t = Math.min(1, (FIRST_PAINT_MS + wall) / PLAN_GROW_MS);
+      seamLog("seam-sample", `i=${i} wall=${wall.toFixed(1)} reveal=${seamEase(t).toFixed(3)} motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
+      if (wall < PLAN_GROW_MS) setTimeout(() => sample(i + 1), 32);
     };
-    const bindScale = () => {
-      host = planRasterHost(plan);
-      const ready = plan.dataset.raster === "1" || plan.dataset.raster === "img";
-      bmp = ready ? host?.querySelector("canvas, img") : null;
-      if (bmp && host) {
-        outer = host;
-        inner = bmp;
-        fit.style.visibility = "hidden";
-        host.style.visibility = "visible";
-        host.style.pointerEvents = "none";
-        host.style.willChange = "transform";
-        bmp.style.willChange = "transform";
-        host.style.transformOrigin = origin;
-        bmp.style.transformOrigin = origin;
-        plan.style.willChange = "auto";
-      } else {
-        outer = plan;
-        inner = fit;
-        plan.style.willChange = "transform";
-        fit.style.willChange = "transform";
-        fit.style.visibility = "visible";
-      }
-    };
-    // Two short gaps mean the compositor is presenting again. A long gap
-    // resets the count and does not advance the 240ms curve.
-    const awaitCalm = (now) => {
-      plan._seamFrame = 0;
-      if (!alive()) {
-        resolve(false);
-        return;
-      }
-      if (!last) {
-        last = now;
-        plan._seamFrame = requestAnimationFrame(awaitCalm);
-        return;
-      }
-      const gap = now - last;
-      last = now;
-      if (gap < 50) calm += 1;
-      else calm = 0;
-      if (calm < 2) {
-        plan._seamFrame = requestAnimationFrame(awaitCalm);
-        return;
-      }
-      // Still hidden. The first visible sample is 12ms on the curve, about
-      // 20%, so the opening frame is never a 0 or 1 percent hold.
-      bindScale();
-      plan.style.transform = "none";
-      const FIRST_PAINT_MS = 12;
-      elapsed = FIRST_PAINT_MS;
-      paintScale(outer, inner, elapsed / PLAN_GROW_MS);
-      plan.classList.remove("is-plan-parked");
-      plan.style.visibility = "visible";
-      seamLog("anim-start", `flight=${flight} mode=raf raster=${plan.dataset.raster || "live"} scale=${outer.style.transform} calm=2`);
-      seamMark("plan-seam:clock");
-      last = now;
-      plan._seamFrame = requestAnimationFrame(step);
-    };
-    const step = (now) => {
-      plan._seamFrame = 0;
-      if (!alive()) {
-        resolve(false);
-        return;
-      }
-      // Paint-driven: one presented frame moves the curve by at most ~33ms,
-      // so a stall between callbacks cannot skip ahead of what was shown.
-      const delta = Math.min(Math.max(0, now - last), 33);
-      last = now;
-      elapsed += delta;
-      const t = elapsed / PLAN_GROW_MS;
-      if (t >= 1) {
-        paintScale(outer, inner, 1);
-        fit.style.visibility = "visible";
-        if (host) host.style.pointerEvents = "none";
-        seamLog("anim-finish", `flight=${flight} mode=raf raster=${plan.dataset.raster || "live"} scale=1`);
-        holdFreeze(shell, FREEZE_AFTER_GROW_MS);
-        holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
-        setSeamPhase(plan, "grown", { dom: false });
-        armQuietFlush(shell);
-        if (host && bmp) {
-          requestAnimationFrame(() => {
-            if (plan.isConnected && seamPhase(plan) === "grown") host.style.visibility = "hidden";
-          });
-        }
-        resolve(true);
-        return;
-      }
-      paintScale(outer, inner, t);
-      plan._seamFrame = requestAnimationFrame(step);
-    };
-    plan._seamFrame = requestAnimationFrame(awaitCalm);
-  });
+    setTimeout(() => sample(0), 32);
+    await playSeamClip(anim, FIRST_PAINT_MS);
+    if (!alive()) return false;
+    shell.style.clipPath = planRevealClip(shell, 1).value;
+    plan.style.pointerEvents = "";
+    fit.style.visibility = "visible";
+    seamLog("anim-finish", `flight=${flight} mode=clip raster=${plan.dataset.raster || "live"} reveal=1`);
+    holdFreeze(shell, FREEZE_AFTER_GROW_MS);
+    holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
+    setSeamPhase(plan, "grown", { dom: false });
+    armQuietFlush(shell);
+    return true;
+  })();
   plan._seamRun = run;
   run.finally(() => {
     if (plan._seamRun === run) plan._seamRun = null;

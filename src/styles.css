@@ -7,7 +7,7 @@
    the orb, pill, and panel are one shell. Clip-path inset() morphs the shape.
    Orb→pill 200ms, pill→panel 480ms, cubic-bezier(.2,.8,.2,1), no spring.
    Click chains the pill into the panel; hover rests on the pill.
-   Collapse clocks are pinned per edge (right 233, left/bottom 266, top 299)
+   Collapse clocks are pinned per edge (right 300, left 316, bottom 266, top 333)
    so a 30fps sample lands in 300–333ms. Content fades in the first 80ms.
    prefers-reduced-motion fades opacity.
    CJK stays untracked — uppercase and letter-spacing only under :lang(en). */
@@ -1141,14 +1141,17 @@ html, body {
   align-self: flex-end;
 }
 
-/* The parked plan is opacity 1 so WebKitGTK rasterises it. Keep the glass
-   opaque until the seam raises that layer, or the full plan ghosts through. */
+/* The parked plan is opacity 1 and visibility visible so WebKitGTK builds
+   its backing store during the panel clip. visibility:hidden skips that
+   paint, and the seam then has nothing to present until growth ends.
+   A translate keeps it under the opaque glass, so it does not show early. */
 .morph:has(.plan-window.is-plan-parked) .morph-fill {
   background-color: #f8f8fc;
 }
 
 .plan-window.is-plan-parked {
-  visibility: hidden !important;
+  visibility: visible;
+  pointer-events: none;
 }
 
 .plan-window[data-size-lock="1"] {

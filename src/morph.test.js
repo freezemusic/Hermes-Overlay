@@ -93,7 +93,7 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(PANEL_RADIUS, 3);
   assert.equal(ORB_PILL_MS, 200);
   assert.equal(PILL_PANEL_MS, 480);
-  assert.equal(COLLAPSE_MS, 300);
+  assert.equal(COLLAPSE_MS, 333);
   assert.equal(CONTENT_OUT_MS, 80);
   assert.equal(CONTENT_IN_MS, 160);
   assert.equal(CONTENT_IN_DELAY_MS, 0);
@@ -244,10 +244,10 @@ test("plan seam and cron height and chat tail use explicit pixels", () => {
 });
 
 test("collapse is one ease-in and the clock is pinned per edge", () => {
-  assert.equal(collapseMs("right"), 233);
-  assert.equal(collapseMs("left"), 266);
+  assert.equal(collapseMs("right"), 300);
+  assert.equal(collapseMs("left"), 316);
   assert.equal(collapseMs("bottom"), 266);
-  assert.equal(collapseMs("top"), 299);
+  assert.equal(collapseMs("top"), 333);
   for (const edge of ["left", "right", "top", "bottom"]) {
     const steps = collapsePhases(edge, "panel");
     assert.deepEqual(steps.map((step) => step.state), ["orb"]);
