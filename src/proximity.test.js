@@ -235,6 +235,23 @@ test("a composer keeps the next key after the modifier comes up", () => {
     activeIsComposer: false,
   }), "ignore");
   assert.equal(composerKeyAction({ key: "a", composerConnected: false }), "ignore");
+  assert.equal(composerKeyAction({
+    key: "Enter",
+    composerConnected: true,
+    activeIsComposer: true,
+  }), "send");
+  assert.equal(composerKeyAction({
+    key: "Enter",
+    composerConnected: true,
+    activeIsComposer: false,
+  }), "send");
+  assert.equal(composerKeyAction({ key: "Enter", composerConnected: false }), "ignore");
+  assert.equal(composerKeyAction({
+    key: "Enter",
+    ctrlKey: true,
+    composerConnected: true,
+  }), "ignore");
+  assert.equal(composerKeyAction({ key: "Escape", composerConnected: true }), "ignore");
 });
 
 test("modifier keys", () => {

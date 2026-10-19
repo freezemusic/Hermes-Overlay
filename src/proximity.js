@@ -325,6 +325,9 @@ export function composerKeyAction({
   }
   if (!composerConnected) return "ignore";
   if (ctrlKey || altKey || metaKey) return "ignore";
+  // Enter is not a character. The field listener sends when focus is still
+  // there; `send` covers the seam stealing focus after the click.
+  if (key === "Enter") return "send";
   if (key.length !== 1) return "ignore";
   return activeIsComposer ? "type" : "insert";
 }

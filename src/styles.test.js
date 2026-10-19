@@ -95,10 +95,13 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /function pumpSeamPresent/);
   assert.match(mainSrc, /function watchPresent/);
   assert.match(mainSrc, /present-frame/);
+  const present = mainSrc.slice(mainSrc.indexOf("function watchPresent"), mainSrc.indexOf("function pumpSeamPresent"));
+  assert.match(present, /state !== "finished"/);
+  assert.doesNotMatch(present, /playState === "running"/);
   assert.match(mainSrc, /watchPresent\(shell, shellAnim, "panel"\)/);
   const seamClip = mainSrc.slice(mainSrc.indexOf("function beginSeamClip"), mainSrc.indexOf("function finishSeamClip"));
   assert.match(seamClip, /shell\.animate\(\[/);
-  assert.match(seamClip, /fill: "forwards"/);
+  assert.match(seamClip, /fill: "both"/);
   assert.match(seamClip, /id: "seam-clip"/);
   assert.match(seamClip, /planRevealClip\(shell, 0\)/);
   assert.match(seamClip, /easing: PLAN_EASE/);
@@ -543,6 +546,8 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(main, /dropParkedAnchor/);
   assert.match(main, /includePlan/);
   assert.match(main, /composerKeyAction/);
+  assert.match(main, /action === "send"/);
+  assert.match(main, /event\.target !== composerField/);
   assert.match(main, /CRON_ORB_BLEED/);
   assert.match(main, /上次 /);
   assert.doesNotMatch(main.slice(main.indexOf("function closeKanban"), main.indexOf("function startKanbanPoll")), /stopKanbanPoll/);

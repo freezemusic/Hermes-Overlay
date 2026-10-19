@@ -565,6 +565,7 @@ function whenAnimEnds(anim, duration, seek = true) {
       window.clearTimeout(timer);
       resolve(ok);
     };
+    const started = performance.now();
     const timer = window.setTimeout(() => {
       if (seek) {
         try {
@@ -573,7 +574,15 @@ function whenAnimEnds(anim, duration, seek = true) {
       }
       finish(true);
     }, duration);
-    anim.finished.then(() => finish(true), () => finish(false));
+    const clock = Number(anim.effect?.getTiming?.().duration);
+    const limit = Number.isFinite(clock) && clock > 0 ? clock : duration;
+    anim.finished.then(() => {
+      // A document-timeline currentTime resolves this before a painted
+      // frame. Compare against the animation's own duration, not the
+      // padded wall timeout, so a real 280ms finish still resolves.
+      if (performance.now() - started < Math.max(0, limit - 40)) return;
+      finish(true);
+    }, () => finish(false));
   });
 }
 
@@ -714,10 +723,23 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     if (toState === "orb") {
       const now = document.timeline?.currentTime;
       if (typeof now === "number") {
+        // The plan clip just finished on this element. Pinning startTime
+        // alone can leave local time already part-way through, and the top
+        // edge then paints short of its 333ms clock. Force the first frame.
         shellAnim.startTime = now;
-        if (fillAnim) fillAnim.startTime = now;
-        if (strokeAnim) strokeAnim.startTime = now;
-        if (shell._idleDim) shell._idleDim.startTime = now;
+        try { shellAnim.currentTime = 0; } catch { /* already at the first frame */ }
+        if (fillAnim) {
+          fillAnim.startTime = now;
+          try { fillAnim.currentTime = 0; } catch { /* same clock */ }
+        }
+        if (strokeAnim) {
+          strokeAnim.startTime = now;
+          try { strokeAnim.currentTime = 0; } catch { /* same clock */ }
+        }
+        if (shell._idleDim) {
+          shell._idleDim.startTime = now;
+          try { shell._idleDim.currentTime = 0; } catch { /* same clock */ }
+        }
       }
     }
     if (toState === "panel") watchPresent(shell, shellAnim, "panel");
@@ -1814,7 +1836,10 @@ function watchPresent(shell, anim, tag) {
       `tag=${tag} i=${i} gap=${gap.toFixed(1)} current=${current} state=${anim.playState || ""} motion=${shell._motion || ""} quiet=${quiet}`,
     );
     i += 1;
-    if (i < 48 && anim.playState === "running") requestAnimationFrame(step);
+    const state = anim.playState || "";
+    // The seam clock is paused for the turn it pins t=0. Stopping on that
+    // first paused sample hid whether play() resumed.
+    if (i < 48 && state !== "finished" && state !== "idle") requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
 }
@@ -1845,38 +1870,52 @@ function pumpSeamPresent(shell, duration) {
   }
 }
 
-/** Anchor t=0 to the first frame that can be presented, not the rAF that
- *  created the animation. The warm capture was ~55ms into PLAN_EASE because
- *  the clock ran through a 26–30ms hiccup before anything reached the screen. */
+/** Anchor t=0 to the first frame that can be presented. A pause that is
+ *  still in effect on a later frame never resumes on a cold compositor:
+ *  the shell stays on the closed keyframe until the finish write jumps
+ *  to open. Play before yielding. A document-timeline currentTime (seconds
+ *  into the page, not the animation) must not be treated as progress. */
 function alignSeamClock(anim) {
   if (!anim) return;
-  const pin = () => {
+  const pin = (ahead = 0) => {
     const now = document.timeline?.currentTime;
     if (typeof now !== "number") return;
-    try { anim.startTime = now; } catch { /* this frame already owns the clock */ }
+    const at = ahead > 0 ? now + ahead : now;
+    try { anim.startTime = at; } catch { /* this frame already owns the clock */ }
+  };
+  const resume = () => {
+    if (!anim || anim.playState === "finished" || anim.playState === "idle") return;
+    try {
+      if (anim.playState !== "running") anim.play();
+    } catch { /* the paused frame stays */ }
   };
   try {
     anim.pause();
     anim.currentTime = 0;
   } catch {
-    pin();
+    pin(0);
+    resume();
     return;
   }
+  // One frame ahead, and running before paint. The closed keyframe is the
+  // pre-growth hold (fill both), not a 1% stub. The first changing sample
+  // is then t≈0, so the ~100ms capture stays on the 280ms curve.
+  pin(16);
+  resume();
   requestAnimationFrame(() => {
-    // Paint of this callback is the paused t=0 frame.
-    requestAnimationFrame(() => {
-      if (!anim || anim.playState === "idle") return;
-      pin();
-      try { anim.play(); } catch { /* the paused frame stays */ }
-      requestAnimationFrame(() => {
-        if (!anim || anim.playState !== "running") return;
-        let current = 0;
-        try { current = Number(anim.currentTime) || 0; } catch { current = 0; }
-        // The frame we just started was not presented. This paint is the
-        // first one on screen, so it has to be t≈0, not the skipped gap.
-        if (current > 24) pin();
-      });
-    });
+    if (!anim || anim.playState === "finished" || anim.playState === "idle") return;
+    let current = 0;
+    try { current = Number(anim.currentTime) || 0; } catch { current = 0; }
+    const lie = current > 400;
+    if (anim.playState === "paused" || lie) {
+      try { anim.currentTime = 0; } catch { /* keep the pin */ }
+      pin(0);
+      resume();
+      return;
+    }
+    // A real extra vsync before the first paint. Rewind once, before this
+    // frame is presented. A healthy ~16ms sample (current > 24 is false) stays.
+    if (current > 24 && current < 48) pin(0);
   });
 }
 
@@ -1893,7 +1932,7 @@ function beginSeamClip(shell) {
     anim = shell.animate([
       { clipPath: from },
       { clipPath: to },
-    ], { duration, easing: PLAN_EASE, fill: "forwards", id: "seam-clip" });
+    ], { duration, easing: PLAN_EASE, fill: "both", id: "seam-clip" });
   } catch {
     shell.style.clipPath = to;
     return null;
@@ -1909,9 +1948,34 @@ function beginSeamClip(shell) {
 
 function finishSeamClip(anim) {
   if (!anim) return Promise.resolve(false);
-  // alignSeamClock holds t=0 until the first presented frame. Seeking to the
-  // end at PLAN_GROW_MS would skip that hold and jump the curve.
-  return whenAnimEnds(anim, PLAN_GROW_MS + 64, false);
+  // Do not seek to the end on the wall timeout: that is the one-frame jump
+  // to open. If the clock never left the closed keyframe, run it once more.
+  return whenAnimEnds(anim, PLAN_GROW_MS + 64, false).then((ok) => {
+    if (!seamClockStuck(anim)) return ok;
+    debugLog("plan-anim-restart", `state=${anim.playState || ""}`);
+    kickSeamClock(anim);
+    return whenAnimEnds(anim, PLAN_GROW_MS + 64, false);
+  });
+}
+
+function seamClockStuck(anim) {
+  if (!anim || anim.playState === "finished") return false;
+  if (anim.playState === "paused") return true;
+  let current = 0;
+  try { current = Number(anim.currentTime) || 0; } catch { current = 0; }
+  // Thousands of milliseconds here is the document timeline, not growth.
+  if (current > 400) return true;
+  return current < 40;
+}
+
+function kickSeamClock(anim) {
+  if (!anim) return;
+  try { anim.currentTime = 0; } catch { /* already idle */ }
+  const now = document.timeline?.currentTime;
+  if (typeof now === "number") {
+    try { anim.startTime = now; } catch { /* play still starts this turn */ }
+  }
+  try { anim.play(); } catch { /* the closed keyframe stays */ }
 }
 
 function growPlan(shell, token) {
@@ -5226,6 +5290,14 @@ function setupComposer() {
       rememberComposer();
       return;
     }
+    if (action === "send" && composerField?.dataset.role === "input" && event.target !== composerField && !slashPopupOpen()) {
+      event.preventDefault();
+      const id = composerField.closest(".morph")?.dataset.botId
+        || composerField.closest(".bot-panel")?.dataset.botId
+        || state.activeId;
+      sendActive(id);
+      return;
+    }
     if (action === "insert" && composerField) {
       restoreComposer();
       if (event.target !== composerField) {
@@ -6777,9 +6849,33 @@ function startWatchers() {
   refreshCron();
 }
 
+/** One composited clip before the first real open. A cold shell clip that
+ *  is paused across frames never presents; this run uses the same clock. */
+function primePlanCompositor() {
+  if (primePlanCompositor.done) return;
+  primePlanCompositor.done = true;
+  const node = document.createElement("div");
+  node.setAttribute("aria-hidden", "true");
+  node.style.cssText = "position:fixed;left:0;top:0;width:280px;height:160px;opacity:0.01;pointer-events:none;z-index:0;will-change:clip-path;transform:translate3d(-120vw,0,0)";
+  document.documentElement.append(node);
+  let anim = null;
+  try {
+    anim = node.animate([
+      { clipPath: "inset(0px 280px 0px 0px)" },
+      { clipPath: "inset(0px 0px 0px 0px)" },
+    ], { duration: PLAN_GROW_MS, easing: PLAN_EASE, fill: "both", id: "seam-prime" });
+  } catch {
+    node.remove();
+    return;
+  }
+  alignSeamClock(anim);
+  whenAnimEnds(anim, PLAN_GROW_MS + 64, false).then(() => node.remove());
+}
+
 async function boot() {
   await armDebugLog();
   setupComposer();
+  requestAnimationFrame(() => requestAnimationFrame(() => primePlanCompositor()));
   setupWindowChrome();
   setupProximity();
   const kanbanClose = $("#btn-kanban-close");
