@@ -668,6 +668,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
         if (strokeAnim) strokeAnim.startTime = now;
       }
     }
+    if (toState === "panel") watchPresent(shell, shellAnim, "panel");
   } catch {
     writeClip(shell, to);
     if (toState === "panel") {
@@ -747,8 +748,7 @@ function sideFromStyle(shell) {
 }
 
 /** Shell clip that reveals `t` of the plan (0..1 through seamEase).
- *  The plan box stays full size. Only this outward inset changes, which is
- *  the same clip-path the panel open already presents frame by frame. */
+ *  The plan box stays full size. Only this outward inset changes. */
 function planRevealClip(shell, t) {
   const reveal = t <= 0 ? 0 : t >= 1 ? 1 : seamEase(t);
   const base = bleedInsets(insetsFor("panel", shellGeom(shell)), FRAME_BLEED + HAIRLINE);
@@ -1556,11 +1556,9 @@ async function playPlanSeam(shell, token) {
   lockPlanBox(shell, plan);
   const flushed = getComputedStyle(plan).transform;
   seamLog("sliver-flush", flushed);
-  holdQuiet(shell, PLAN_GROW_MS + 420);
-  await nextPaint();
   if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
   if (seamPhase(plan) !== "growing") return;
-  seamLog("sliver-painted", getComputedStyle(plan).transform);
+  seamLog("sliver-painted", flushed);
   shell.classList.remove("is-plan-arming");
   seamMark("plan-seam:painted");
   await growPlan(shell, token);
@@ -1578,75 +1576,80 @@ function pinContentOpacity(shell) {
   });
 }
 
-/** One yield after the starter clip is written. rAF during the old growth
- *  loop fired without a GTK present; a timeout lets that present happen
- *  before the clock moves. */
-function paintFlush(shell, tag) {
-  return new Promise((resolve) => {
-    const armed = performance.now();
-    const motion = shell._motion || "";
-    const quiet = Math.round(clockAt(shell, "quiet") - armed);
-    const freeze = Math.round(clockAt(shell, "freeze") - armed);
-    setTimeout(() => {
-      const flushed = performance.now();
-      seamLog(
-        "present-flush",
-        `${tag} armed=${armed.toFixed(1)} flushed=${flushed.toFixed(1)} gap=${(flushed - armed).toFixed(1)} motion=${motion} quiet=${quiet} freeze=${freeze}`,
-      );
-      resolve(flushed);
-    }, 0);
-  });
+/** rAF time against the animation clock for one running clip. The 30fps
+ *  capture is still the gate; this only shows whether the callback cadence
+ *  matches. No computed style: a flush here would itself force a paint. */
+function watchPresent(shell, anim, tag) {
+  if (!debugFile.enabled || !anim) return;
+  let last = performance.now();
+  let i = 0;
+  const step = (now) => {
+    const gap = now - last;
+    last = now;
+    let current = "";
+    try { current = Number(anim.currentTime).toFixed(1); } catch { current = ""; }
+    const quiet = Math.round(clockAt(shell, "quiet") - now);
+    debugLog(
+      "present-frame",
+      `tag=${tag} i=${i} gap=${gap.toFixed(1)} current=${current} state=${anim.playState || ""} motion=${shell._motion || ""} quiet=${quiet}`,
+    );
+    i += 1;
+    if (i < 48 && anim.playState === "running") requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
-/** Hold the shell clip on one sample of the curve. The plan node is not
- *  scaled: v53 showed every plan-local animation (rAF scale, width, snapshot)
- *  stay off-screen for the whole clock, then catch up in three frames.
- *  The shell clip is the animation the panel open already presents. */
-function seekSeamClip(shell, atMs) {
-  const from = planRevealClip(shell, 0).value;
-  const to = planRevealClip(shell, 1).value;
-  const held = planRevealClip(shell, atMs / PLAN_GROW_MS).value;
-  let anim = shell._clipHold;
-  holdMotion(shell);
-  if (!anim?.effect) {
-    try {
-      anim = shell.animate([
-        { clipPath: from },
-        { clipPath: to },
-      ], { duration: PLAN_GROW_MS, easing: EASE, fill: "forwards" });
-      shell._clipHold = anim;
-    } catch {
-      shell.style.clipPath = held;
-      return null;
-    }
-  } else {
-    try {
-      anim.effect.updateTiming({ duration: PLAN_GROW_MS, easing: EASE, fill: "forwards" });
-      anim.effect.setKeyframes([
-        { clipPath: from, offset: 0 },
-        { clipPath: to, offset: 1 },
-      ]);
-    } catch { /* inline clip still shows the starter */ }
-  }
+/** Panel open paints because the orb's composited transform runs the whole
+ *  480ms beside the shell clip. The plan clip used to start after that
+ *  transform had finished, and WebKitGTK then kept the last inset on screen.
+ *  translateZ does not move the orb: the shell has no perspective. */
+function pumpSeamPresent(shell, duration) {
+  const orb = shell.querySelector(".morph-orb");
+  if (!orb || !(duration > 0)) return null;
+  const scale = ICON / ORB;
+  holdMotion(orb);
+  orb.style.willChange = "transform";
   try {
-    anim.pause();
-    anim.currentTime = atMs;
-  } catch { /* static clip below */ }
-  shell.style.clipPath = held;
-  void getComputedStyle(shell).clipPath;
+    return orb.animate([
+      { transform: `scale(${scale}) translateZ(0px)` },
+      { transform: `scale(${scale}) translateZ(1px)`, offset: 0.5 },
+      { transform: `scale(${scale}) translateZ(0px)` },
+    ], { duration, easing: "linear", fill: "forwards", id: "seam-pump" });
+  } catch {
+    return null;
+  }
+}
+
+/** Same element, same property, same animate() shape as the panel clip.
+ *  v54 retimed the finished panel animation and GTK held the 12ms sample,
+ *  then jumped. This opens a new animation instead. */
+function beginSeamClip(shell) {
+  const from = planRevealClip(shell, 12 / PLAN_GROW_MS).value;
+  const to = planRevealClip(shell, 1).value;
+  const duration = PLAN_GROW_MS - 12;
+  holdMotion(shell);
+  const previous = shell._clipHold;
+  let anim = null;
+  try {
+    anim = shell.animate([
+      { clipPath: from },
+      { clipPath: to },
+    ], { duration, easing: EASE, fill: "forwards", id: "seam-clip" });
+  } catch {
+    shell.style.clipPath = to;
+    return null;
+  }
+  shell._clipHold = anim;
+  shell.style.clipPath = to;
+  pumpSeamPresent(shell, duration);
+  watchPresent(shell, anim, "plan");
+  seamLog("clip-open", `prev=${previous?.playState || "none"} dur=${duration}`);
   return anim;
 }
 
-function playSeamClip(anim, atMs) {
+function finishSeamClip(anim) {
   if (!anim) return Promise.resolve(false);
-  const now = document.timeline?.currentTime;
-  try {
-    anim.play();
-    if (typeof now === "number") anim.startTime = now - atMs;
-  } catch {
-    return Promise.resolve(false);
-  }
-  return whenAnimEnds(anim, PLAN_GROW_MS);
+  return whenAnimEnds(anim, PLAN_GROW_MS - 12);
 }
 
 function growPlan(shell, token) {
@@ -1709,11 +1712,10 @@ function growPlan(shell, token) {
     return true;
   };
   const run = (async () => {
-    const anim = seekSeamClip(shell, FIRST_PAINT_MS);
+    const anim = beginSeamClip(shell);
     const first = seamScaleAt(FIRST_PAINT_MS / PLAN_GROW_MS);
-    seamLog("anim-start", `flight=${flight} mode=clip raster=${plan.dataset.raster || "live"} reveal=${first.toFixed(3)}`);
+    seamLog("anim-start", `flight=${flight} mode=clip same=shell raster=${plan.dataset.raster || "live"} reveal=${first.toFixed(3)} motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
     seamMark("plan-seam:clock");
-    await paintFlush(shell, "starter");
     if (!alive()) return false;
     const started = performance.now();
     const sample = (i) => {
@@ -1724,7 +1726,7 @@ function growPlan(shell, token) {
       if (wall < PLAN_GROW_MS) setTimeout(() => sample(i + 1), 32);
     };
     setTimeout(() => sample(0), 32);
-    await playSeamClip(anim, FIRST_PAINT_MS);
+    await finishSeamClip(anim);
     if (!alive()) return false;
     shell.style.clipPath = planRevealClip(shell, 1).value;
     plan.style.pointerEvents = "";

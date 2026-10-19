@@ -1069,8 +1069,8 @@ html, body {
 
 .plan-window::before { display: none; }
 
-/* Resting transform is none. Growth keeps this box at the final width and
-   reveals a pre-rasterised bitmap with scaleX only. Do not animate width. */
+/* Resting transform is none. Growth keeps this box at the final width.
+   The shell clip reveals it. Do not animate width or the plan's own transform. */
 .morph .plan-window {
   position: absolute;
   left: 100%;
