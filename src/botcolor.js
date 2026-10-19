@@ -39,7 +39,11 @@ export function botChannels(hex) {
 export function applyBotColor(el, hex) {
   if (!el) return;
   const color = /^#[0-9a-fA-F]{6}$/.test(String(hex || "").trim()) ? hex : NOUS.blue;
+  const channels = botChannels(color);
+  if (el.style.getPropertyValue("--bot") === color
+    && el.style.getPropertyValue("--bot-rgb").trim() === channels
+    && el.style.getPropertyValue("--bot-color") === color) return;
   el.style.setProperty("--bot", color);
-  el.style.setProperty("--bot-rgb", botChannels(color));
+  el.style.setProperty("--bot-rgb", channels);
   el.style.setProperty("--bot-color", color);
 }

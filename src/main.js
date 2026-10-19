@@ -752,7 +752,10 @@ function hideUnwarmedPlan(shell) {
   if (plan) {
     plan.hidden = true;
     delete plan.dataset.seam;
+    delete plan.dataset.sizeLock;
     clearPlanMotion(plan);
+    plan.style.width = "";
+    plan.style.height = "";
     delete plan.dataset.warm;
     delete plan.dataset.painted;
   }
@@ -781,9 +784,11 @@ function lockPlanRevealed(plan) {
   plan.style.opacity = "";
   plan.style.removeProperty("z-index");
   plan.style.removeProperty("clip-path");
-  plan.style.removeProperty("will-change");
   plan.style.removeProperty("pointer-events");
-  if (fit) fit.style.removeProperty("will-change");
+  if (plan.dataset.sizeLock !== "1") {
+    plan.style.removeProperty("will-change");
+    if (fit) fit.style.removeProperty("will-change");
+  }
   plan.dataset.seam = "grown";
   seamLog("lock", "transform=scaleX(1) kept-fill");
 }
@@ -917,6 +922,46 @@ function applyParkedPlan(shell, plan) {
   return fit;
 }
 
+/** Freeze the plan border box so a later markdown swap cannot change the
+ *  measured width. The pixels come from the warm pass, before the clip. */
+function lockPlanBox(shell, plan) {
+  if (!plan) return;
+  const width = Number(shell?.dataset.planWidth) || Math.round(planWidthPx());
+  const height = Number(shell?.dataset.planHeight)
+    || Math.round(Number.parseFloat(shell?.style.height) || 0);
+  if (width > 0) plan.style.width = `${width}px`;
+  if (height > 0) plan.style.height = `${height}px`;
+  plan.style.setProperty("overflow", "hidden", "important");
+  plan.dataset.sizeLock = "1";
+  const fit = ensurePlanFit(plan);
+  fit.style.overflow = "hidden";
+  fit.style.width = "100%";
+  fit.style.height = "100%";
+}
+
+function releasePlanBox(plan) {
+  if (!plan || plan.dataset.sizeLock !== "1") return;
+  const shell = plan.closest?.(".morph");
+  if (shell?.classList.contains("is-morphing") || shell?.classList.contains("is-plan-seam")) return;
+  delete plan.dataset.sizeLock;
+  plan.style.width = "";
+  plan.style.height = "";
+  plan.style.removeProperty("overflow");
+  plan.style.removeProperty("will-change");
+  const fit = planFitEl(plan);
+  if (fit) {
+    fit.style.overflow = "";
+    fit.style.width = "";
+    fit.style.height = "";
+    fit.style.removeProperty("will-change");
+  }
+  plan.classList.remove("is-seam-grow");
+  plan.style.removeProperty("display");
+  if (shell?.dataset.planOpen === "1") {
+    plan.style.setProperty("overflow", "visible", "important");
+  }
+}
+
 function planHostReady(shell) {
   if (!shell) return false;
   if (shell.dataset.opening === "panel") return true;
@@ -943,6 +988,7 @@ function warmPlanLayer(shell) {
     return;
   }
   shell.dataset.planWidth = String(width);
+  shell.dataset.planHeight = String(Math.round(plan.offsetHeight || 0));
   plan.dataset.warm = "1";
   requestAnimationFrame(() => {
     plan.dataset.painted = "1";
@@ -1044,8 +1090,9 @@ function seamLocked(plan) {
   return plan?.dataset.seam === "growing" || plan?.dataset.seam === "grown";
 }
 
-/** Content is already painted. Stay hidden across one frame, then start the
- *  240ms clock in that next frame so the first painted growth sample is near 0. */
+/** Content is already in the DOM. Paint the plan itself at scaleX(0.001)
+ *  (double rAF after a style flush on that node), then start the 240ms clock
+ *  so the first growth sample is that painted frame, under 35%. */
 async function playPlanSeam(shell, token) {
   armSeamWatch();
   seamMark("plan-seam:clip-end");
@@ -1067,10 +1114,14 @@ async function playPlanSeam(shell, token) {
   pauseHitSync();
   showPlanHost(shell);
   holdSeamVisual(shell);
+  lockPlanBox(shell, plan);
   const flushed = getComputedStyle(plan).transform;
   seamLog("sliver-flush", flushed);
-  holdQuiet(shell, PLAN_GROW_MS + 320);
-  await nextFrame();
+  plan.classList.remove("is-plan-parked");
+  plan.style.visibility = "visible";
+  void getComputedStyle(plan).transform;
+  holdQuiet(shell, PLAN_GROW_MS + 420);
+  await nextPaint();
   if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
   if (plan.dataset.seam !== "growing") return;
   seamLog("sliver-painted", getComputedStyle(plan).transform);
@@ -1129,13 +1180,10 @@ function growPlan(shell, token) {
     const current = !token || shell.dataset.morphToken === token;
     if (plan.dataset.seamFlight !== flight) return;
     if (current && finished) {
+      holdPlanContent(shell, 100);
       lockPlanRevealed(plan);
       holdMotion(plan);
       holdMotion(fit);
-      if (!shell.classList.contains("is-morphing")) {
-        plan.classList.remove("is-seam-grow");
-        plan.style.removeProperty("display");
-      }
     }
     if (!shell.classList.contains("is-morphing") && shell.classList.contains("is-plan-seam")) {
       endPlanSeam(shell);
@@ -1163,18 +1211,32 @@ function holdQuiet(shell, ms) {
   if (until > Number(shell.dataset.quietUntil || 0)) shell.dataset.quietUntil = String(until);
 }
 
+function holdPlanContent(shell, ms) {
+  if (!shell) return;
+  const until = performance.now() + ms;
+  if (until > Number(shell.dataset.planHoldUntil || 0)) shell.dataset.planHoldUntil = String(until);
+}
+
+function planContentHeld(shell) {
+  return !!shell && performance.now() < Number(shell.dataset.planHoldUntil || 0);
+}
+
 function deferShellWork(shell) {
   return visualQuiet(shell);
 }
 
 function armQuietFlush(shell) {
   if (!shell || shell._quietFlush) return;
-  const wait = Math.max(0, Number(shell.dataset.quietUntil || 0) - performance.now());
+  const wait = Math.max(
+    0,
+    Number(shell.dataset.quietUntil || 0) - performance.now(),
+    Number(shell.dataset.planHoldUntil || 0) - performance.now(),
+  );
   shell._quietFlush = window.setTimeout(() => {
     shell._quietFlush = 0;
     requestAnimationFrame(() => {
       if (!shell.isConnected) return;
-      if (deferShellWork(shell)) {
+      if (deferShellWork(shell) || planContentHeld(shell)) {
         shell.dataset.chatDirty = "1";
         shell.dataset.planDirty = "1";
         armQuietFlush(shell);
@@ -1184,6 +1246,10 @@ function armQuietFlush(shell) {
       delete shell.dataset.planDirty;
       renderChat(shell.dataset.botId, { inplace: true });
       if (renderBots.pending) renderBots();
+      requestAnimationFrame(() => {
+        if (!shell.isConnected || planContentHeld(shell) || deferShellWork(shell)) return;
+        releasePlanBox(shell.querySelector(".plan-window"));
+      });
     });
   }, wait);
 }
@@ -1191,13 +1257,13 @@ function armQuietFlush(shell) {
 function flushDeferredChat(shell) {
   if (!shell) return;
   if (shell.dataset.chatDirty !== "1" && shell.dataset.planDirty !== "1") return;
-  if (deferShellWork(shell)) {
+  if (deferShellWork(shell) || planContentHeld(shell)) {
     armQuietFlush(shell);
     return;
   }
   requestAnimationFrame(() => {
     if (!shell.isConnected) return;
-    if (deferShellWork(shell)) {
+    if (deferShellWork(shell) || planContentHeld(shell)) {
       shell.dataset.chatDirty = "1";
       shell.dataset.planDirty = "1";
       armQuietFlush(shell);
@@ -1206,6 +1272,10 @@ function flushDeferredChat(shell) {
     delete shell.dataset.chatDirty;
     delete shell.dataset.planDirty;
     renderChat(shell.dataset.botId, { inplace: true });
+    requestAnimationFrame(() => {
+      if (!shell.isConnected || planContentHeld(shell) || deferShellWork(shell)) return;
+      releasePlanBox(shell.querySelector(".plan-window"));
+    });
   });
 }
 
@@ -1347,21 +1417,26 @@ function settleShell(shell, target) {
   if (plan) {
     if (plan.dataset.seam === "grown") lockPlanRevealed(plan);
     else clearPlanMotion(plan);
-    plan.classList.remove("is-seam-grow");
-    plan.style.removeProperty("display");
-    plan.style.removeProperty("overflow");
+    const locked = plan.dataset.sizeLock === "1";
+    if (!locked) {
+      plan.classList.remove("is-seam-grow");
+      plan.style.removeProperty("display");
+      plan.style.removeProperty("overflow");
+    }
     const fit = planFitEl(plan);
-    if (fit) releaseMotion(fit);
+    if (fit && !locked) releaseMotion(fit);
     if (target === "panel" && shell.dataset.planOpen === "1") {
-      plan.style.setProperty("overflow", "visible", "important");
+      if (!locked) plan.style.setProperty("overflow", "visible", "important");
       plan.style.setProperty("clip-path", "none", "important");
     } else {
+      releasePlanBox(plan);
       delete plan.dataset.seam;
       delete plan.dataset.warm;
       delete plan.dataset.painted;
       delete shell.dataset.planWidth;
+      delete shell.dataset.planHeight;
     }
-    releaseMotion(plan);
+    if (!locked) releaseMotion(plan);
   }
   paintClip(shell, insetsFor(target, shellGeom(shell)), target);
   shell.dataset.opening = "";
@@ -1751,7 +1826,7 @@ function previewNode() {
 function attachShell(shell, id) {
   shell.addEventListener("pointerenter", () => {
     if (id === "settings" || id === "kanban" || id === "cron") return;
-    beginBotHistory(id)?.catch(() => {});
+    prefetchBotChats();
   });
   shell.addEventListener("click", (event) => {
     const orb = event.target.closest?.(".morph-orb");
@@ -2248,6 +2323,11 @@ function openPlanWindow(id, key) {
   paintPlan(id);
 }
 
+function planSwapBlocked(shell, section) {
+  if (section?.dataset.seam === "growing") return true;
+  return planContentHeld(shell);
+}
+
 function paintPlan(id) {
   const shell = shellFor(id);
   const section = planWindow(id);
@@ -2270,12 +2350,16 @@ function paintPlan(id) {
   else delete shell.dataset.planOpen;
   if (!open) {
     delete section.dataset.seam;
+    delete section.dataset.sizeLock;
     clearPlanMotion(section);
+    section.style.width = "";
+    section.style.height = "";
     section.style.removeProperty("display");
     section.classList.remove("is-seam-grow");
     delete section.dataset.warm;
     delete section.dataset.painted;
     delete shell.dataset.planWidth;
+    delete shell.dataset.planHeight;
     shell.classList.remove("is-plan-seam");
     scheduleHitSync();
     return;
@@ -2296,22 +2380,27 @@ function paintPlan(id) {
     if (mode === "preview") {
       const html = renderAssistantMarkdown(focus.markdown);
       if (body.dataset.md !== html) {
-        body.dataset.md = html;
-        body.innerHTML = html;
-        decorateCodeBlocks(body);
-        // A grown seam keeps its node and its transform. Swapping markdown
-        // must not rewind scaleX or re-add the seam class.
-        if (seamLocked(section)) seamLog("content-swap", `key=${section.dataset.key || ""}`);
-        else {
-          delete section.dataset.warm;
-          delete section.dataset.painted;
+        if (planSwapBlocked(shell, section)) {
+          shell.dataset.planDirty = "1";
+          seamLog("content-hold", `key=${focus.key}`);
+        } else {
+          body.dataset.md = html;
+          body.innerHTML = html;
+          decorateCodeBlocks(body);
+          if (section.dataset.sizeLock !== "1" && !seamLocked(section)) {
+            delete section.dataset.warm;
+            delete section.dataset.painted;
+          }
         }
       }
     }
   }
   if (source) {
     source.hidden = mode !== "source";
-    if (mode === "source" && source.textContent !== focus.markdown) source.textContent = focus.markdown;
+    if (mode === "source" && source.textContent !== focus.markdown) {
+      if (planSwapBlocked(shell, section)) shell.dataset.planDirty = "1";
+      else source.textContent = focus.markdown;
+    }
   }
   if (seamLocked(section)) {
     if (!shell.classList.contains("is-plan-seam") && !collapseBusy()) scheduleHitSync();
@@ -2586,6 +2675,7 @@ function setBotStatus(id, text, statusState) {
     return;
   }
   if (panelFor(id)) renderChat(id);
+  if (thread.loading) return;
   renderBots();
 }
 
@@ -2638,6 +2728,7 @@ function beginBotHistory(id) {
 function prefetchBotChats() {
   if (state.mode !== "hermes" || !inTauri()) return;
   for (const bot of state.bots) {
+    if (bot.hasKey === false) continue;
     beginBotHistory(bot.id)?.catch(() => {});
   }
 }
@@ -2653,13 +2744,15 @@ function prefetchOrbUnderCursor() {
     const x = cursorPoint.x;
     const y = cursorPoint.y;
     if (x < box.left - pad || x > box.right + pad || y < box.top - pad || y > box.bottom + pad) continue;
-    beginBotHistory(bot.id)?.catch(() => {});
+    prefetchBotChats();
+    return;
   }
 }
 
 function refreshBotChats() {
   if (state.mode !== "hermes" || !inTauri()) return;
   for (const bot of state.bots) {
+    if (bot.hasKey === false) continue;
     const shell = shellFor(bot.id);
     if (visualQuiet(shell) || state.busy.has(bot.id)) continue;
     const thread = threadFor(bot.id);
@@ -2821,21 +2914,20 @@ async function selectBot(id) {
   }
   const thread = threadFor(id);
   const pending = thread.loaded ? null : (thread.historyPromise || null);
+  if (pending) {
+    try {
+      await pending;
+    } catch (err) {
+      noteHistoryError(id, err);
+    }
+  }
   renderBots();
   renderChat(id);
   openBotPanel(id);
   if (thread.loaded) return;
-  if (!pending) {
-    const host = shellFor(id);
-    if (host) host.dataset.seamWait = "1";
-    armHistoryAfterQuiet(id);
-    return;
-  }
-  try {
-    await pending;
-  } catch (err) {
-    noteHistoryError(id, err);
-  }
+  const host = shellFor(id);
+  if (host) host.dataset.seamWait = "1";
+  armHistoryAfterQuiet(id);
 }
 
 function openBotPanel(id) {
@@ -3523,6 +3615,7 @@ async function setProfileShown(id, enabled) {
     const [mapped] = botsFromSettings({ bots: [{ ...row, enabled: true }] });
     if (mapped) state.bots.push(mapped);
     renderBots();
+    prefetchBotChats();
   }
   syncRosterCheckbox(id, !!enabled);
   closeOrbMenu();
@@ -3533,6 +3626,7 @@ async function setProfileShown(id, enabled) {
     state.settings = settings;
     state.bots = botsFromSettings(settings);
     renderBots();
+    prefetchBotChats();
     syncRosterCheckbox(id, !!enabled);
   } catch (err) {
     row.enabled = previous;
@@ -4222,11 +4316,14 @@ function setupComposer() {
 
 function paintOrb(el, color, letter) {
   if (!el) return;
-  el.style.background = "";
+  if (el.style.background) el.style.background = "";
   applyBotColor(el, color || NOUS.neutral);
   const glyph = el.querySelector?.(".orb-glyph");
-  if (glyph && letter !== undefined) glyph.textContent = letter;
-  else if (letter !== undefined && !glyph) el.textContent = letter;
+  if (glyph && letter !== undefined) {
+    if (glyph.textContent !== letter) glyph.textContent = letter;
+  } else if (letter !== undefined && !glyph && el.textContent !== letter) {
+    el.textContent = letter;
+  }
 }
 
 function isTextField(el) {
