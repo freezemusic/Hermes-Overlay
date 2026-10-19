@@ -232,7 +232,7 @@ test("collapse is one ease-in and the clock is pinned per edge", () => {
   assert.equal(collapseMs("right"), 233);
   assert.equal(collapseMs("left"), 266);
   assert.equal(collapseMs("bottom"), 266);
-  assert.equal(collapseMs("top"), 266);
+  assert.equal(collapseMs("top"), 299);
   for (const edge of ["left", "right", "top", "bottom"]) {
     const steps = collapsePhases(edge, "panel");
     assert.deepEqual(steps.map((step) => step.state), ["orb"]);
