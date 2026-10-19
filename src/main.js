@@ -498,7 +498,7 @@ function writeClip(shell, insets) {
   shell.dataset.clipRadius = String(insets.radius);
 }
 
-function cancelClipAnims(shell) {
+function cancelClipAnims(shell, keepPlan = false) {
   const fill = shell.querySelector(".morph-fill");
   const stroke = shell.querySelector(".morph-stroke");
   shell.getAnimations?.().forEach((anim) => anim.cancel());
@@ -506,9 +506,8 @@ function cancelClipAnims(shell) {
   stroke?.getAnimations?.().forEach((anim) => anim.cancel());
   shell.querySelector(".morph-orb")?.getAnimations?.().forEach((anim) => anim.cancel());
   shell.querySelector(".morph-glow")?.getAnimations?.().forEach((anim) => anim.cancel());
-  const plan = shell.querySelector(".plan-window");
-  plan?.getAnimations?.().forEach((anim) => anim.cancel());
-  plan?.querySelector(":scope > .plan-fit")?.getAnimations?.().forEach((anim) => anim.cancel());
+  if (keepPlan) debugLog("plan-anim-cancel-blocked", "reason=clip");
+  else dropPlanAnims(shell.querySelector(".plan-window"), "clip");
 }
 
 /** Stylesheet transitions must not run beside a WAAPI clip. WebKitGTK will
@@ -580,15 +579,10 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     holdMotion(stroke);
     holdMotion(shell.querySelector(".morph-orb"));
     holdMotion(shell.querySelector(".morph-glow"));
-    const plan = shell.querySelector(".plan-window");
-    if (plan) {
-      plan.hidden = true;
-      plan.style.visibility = "hidden";
-      plan.classList.remove("is-seam-grow", "is-plan-parked");
-    }
+    debugLog("collapse-plan-keep", `seam=${shell.querySelector(".plan-window")?.dataset.seam || "-"}`);
     pauseHitSync();
   }
-  cancelClipAnims(shell);
+  cancelClipAnims(shell, toState === "orb");
   if (reducedMotion() || !(duration > 0)) {
     writeClip(shell, to);
     if (toState === "panel") {
@@ -762,12 +756,66 @@ function hideUnwarmedPlan(shell) {
   if (shell) delete shell.dataset.planOpen;
 }
 
-function cancelPlanAnims(plan, fit) {
-  plan?.getAnimations?.().forEach((anim) => {
-    seamLog("anim-cancel", anim.id || anim.playState || "");
+function shellFrozen(shell) {
+  if (!shell) return false;
+  if (shell.classList.contains("is-morphing")
+    || shell.classList.contains("is-collapsing")
+    || shell.classList.contains("is-plan-seam")
+    || shell.classList.contains("is-plan-arming")) return true;
+  return performance.now() < Number(shell.dataset.freezeUntil || 0);
+}
+
+function motionFrozen() {
+  if (document.querySelector(".morph.is-morphing, .morph.is-collapsing, .morph.is-plan-seam, .morph.is-plan-arming")) {
+    return true;
+  }
+  const now = performance.now();
+  return [...document.querySelectorAll(".morph")].some((shell) => now < Number(shell.dataset.freezeUntil || 0));
+}
+
+function holdFreeze(shell, ms) {
+  if (!shell || !(ms > 0)) return;
+  const until = performance.now() + ms;
+  if (until > Number(shell.dataset.freezeUntil || 0)) shell.dataset.freezeUntil = String(until);
+  debugLog("freeze", `bot=${shell.dataset.botId || ""} ms=${ms}`);
+}
+
+/** A live seam stays at fill:forwards. Cancelling it on the finish frame
+ *  paints the pre-animation scale for one or two frames. */
+function planAnimLocked(plan, shell) {
+  if (!plan) return false;
+  if (shell?.classList.contains("is-collapsing")
+    || shell?.classList.contains("is-morphing")
+    || shell?.classList.contains("is-plan-seam")
+    || shell?.classList.contains("is-plan-arming")) return true;
+  if (performance.now() < Number(shell?.dataset.freezeUntil || 0)) return true;
+  if (plan.dataset.sizeLock === "1") return true;
+  if (plan.dataset.seam === "growing") return true;
+  return false;
+}
+
+function dropPlanAnims(plan, reason) {
+  if (!plan) return;
+  const shell = plan.closest?.(".morph");
+  if (planAnimLocked(plan, shell)) {
+    debugLog("plan-anim-cancel-blocked", `reason=${reason} seam=${plan.dataset.seam || "-"}`);
+    return;
+  }
+  const fit = planFitEl(plan);
+  plan.getAnimations?.().forEach((anim) => {
+    debugLog("plan-anim-cancel", `reason=${reason} id=${anim.id || ""} state=${anim.playState || ""}`);
+    seamLog("anim-cancel", `${reason} ${anim.id || anim.playState || ""}`);
     anim.cancel();
   });
   fit?.getAnimations?.().forEach((anim) => anim.cancel());
+}
+
+function cancelPlanAnims(plan, fit) {
+  if (!plan) {
+    fit?.getAnimations?.().forEach((anim) => anim.cancel());
+    return;
+  }
+  dropPlanAnims(plan, "clear");
 }
 
 /** Full size. Leave the finished animation at fill:forwards. Cancelling it
@@ -796,8 +844,7 @@ function lockPlanRevealed(plan) {
 function clearPlanMotion(plan) {
   if (!plan) return;
   const fit = planFitEl(plan);
-  if (plan.dataset.seam === "grown") {
-    lockPlanRevealed(plan);
+  if (plan.dataset.seam === "grown" || plan.dataset.seam === "growing") {
     return;
   }
   cancelPlanAnims(plan, fit);
@@ -828,10 +875,49 @@ function seamMark(name) {
   else console.info(line);
 }
 
+/** Quiet window after the plan reaches full size. Queued DOM work waits this out. */
+const FREEZE_AFTER_GROW_MS = 600;
+
+const debugFile = { enabled: false, invoke: null };
+
+function callerTag(skip) {
+  const stack = (new Error().stack || "").split("\n");
+  const skipNames = new Set(["callerTag", "debugLog", "seamLog", skip].filter(Boolean));
+  for (const raw of stack) {
+    const frame = raw.trim().replace(/^at\s+/, "");
+    const name = frame.split(/[@(]/)[0].trim();
+    if (!name || skipNames.has(name)) continue;
+    if (name === "Error") continue;
+    return name.slice(0, 160);
+  }
+  return "top";
+}
+
+/** Opt-in file log. Release builds hide the console; the box sets
+ *  HERMES_OVERLAY_DEBUG_LOG to a path and lines land there off the GTK thread. */
+function debugLog(event, detail = "") {
+  if (!debugFile.enabled || !debugFile.invoke) return;
+  const line = `${new Date().toISOString()} t=${performance.now().toFixed(1)} ${event}${detail ? ` ${detail}` : ""}`;
+  debugFile.invoke("debug_log", { line }).catch(() => {});
+}
+
+async function armDebugLog() {
+  if (!inTauri()) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    debugFile.invoke = invoke;
+    debugFile.enabled = !!(await invoke("debug_log_enabled"));
+    if (debugFile.enabled) debugLog("boot", "HERMES_OVERLAY_DEBUG_LOG");
+  } catch {
+    debugFile.enabled = false;
+  }
+}
+
 function seamLog(event, detail = "") {
   const plan = document.querySelector(".plan-window");
   const scale = plan ? (plan.style.transform || "style-empty") : "no-plan";
   console.info(`[plan-seam] ${event} t=${performance.now().toFixed(1)} seam=${plan?.dataset.seam || "-"} node=${plan?.dataset.seamNode || "-"} ${scale} ${detail}`);
+  debugLog(`plan-${event}`, `seam=${plan?.dataset.seam || "-"} ${scale} ${detail}`);
 }
 
 function installPlanDomLog() {
@@ -942,10 +1028,14 @@ function lockPlanBox(shell, plan) {
 function releasePlanBox(plan) {
   if (!plan || plan.dataset.sizeLock !== "1") return;
   const shell = plan.closest?.(".morph");
-  if (shell?.classList.contains("is-morphing") || shell?.classList.contains("is-plan-seam")) return;
+  if (shellFrozen(shell) || shell?.classList.contains("is-plan-seam")) return;
   delete plan.dataset.sizeLock;
   plan.style.width = "";
   plan.style.height = "";
+  if (plan.dataset.seam === "grown") {
+    debugLog("plan-unlock", "keep-fill");
+    return;
+  }
   plan.style.removeProperty("overflow");
   plan.style.removeProperty("will-change");
   const fit = planFitEl(plan);
@@ -1161,8 +1251,8 @@ function growPlan(shell, token) {
     plan.classList.remove("is-plan-parked");
     plan.style.visibility = "visible";
     seamLog("show", "growth-frame");
-    anim = plan.animate(outer, { duration: PLAN_GROW_MS, easing: "linear", fill: "both", id: "plan-seam" });
-    fitAnim = fit.animate(inner, { duration: PLAN_GROW_MS, easing: "linear", fill: "both", id: "plan-seam-fit" });
+    anim = plan.animate(outer, { duration: PLAN_GROW_MS, easing: "linear", fill: "forwards", id: "plan-seam" });
+    fitAnim = fit.animate(inner, { duration: PLAN_GROW_MS, easing: "linear", fill: "forwards", id: "plan-seam-fit" });
     const now = document.timeline?.currentTime;
     if (typeof now === "number") {
       anim.startTime = now;
@@ -1180,13 +1270,11 @@ function growPlan(shell, token) {
     const current = !token || shell.dataset.morphToken === token;
     if (plan.dataset.seamFlight !== flight) return;
     if (current && finished) {
-      holdPlanContent(shell, 100);
-      lockPlanRevealed(plan);
-      holdMotion(plan);
-      holdMotion(fit);
-    }
-    if (!shell.classList.contains("is-morphing") && shell.classList.contains("is-plan-seam")) {
-      endPlanSeam(shell);
+      holdFreeze(shell, FREEZE_AFTER_GROW_MS);
+      holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
+      plan.dataset.seam = "grown";
+      seamLog("lock", "fill=forwards");
+      armQuietFlush(shell);
     }
   });
   plan._seamRun = run;
@@ -1198,10 +1286,7 @@ function growPlan(shell, token) {
 
 function visualQuiet(shell) {
   if (!shell) return false;
-  if (shell.classList.contains("is-morphing")
-    || shell.classList.contains("is-collapsing")
-    || shell.classList.contains("is-plan-seam")
-    || shell.classList.contains("is-plan-arming")) return true;
+  if (shellFrozen(shell)) return true;
   return performance.now() < Number(shell.dataset.quietUntil || 0);
 }
 
@@ -1225,63 +1310,75 @@ function deferShellWork(shell) {
   return visualQuiet(shell);
 }
 
+function quietWait(shell) {
+  return Math.max(
+    0,
+    Number(shell?.dataset.quietUntil || 0) - performance.now(),
+    Number(shell?.dataset.planHoldUntil || 0) - performance.now(),
+    Number(shell?.dataset.freezeUntil || 0) - performance.now(),
+  );
+}
+
+function freezeCooling(shell) {
+  if (!shell) return false;
+  if (shell.classList.contains("is-morphing")
+    || shell.classList.contains("is-collapsing")
+    || shell.classList.contains("is-plan-arming")) return true;
+  if (planContentHeld(shell)) return true;
+  return performance.now() < Number(shell.dataset.freezeUntil || 0);
+}
+
+function applyQueuedShell(shell, tag) {
+  if (!shell?.isConnected) return;
+  if (freezeCooling(shell)) {
+    shell.dataset.chatDirty = "1";
+    shell.dataset.planDirty = "1";
+    armQuietFlush(shell);
+    return;
+  }
+  shell.classList.remove("is-plan-seam", "is-plan-arming");
+  delete shell.dataset.chatDirty;
+  delete shell.dataset.planDirty;
+  debugLog("queued-apply", `bot=${shell.dataset.botId || ""} tag=${tag}`);
+  renderChat(shell.dataset.botId, { inplace: true, tag });
+  requestAnimationFrame(() => {
+    if (!shell.isConnected || freezeCooling(shell)) {
+      armQuietFlush(shell);
+      return;
+    }
+    releasePlanBox(shell.querySelector(".plan-window"));
+    if (renderBots.pending) renderBots(tag);
+    else scheduleHitSync(tag);
+  });
+}
+
 function armQuietFlush(shell) {
   if (!shell || shell._quietFlush) return;
-  const wait = Math.max(
-    0,
-    Number(shell.dataset.quietUntil || 0) - performance.now(),
-    Number(shell.dataset.planHoldUntil || 0) - performance.now(),
-  );
+  const wait = Math.max(quietWait(shell), freezeCooling(shell) ? 32 : 0);
   shell._quietFlush = window.setTimeout(() => {
     shell._quietFlush = 0;
-    requestAnimationFrame(() => {
-      if (!shell.isConnected) return;
-      if (deferShellWork(shell) || planContentHeld(shell)) {
-        shell.dataset.chatDirty = "1";
-        shell.dataset.planDirty = "1";
-        armQuietFlush(shell);
-        return;
-      }
-      delete shell.dataset.chatDirty;
-      delete shell.dataset.planDirty;
-      renderChat(shell.dataset.botId, { inplace: true });
-      if (renderBots.pending) renderBots();
-      requestAnimationFrame(() => {
-        if (!shell.isConnected || planContentHeld(shell) || deferShellWork(shell)) return;
-        releasePlanBox(shell.querySelector(".plan-window"));
-      });
-    });
+    requestAnimationFrame(() => applyQueuedShell(shell, "quiet-flush"));
   }, wait);
 }
 
 function flushDeferredChat(shell) {
   if (!shell) return;
-  if (shell.dataset.chatDirty !== "1" && shell.dataset.planDirty !== "1") return;
-  if (deferShellWork(shell) || planContentHeld(shell)) {
+  if (shell.dataset.chatDirty !== "1" && shell.dataset.planDirty !== "1" && !renderBots.pending) return;
+  if (deferShellWork(shell) || planContentHeld(shell) || shellFrozen(shell)) {
     armQuietFlush(shell);
     return;
   }
-  requestAnimationFrame(() => {
-    if (!shell.isConnected) return;
-    if (deferShellWork(shell) || planContentHeld(shell)) {
-      shell.dataset.chatDirty = "1";
-      shell.dataset.planDirty = "1";
-      armQuietFlush(shell);
-      return;
-    }
-    delete shell.dataset.chatDirty;
-    delete shell.dataset.planDirty;
-    renderChat(shell.dataset.botId, { inplace: true });
-    requestAnimationFrame(() => {
-      if (!shell.isConnected || planContentHeld(shell) || deferShellWork(shell)) return;
-      releasePlanBox(shell.querySelector(".plan-window"));
-    });
-  });
+  requestAnimationFrame(() => applyQueuedShell(shell, "deferred-chat"));
 }
 
 function endPlanSeam(shell) {
+  if (freezeCooling(shell)) {
+    debugLog("seam-end-held", `bot=${shell.dataset.botId || ""}`);
+    armQuietFlush(shell);
+    return;
+  }
   shell.classList.remove("is-plan-seam", "is-plan-arming");
-  scheduleHitSync();
+  scheduleHitSync("seam-end");
   flushDeferredChat(shell);
 }
 
@@ -1384,7 +1481,11 @@ async function growAfterPaint(shell, token) {
 }
 
 function settleShell(shell, target) {
-  if (target === "panel") holdQuiet(shell, 300);
+  if (target === "panel") {
+    holdFreeze(shell, FREEZE_AFTER_GROW_MS);
+    holdQuiet(shell, FREEZE_AFTER_GROW_MS);
+  }
+  debugLog("morph-settle", `target=${target} bot=${shell.dataset.botId || ""}`);
   markVisual(shell, target);
   shell.classList.remove("is-growing-pill", "is-growing-panel");
   const fill = shell.querySelector(".morph-fill");
@@ -1398,7 +1499,9 @@ function settleShell(shell, target) {
   }
   const plan = shell.querySelector(".plan-window");
   const stroke = shell.querySelector(".morph-stroke");
-  shell.classList.remove("is-morphing", "is-collapsing", "is-plan-seam", "is-plan-arming");
+  const grown = plan?.dataset.seam === "grown" || plan?.dataset.seam === "growing";
+  shell.classList.remove("is-morphing", "is-collapsing", "is-plan-arming");
+  if (!grown) shell.classList.remove("is-plan-seam");
   shell.style.background = "";
   shell.style.removeProperty("filter");
   if (fill) fill.style.removeProperty("box-shadow");
@@ -1414,7 +1517,13 @@ function settleShell(shell, target) {
   requestAnimationFrame(() => promoted.classList.remove("is-content-promoted"));
   releaseMotion(shell);
   releaseMotion(fill);
-  if (plan) {
+  if (plan && grown) {
+    debugLog("settle-plan-keep", `target=${target}`);
+    if (target === "orb") {
+      plan.hidden = true;
+      plan.style.visibility = "hidden";
+    }
+  } else if (plan) {
     if (plan.dataset.seam === "grown") lockPlanRevealed(plan);
     else clearPlanMotion(plan);
     const locked = plan.dataset.sizeLock === "1";
@@ -1445,35 +1554,42 @@ function settleShell(shell, target) {
     shell.querySelectorAll(".center-panel").forEach((panel) => {
       panel.hidden = true;
     });
-    layoutShell(shell);
+    if (!shellFrozen(shell)) layoutShell(shell);
   }
-  if (target === "panel" && shell.dataset.kind === "bot") stickChat(shell.dataset.botId);
+  if (target === "panel" && shell.dataset.kind === "bot" && !shellFrozen(shell)) stickChat(shell.dataset.botId);
   if (target === "panel" && shell.dataset.botId === "cron") syncCronBox();
   flushDeferredChat(shell);
   if (renderBots.pending) {
-    if (visualQuiet(shell)) armQuietFlush(shell);
-    else renderBots();
+    if (visualQuiet(shell) || motionFrozen()) armQuietFlush(shell);
+    else renderBots("settle");
   }
-  separateOpenShells([...document.querySelectorAll(".morph")]);
-  scheduleHitSync();
+  if (shellFrozen(shell) || motionFrozen()) {
+    debugLog("settle-defer", "hits");
+    armQuietFlush(shell);
+  } else {
+    separateOpenShells([...document.querySelectorAll(".morph")]);
+    scheduleHitSync("settle");
+  }
 }
 
-function stopShellTransition(shell) {
+function stopShellTransition(shell, target = "") {
   const fill = shell.querySelector(".morph-fill");
   const stroke = shell.querySelector(".morph-stroke");
   holdMotion(shell);
   holdMotion(fill);
   holdMotion(stroke);
-  cancelClipAnims(shell);
+  const plan = shell.querySelector(".plan-window");
+  const keepPlan = target === "orb" || planAnimLocked(plan, shell);
+  if (keepPlan) debugLog("plan-anim-cancel-blocked", `reason=stop target=${target}`);
+  cancelClipAnims(shell, keepPlan);
   if (stroke) stroke.style.clipPath = "";
   if (fill) fill.style.removeProperty("box-shadow");
-  const plan = shell.querySelector(".plan-window");
-  if (plan) {
+  if (plan && !keepPlan) {
     plan.style.visibility = "hidden";
     holdMotion(plan);
     const fit = planFitEl(plan);
     void getComputedStyle(plan).transform;
-    plan.getAnimations?.().forEach((anim) => anim.cancel());
+    dropPlanAnims(plan, "stop");
     fit?.getAnimations?.().forEach((anim) => anim.cancel());
     // Keep a warmed layer across the open. display:none drops the backing
     // store, and WebKitGTK would rasterise the markdown again at the seam.
@@ -1488,6 +1604,8 @@ function stopShellTransition(shell) {
       delete plan.dataset.painted;
       delete shell.dataset.planWidth;
     }
+  } else if (plan && target === "orb") {
+    debugLog("collapse-plan-keep", `seam=${plan.dataset.seam || "-"}`);
   }
   shell.classList.remove("is-growing-pill", "is-growing-panel", "is-orb-moving", "is-content-promoted", "is-plan-seam", "is-plan-arming");
 }
@@ -1504,7 +1622,8 @@ async function runShellMorph(shell, target) {
   const token = String((Number(shell.dataset.morphToken) || 0) + 1);
   shell.dataset.morphToken = token;
   shell.getAnimations?.().forEach((anim) => anim.cancel());
-  stopShellTransition(shell);
+  stopShellTransition(shell, target);
+  debugLog("morph-start", `target=${target} bot=${shell.dataset.botId || ""} edge=${shell.dataset.edge || ""}`);
   if (target === "panel") {
     const openingPlan = shell.querySelector(".plan-window");
     if (openingPlan) delete openingPlan.dataset.seam;
@@ -1532,6 +1651,7 @@ async function runShellMorph(shell, target) {
     holdMotion(shell.querySelector(".morph-fill"));
     shell.dataset.intent = "close";
     shell.classList.add("is-collapsing");
+    debugLog("collapse-start", `edge=${shell.dataset.edge || ""} scale=${closingScale}`);
     shell._closingScale = closingScale;
     shell.classList.remove("is-orb-moving", "is-content-hold", "open");
     shell.dataset.contentOnce = "";
@@ -1974,11 +2094,13 @@ function ensureChrome() {
   if (cron) ensureChromeShell(cron, "cron", "時", "排程", "orb--cron");
 }
 
-function renderBots() {
-  if (collapseBusy()) {
+function renderBots(tag = "renderBots") {
+  if (collapseBusy() || motionFrozen()) {
     renderBots.pending = true;
+    debugLog("render-bots-defer", `tag=${tag}`);
     return;
   }
+  if (debugFile.enabled) debugLog("render-bots", `tag=${tag} call=${callerTag("renderBots")}`);
   renderBots.pending = false;
   const rail = $("#bot-rail");
   ensureChrome();
@@ -2246,12 +2368,26 @@ function syncChatInPlace(chat, thread, id) {
   chat.dataset.stamp = chatStamp(thread);
 }
 
+function mountChat(chat, thread, id) {
+  const frag = document.createDocumentFragment();
+  thread.messages.forEach((message) => frag.appendChild(bubbleEl(message, id)));
+  chat.replaceChildren(frag);
+  chat.dataset.stamp = chatStamp(thread);
+}
+
+function replaceHtml(el, html) {
+  const scratch = document.createElement("div");
+  scratch.innerHTML = html;
+  el.replaceChildren(...scratch.childNodes);
+}
+
 function renderChat(id = state.activeId, options = {}) {
   const shell = shellFor(id);
   const force = options.force === true;
-  const inplace = options.inplace === true;
+  const tag = options.tag || "renderChat";
   if (shell && !force && deferShellWork(shell)) {
     shell.dataset.chatDirty = "1";
+    debugLog("render-panel-defer", `id=${id} tag=${tag}`);
     return;
   }
   const panel = panelFor(id);
@@ -2259,6 +2395,7 @@ function renderChat(id = state.activeId, options = {}) {
   const bot = state.bots.find((b) => b.id === id);
   const chat = role(panel, "chat");
   if (!bot || !chat) return;
+  if (debugFile.enabled) debugLog("render-panel", `id=${id} force=${force ? 1 : 0} tag=${tag} call=${callerTag("renderChat")}`);
   const thread = threadFor(bot.id);
   const title = role(panel, "name");
   if (title && title.textContent !== bot.name) title.textContent = bot.name;
@@ -2286,12 +2423,8 @@ function renderChat(id = state.activeId, options = {}) {
   if (!current) {
     if (thread.followTail === false) thread.scrollTop = chat.scrollTop;
     markProgrammaticScroll(chat);
-    if (inplace || (chat.childElementCount > 0 && !force)) syncChatInPlace(chat, thread, bot.id);
-    else {
-      chat.innerHTML = "";
-      thread.messages.forEach((m) => chat.appendChild(bubbleEl(m, bot.id)));
-      chat.dataset.stamp = stamp;
-    }
+    if (chat.childElementCount > 0) syncChatInPlace(chat, thread, bot.id);
+    else mountChat(chat, thread, bot.id);
     stickChat(id);
   }
   paintPlan(id);
@@ -2333,10 +2466,12 @@ function paintPlan(id) {
   const section = planWindow(id);
   if (!shell || !section) return;
   const through = shell.dataset.paintThrough === "1";
-  if (!through && visualQuiet(shell)) {
+  if (!through && (visualQuiet(shell) || shellFrozen(shell))) {
     shell.dataset.planDirty = "1";
+    debugLog("render-plan-defer", `id=${id}`);
     return;
   }
+  if (debugFile.enabled) debugLog("render-plan", `id=${id} call=${callerTag("paintPlan")}`);
   const thread = threadFor(id);
   const plans = plansIn(thread.messages);
   noteNewestPlan(thread, plans);
@@ -2345,6 +2480,11 @@ function paintPlan(id) {
   const open = !!focus;
   const wasOpen = shell.dataset.planOpen === "1";
   seamLog("paint", `open=${open ? 1 : 0} was=${wasOpen ? 1 : 0} key=${focus?.key || ""}`);
+  if (!open && (section.dataset.seam === "growing" || freezeCooling(shell) || shell.classList.contains("is-plan-seam"))) {
+    shell.dataset.planDirty = "1";
+    debugLog("plan-hide-blocked", `seam=${section.dataset.seam || "-"}`);
+    return;
+  }
   if (section.hidden !== !open) section.hidden = !open;
   if (open) shell.dataset.planOpen = "1";
   else delete shell.dataset.planOpen;
@@ -2385,7 +2525,7 @@ function paintPlan(id) {
           seamLog("content-hold", `key=${focus.key}`);
         } else {
           body.dataset.md = html;
-          body.innerHTML = html;
+          replaceHtml(body, html);
           decorateCodeBlocks(body);
           if (section.dataset.sizeLock !== "1" && !seamLocked(section)) {
             delete section.dataset.warm;
@@ -2512,7 +2652,7 @@ function paintBotBubble(el, text) {
   const html = renderAssistantMarkdown(text);
   if (el.dataset.md === html) return;
   el.dataset.md = html;
-  el.innerHTML = html;
+  replaceHtml(el, html);
   decorateCodeBlocks(el);
 }
 
@@ -2750,7 +2890,10 @@ function prefetchOrbUnderCursor() {
 }
 
 function refreshBotChats() {
+  const frozen = motionFrozen();
+  debugLog("refresh-tick", `frozen=${frozen ? 1 : 0}`);
   if (state.mode !== "hermes" || !inTauri()) return;
+  if (frozen) return;
   for (const bot of state.bots) {
     if (bot.hasKey === false) continue;
     const shell = shellFor(bot.id);
@@ -4477,7 +4620,9 @@ function collectHits() {
 let hitFrame = 0;
 let lastHits = "";
 
-function publishHits() {
+function publishHits(tag = "publish") {
+  if (collapseBusy() || motionFrozen()) return;
+  debugLog("hit-flush", `tag=${tag}`);
   const rects = collectHits();
   const key = JSON.stringify(
     rects.map((rect) => ({
@@ -4505,11 +4650,19 @@ function collapseBusy() {
   return !!document.querySelector(".morph.is-collapsing");
 }
 
-function scheduleHitSync() {
-  if (collapseBusy()) return;
-  if (document.querySelector(".morph.is-plan-seam, .morph.is-plan-arming")) return;
+let hitDeferLogged = false;
+
+function scheduleHitSync(tag = "schedule") {
+  if (collapseBusy() || motionFrozen()) {
+    if (!hitDeferLogged) {
+      hitDeferLogged = true;
+      debugLog("hit-flush-defer", `tag=${tag}`);
+    }
+    return;
+  }
+  hitDeferLogged = false;
   cancelAnimationFrame(hitFrame);
-  hitFrame = requestAnimationFrame(publishHits);
+  hitFrame = requestAnimationFrame(() => publishHits(tag));
 }
 
 function pauseHitSync() {
@@ -4517,10 +4670,13 @@ function pauseHitSync() {
   hitFrame = 0;
 }
 
-function flushHits() {
-  if (collapseBusy()) return;
+function flushHits(tag = "flush") {
+  if (collapseBusy() || motionFrozen()) {
+    debugLog("hit-flush-defer", `tag=${tag}`);
+    return;
+  }
   cancelAnimationFrame(hitFrame);
-  publishHits();
+  publishHits(tag);
 }
 
 function applyFrames(frames, interactiveAll = false) {
@@ -5453,6 +5609,7 @@ function startWatchers() {
 }
 
 async function boot() {
+  await armDebugLog();
   setupComposer();
   setupWindowChrome();
   setupProximity();

@@ -36,6 +36,8 @@
     "allow-write-soul",
     "allow-save-bot-meta",
     "allow-sync-profiles",
-    "allow-set-profile-enabled"
+    "allow-set-profile-enabled",
+    "allow-debug-log-enabled",
+    "allow-debug-log"
   ]
 }

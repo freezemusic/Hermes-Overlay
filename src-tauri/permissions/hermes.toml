@@ -112,3 +112,13 @@ commands.allow = ["sync_profiles"]
 identifier = "allow-set-profile-enabled"
 description = "Show or hide one roster profile without deleting its key."
 commands.allow = ["set_profile_enabled"]
+
+[[permission]]
+identifier = "allow-debug-log-enabled"
+description = "Report whether HERMES_OVERLAY_DEBUG_LOG is set."
+commands.allow = ["debug_log_enabled"]
+
+[[permission]]
+identifier = "allow-debug-log"
+description = "Append one line when HERMES_OVERLAY_DEBUG_LOG is set."
+commands.allow = ["debug_log"]

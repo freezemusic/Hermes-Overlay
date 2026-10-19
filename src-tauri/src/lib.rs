@@ -9,8 +9,10 @@ use hermes::{explain, route_root, HermesError, TurnEvent};
 use secrets::Lookup;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const SETTINGS_SHORTCUT: &str = "Ctrl+Shift+Alt+H";
@@ -1337,6 +1339,58 @@ struct HitRectIn {
     round: bool,
 }
 
+static DEBUG_LOG_TX: OnceLock<Option<Sender<String>>> = OnceLock::new();
+
+/// `HERMES_OVERLAY_DEBUG_LOG=/path` opts into a file log. Unset means no file
+/// and no disk work. The writer thread keeps the append off the GTK thread.
+fn debug_log_tx() -> Option<&'static Sender<String>> {
+    DEBUG_LOG_TX
+        .get_or_init(|| {
+            let path = std::env::var("HERMES_OVERLAY_DEBUG_LOG").unwrap_or_default();
+            let path = path.trim();
+            if path.is_empty() {
+                return None;
+            }
+            let path = path.to_string();
+            let (tx, rx) = mpsc::channel::<String>();
+            std::thread::Builder::new()
+                .name("hermes-debug-log".into())
+                .spawn(move || {
+                    let mut file = match std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
+                        Ok(file) => file,
+                        Err(err) => {
+                            eprintln!("HERMES_OVERLAY_DEBUG_LOG: {err}");
+                            return;
+                        }
+                    };
+                    while let Ok(line) = rx.recv() {
+                        let _ = writeln!(file, "{line}");
+                        let _ = file.flush();
+                    }
+                })
+                .ok()?;
+            Some(tx)
+        })
+        .as_ref()
+}
+
+#[tauri::command]
+fn debug_log_enabled() -> bool {
+    debug_log_tx().is_some()
+}
+
+#[tauri::command]
+fn debug_log(line: String) -> Result<(), String> {
+    if let Some(tx) = debug_log_tx() {
+        let _ = tx.send(line);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<(), String> {
     let mapped = rects
@@ -1954,6 +2008,8 @@ pub fn run() {
             get_kanban_board,
             patch_kanban_task,
             list_cron_jobs,
+            debug_log_enabled,
+            debug_log,
             set_hit_rects,
             set_interaction_latch,
             focus_owner,
