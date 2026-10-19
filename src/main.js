@@ -1044,8 +1044,8 @@ function seamLocked(plan) {
   return plan?.dataset.seam === "growing" || plan?.dataset.seam === "grown";
 }
 
-/** Stay visibility:hidden until the same turn that starts the 240ms clock.
- *  A visible scaleX(0.001) reads as a 2% seam for the whole wait. */
+/** Content is already painted. Stay hidden across one frame, then start the
+ *  240ms clock in that next frame so the first painted growth sample is near 0. */
 async function playPlanSeam(shell, token) {
   armSeamWatch();
   seamMark("plan-seam:clip-end");
@@ -1066,13 +1066,10 @@ async function playPlanSeam(shell, token) {
   shell.classList.add("is-plan-seam", "is-plan-arming");
   pauseHitSync();
   showPlanHost(shell);
-  seamLog("parked");
-  await nextFrame();
-  if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
-  if (plan.dataset.seam !== "growing") return;
   holdSeamVisual(shell);
   const flushed = getComputedStyle(plan).transform;
   seamLog("sliver-flush", flushed);
+  holdQuiet(shell, PLAN_GROW_MS + 320);
   await nextFrame();
   if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
   if (plan.dataset.seam !== "growing") return;
@@ -1151,31 +1148,64 @@ function growPlan(shell, token) {
   return run;
 }
 
-function deferShellWork(shell) {
+function visualQuiet(shell) {
   if (!shell) return false;
-  return shell.classList.contains("is-plan-seam")
-    || shell.classList.contains("is-plan-arming")
-    || shell.classList.contains("is-morphing")
-    || shell.classList.contains("is-collapsing");
+  if (shell.classList.contains("is-morphing")
+    || shell.classList.contains("is-collapsing")
+    || shell.classList.contains("is-plan-seam")
+    || shell.classList.contains("is-plan-arming")) return true;
+  return performance.now() < Number(shell.dataset.quietUntil || 0);
+}
+
+function holdQuiet(shell, ms) {
+  if (!shell) return;
+  const until = performance.now() + ms;
+  if (until > Number(shell.dataset.quietUntil || 0)) shell.dataset.quietUntil = String(until);
+}
+
+function deferShellWork(shell) {
+  return visualQuiet(shell);
+}
+
+function armQuietFlush(shell) {
+  if (!shell || shell._quietFlush) return;
+  const wait = Math.max(0, Number(shell.dataset.quietUntil || 0) - performance.now());
+  shell._quietFlush = window.setTimeout(() => {
+    shell._quietFlush = 0;
+    requestAnimationFrame(() => {
+      if (!shell.isConnected) return;
+      if (deferShellWork(shell)) {
+        shell.dataset.chatDirty = "1";
+        shell.dataset.planDirty = "1";
+        armQuietFlush(shell);
+        return;
+      }
+      delete shell.dataset.chatDirty;
+      delete shell.dataset.planDirty;
+      renderChat(shell.dataset.botId, { inplace: true });
+      if (renderBots.pending) renderBots();
+    });
+  }, wait);
 }
 
 function flushDeferredChat(shell) {
   if (!shell) return;
   if (shell.dataset.chatDirty !== "1" && shell.dataset.planDirty !== "1") return;
-  delete shell.dataset.chatDirty;
-  delete shell.dataset.planDirty;
-  const id = shell.dataset.botId;
-  // Two frames so the locked plan paints at full size before chat markdown
-  // rebuilds. That rebuild was holding a cancelled mid-scale frame on screen.
+  if (deferShellWork(shell)) {
+    armQuietFlush(shell);
+    return;
+  }
   requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      if (deferShellWork(shell)) {
-        shell.dataset.chatDirty = "1";
-        shell.dataset.planDirty = "1";
-        return;
-      }
-      renderChat(id);
-    });
+    if (!shell.isConnected) return;
+    if (deferShellWork(shell)) {
+      shell.dataset.chatDirty = "1";
+      shell.dataset.planDirty = "1";
+      armQuietFlush(shell);
+      return;
+    }
+    delete shell.dataset.chatDirty;
+    delete shell.dataset.planDirty;
+    renderChat(shell.dataset.botId, { inplace: true });
   });
 }
 
@@ -1267,7 +1297,24 @@ function revealContent(shell) {
   shell.classList.add("open");
 }
 
+/** Paint is already on screen. One frame later the seam clock starts. */
+async function growAfterPaint(shell, token) {
+  await nextFrame();
+  if (!shell?.isConnected) return;
+  if (token && shell.dataset.morphToken !== token) return;
+  if (visualQuiet(shell)) {
+    shell.dataset.planDirty = "1";
+    armQuietFlush(shell);
+    return;
+  }
+  const plan = shell.querySelector(".plan-window");
+  if (!plan || shell.dataset.planOpen !== "1" || seamLocked(plan)) return;
+  if (plan.dataset.warm !== "1") warmPlanLayer(shell);
+  await playPlanSeam(shell, token);
+}
+
 function settleShell(shell, target) {
+  if (target === "panel") holdQuiet(shell, 300);
   markVisual(shell, target);
   shell.classList.remove("is-growing-pill", "is-growing-panel");
   const fill = shell.querySelector(".morph-fill");
@@ -1328,7 +1375,10 @@ function settleShell(shell, target) {
   if (target === "panel" && shell.dataset.kind === "bot") stickChat(shell.dataset.botId);
   if (target === "panel" && shell.dataset.botId === "cron") syncCronBox();
   flushDeferredChat(shell);
-  if (renderBots.pending) renderBots();
+  if (renderBots.pending) {
+    if (visualQuiet(shell)) armQuietFlush(shell);
+    else renderBots();
+  }
   separateOpenShells([...document.querySelectorAll(".morph")]);
   scheduleHitSync();
 }
@@ -1428,6 +1478,7 @@ async function runShellMorph(shell, target) {
       });
       resetContent(shell);
       void shell.offsetWidth;
+      if (shell.dataset.kind === "bot") primeCachedChat(shell);
     } else {
       shell.dataset.opening = "";
       shell.classList.remove("is-orb-docked");
@@ -1438,6 +1489,9 @@ async function runShellMorph(shell, target) {
     if (!shell.dataset.planSide) shell.dataset.planSide = sideFromStyle(shell);
     warmPlanLayer(shell);
     armSeamWatch(2000);
+    await nextPaint();
+    if (!alive()) return false;
+  } else if (target === "panel" && shell.dataset.kind === "bot" && threadHasCache(threadFor(shell.dataset.botId))) {
     await nextPaint();
     if (!alive()) return false;
   }
@@ -1460,10 +1514,30 @@ async function runShellMorph(shell, target) {
   }
   if (!alive()) return false;
   if (target === "panel" && shell.dataset.planOpen === "1") {
-    if (shell.querySelector(".plan-window")?.dataset.warm === "1") {
+    const id = shell.dataset.botId;
+    const thread = threadFor(id);
+    const plan = shell.querySelector(".plan-window");
+    if (plan?.dataset.warm === "1") {
       await playPlanSeam(shell, token);
+    } else if (thread.loaded || thread.messages.length || thread.planCache) {
+      shell.dataset.paintThrough = "1";
+      renderChat(id, { force: true });
+      delete shell.dataset.paintThrough;
+      warmPlanLayer(shell);
+      await nextFrame();
+      if (alive() && shell.querySelector(".plan-window")?.dataset.warm === "1") {
+        await playPlanSeam(shell, token);
+      } else {
+        hideUnwarmedPlan(shell);
+      }
     } else {
+      shell.dataset.seamWait = "1";
       hideUnwarmedPlan(shell);
+    }
+  } else if (target === "panel" && shell.dataset.kind === "bot") {
+    const thread = threadFor(shell.dataset.botId);
+    if (!thread.loaded && !thread.planCache && thread.messages.length === 0) {
+      shell.dataset.seamWait = "1";
     }
   }
   if (!alive()) return false;
@@ -1675,6 +1749,10 @@ function previewNode() {
 }
 
 function attachShell(shell, id) {
+  shell.addEventListener("pointerenter", () => {
+    if (id === "settings" || id === "kanban" || id === "cron") return;
+    beginBotHistory(id)?.catch(() => {});
+  });
   shell.addEventListener("click", (event) => {
     const orb = event.target.closest?.(".morph-orb");
     if (shell.dataset.state === "panel" && !orb) return;
@@ -1840,7 +1918,9 @@ function renderBots() {
   });
   state.bots.forEach((bot) => {
     const shell = ensureBotShell(bot);
-    const morphing = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
+    const morphing = shell.classList.contains("is-morphing")
+      || shell.classList.contains("is-collapsing")
+      || visualQuiet(shell);
     const btn = shell.querySelector(".morph-orb");
     const thread = threadFor(bot.id);
     if (morphing) {
@@ -1856,7 +1936,8 @@ function renderBots() {
     if (thread.unread) classes.push("has-unread");
     if (thread.statusState === "error") classes.push("error");
     if (bot.id === pulseId || keepEnter) classes.push("orb-enter");
-    btn.className = classes.join(" ");
+    const nextClass = classes.join(" ");
+    if (btn.className !== nextClass) btn.className = nextClass;
     applyBotColor(shell, bot.color);
     applyBotColor(btn, bot.color);
     btn.setAttribute("aria-label", bot.name);
@@ -2020,9 +2101,81 @@ function chatStamp(thread) {
   return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}`;
 }
 
-function renderChat(id = state.activeId) {
+function threadHasCache(thread) {
+  return !!(thread && (thread.loaded || thread.messages.length || thread.planCache));
+}
+
+function chatPainted(id) {
+  const thread = threadFor(id);
+  const chat = chatOf(id);
+  if (!thread || !chat) return false;
+  return chat.dataset.stamp === chatStamp(thread) && chat.childElementCount === thread.messages.length;
+}
+
+function primeCachedChat(shell) {
+  if (!shell || shell.dataset.kind !== "bot") return;
+  const id = shell.dataset.botId;
+  if (!threadHasCache(threadFor(id)) || chatPainted(id)) return;
+  shell.dataset.paintThrough = "1";
+  renderChat(id, { force: true });
+  delete shell.dataset.paintThrough;
+}
+
+function ensurePlanChip(node, message, id) {
+  if (!id || message.role !== "bot" || message.live || node.querySelector(".plan-chip")) return;
+  const messages = threadFor(id).messages;
+  const plan = plansIn(messages).find((item) => messages[item.index] === message);
+  if (!plan) return;
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "plan-chip";
+  chip.textContent = "睇計劃";
+  chip.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openPlanWindow(id, plan.key);
+  });
+  node.appendChild(chip);
+}
+
+function syncChatInPlace(chat, thread, id) {
+  const messages = thread.messages;
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i];
+    let node = chat.children[i];
+    if (!node) {
+      chat.appendChild(bubbleEl(message, id));
+      continue;
+    }
+    const want = message.role === "user" ? "user" : message.role === "bot" ? "bot" : message.role;
+    const nextClass = `bubble ${want}`;
+    if (node.className !== nextClass) node.className = nextClass;
+    if (message.role === "bot") {
+      paintBotBubble(node, message.text);
+      ensurePlanChip(node, message, id);
+    } else if (message.role === "user") {
+      const line = node.querySelector(".user-line");
+      if (line) {
+        if (line.textContent !== (message.text || "")) line.textContent = message.text || "";
+      } else {
+        node.replaceChildren();
+        paintUserBubble(node, message);
+      }
+    } else if (node.textContent !== (message.text || "")) {
+      node.textContent = message.text || "";
+    }
+    if (message.live) node.dataset.live = "1";
+    else delete node.dataset.live;
+  }
+  while (chat.childElementCount > messages.length) chat.lastElementChild.remove();
+  chat.dataset.stamp = chatStamp(thread);
+}
+
+function renderChat(id = state.activeId, options = {}) {
   const shell = shellFor(id);
-  if (deferShellWork(shell)) {
+  const force = options.force === true;
+  const inplace = options.inplace === true;
+  if (shell && !force && deferShellWork(shell)) {
     shell.dataset.chatDirty = "1";
     return;
   }
@@ -2033,7 +2186,7 @@ function renderChat(id = state.activeId) {
   if (!bot || !chat) return;
   const thread = threadFor(bot.id);
   const title = role(panel, "name");
-  if (title) title.textContent = bot.name;
+  if (title && title.textContent !== bot.name) title.textContent = bot.name;
   const statusEl = role(panel, "status");
   setStatusText(id, thread.status || bot.status || "閒置");
   if (statusEl) statusEl.dataset.state = thread.statusState || "idle";
@@ -2047,40 +2200,32 @@ function renderChat(id = state.activeId) {
   }
   const hint = role(panel, "hint");
   if (hint) hint.textContent = hintText();
-  paintOrb(role(panel, "avatar"), bot.color, bot.short || "");
-  applyBotColor(panel, bot.color);
-  paintSessionSelect(id);
+  const quietChrome = shell && visualQuiet(shell) && !force;
+  if (!quietChrome) {
+    paintOrb(role(panel, "avatar"), bot.color, bot.short || "");
+    applyBotColor(panel, bot.color);
+    paintSessionSelect(id);
+  }
   const stamp = chatStamp(thread);
   const current = chat.dataset.stamp === stamp && chat.childElementCount === thread.messages.length;
-  const opening = shell && (shell.dataset.visual || shell.dataset.state) === "orb";
-  const revealPlan = shell
-    && shell.dataset.planOpen !== "1"
-    && (shell.dataset.visual || shell.dataset.state) === "panel"
-    && planForPanel(thread);
-  if (revealPlan) {
-    paintPlan(id);
-    if (!current) shell.dataset.chatDirty = "1";
-  } else if (!current && opening && thread.messages.length > 0) {
-    // Bubble markdown waits until the clip and the plan seam have finished.
-    paintPlan(id);
-    shell.dataset.chatDirty = "1";
-  } else if (!current) {
+  if (!current) {
     if (thread.followTail === false) thread.scrollTop = chat.scrollTop;
     markProgrammaticScroll(chat);
-    chat.innerHTML = "";
-    thread.messages.forEach((m) => chat.appendChild(bubbleEl(m, bot.id)));
-    chat.dataset.stamp = stamp;
+    if (inplace || (chat.childElementCount > 0 && !force)) syncChatInPlace(chat, thread, bot.id);
+    else {
+      chat.innerHTML = "";
+      thread.messages.forEach((m) => chat.appendChild(bubbleEl(m, bot.id)));
+      chat.dataset.stamp = stamp;
+    }
     stickChat(id);
-    paintPlan(id);
-  } else {
-    paintPlan(id);
   }
+  paintPlan(id);
   const stop = role(panel, "stop");
   const send = role(panel, "send");
   if (stop) stop.hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
   if (send) send.disabled = state.mode === "hermes" && state.busy.has(bot.id);
-  syncActivityChrome(id);
-  scheduleHitSync();
+  if (!quietChrome) syncActivityChrome(id);
+  if (!shell || !visualQuiet(shell)) scheduleHitSync();
 }
 
 function planWindow(id) {
@@ -2107,7 +2252,8 @@ function paintPlan(id) {
   const shell = shellFor(id);
   const section = planWindow(id);
   if (!shell || !section) return;
-  if (shell.classList.contains("is-plan-seam") || shell.classList.contains("is-plan-arming") || (shell.classList.contains("is-morphing") && shell.dataset.planOpen === "1")) {
+  const through = shell.dataset.paintThrough === "1";
+  if (!through && visualQuiet(shell)) {
     shell.dataset.planDirty = "1";
     return;
   }
@@ -2173,11 +2319,11 @@ function paintPlan(id) {
   }
   const morphing = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
   if (morphing) {
-    if (open && !wasOpen) {
+    if (open) {
       if (!shell.dataset.planSide) shell.dataset.planSide = sideFromStyle(shell);
       warmPlanLayer(shell);
     }
-    shell.dataset.chatDirty = "1";
+    if (!through) shell.dataset.chatDirty = "1";
     return;
   }
   syncPlanSide(shell);
@@ -2186,7 +2332,7 @@ function paintPlan(id) {
   if (open && !wasOpen && settledPanel) {
     const token = shell.dataset.morphToken || "";
     warmPlanLayer(shell);
-    void playPlanSeam(shell, token);
+    void growAfterPaint(shell, token);
     return;
   }
   if (open && !wasOpen && planHostReady(shell)) warmPlanLayer(shell);
@@ -2431,6 +2577,14 @@ function setBotStatus(id, text, statusState) {
   thread.statusState = statusState;
   if (statusState === "busy") state.busy.add(id);
   else state.busy.delete(id);
+  const shell = shellFor(id);
+  if (visualQuiet(shell)) {
+    setStatusText(id, text);
+    const statusEl = role(panelFor(id), "status");
+    if (statusEl) statusEl.dataset.state = statusState || "idle";
+    shell.dataset.chatDirty = "1";
+    return;
+  }
   if (panelFor(id)) renderChat(id);
   renderBots();
 }
@@ -2453,26 +2607,13 @@ function applyOpened(id, opened) {
   rememberPlan(thread, thread.messages);
   clearConnectionBanner();
   const shell = shellFor(id);
-  const animating = shell && (
-    shell.classList.contains("is-morphing")
-    || shell.classList.contains("is-collapsing")
-    || shell.classList.contains("is-plan-seam")
-    || shell.classList.contains("is-plan-arming")
-  );
-  if (animating) {
+  if (visualQuiet(shell)) {
     thread.status = "閒置";
     thread.statusState = "idle";
     state.busy.delete(id);
     setStatusText(id, "閒置");
-    const statusEl = role(panelFor(id), "status");
-    if (statusEl) statusEl.dataset.state = "idle";
-    paintSessionSelect(id);
-    if (shell.classList.contains("is-plan-seam") || shell.classList.contains("is-plan-arming")) {
-      shell.dataset.planDirty = "1";
-    } else {
-      paintPlan(id);
-    }
     shell.dataset.chatDirty = "1";
+    shell.dataset.planDirty = "1";
     return;
   }
   setBotStatus(id, "閒置", "idle");
@@ -2499,6 +2640,45 @@ function prefetchBotChats() {
   for (const bot of state.bots) {
     beginBotHistory(bot.id)?.catch(() => {});
   }
+}
+
+function prefetchOrbUnderCursor() {
+  if (state.mode !== "hermes" || !inTauri()) return;
+  const pad = 24;
+  for (const bot of state.bots) {
+    const shell = shellFor(bot.id);
+    const visual = shell?.dataset.visual || shell?.dataset.state;
+    if (!shell || visual !== "orb") continue;
+    const box = shell.getBoundingClientRect();
+    const x = cursorPoint.x;
+    const y = cursorPoint.y;
+    if (x < box.left - pad || x > box.right + pad || y < box.top - pad || y > box.bottom + pad) continue;
+    beginBotHistory(bot.id)?.catch(() => {});
+  }
+}
+
+function refreshBotChats() {
+  if (state.mode !== "hermes" || !inTauri()) return;
+  for (const bot of state.bots) {
+    const shell = shellFor(bot.id);
+    if (visualQuiet(shell) || state.busy.has(bot.id)) continue;
+    const thread = threadFor(bot.id);
+    if (thread.historyPromise) continue;
+    if (!thread.loaded) {
+      beginBotHistory(bot.id)?.catch(() => {});
+      continue;
+    }
+    const token = state.reconnectToken;
+    const job = loadBotHistory(bot.id, token).finally(() => {
+      if (thread.historyPromise === job) thread.historyPromise = null;
+    });
+    thread.historyPromise = job;
+  }
+}
+
+function armChatRefresh() {
+  window.clearInterval(state.chatRefresh);
+  state.chatRefresh = window.setInterval(refreshBotChats, 4000);
 }
 
 async function loadBotHistory(id, token) {
@@ -2594,6 +2774,36 @@ async function retryHistory(id, attempt, token) {
   }
 }
 
+function noteHistoryError(id, err) {
+  const thread = threadFor(id);
+  thread.loaded = false;
+  const message = String(err);
+  if (gatewayDown(message)) {
+    setBotStatus(id, "連線錯誤", "error");
+    setBanner(message, "error");
+    armReconnect(id, 0, state.reconnectToken);
+    return;
+  }
+  appendMessage(id, { role: "commentary", text: message });
+  setBotStatus(id, "連線錯誤", "error");
+  setBanner(message, "error");
+}
+
+function armHistoryAfterQuiet(id) {
+  const tick = () => {
+    const shell = shellFor(id);
+    if (shell && visualQuiet(shell)) {
+      window.setTimeout(tick, 40);
+      return;
+    }
+    if (state.mode !== "hermes") return;
+    const thread = threadFor(id);
+    if (thread.loaded || thread.historyPromise) return;
+    beginBotHistory(id)?.catch((err) => noteHistoryError(id, err));
+  };
+  window.setTimeout(tick, 40);
+}
+
 async function selectBot(id) {
   clearUnread(id);
   if (state.catalogProfile && state.catalogProfile !== id) {
@@ -2609,34 +2819,22 @@ async function selectBot(id) {
     renderBots();
     return;
   }
-  const pending = beginBotHistory(id);
-  if (pending) {
-    const thread = threadFor(id);
-    if (!thread.loaded) {
-      thread.status = "載入對話…";
-      thread.statusState = "busy";
-      state.busy.add(id);
-    }
-  }
+  const thread = threadFor(id);
+  const pending = thread.loaded ? null : (thread.historyPromise || null);
   renderBots();
   renderChat(id);
   openBotPanel(id);
-  if (!pending) return;
+  if (thread.loaded) return;
+  if (!pending) {
+    const host = shellFor(id);
+    if (host) host.dataset.seamWait = "1";
+    armHistoryAfterQuiet(id);
+    return;
+  }
   try {
     await pending;
   } catch (err) {
-    const thread = threadFor(id);
-    thread.loaded = false;
-    const message = String(err);
-    if (gatewayDown(message)) {
-      setBotStatus(id, "連線錯誤", "error");
-      setBanner(message, "error");
-      armReconnect(id, 0, state.reconnectToken);
-    } else {
-      appendMessage(id, { role: "commentary", text: message });
-      setBotStatus(id, "連線錯誤", "error");
-      setBanner(message, "error");
-    }
+    noteHistoryError(id, err);
   }
 }
 
@@ -3174,6 +3372,8 @@ async function sendClientCommand(id, text, action) {
 
 function useMock(reason, bannerAction = "") {
   cancelReconnect();
+  window.clearInterval(state.chatRefresh);
+  state.chatRefresh = 0;
   state.mode = "mock";
   state.bots = MOCK_BOTS.map((bot) => ({
     ...bot,
@@ -3231,6 +3431,7 @@ function useHermes(settings) {
   }
   renderBots();
   prefetchBotChats();
+  armChatRefresh();
 }
 
 async function connectHermes(settings) {
@@ -4444,6 +4645,7 @@ function setupProximity() {
       cursorPoint.x = event.clientX;
       cursorPoint.y = event.clientY;
       paintOrbLabel();
+      prefetchOrbUnderCursor();
     });
     return;
   }
@@ -4452,10 +4654,12 @@ function setupProximity() {
     cursorPoint.x = event.clientX;
     cursorPoint.y = event.clientY;
     paintLocalProximity();
+    prefetchOrbUnderCursor();
   });
   window.addEventListener("keydown", (event) => {
     state.heldKeys.add(event.key);
     paintLocalProximity();
+    prefetchOrbUnderCursor();
   });
   window.addEventListener("keyup", (event) => {
     state.heldKeys.delete(event.key);
@@ -4487,6 +4691,7 @@ function syncActivityChrome(id = state.activeId) {
 
 function paintActivity(id) {
   const thread = threadFor(id);
+  if (visualQuiet(shellFor(id))) return;
   const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
   applyOrbMotion(btn, thread);
   btn?.classList.toggle("has-unread", !!thread.unread);
@@ -4533,6 +4738,7 @@ function clearWatchdog(id) {
 }
 
 function pingOrb(id) {
+  if (visualQuiet(shellFor(id))) return;
   const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
   if (!btn) return;
   btn.querySelector(".orb-ping")?.remove();

@@ -121,7 +121,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /requestAnimationFrame\(\(\) => requestAnimationFrame\(resolve\)\)/);
   const reveal = mainSrc.slice(mainSrc.indexOf("async function playPlanSeam"), mainSrc.indexOf("function growPlan"));
   assert.equal(reveal.split("await nextPaint()").length - 1, 0);
-  assert.equal(reveal.split("await nextFrame()").length - 1, 2);
+  assert.equal(reveal.split("await nextFrame()").length - 1, 1);
   assert.match(reveal, /seamLocked\(plan\)/);
   assert.match(reveal, /holdSeamVisual/);
   assert.match(reveal, /getComputedStyle\(plan\)\.transform/);
@@ -137,6 +137,14 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.doesNotMatch(seamCall, /flushHits|revealPlanFrame|offsetWidth|getBoundingClientRect/);
   const picked = mainSrc.slice(mainSrc.indexOf("async function selectBot"), mainSrc.indexOf("function openBotPanel"));
   assert.match(picked, /renderChat\(id\);\n  openBotPanel\(id\)/);
+  assert.match(mainSrc, /function visualQuiet/);
+  assert.match(mainSrc, /dataset\.quietUntil/);
+  assert.match(mainSrc, /seamWait = "1"/);
+  assert.match(mainSrc, /function prefetchOrbUnderCursor/);
+  assert.match(mainSrc, /pointerenter/);
+  assert.match(mainSrc, /setInterval\(refreshBotChats, 4000\)/);
+  assert.match(mainSrc, /inplace: true/);
+  assert.doesNotMatch(mainSrc, /Bubble markdown waits until the clip/);
   const parked = mainSrc.slice(mainSrc.indexOf("function stopShellTransition"), mainSrc.indexOf("async function runShellMorph"));
   assert.match(parked, /applyParkedPlan/);
   assert.doesNotMatch(parked, /opacity = "0"/);
