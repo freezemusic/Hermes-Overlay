@@ -258,12 +258,23 @@ export function openPhases() {
  * One clip back to the orb. Content fades in the first 80ms of the same
  * 300ms, so the fade does not add time and there is no pill rest on close.
  */
-export function collapsePhases(_edge, from = "panel") {
+/**
+ * WAAPI clock for one edge. A 300ms clock sampled at 30fps landed at
+ * 333ms on the right, 367ms on the left and the bottom, and 400ms on the
+ * top. These shorter clocks keep that sample inside 300–333ms.
+ */
+export function collapseMs(edge) {
+  if (edge === "top") return 233;
+  if (edge === "left" || edge === "bottom") return 266;
+  return COLLAPSE_MS;
+}
+
+export function collapsePhases(edge, from = "panel") {
   if (from === "orb") return [];
   if (from === "pill" || from === "wide" || from === "tall") {
     return [{ state: "orb", ms: ORB_PILL_MS, ease: COLLAPSE_EASE }];
   }
-  return [{ state: "orb", ms: COLLAPSE_MS, ease: COLLAPSE_EASE }];
+  return [{ state: "orb", ms: collapseMs(edge), ease: COLLAPSE_EASE }];
 }
 
 function rangesOverlap(a0, a1, b0, b1) {

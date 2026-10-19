@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   COLLAPSE_EASE,
   COLLAPSE_MS,
+  collapseMs,
   CONTENT_IN_DELAY_MS,
   CONTENT_IN_MS,
   CONTENT_OUT_MS,
@@ -227,12 +228,17 @@ test("plan seam and cron height and chat tail use explicit pixels", () => {
   assert.equal(chatTailAction({ followTail: false, userGesture: true, nearTail: true }), "pin");
 });
 
-test("collapse is one 300ms ease-in and content fades inside that window", () => {
+test("collapse is one ease-in and the clock is pinned per edge", () => {
+  assert.equal(collapseMs("right"), COLLAPSE_MS);
+  assert.equal(collapseMs("left"), 266);
+  assert.equal(collapseMs("bottom"), 266);
+  assert.equal(collapseMs("top"), 233);
   for (const edge of ["left", "right", "top", "bottom"]) {
     const steps = collapsePhases(edge, "panel");
     assert.deepEqual(steps.map((step) => step.state), ["orb"]);
-    assert.equal(steps[0].ms, COLLAPSE_MS);
+    assert.equal(steps[0].ms, collapseMs(edge));
     assert.equal(steps[0].ease, COLLAPSE_EASE);
+    assert.ok(steps[0].ms <= COLLAPSE_MS);
     assert.ok(CONTENT_OUT_MS < steps[0].ms);
   }
   assert.equal(collapsePhases("bottom", "pill").reduce((sum, step) => sum + step.ms, 0), ORB_PILL_MS);

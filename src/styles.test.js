@@ -65,8 +65,13 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph\.is-morphing\[data-kind="bot"\]\[data-state="panel"\] \{[^}]*background:\s*transparent/s);
   assert.match(css, /\.morph\.is-content-promoted \.content,\s*\n\.morph\.is-content-promoted \.morph-body \{[^}]*translateZ\(0\)/s);
   assert.match(css, /\.morph\.is-orb-moving \.morph-orb \{[^}]*contain:\s*none/s);
+  assert.match(css, /\.morph\.is-orb-docked \.morph-orb,[\s\S]*contain:\s*none/);
+  assert.match(css, /\.morph\.is-morphing \.morph-pill \{[^}]*transition:\s*none/s);
+  assert.match(css, /\.morph\[data-state="panel"\] \.morph-orb:hover::before \{[^}]*transition:\s*none/s);
   assert.match(css, /\.morph\.is-morphing:not\(\.is-orb-docked\):not\(\.is-orb-moving\) \.morph-orb,[\s\S]{0,120}scale\(1\)/);
   const mainSrc = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  assert.match(mainSrc, /dataset\.seam = "grown"/);
+  assert.match(mainSrc, /seamLocked\(section\)/);
   const grow = mainSrc.slice(mainSrc.indexOf("function growPlan"), mainSrc.indexOf("function orbScaleNow"));
   assert.match(grow, /document\.timeline\?\.currentTime/);
   assert.match(grow, /\.startTime = now/);
@@ -113,7 +118,11 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.doesNotMatch(mainSrc, /function revealPlanFrame/);
   assert.match(mainSrc, /requestAnimationFrame\(\(\) => requestAnimationFrame\(resolve\)\)/);
   const reveal = mainSrc.slice(mainSrc.indexOf("async function playPlanSeam"), mainSrc.indexOf("function growPlan"));
-  assert.equal(reveal.split("await nextPaint()").length - 1, 2);
+  assert.equal(reveal.split("await nextPaint()").length - 1, 0);
+  assert.equal(reveal.split("await nextFrame()").length - 1, 1);
+  assert.match(reveal, /seamLocked\(plan\)/);
+  const afterFrame = reveal.slice(reveal.indexOf("await nextFrame()"));
+  assert.match(afterFrame, /holdSeamVisual[\s\S]*growPlan/);
   assert.match(reveal, /holdSeamVisual/);
   assert.doesNotMatch(reveal, /flushHits|offsetWidth|getBoundingClientRect/);
   const opened = mainSrc.slice(mainSrc.indexOf("async function runShellMorph"), mainSrc.indexOf("function raisePanel"));
