@@ -474,6 +474,16 @@ export function seamScaleAt(t) {
   return Math.max(SEAM_MIN, seamEase(t));
 }
 
+/** Plan growth clip. The markdown stays at final size; only the wrapper's
+ *  inset changes, so WebKitGTK does not re-raster the text each frame.
+ *  Right dock eats the right edge. Left dock eats the left edge. t is 0..1. */
+export function seamClip(side, t) {
+  const reveal = t <= 0 ? 0 : t >= 1 ? 1 : seamEase(t);
+  const hidden = Math.round((1 - reveal) * 1000) / 10;
+  if (side === "left") return `inset(0px 0px 0px ${hidden}%)`;
+  return `inset(0px ${hidden}% 0px 0px)`;
+}
+
 /** Composited seam. WebKitGTK does not run clip-path on the compositor, so a
  *  240ms inset animation paints on the main thread and the first presented
  *  frame is already most of the way open. scaleX is composited. The inner

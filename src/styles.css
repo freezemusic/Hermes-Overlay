@@ -1047,8 +1047,8 @@ html, body {
 
 .plan-window::before { display: none; }
 
-/* Resting transform is none. JS writes inline scaleX only while the plan
-   grows, then leaves scaleX(1). Do not put a near-zero scale in this file. */
+/* Resting transform is none. Growth reveals with inline clip-path on this
+   fixed box. Do not put a near-zero scale in this file. */
 .morph .plan-window {
   position: absolute;
   left: 100%;

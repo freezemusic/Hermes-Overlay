@@ -16,8 +16,7 @@ import {
   PANEL_W,
   PILL_PANEL_MS,
   PLAN_GROW_MS,
-  SEAM_MIN,
-  seamScaleAt,
+  seamClip,
   clipPath,
   distributeEdges,
   fixedOrbPoint,
@@ -908,22 +907,22 @@ function cancelPlanAnims(plan, fit) {
 function lockPlanRevealed(plan) {
   if (!plan) return;
   const fit = planFitEl(plan);
+  const shell = plan.closest?.(".morph");
   plan.style.visibility = "visible";
   plan.classList.remove("is-plan-parked");
-  plan.style.transform = "scaleX(1)";
-  if (fit) fit.style.transform = "scaleX(1)";
-  void getComputedStyle(plan).transform;
-  if (fit) void getComputedStyle(fit).transform;
+  plan.style.removeProperty("transform");
+  if (fit) fit.style.removeProperty("transform");
+  plan.style.clipPath = seamClip(shell?.dataset.planSide, 1);
+  void getComputedStyle(plan).clipPath;
   plan.style.opacity = "";
   plan.style.removeProperty("z-index");
-  plan.style.removeProperty("clip-path");
   plan.style.removeProperty("pointer-events");
   if (plan.dataset.sizeLock !== "1") {
     plan.style.removeProperty("will-change");
     if (fit) fit.style.removeProperty("will-change");
   }
   setSeamPhase(plan, "grown");
-  seamLog("lock", "transform=scaleX(1) kept-fill");
+  seamLog("lock", "clip=open kept");
 }
 
 /** Seam phase is a JS field. The finish frame must not write data-seam:
@@ -946,8 +945,10 @@ function paintedScaleX(transform) {
 function retireGrownSeam(plan) {
   if (!plan || seamPhase(plan) !== "grown") return;
   const fit = planFitEl(plan);
-  plan.style.transform = "scaleX(1)";
-  if (fit) fit.style.transform = "scaleX(1)";
+  const shell = plan.closest?.(".morph");
+  plan.style.clipPath = seamClip(shell?.dataset.planSide, 1);
+  plan.style.removeProperty("transform");
+  if (fit) fit.style.removeProperty("transform");
   const painted = getComputedStyle(plan).transform;
   if (fit) void getComputedStyle(fit).transform;
   if (paintedScaleX(painted) < 0.99) return;
@@ -1045,8 +1046,9 @@ function seamLog(event, detail = "") {
   const plan = document.querySelector(".plan-window");
   const phase = seamPhase(plan) || "-";
   const scale = plan ? (plan.style.transform || "style-empty") : "no-plan";
-  console.info(`[plan-seam] ${event} t=${performance.now().toFixed(1)} seam=${phase} node=${plan?.dataset.seamNode || "-"} ${scale} ${detail}`);
-  debugLog(`plan-${event}`, `seam=${phase} ${scale} ${detail}`);
+  const clip = plan ? (plan.style.clipPath || "clip-empty") : "no-plan";
+  console.info(`[plan-seam] ${event} t=${performance.now().toFixed(1)} seam=${phase} node=${plan?.dataset.seamNode || "-"} ${scale} clip=${clip} ${detail}`);
+  debugLog(`plan-${event}`, `seam=${phase} ${scale} clip=${clip} ${detail}`);
 }
 
 function installPlanDomLog() {
@@ -1125,15 +1127,15 @@ function applyParkedPlan(shell, plan) {
   plan.style.pointerEvents = "none";
   plan.style.opacity = "1";
   plan.style.zIndex = "-1";
-  plan.style.willChange = "transform";
-  fit.style.willChange = "transform";
+  plan.style.willChange = "transform, clip-path";
+  fit.style.removeProperty("will-change");
   plan.style.transformOrigin = origin;
   fit.style.transformOrigin = origin;
   plan.style.clipPath = "none";
   holdMotion(plan);
   holdMotion(fit);
   plan.style.transform = `translateX(${shift})`;
-  fit.style.transform = "scaleX(1)";
+  fit.style.removeProperty("transform");
   return fit;
 }
 
@@ -1294,8 +1296,8 @@ function holdSeamVisual(shell) {
   plan.style.visibility = "hidden";
   plan.style.transformOrigin = origin;
   fit.style.transformOrigin = origin;
-  plan.style.willChange = "transform";
-  fit.style.willChange = "transform";
+  plan.style.willChange = "transform, clip-path";
+  fit.style.removeProperty("will-change");
   plan.style.clipPath = "none";
   plan.style.setProperty("display", "flex", "important");
   plan.style.setProperty("overflow", "hidden", "important");
@@ -1351,12 +1353,10 @@ function stopSeamClock(plan) {
   plan._seamFrame = 0;
 }
 
-/** Inline scale only. The stylesheet has no scaleX resting value, so a
- *  finished WAAPI fill cannot fall back to scaleX(0.001) for one frame. */
-function writeSeamScale(plan, fit, scale) {
-  const outer = scale >= 0.999 ? 1 : scale;
-  plan.style.transform = `scaleX(${outer})`;
-  if (fit) fit.style.transform = `scaleX(${outer === 1 ? 1 : 1 / outer})`;
+/** Clip only. The plan and its markdown stay at final size; a scale would
+ *  re-raster the text and WebKitGTK would drop the intermediate paints. */
+function writeSeamClip(plan, side, t) {
+  plan.style.clipPath = seamClip(side, t);
 }
 
 function pinContentOpacity(shell) {
@@ -1388,10 +1388,11 @@ function growPlan(shell, token) {
   shell.classList.add("is-plan-seam");
   pauseHitSync();
   stopSeamClock(plan);
-  // Promote before the first scale. A parked plan stays hidden through the
-  // settle tail so the 0.001 sample is not the frame a stall holds on screen.
-  plan.style.willChange = "transform";
-  fit.style.willChange = "transform";
+  // Promote the clip layer while the plan is still hidden. The settle tail
+  // must not paint a 1% stub, and the markdown must not scale.
+  const side = shell.dataset.planSide === "left" ? "left" : "right";
+  plan.style.willChange = "clip-path";
+  fit.style.removeProperty("will-change");
   pinContentOpacity(shell);
   const run = new Promise((resolve) => {
     let elapsed = 0;
@@ -1423,15 +1424,21 @@ function growPlan(shell, token) {
         plan._seamFrame = requestAnimationFrame(awaitCalm);
         return;
       }
+      // Park translate comes off while the clip is still fully closed, then
+      // the first visible sample is a short step so 30fps does not open on
+      // the steep part of the curve.
+      plan.style.removeProperty("transform");
+      fit.style.removeProperty("transform");
+      plan.style.willChange = "clip-path";
+      writeSeamClip(plan, side, 0);
+      const FIRST_PAINT_MS = 12;
+      elapsed = FIRST_PAINT_MS;
+      writeSeamClip(plan, side, elapsed / PLAN_GROW_MS);
       plan.classList.remove("is-plan-parked");
       plan.style.visibility = "visible";
-      plan.style.willChange = "transform";
-      fit.style.willChange = "transform";
-      writeSeamScale(plan, fit, SEAM_MIN);
-      seamLog("anim-start", `flight=${flight} mode=raf scale=${SEAM_MIN} calm=2`);
+      seamLog("anim-start", `flight=${flight} mode=raf clip=${plan.style.clipPath} calm=2`);
       seamMark("plan-seam:clock");
       last = now;
-      elapsed = 0;
       plan._seamFrame = requestAnimationFrame(step);
     };
     const step = (now) => {
@@ -1447,8 +1454,8 @@ function growPlan(shell, token) {
       elapsed += delta;
       const t = elapsed / PLAN_GROW_MS;
       if (t >= 1) {
-        writeSeamScale(plan, fit, 1);
-        seamLog("anim-finish", `flight=${flight} mode=raf scale=1`);
+        writeSeamClip(plan, side, 1);
+        seamLog("anim-finish", `flight=${flight} mode=raf clip=${plan.style.clipPath}`);
         holdFreeze(shell, FREEZE_AFTER_GROW_MS);
         holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
         setSeamPhase(plan, "grown", { dom: false });
@@ -1456,8 +1463,7 @@ function growPlan(shell, token) {
         resolve(true);
         return;
       }
-      const scale = seamScaleAt(t);
-      writeSeamScale(plan, fit, scale);
+      writeSeamClip(plan, side, t);
       plan._seamFrame = requestAnimationFrame(step);
     };
     plan._seamFrame = requestAnimationFrame(awaitCalm);
@@ -4763,9 +4769,15 @@ function syncLatch() {
 }
 
 const CLOSE_PAD_PX = 36;
+/** The v50 miss was ~15px below the published edge. Cover the button and that slack. */
+const BOTTOM_HIT_SLACK = 32;
 
-/** Bottom footer border box. The header is the last flex item, and it can
- *  sit past the shell edge the announce rect was built from. */
+function hitBoxText(box) {
+  if (!box || box.width < 1 || box.height < 1) return "-";
+  return `${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`;
+}
+
+/** Bottom footer border box. The header is the last flex item. */
 function bottomFooterBox(shell) {
   if (shell?.dataset.header !== "bottom") return null;
   const header = shell.querySelector(".center-panel > .panel-header, .settings-head");
@@ -4775,17 +4787,43 @@ function bottomFooterBox(shell) {
   return box;
 }
 
+function bottomCloseButton(shell) {
+  return shell?.querySelector?.(".panel-header [data-role='close'], .settings-head [data-role='close']") || null;
+}
+
+/** Bottom slot. A box measured while the header is still the top row sits in
+ *  the upper half of the shell; the painted footer is the bottom 44px. */
+function bottomHitFloor(shell) {
+  if (shell?.dataset.header !== "bottom") return null;
+  const host = shell.getBoundingClientRect();
+  if (host.width < 1 || host.height < 1) return null;
+  const foot = bottomFooterBox(shell);
+  const buttonEl = bottomCloseButton(shell);
+  const button = buttonEl?.getBoundingClientRect();
+  const buttonOk = button && button.height >= 1 && button.width >= 1;
+  const footOk = !!foot;
+  const centerY = buttonOk
+    ? button.y + button.height / 2
+    : footOk
+      ? foot.y + foot.height / 2
+      : host.bottom;
+  const upper = centerY < host.y + host.height * 0.5;
+  const measured = Math.max(host.bottom, footOk ? foot.bottom : 0, buttonOk ? button.bottom : 0);
+  return {
+    host,
+    foot: footOk ? foot : null,
+    button: buttonOk ? button : null,
+    upper,
+    bottom: (upper ? host.bottom : measured) + BOTTOM_HIT_SLACK,
+  };
+}
+
 /** Pull the panel hit down over a bottom footer that paints past the shell. */
 function coverBottomFooter(rect, shell) {
-  const foot = bottomFooterBox(shell);
-  if (!foot || !rect) return rect;
-  const close = shell.querySelector("[data-hit-id^='close:']");
-  const button = close?.getBoundingClientRect();
-  const buttonBottom = button && button.height >= 1 ? button.bottom : foot.bottom;
-  const top = Math.min(rect.y, foot.top);
-  const bottom = Math.max(rect.y + rect.h, foot.bottom, buttonBottom);
-  rect.y = top;
-  rect.h = bottom - top;
+  const slot = bottomHitFloor(shell);
+  if (!slot || !rect) return rect;
+  const bottom = Math.max(rect.y + rect.h, slot.bottom);
+  rect.h = bottom - rect.y;
   return rect;
 }
 
@@ -4797,15 +4835,17 @@ function pushCloseHit(rects, shell, level) {
   let y = box.y;
   let h = box.height;
   if (shell.dataset.header === "bottom") {
-    const foot = bottomFooterBox(shell);
-    if (foot && foot.height >= box.height) {
-      // The control is centered in the footer. A box pinned to the title row
-      // leaves the visual centre outside the hit.
-      const centered = foot.y + (foot.height - box.height) / 2;
-      if (y + 1 < centered) y = centered;
-      const footBottom = Math.max(y + h, foot.bottom);
-      h = footBottom - y;
+    const slot = bottomHitFloor(shell);
+    if (slot?.upper) {
+      const row = 44;
+      y = slot.host.bottom - row + Math.max(0, (row - box.height) / 2);
     }
+    const footBottom = Math.max(y + h, slot?.bottom || y + h);
+    h = footBottom - y;
+    debugLog(
+      "hit-close",
+      `when=push header=bottom upper=${slot?.upper ? 1 : 0} shell=${hitBoxText(slot?.host)} foot=${hitBoxText(slot?.foot)} button=${hitBoxText(slot?.button || box)} hit=${Math.round(box.x - CLOSE_PAD_PX)},${Math.round(y - CLOSE_PAD_PX)},${Math.round(box.width + CLOSE_PAD_PX * 2)}x${Math.round(h + CLOSE_PAD_PX * 2)}`,
+    );
   }
   rects.push({
     id: close.dataset.hitId,
@@ -4984,13 +5024,31 @@ function announcePanelHits(shell) {
     rect.w = right - left;
   }
   coverBottomFooter(rect, shell);
-  const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id);
+  const closeId = `close:${shell.dataset.botId || ""}`;
+  const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id && item.id !== closeId);
   keep.push(rect);
-  pushCloseHit(keep, shell, rect.z || 1);
+  // No close: rect in this frozen set. The button sits inside the panel rect,
+  // so it clicks when Ctrl is up and passes through while Ctrl is held.
+  // v50 published close: here and the silence window captured Ctrl+click.
   hitSilence.add(shell);
   pauseHitSync();
   sendHitRects(keep, "announce-panel");
   debugLog("hit-announce", `bot=${shell.dataset.botId || ""} mode=panel`);
+  if (shell.dataset.header === "bottom") {
+    const slot = bottomHitFloor(shell);
+    debugLog(
+      "hit-close",
+      `when=announce header=bottom upper=${slot?.upper ? 1 : 0} shell=${hitBoxText(slot?.host)} foot=${hitBoxText(slot?.foot)} button=${hitBoxText(slot?.button)} panel=${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.w)}x${Math.round(rect.h)} close=omitted`,
+    );
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!shell.isConnected) return;
+      const later = bottomHitFloor(shell);
+      debugLog(
+        "hit-close",
+        `when=later header=bottom upper=${later?.upper ? 1 : 0} shell=${hitBoxText(later?.host)} foot=${hitBoxText(later?.foot)} button=${hitBoxText(later?.button)}`,
+      );
+    }));
+  }
 }
 
 function announceOrbHits(shell) {
