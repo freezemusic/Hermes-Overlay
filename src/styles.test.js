@@ -250,6 +250,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   const libRs = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   const interactionRs = readFileSync(new URL("../src-tauri/src/interaction.rs", import.meta.url), "utf8");
   assert.match(libRs, /cmd=set_hit_rects/);
+  assert.match(libRs, /let mapped: Vec<interaction::HitRect>/);
   assert.match(interactionRs, /cmd=input-shape n=\{\} platform=linux/);
   assert.match(interactionRs, /cmd=input-shape n=\{\} platform=windows/);
   assert.match(css, /\.morph-pill \{[^}]*height:\s*44px/s);

@@ -1405,7 +1405,7 @@ pub(crate) fn trace_debug(event: &str, detail: &str) {
 
 #[tauri::command]
 fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<(), String> {
-    let mapped = rects
+    let mapped: Vec<interaction::HitRect> = rects
         .into_iter()
         .map(|rect| interaction::HitRect {
             id: rect.id,
