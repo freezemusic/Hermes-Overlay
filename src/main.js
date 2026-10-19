@@ -676,6 +676,12 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     } else if (toState === "orb") {
       const fromScale = Number(shell._closingScale) || 1;
       if (fromScale < 0.98) scaleOrb(shell, token, fromScale, 1, duration, easing, true);
+      const floor = idleOrbOpacity(shell);
+      shell._idleDim = shell.animate([
+        { opacity: 1, offset: 0 },
+        { opacity: 1, offset: 0.82 },
+        { opacity: floor, offset: 1 },
+      ], { duration, easing: "linear", fill: "forwards", id: "orb-idle" });
       if (stroke) {
         strokeAnim = stroke.animate([
           { clipPath: clipPath(from) },
@@ -711,6 +717,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
         shellAnim.startTime = now;
         if (fillAnim) fillAnim.startTime = now;
         if (strokeAnim) strokeAnim.startTime = now;
+        if (shell._idleDim) shell._idleDim.startTime = now;
       }
     }
     if (toState === "panel") watchPresent(shell, shellAnim, "panel");
@@ -783,10 +790,20 @@ function commitClosedShell(shell) {
   // have one, and keeping it retitles the orb a different colour after close.
   shell.style.removeProperty("will-change");
   if (orb) orb.style.removeProperty("will-change");
+  const floor = String(idleOrbOpacity(shell));
+  if (shell.style.getPropertyValue("--hit-opacity") !== floor) {
+    shell.style.setProperty("--hit-opacity", floor);
+  }
   if (orb?.classList.contains("active") && !state.openIds.includes(shell.dataset.botId)) {
     orb.classList.remove("active");
-    debugLog("orb-restyle", "when=collapse-end class=active-off");
   }
+  debugLog("orb-restyle", `when=collapse-end class=active-off opacity=${floor}`);
+}
+
+function idleOrbOpacity(shell) {
+  if (shell?.dataset.botId === "cron") return 0.55;
+  const value = Number(state.interaction?.minOpacity);
+  return Number.isFinite(value) ? value : 0.18;
 }
 
 function planWidthPx() {
@@ -876,10 +893,12 @@ function hideUnwarmedPlan(shell) {
     clearPlanMotion(plan);
     plan.style.width = "";
     plan.style.height = "";
-    delete plan.dataset.warm;
-    delete plan.dataset.painted;
+    forgetPlanWarm(plan);
   }
-  if (shell) delete shell.dataset.planOpen;
+  if (shell) {
+    delete shell.dataset.planOpen;
+    shell.classList.remove("is-plan-seam", "is-plan-arming");
+  }
 }
 
 /** Freeze, quiet, and plan-hold clocks live off the DOM. Writing them onto
@@ -1452,6 +1471,32 @@ function capturePlanRaster(plan) {
   loadImage();
 }
 
+function planInk(plan) {
+  const text = plan?.querySelector?.("[data-role='plan-body']")?.textContent || "";
+  const title = plan?.querySelector?.("[data-role='plan-title']")?.textContent || "";
+  return `${title}${text}`.trim().length;
+}
+
+/** Warm is real only after the parked layer has presented with text in it.
+ *  A blank foreignObject bitmap does not count. */
+function planPresented(plan) {
+  if (!plan || plan.dataset.warmPresented !== "1") return false;
+  const ink = planInk(plan);
+  return ink > 0 && plan.dataset.warmInk === String(ink);
+}
+
+function forgetPlanWarm(plan) {
+  if (!plan) return;
+  plan.getAnimations?.().forEach((anim) => {
+    if (anim.id === "plan-warm") anim.cancel();
+  });
+  delete plan.dataset.warm;
+  delete plan.dataset.warmPresented;
+  delete plan.dataset.warmInk;
+  delete plan.dataset.painted;
+  delete plan.dataset.raster;
+}
+
 /** Lay the plan out and promote a transform layer before the seam clock.
  *  WebKitGTK does not rasterise opacity:0, so the markdown has to be painted
  *  at opacity 1 while the opaque glass still covers it. The animate() turn
@@ -1461,7 +1506,9 @@ function warmPlanLayer(shell) {
   if (!plan || shell.dataset.planOpen !== "1" || !planHostReady(shell)) return;
   if (seamLocked(plan)) return;
   applyParkedPlan(shell, plan);
-  if (plan.dataset.warm === "1") return;
+  const ink = planInk(plan);
+  if (plan.dataset.warm === "1" && planPresented(plan)) return;
+  if (plan.dataset.warmInk && plan.dataset.warmInk !== String(ink)) forgetPlanWarm(plan);
   armSeamWatch(2000);
   seamMark("plan-seam:warm");
   void plan.offsetWidth;
@@ -1482,30 +1529,69 @@ function warmPlanLayer(shell) {
   plan.style.willChange = "transform";
   fit.style.willChange = "transform";
   plan.dataset.warm = "1";
-  pumpPlanWarm(shell, plan);
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      if (!plan.isConnected) return;
-      plan.dataset.painted = "1";
-      seamMark("plan-seam:warm-painted");
-      capturePlanRaster(plan);
-    });
-  });
+  plan.dataset.warmInk = String(ink);
+  const anim = pumpPlanWarm(shell, plan);
+  watchPlanWarm(plan, anim);
 }
 
 /** Composited transform while the plan is still parked under the glass.
  *  The first open otherwise rasterises the markdown on the first revealed
  *  frames, and the shell clip stops presenting until 100%. */
 function pumpPlanWarm(shell, plan) {
-  if (!plan || plan.getAnimations?.().some((anim) => anim.id === "plan-warm")) return;
+  const running = plan?.getAnimations?.().find((anim) => anim.id === "plan-warm" && anim.playState === "running");
+  if (!plan || running) return running || null;
   const shift = shell?.dataset.planSide === "left" ? "100%" : "-100%";
+  const ink = planInk(plan);
+  debugLog("plan-warm", `side=${shell?.dataset.planSide || "right"} ink=${ink} w=${shell?.dataset.planWidth || ""}`);
   try {
-    plan.animate([
+    return plan.animate([
       { transform: `translate3d(${shift},0,0)` },
       { transform: `translate3d(${shift},0,1px)`, offset: 0.5 },
       { transform: `translate3d(${shift},0,0)` },
     ], { duration: 320, easing: "linear", fill: "none", id: "plan-warm" });
-  } catch { /* the parked inline transform still paints */ }
+  } catch {
+    return null;
+  }
+}
+
+/** The cold open used to cancel this animation on the same turn it started,
+ *  so the markdown was first rasterised by the revealing clip. Wait until
+ *  the parked layer has actually presented. */
+function watchPlanWarm(plan, anim) {
+  if (!anim) return;
+  const started = performance.now();
+  const step = () => {
+    if (!plan?.isConnected || anim.playState === "idle") return;
+    const ink = planInk(plan);
+    const current = Number(anim?.currentTime) || 0;
+    const done = anim?.playState === "finished" || current >= 120;
+    if (ink > 0 && done) {
+      plan.dataset.warmPresented = "1";
+      plan.dataset.warmInk = String(ink);
+      plan.dataset.painted = "1";
+      debugLog("plan-warm-paint", `current=${current.toFixed(1)} ink=${ink} state=${anim?.playState || ""}`);
+      return;
+    }
+    if (performance.now() - started > 360) {
+      debugLog("plan-warm-paint", `timeout ink=${ink} current=${current.toFixed(1)}`);
+      return;
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+async function waitPlanPresented(shell) {
+  const plan = shell?.querySelector?.(".plan-window");
+  if (!plan) return false;
+  if (planPresented(plan)) return true;
+  const started = performance.now();
+  while (plan.isConnected && performance.now() - started < 340) {
+    if (planPresented(plan)) return true;
+    await nextFrame();
+  }
+  debugLog("plan-warm-wait", `presented=${plan.dataset.warmPresented || 0} ink=${planInk(plan)}`);
+  return planPresented(plan);
 }
 
 /** Park the seam while the panel clip is still covering it, before content
@@ -1700,6 +1786,14 @@ function pumpSeamPresent(shell, duration) {
   }
 }
 
+/** Pin the seam to this frame's timeline so the first presented sample is
+ *  one vsync of PLAN_EASE, not a 30fps phase that lands past 30%. */
+function alignSeamClock(anim) {
+  const now = document.timeline?.currentTime;
+  if (!anim || typeof now !== "number") return;
+  try { anim.startTime = now; } catch { /* the clock is already on this frame */ }
+}
+
 /** Fresh shell clip, fully closed to fully open. The finished panel clip
  *  stays where it ended. A new animation on the same property paints over it. */
 function beginSeamClip(shell) {
@@ -1719,6 +1813,7 @@ function beginSeamClip(shell) {
     return null;
   }
   shell._clipHold = anim;
+  alignSeamClock(anim);
   shell.style.clipPath = to;
   pumpSeamPresent(shell, duration);
   watchPresent(shell, anim, "plan");
@@ -1776,7 +1871,9 @@ function growPlan(shell, token) {
   fit.style.willChange = "transform";
   plan.style.transformOrigin = origin;
   plan.getAnimations?.().forEach((anim) => {
-    if (anim.id === "plan-warm") anim.cancel();
+    if (anim.id !== "plan-warm") return;
+    debugLog("plan-warm-cancel", `current=${Number(anim.currentTime || 0).toFixed(1)} presented=${plan.dataset.warmPresented || 0}`);
+    anim.cancel();
   });
   plan.style.transform = "none";
   plan.style.removeProperty("clip-path");
@@ -2150,8 +2247,7 @@ function stopShellTransition(shell, target = "") {
       clearPlanMotion(plan);
       plan.style.removeProperty("display");
       plan.classList.remove("is-seam-grow");
-      delete plan.dataset.warm;
-      delete plan.dataset.painted;
+      forgetPlanWarm(plan);
       delete shell.dataset.planWidth;
     }
   } else if (plan && target === "orb") {
@@ -2342,22 +2438,28 @@ async function runShellMorph(shell, target) {
     const id = shell.dataset.botId;
     const thread = threadFor(id);
     const plan = shell.querySelector(".plan-window");
-    if (plan?.dataset.warm === "1") {
+    // A layer that already presented during the panel clip starts on this
+    // turn. A cold plan stays parked until plan-warm has painted real text.
+    if (planPresented(plan)) {
       await playPlanSeam(shell, token);
-    } else if (thread.loaded || thread.messages.length || thread.planCache) {
+    } else if (thread.loaded || thread.messages.length || thread.planCache || planInk(plan) > 0) {
       shell.dataset.paintThrough = "1";
       renderChat(id, { force: true });
       delete shell.dataset.paintThrough;
       warmPlanLayer(shell);
-      await nextFrame();
-      if (alive() && shell.querySelector(".plan-window")?.dataset.warm === "1") {
-        await playPlanSeam(shell, token);
-      } else {
+      shell.classList.add("is-plan-seam");
+      const ready = alive() && await waitPlanPresented(shell);
+      if (alive() && ready) await playPlanSeam(shell, token);
+      else if (alive()) hideUnwarmedPlan(shell);
+    } else {
+      warmPlanLayer(shell);
+      shell.classList.add("is-plan-seam");
+      const ready = alive() && await waitPlanPresented(shell);
+      if (alive() && ready) await playPlanSeam(shell, token);
+      else if (alive()) {
+        shell.dataset.seamWait = "1";
         hideUnwarmedPlan(shell);
       }
-    } else {
-      shell.dataset.seamWait = "1";
-      hideUnwarmedPlan(shell);
     }
   } else if (target === "panel" && shell.dataset.kind === "bot") {
     const thread = threadFor(shell.dataset.botId);
@@ -3183,8 +3285,7 @@ function paintPlan(id) {
     section.style.height = "";
     section.style.removeProperty("display");
     section.classList.remove("is-seam-grow");
-    delete section.dataset.warm;
-    delete section.dataset.painted;
+    forgetPlanWarm(section);
     delete shell.dataset.planWidth;
     delete shell.dataset.planHeight;
     shell.classList.remove("is-plan-seam");
@@ -3215,8 +3316,7 @@ function paintPlan(id) {
           replaceHtml(body, html);
           decorateCodeBlocks(body);
           if (section.dataset.sizeLock !== "1" && !seamLocked(section)) {
-            delete section.dataset.warm;
-            delete section.dataset.painted;
+            forgetPlanWarm(section);
           }
         }
       }
@@ -5617,6 +5717,13 @@ function applyFrames(frames, interactiveAll = false) {
     const nested = !!el.parentElement?.closest?.("[data-hit-id]");
     const value = known == null || nested ? 1 : known.opacity;
     const nextOpacity = String(value);
+    // A finished orb-idle fill is the dim already on screen. Cancelling it
+    // when this frame does not know the orb would paint the lit fallback.
+    el.getAnimations?.().forEach((anim) => {
+      if (anim.id !== "orb-idle" || anim.playState === "running") return;
+      if (known == null && nextOpacity === "1") return;
+      anim.cancel();
+    });
     if (el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
       el.style.setProperty("--hit-opacity", nextOpacity);
     }

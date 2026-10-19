@@ -104,6 +104,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClip, /easing: PLAN_EASE/);
   assert.match(seamClip, /const duration = PLAN_GROW_MS/);
   assert.match(seamClip, /pumpSeamPresent\(shell, duration\)/);
+  assert.match(seamClip, /alignSeamClock\(anim\)/);
   assert.doesNotMatch(seamClip, /\.pause\(\)|startTime|setKeyframes|updateTiming|PLAN_GROW_MS - 12/);
   const pump = mainSrc.slice(mainSrc.indexOf("function pumpSeamPresent"), mainSrc.indexOf("function beginSeamClip"));
   assert.match(pump, /translate3d\(0,0,0\)/);
@@ -197,6 +198,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(contentOutFn, /classList\.remove\("is-plan-collapse", "is-content-hold", "open"\)/);
   const seamCall = opened.slice(opened.lastIndexOf("planOpen"));
   assert.match(seamCall, /await playPlanSeam\(shell, token\)/);
+  assert.match(seamCall, /planPresented\(plan\)/);
+  assert.match(seamCall, /await waitPlanPresented\(shell\)/);
   assert.doesNotMatch(seamCall, /flushHits|revealPlanFrame|offsetWidth|getBoundingClientRect/);
   const picked = mainSrc.slice(mainSrc.indexOf("async function selectBot"), mainSrc.indexOf("function openBotPanel"));
   assert.match(picked, /renderChat\(id\);\n  openBotPanel\(id\)/);
@@ -247,9 +250,19 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.ok(raster.indexOf("phase === \"growing\"") > 0 && raster.indexOf("phase === \"growing\"") < raster.indexOf("offsetWidth"));
   const warmFn = mainSrc.slice(mainSrc.indexOf("function warmPlanLayer"), mainSrc.indexOf("function pumpPlanWarm"));
   assert.match(warmFn, /pumpPlanWarm\(shell, plan\)/);
+  assert.match(warmFn, /planPresented\(plan\)/);
   const warmPump = mainSrc.slice(mainSrc.indexOf("function pumpPlanWarm"), mainSrc.indexOf("function armPlanSeam"));
   assert.match(warmPump, /id: "plan-warm"/);
   assert.match(warmPump, /translate3d/);
+  assert.match(warmPump, /debugLog\("plan-warm"/);
+  assert.match(warmPump, /warmPresented = "1"/);
+  assert.match(mainSrc, /function alignSeamClock/);
+  assert.match(mainSrc, /id: "orb-idle"/);
+  assert.match(mainSrc, /setProperty\("--hit-opacity", floor\)/);
+  assert.match(mainSrc, /anim\.id !== "orb-idle"/);
+  const seamHit = css.slice(css.indexOf(".morph.is-plan-seam[data-state=\"panel\"]"));
+  assert.match(seamHit, /\.center-panel \* \{\s*pointer-events:\s*auto !important;/);
+  assert.doesNotMatch(seamHit.slice(0, 500), /plan-window/);
   const place = mainSrc.slice(mainSrc.indexOf("function placeShellElement"), mainSrc.indexOf("function layoutShell"));
   assert.match(place, /style\.width === `\$\{placed\.width\}px`/);
   assert.match(place, /return placed/);

@@ -2445,6 +2445,13 @@ html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is
   pointer-events: auto !important;
 }
 
+/* The panel clip is finished while is-morphing stays up for the seam.
+   The composer has to take a click then. The plan window stays inert. */
+html.overlay-passthrough:not([data-pass="1"]) .morph.is-plan-seam[data-state="panel"]:not(.is-collapsing) .center-panel,
+html.overlay-passthrough:not([data-pass="1"]) .morph.is-plan-seam[data-state="panel"]:not(.is-collapsing) .center-panel * {
+  pointer-events: auto !important;
+}
+
 html.overlay-passthrough .overlay-root [data-hit-id^="close:"],
 html.overlay-passthrough .overlay-root [data-hit-id^="close:"] * {
   pointer-events: auto !important;
