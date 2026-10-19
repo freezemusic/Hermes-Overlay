@@ -263,8 +263,8 @@ export function openPhases() {
  * Right at 300ms measured 366ms, so its clock is 233ms.
  * Top at 266ms measured 266ms once, one frame under that window, so its clock is 299ms.
  * Left once measured 366ms inside 300/366/333. That outlier is a stall frame,
- * so the 266ms clock stays. Refresh and hit flush wait more than a second
- * after the collapse, and an unchanged tick does not write the DOM.
+ * so the 266ms clock stays. Refresh, hit flush, and orb repaint wait more
+ * than a second after the collapse, and an unchanged tick does not write the DOM.
  */
 export function collapseMs(edge) {
   if (edge === "right") return 233;

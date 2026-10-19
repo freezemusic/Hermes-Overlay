@@ -184,6 +184,13 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /holdCollapseGate\(shell\)/);
   assert.match(mainSrc, /releaseCollapseGate\(shell\)/);
   assert.match(mainSrc, /collapseQuietUntil = performance\.now\(\) \+ 1100/);
+  assert.match(mainSrc, /cmd=set_hit_rects/);
+  assert.match(mainSrc, /function announcePanelHits/);
+  assert.match(mainSrc, /function announceOrbHits/);
+  assert.match(mainSrc, /mode=orb/);
+  const freezeFn = mainSrc.slice(mainSrc.indexOf("function holdFreeze"), mainSrc.indexOf("function planAnimLocked"));
+  assert.doesNotMatch(freezeFn, /cancel\(|cancelAnimationFrame|removeEventListener|pauseHitSync/);
+  assert.doesNotMatch(settleBody, /cancel\(|cancelAnimationFrame|removeEventListener|pauseHitSync/);
   assert.match(mainSrc, /shell\._clipHold = shellAnim/);
   assert.match(mainSrc, /mode=widen/);
   assert.match(mainSrc, /function holdPlanClip/);
@@ -239,7 +246,12 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(lock, /scaleX\(1\)/);
   assert.match(lock, /getComputedStyle\(plan\)\.transform/);
   assert.doesNotMatch(lock, /cancelPlanAnims|transform = "none"/);
-  assert.match(mainSrc, /if \(collapseBusy\(\) \|\| motionFrozen\(\)\)/);
+  assert.match(mainSrc, /collapseBusy\(\) \|\| motionFrozen\(\) \|\| collapseQuiet\(\) \|\| hitSilence\.size > 0/);
+  const libRs = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const interactionRs = readFileSync(new URL("../src-tauri/src/interaction.rs", import.meta.url), "utf8");
+  assert.match(libRs, /cmd=set_hit_rects/);
+  assert.match(interactionRs, /cmd=input-shape n=\{\} platform=linux/);
+  assert.match(interactionRs, /cmd=input-shape n=\{\} platform=windows/);
   assert.match(css, /\.morph-pill \{[^}]*height:\s*44px/s);
   assert.match(css, /\.morph-pill \{[^}]*width:\s*320px/s);
   assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-morphing\) \.morph-orb \{[^}]*scale\(calc\(28 \/ 44\)\)/s);

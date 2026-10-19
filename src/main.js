@@ -649,6 +649,16 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       // frame; the inline value is what remains if that fill drops.
       shell.style.clipPath = clipPath(shellTo);
       if (fill) fill.style.clipPath = clipPath(fillTo);
+    } else if (toState === "orb") {
+      // Resting orb is already the inline style. The collapse animation
+      // paints the from frame, so the frames after it ends match.
+      shell.style.clipPath = clipPath(shellTo);
+      if (fill) fill.style.clipPath = clipPath(fillTo);
+      const orb = shell.querySelector(".morph-orb");
+      if (orb) {
+        orb.style.transformOrigin = "center center";
+        orb.style.transform = "scale(1)";
+      }
     }
     if (toState === "orb") {
       const now = document.timeline?.currentTime;
@@ -666,32 +676,22 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     }
     return Promise.resolve(shell.dataset.morphToken === token);
   }
-  if (toState !== "orb") {
-    const track = () => {
-      if (shell.dataset.morphToken !== token) return;
-      scheduleHitSync();
-      if (!shellAnim || shellAnim.playState === "finished" || shellAnim.playState === "idle") return;
-      requestAnimationFrame(track);
-    };
-    requestAnimationFrame(track);
-  } else {
-    pauseHitSync();
-  }
+  // Hits were announced before this clip. A per-frame hit rAF would stop
+  // on the finish frame, which is the settle wash. Leave that loop idle.
+  pauseHitSync();
   return whenAnimEnds(shellAnim, duration).then((finished) => {
     if (shell.dataset.morphToken !== token) return false;
     if (!finished) return false;
-    pauseHitSync();
     // The content fade is the WAAPI started with this clip. Writing opacity
     // or transition here restarts it and drops the seam's first frame.
     holdMotion(shell);
     holdMotion(fill);
     if (toState === "orb") {
       commitClosedShell(shell);
-      writeClip(shell, to);
       shell.classList.remove("is-growing-pill", "is-growing-panel");
-      shellAnim.cancel();
-      fillAnim?.cancel();
-      strokeAnim?.cancel();
+      // Same pixels as the inline orb clip and scale(1). Cancelling here
+      // drops the layer one frame after the panel is already gone.
+      debugLog("clip-hold", `bot=${shell.dataset.botId || ""} mode=orb`);
       return true;
     }
     // Leave the clip animation in place. Cancelling it, or swapping the
@@ -856,6 +856,8 @@ function motionFrozen() {
   return [...document.querySelectorAll(".morph")].some((shell) => shell._motion || now < clockAt(shell, "freeze"));
 }
 
+/** Timestamp only. Settle must not cancel an animation, stop an rAF loop,
+ *  or remove a listener in the same turn. */
 function holdFreeze(shell, ms) {
   if (!shell || !(ms > 0)) return;
   holdClock(shell, "freeze", ms);
@@ -1456,6 +1458,7 @@ function quietWait(shell) {
     clockAt(shell, "quiet") - performance.now(),
     clockAt(shell, "plan") - performance.now(),
     clockAt(shell, "freeze") - performance.now(),
+    collapseQuietUntil - performance.now(),
   );
 }
 
@@ -1535,9 +1538,7 @@ function deferredParts(shell) {
 
 function applyQueuedShell(shell, tag) {
   if (!shell?.isConnected) return;
-  if (freezeCooling(shell) || collapseBusy()) {
-    shell.dataset.chatDirty = "1";
-    shell.dataset.planDirty = "1";
+  if (freezeCooling(shell) || collapseBusy() || collapseQuiet()) {
     armQuietFlush(shell);
     return;
   }
@@ -1550,13 +1551,13 @@ function applyQueuedShell(shell, tag) {
   renderChat(shell.dataset.botId, { inplace: true, tag, resting: true });
   pinRestingNodes(shell);
   requestAnimationFrame(() => {
-    if (!shell.isConnected || freezeCooling(shell) || collapseBusy()) {
+    if (!shell.isConnected || freezeCooling(shell) || collapseBusy() || collapseQuiet()) {
       armQuietFlush(shell);
       return;
     }
     releasePlanBox(shell.querySelector(".plan-window"));
+    releaseHitSilence(tag);
     if (renderBots.pending) renderBots(tag);
-    else scheduleHitSync(tag);
   });
 }
 
@@ -1694,11 +1695,13 @@ async function growAfterPaint(shell, token) {
  *  clip writes here race the last growth frame and wash the panel. The clip
  *  completion already committed the resting inline styles. */
 function settleShell(shell, target) {
-  shell._motion = "";
   if (target === "panel") {
     if (!(clockAt(shell, "freeze") > performance.now())) holdFreeze(shell, FREEZE_AFTER_GROW_MS);
     holdQuiet(shell, FREEZE_AFTER_GROW_MS);
   }
+  // Freeze is already a timestamp. Clearing motion after it keeps the hit
+  // gate closed; this function does not touch animations or listeners.
+  shell._motion = "";
   shell._settleGate = 1;
   debugLog("morph-settle", `target=${target} bot=${shell.dataset.botId || ""} dom=0`);
   debugLog("settle-defer", `bot=${shell.dataset.botId || ""} ${deferredParts(shell)}`);
@@ -1829,12 +1832,18 @@ async function runShellMorph(shell, target) {
   if (target === "panel" && shell.dataset.planOpen === "1") {
     if (!shell.dataset.planSide) shell.dataset.planSide = sideFromStyle(shell);
     warmPlanLayer(shell);
+    announcePanelHits(shell);
     armSeamWatch(2000);
     await nextPaint();
     if (!alive()) return false;
   } else if (target === "panel" && shell.dataset.kind === "bot" && threadHasCache(threadFor(shell.dataset.botId))) {
+    announcePanelHits(shell);
     await nextPaint();
     if (!alive()) return false;
+  } else if (target === "panel") {
+    announcePanelHits(shell);
+  } else if (target === "orb") {
+    announceOrbHits(shell);
   }
   let current = from;
   for (const step of phaseList(shell.dataset.edge || "bottom", from, target)) {
@@ -4830,11 +4839,13 @@ function collectHits() {
 
 let hitFrame = 0;
 let lastHits = "";
+const hitSilence = new Set();
 
-function publishHits(tag = "publish") {
-  if (collapseBusy() || motionFrozen()) return;
-  debugLog("hit-flush", `tag=${tag}`);
-  const rects = collectHits();
+function hitsBlocked() {
+  return hitSilence.size > 0 || collapseBusy() || collapseQuiet() || motionFrozen();
+}
+
+function sendHitRects(rects, tag) {
   const key = JSON.stringify(
     rects.map((rect) => ({
       id: rect.id,
@@ -4846,15 +4857,98 @@ function publishHits(tag = "publish") {
       round: !!rect.round,
     })),
   );
-  if (key !== lastHits) {
-    lastHits = key;
-    if (inTauri()) {
-      import("@tauri-apps/api/core")
-        .then(({ invoke }) => invoke("set_hit_rects", { rects }))
-        .catch(() => {});
-    }
+  const same = key === lastHits;
+  debugLog("hit-flush", `tag=${tag} n=${rects.length} same=${same ? 1 : 0}`);
+  if (same) return;
+  lastHits = key;
+  debugLog("hit-ipc", `cmd=set_hit_rects tag=${tag} n=${rects.length}`);
+  if (inTauri()) {
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("set_hit_rects", { rects }))
+      .catch(() => {});
+  } else {
+    paintLocalProximity(rects);
   }
-  if (!inTauri()) paintLocalProximity(rects);
+}
+
+function publishHits(tag = "publish") {
+  if (hitsBlocked()) {
+    if (!hitDeferLogged) {
+      hitDeferLogged = true;
+      debugLog("hit-flush-defer", `tag=${tag}`);
+    }
+    return;
+  }
+  hitDeferLogged = false;
+  sendHitRects(collectHits(), tag);
+}
+
+/** Final geometry, announced once before the clip. Later frames must not
+ *  send another input shape until the freeze or the collapse quiet ends. */
+function announcePanelHits(shell) {
+  const id = hitFor(shell.dataset.botId, "panel");
+  const host = shell.getBoundingClientRect();
+  const rect = {
+    id,
+    x: host.x,
+    y: host.y,
+    w: host.width,
+    h: host.height,
+    z: 1,
+    round: false,
+  };
+  if (shell.dataset.planOpen === "1" && host.width >= 1) {
+    const width = Number(shell.dataset.planWidth) || planWidthPx();
+    const dockX = shell.dataset.planSide === "left" ? host.x - width : host.right;
+    const left = Math.min(rect.x, dockX);
+    const right = Math.max(rect.x + rect.w, dockX + width);
+    rect.x = left;
+    rect.w = right - left;
+  }
+  const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id);
+  keep.push(rect);
+  hitSilence.add(shell);
+  pauseHitSync();
+  sendHitRects(keep, "announce-panel");
+  debugLog("hit-announce", `bot=${shell.dataset.botId || ""} mode=panel`);
+}
+
+function announceOrbHits(shell) {
+  const id = hitFor(shell.dataset.botId, "orb");
+  const host = shell.getBoundingClientRect();
+  const ax = Number(shell.dataset.ax) || ORB / 2;
+  const ay = Number(shell.dataset.ay) || ORB / 2;
+  const rect = {
+    id,
+    x: host.x + ax - ORB / 2,
+    y: host.y + ay - ORB / 2,
+    w: ORB,
+    h: ORB,
+    z: 0,
+    round: true,
+  };
+  const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id);
+  keep.push(rect);
+  hitSilence.add(shell);
+  pauseHitSync();
+  sendHitRects(keep, "announce-orb");
+  debugLog("hit-announce", `bot=${shell.dataset.botId || ""} mode=orb`);
+}
+
+function releaseHitSilence(tag) {
+  for (const shell of [...hitSilence]) {
+    if (!shell.isConnected) {
+      hitSilence.delete(shell);
+      continue;
+    }
+    if (shellFrozen(shell)
+      || shell.classList.contains("is-morphing")
+      || shell.classList.contains("is-collapsing")
+      || shell.classList.contains("is-plan-seam")
+      || shell.classList.contains("is-plan-arming")) continue;
+    hitSilence.delete(shell);
+  }
+  if (!hitsBlocked()) scheduleHitSync(tag);
 }
 
 let collapseHold = 0;
@@ -4882,7 +4976,7 @@ function releaseDeferredTicks() {
     refreshCron();
   }
   if (renderBots.pending) renderBots("after-collapse");
-  else scheduleHitSync("after-collapse");
+  releaseHitSilence("after-collapse");
 }
 
 let collapseQuietUntil = 0;
@@ -4921,7 +5015,7 @@ function releaseCollapseGate(shell) {
 let hitDeferLogged = false;
 
 function scheduleHitSync(tag = "schedule") {
-  if (collapseBusy() || motionFrozen()) {
+  if (collapseBusy() || motionFrozen() || collapseQuiet() || hitSilence.size > 0) {
     if (!hitDeferLogged) {
       hitDeferLogged = true;
       debugLog("hit-flush-defer", `tag=${tag}`);
@@ -4939,7 +5033,7 @@ function pauseHitSync() {
 }
 
 function flushHits(tag = "flush") {
-  if (collapseBusy() || motionFrozen()) {
+  if (hitsBlocked()) {
     debugLog("hit-flush-defer", `tag=${tag}`);
     return;
   }

@@ -1035,6 +1035,10 @@ fn remember_hit_region(rects: &[HitRect], origin_x: f64, origin_y: f64, scale: f
     cache.origin_x = origin_x;
     cache.origin_y = origin_y;
     cache.scale = if scale > 0.0 { scale } else { 1.0 };
+    crate::trace_debug(
+        "hit-ipc",
+        &format!("cmd=input-shape n={} platform=windows", cache.rects.len()),
+    );
 }
 
 #[cfg(windows)]
@@ -1193,6 +1197,10 @@ fn apply_linux_input_shape(app: &AppHandle, rects: &[HitRect], scale: f64) {
         } else {
             gtk::cairo::Region::create_rectangles(&pixels)
         };
+        crate::trace_debug(
+            "hit-ipc",
+            &format!("cmd=input-shape n={} platform=linux", pixels.len()),
+        );
         gdk_window.input_shape_combine_region(&region, 0, 0);
     });
 }

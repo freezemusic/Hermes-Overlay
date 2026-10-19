@@ -1391,6 +1391,18 @@ fn debug_log(line: String) -> Result<(), String> {
     Ok(())
 }
 
+/// File log for hit IPC. The writer thread owns the disk; this only enqueues.
+pub(crate) fn trace_debug(event: &str, detail: &str) {
+    let Some(tx) = debug_log_tx() else {
+        return;
+    };
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|dur| dur.as_millis())
+        .unwrap_or(0);
+    let _ = tx.send(format!("unix_ms={ms} {event} {detail}"));
+}
+
 #[tauri::command]
 fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<(), String> {
     let mapped = rects
@@ -1405,11 +1417,13 @@ fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<()
             round: rect.round,
         })
         .collect();
+    let count = mapped.len();
     *state
         .interaction
         .rects
         .lock()
         .unwrap_or_else(|err| err.into_inner()) = mapped;
+    trace_debug("hit-ipc", &format!("cmd=set_hit_rects n={count}"));
     Ok(())
 }
 
