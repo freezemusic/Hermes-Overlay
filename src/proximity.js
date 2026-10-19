@@ -56,7 +56,7 @@ export function isPillHit(rect) {
   return String(rect?.id || "").startsWith("pill:");
 }
 
-/** Close buttons stay clickable on the first press, even while the modifier is held. */
+/** Close buttons. They capture with the panel, and pass through while the modifier is held. */
 export function isCloseHit(rect) {
   return String(rect?.id || "").startsWith("close:");
 }
@@ -112,8 +112,8 @@ function preferHit(candidate, current) {
  * Orbs stay faded and click-through. Only the orb under or near the cursor
  * turns solid and clickable while the modifier is held.
  * A message-preview pill stays visually solid. It captures only while the
- * modifier is held over it. A close button stays solid and captures whenever
- * the cursor is over it, including while the modifier is held. Toasts stay
+ * modifier is held over it. A close button captures only while the modifier
+ * is up. While the modifier is held it passes through with the panel. Toasts stay
  * visually solid and are clickable only when the modifier is up.
  */
 export function elementStates({
@@ -129,7 +129,7 @@ export function elementStates({
   return rects.map((rect) => {
     const here = !!cursor && under === rect.id;
     if (isCloseHit(rect)) {
-      return { id: rect.id, opacity: 1, capture: here };
+      return { id: rect.id, opacity: 1, capture: here && !held };
     }
     if (isPillHit(rect)) {
       return { id: rect.id, opacity: 1, capture: here && held };

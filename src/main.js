@@ -16,7 +16,7 @@ import {
   PANEL_W,
   PILL_PANEL_MS,
   PLAN_GROW_MS,
-  seamClip,
+  seamWidthPx,
   clipPath,
   distributeEdges,
   fixedOrbPoint,
@@ -743,8 +743,9 @@ function sideFromStyle(shell) {
   return roomRight >= planWidthPx() ? "right" : "left";
 }
 
-/** Widen the held clip over the plan. The plan is still hidden, so the
- *  panel pixels stay the same and the clip layer is not removed. */
+/** Widen the held clip over the plan. Left and right share this path: only
+ *  the outward edge changes, and the clip animation stays. The plan is still
+ *  hidden, so the panel pixels stay the same and the clip layer is not removed. */
 function holdPlanClip(shell) {
   if (!shell || shell.dataset.planOpen !== "1") return;
   const base = bleedInsets(insetsFor("panel", shellGeom(shell)), FRAME_BLEED + HAIRLINE);
@@ -908,12 +909,18 @@ function lockPlanRevealed(plan) {
   if (!plan) return;
   const fit = planFitEl(plan);
   const shell = plan.closest?.(".morph");
+  const full = Math.round(Number(shell?.dataset.planWidth) || planWidthPx());
   plan.style.visibility = "visible";
   plan.classList.remove("is-plan-parked");
   plan.style.removeProperty("transform");
-  if (fit) fit.style.removeProperty("transform");
-  plan.style.clipPath = seamClip(shell?.dataset.planSide, 1);
-  void getComputedStyle(plan).clipPath;
+  if (fit) {
+    fit.style.removeProperty("transform");
+    fit.style.flex = "none";
+    fit.style.width = `${full}px`;
+    fit.style.alignSelf = shell?.dataset.planSide === "left" ? "flex-end" : "flex-start";
+  }
+  plan.style.width = `${full}px`;
+  void getComputedStyle(plan).width;
   plan.style.opacity = "";
   plan.style.removeProperty("z-index");
   plan.style.removeProperty("pointer-events");
@@ -922,7 +929,7 @@ function lockPlanRevealed(plan) {
     if (fit) fit.style.removeProperty("will-change");
   }
   setSeamPhase(plan, "grown");
-  seamLog("lock", "clip=open kept");
+  seamLog("lock", "width=final kept");
 }
 
 /** Seam phase is a JS field. The finish frame must not write data-seam:
@@ -946,7 +953,12 @@ function retireGrownSeam(plan) {
   if (!plan || seamPhase(plan) !== "grown") return;
   const fit = planFitEl(plan);
   const shell = plan.closest?.(".morph");
-  plan.style.clipPath = seamClip(shell?.dataset.planSide, 1);
+  const full = Math.round(Number(shell?.dataset.planWidth) || planWidthPx());
+  plan.style.width = `${full}px`;
+  if (fit) {
+    fit.style.flex = "none";
+    fit.style.width = `${full}px`;
+  }
   plan.style.removeProperty("transform");
   if (fit) fit.style.removeProperty("transform");
   const painted = getComputedStyle(plan).transform;
@@ -1046,9 +1058,9 @@ function seamLog(event, detail = "") {
   const plan = document.querySelector(".plan-window");
   const phase = seamPhase(plan) || "-";
   const scale = plan ? (plan.style.transform || "style-empty") : "no-plan";
-  const clip = plan ? (plan.style.clipPath || "clip-empty") : "no-plan";
-  console.info(`[plan-seam] ${event} t=${performance.now().toFixed(1)} seam=${phase} node=${plan?.dataset.seamNode || "-"} ${scale} clip=${clip} ${detail}`);
-  debugLog(`plan-${event}`, `seam=${phase} ${scale} clip=${clip} ${detail}`);
+  const width = plan ? (plan.style.width || "width-empty") : "no-plan";
+  console.info(`[plan-seam] ${event} t=${performance.now().toFixed(1)} seam=${phase} node=${plan?.dataset.seamNode || "-"} ${scale} width=${width} ${detail}`);
+  debugLog(`plan-${event}`, `seam=${phase} ${scale} width=${width} ${detail}`);
 }
 
 function installPlanDomLog() {
@@ -1127,11 +1139,11 @@ function applyParkedPlan(shell, plan) {
   plan.style.pointerEvents = "none";
   plan.style.opacity = "1";
   plan.style.zIndex = "-1";
-  plan.style.willChange = "transform, clip-path";
+  plan.style.willChange = "width";
   fit.style.removeProperty("will-change");
   plan.style.transformOrigin = origin;
   fit.style.transformOrigin = origin;
-  plan.style.clipPath = "none";
+  plan.style.removeProperty("clip-path");
   holdMotion(plan);
   holdMotion(fit);
   plan.style.transform = `translateX(${shift})`;
@@ -1146,14 +1158,16 @@ function lockPlanBox(shell, plan) {
   const width = Number(shell?.dataset.planWidth) || Math.round(planWidthPx());
   const height = Number(shell?.dataset.planHeight)
     || Math.round(Number.parseFloat(shell?.style.height) || 0);
-  if (width > 0) plan.style.width = `${width}px`;
   if (height > 0) plan.style.height = `${height}px`;
   plan.style.setProperty("overflow", "hidden", "important");
   plan.dataset.sizeLock = "1";
+  if (seamPhase(plan) !== "grown") plan.style.width = "0px";
   const fit = ensurePlanFit(plan);
   fit.style.overflow = "hidden";
-  fit.style.width = "100%";
+  fit.style.flex = "none";
+  fit.style.width = `${width}px`;
   fit.style.height = "100%";
+  fit.style.alignSelf = shell?.dataset.planSide === "left" ? "flex-end" : "flex-start";
 }
 
 function releasePlanBox(plan) {
@@ -1210,6 +1224,15 @@ function warmPlanLayer(shell) {
   }
   shell.dataset.planWidth = String(width);
   shell.dataset.planHeight = String(Math.round(plan.offsetHeight || 0));
+  const fit = ensurePlanFit(plan);
+  fit.style.flex = "none";
+  fit.style.width = `${width}px`;
+  fit.style.height = "100%";
+  fit.style.alignSelf = shell.dataset.planSide === "left" ? "flex-end" : "flex-start";
+  plan.style.width = "0px";
+  plan.style.removeProperty("transform");
+  fit.style.removeProperty("transform");
+  plan.style.willChange = "width";
   plan.dataset.warm = "1";
   requestAnimationFrame(() => {
     plan.dataset.painted = "1";
@@ -1296,9 +1319,9 @@ function holdSeamVisual(shell) {
   plan.style.visibility = "hidden";
   plan.style.transformOrigin = origin;
   fit.style.transformOrigin = origin;
-  plan.style.willChange = "transform, clip-path";
+  plan.style.willChange = "width";
   fit.style.removeProperty("will-change");
-  plan.style.clipPath = "none";
+  plan.style.removeProperty("clip-path");
   plan.style.setProperty("display", "flex", "important");
   plan.style.setProperty("overflow", "hidden", "important");
   holdMotion(plan);
@@ -1353,10 +1376,9 @@ function stopSeamClock(plan) {
   plan._seamFrame = 0;
 }
 
-/** Clip only. The plan and its markdown stay at final size; a scale would
- *  re-raster the text and WebKitGTK would drop the intermediate paints. */
-function writeSeamClip(plan, side, t) {
-  plan.style.clipPath = seamClip(side, t);
+/** Wrapper width only. The markdown stays at the final width inside it. */
+function writeSeamWidth(plan, full, t) {
+  plan.style.width = `${seamWidthPx(full, t)}px`;
 }
 
 function pinContentOpacity(shell) {
@@ -1388,11 +1410,20 @@ function growPlan(shell, token) {
   shell.classList.add("is-plan-seam");
   pauseHitSync();
   stopSeamClock(plan);
-  // Promote the clip layer while the plan is still hidden. The settle tail
-  // must not paint a 1% stub, and the markdown must not scale.
+  // Width stays 0 while hidden. The inner box is already the final width,
+  // so each painted step only reveals a new strip.
   const side = shell.dataset.planSide === "left" ? "left" : "right";
-  plan.style.willChange = "clip-path";
+  const full = Number(shell.dataset.planWidth) || planWidthPx();
+  fit.style.flex = "none";
+  fit.style.width = `${Math.round(full)}px`;
+  fit.style.height = "100%";
+  fit.style.alignSelf = side === "left" ? "flex-end" : "flex-start";
+  fit.style.removeProperty("transform");
   fit.style.removeProperty("will-change");
+  plan.style.removeProperty("transform");
+  plan.style.removeProperty("clip-path");
+  plan.style.willChange = "width";
+  plan.style.width = "0px";
   pinContentOpacity(shell);
   const run = new Promise((resolve) => {
     let elapsed = 0;
@@ -1424,19 +1455,18 @@ function growPlan(shell, token) {
         plan._seamFrame = requestAnimationFrame(awaitCalm);
         return;
       }
-      // Park translate comes off while the clip is still fully closed, then
-      // the first visible sample is a short step so 30fps does not open on
+      // The hidden width is already 0. The first visible sample is a short
+      // step so the opening frame shows growth and 30fps does not open on
       // the steep part of the curve.
       plan.style.removeProperty("transform");
       fit.style.removeProperty("transform");
-      plan.style.willChange = "clip-path";
-      writeSeamClip(plan, side, 0);
+      plan.style.willChange = "width";
       const FIRST_PAINT_MS = 12;
       elapsed = FIRST_PAINT_MS;
-      writeSeamClip(plan, side, elapsed / PLAN_GROW_MS);
+      writeSeamWidth(plan, full, elapsed / PLAN_GROW_MS);
       plan.classList.remove("is-plan-parked");
       plan.style.visibility = "visible";
-      seamLog("anim-start", `flight=${flight} mode=raf clip=${plan.style.clipPath} calm=2`);
+      seamLog("anim-start", `flight=${flight} mode=raf width=${plan.style.width} calm=2`);
       seamMark("plan-seam:clock");
       last = now;
       plan._seamFrame = requestAnimationFrame(step);
@@ -1454,8 +1484,8 @@ function growPlan(shell, token) {
       elapsed += delta;
       const t = elapsed / PLAN_GROW_MS;
       if (t >= 1) {
-        writeSeamClip(plan, side, 1);
-        seamLog("anim-finish", `flight=${flight} mode=raf clip=${plan.style.clipPath}`);
+        writeSeamWidth(plan, full, 1);
+        seamLog("anim-finish", `flight=${flight} mode=raf width=${plan.style.width}`);
         holdFreeze(shell, FREEZE_AFTER_GROW_MS);
         holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
         setSeamPhase(plan, "grown", { dom: false });
@@ -1463,7 +1493,7 @@ function growPlan(shell, token) {
         resolve(true);
         return;
       }
-      writeSeamClip(plan, side, t);
+      writeSeamWidth(plan, full, t);
       plan._seamFrame = requestAnimationFrame(step);
     };
     plan._seamFrame = requestAnimationFrame(awaitCalm);
@@ -1748,7 +1778,10 @@ function settleShell(shell, target) {
   // gate closed; this function does not touch animations or listeners.
   shell._motion = "";
   shell._settleGate = 1;
-  debugLog("morph-settle", `target=${target} bot=${shell.dataset.botId || ""} dom=0`);
+  debugLog(
+    "morph-settle",
+    `target=${target} bot=${shell.dataset.botId || ""} dom=0 edge=${shell.dataset.edge || ""} side=${shell.dataset.planSide || ""} clip=${shell.dataset.clipRadius ? "kept" : "empty"}`,
+  );
   debugLog("settle-defer", `bot=${shell.dataset.botId || ""} ${deferredParts(shell)}`);
   framesLater(2, () => {
     if (!shell.isConnected) return;
@@ -5372,6 +5405,19 @@ function setupProximity() {
   });
   window.addEventListener("focus", noteWindowFocus);
   window.addEventListener("resize", scheduleHitSync);
+  const logCtrlEdge = (phase, ctrl) => {
+    if (!document.querySelector(".morph[data-state='panel']")) return;
+    debugLog("hit-ctrl", `phase=${phase} ctrl=${ctrl ? 1 : 0} published=${lastHits || "-"}`);
+  };
+  window.addEventListener("keydown", (event) => {
+    if (event.repeat) return;
+    if (event.key !== "Control" && event.key !== "Shift" && event.key !== "Alt") return;
+    logCtrlEdge("down", event.ctrlKey || event.key === "Control");
+  });
+  window.addEventListener("keyup", (event) => {
+    if (event.key !== "Control" && event.key !== "Shift" && event.key !== "Alt") return;
+    logCtrlEdge("up", event.ctrlKey);
+  });
   if (inTauri()) {
     import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) =>

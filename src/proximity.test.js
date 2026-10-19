@@ -169,7 +169,7 @@ test("round avatar ignores bounding-box corners", () => {
   assert.equal(isPanelHit({ id: "pill:a" }), false);
 });
 
-test("the close button captures on the first press while the modifier is held", () => {
+test("the close button passes through while the modifier is held", () => {
   const rects = [
     { id: "panel:a", x: 0, y: 0, w: 420, h: 560, z: 4 },
     { id: "close:a", x: 300, y: 8, w: 100, h: 80, z: 44 },
@@ -180,7 +180,7 @@ test("the close button captures on the first press while the modifier is held", 
   const over = { x: 340, y: 40 };
   const held = elementStates({ held: true, cursor: over, rects, ...fadeOpts });
   assert.equal(byId(held, "close:a").opacity, 1);
-  assert.equal(byId(held, "close:a").capture, true);
+  assert.equal(byId(held, "close:a").capture, false);
   assert.equal(byId(held, "panel:a").capture, false);
   assert.equal(byId(held, "panel:a").opacity, 0.18);
   const idle = elementStates({ held: false, cursor: over, rects, ...fadeOpts });

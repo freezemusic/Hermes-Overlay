@@ -1047,8 +1047,8 @@ html, body {
 
 .plan-window::before { display: none; }
 
-/* Resting transform is none. Growth reveals with inline clip-path on this
-   fixed box. Do not put a near-zero scale in this file. */
+/* Resting transform is none. Growth reveals by widening this box from 0.
+   The inner .plan-fit stays at the final width. Do not scale or clip it. */
 .morph .plan-window {
   position: absolute;
   left: 100%;
@@ -1098,6 +1098,25 @@ html, body {
    The seam has to keep clipping or the counter-scaled text paints at full width. */
 .morph[data-state="panel"] .plan-window.is-seam-grow {
   overflow: hidden !important;
+  align-items: flex-start;
+  box-sizing: border-box;
+  padding: 0;
+  background: transparent;
+}
+
+.morph .plan-window.is-seam-grow > .plan-fit {
+  flex: none;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  background:
+    linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    rgba(248, 248, 252, .92);
+}
+
+.morph[data-plan-side="left"] .plan-window.is-seam-grow > .plan-fit {
+  align-self: flex-end;
 }
 
 /* The parked plan is opacity 1 so WebKitGTK rasterises it. Keep the glass

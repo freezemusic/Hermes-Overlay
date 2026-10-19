@@ -40,6 +40,7 @@ import {
   seamScaleFrames,
   SEAM_MIN,
   seamClip,
+  seamWidthPx,
   cronShellHeight,
   chatTailAction,
   separateStackedPanels,
@@ -112,6 +113,10 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(seamClip("left", 0), "inset(0px 0px 0px 100%)");
   assert.equal(seamClip("right", 1), "inset(0px 0% 0px 0px)");
   assert.equal(seamClip("left", 1), "inset(0px 0px 0px 0%)");
+  assert.equal(seamWidthPx(420, 0), 0);
+  assert.equal(seamWidthPx(420, 1), 420);
+  assert.ok(seamWidthPx(420, 12 / 240) > 0);
+  assert.ok(seamWidthPx(420, 12 / 240) < 420 * 0.35);
   assert.ok(seamClip("right", 0.05).includes("%"));
   assert.ok(seamScaleAt(0.05) > SEAM_MIN && seamScaleAt(0.05) < 1);
   seam.outer.forEach((frame, index) => {

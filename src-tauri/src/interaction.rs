@@ -236,19 +236,23 @@ pub fn is_pill_hit(rect: &HitRect) -> bool {
     rect.id.starts_with("pill:")
 }
 
-/// Close buttons capture on the first press, even while the modifier is held.
+/// A `close:` id. It is part of the panel: clickable when the modifier is up,
+/// and out of the OS shape while the modifier is held.
 pub fn is_close_hit(rect: &HitRect) -> bool {
     rect.id.starts_with("close:")
 }
 
-/// Open panels and close buttons stay in the OS hit region the whole time they
-/// are on screen. Orbs are left out, so they stay click-through until the
-/// modifier is held over them.
+/// Open panels and their close buttons stay in the OS hit region while the
+/// modifier is up. While it is held, both leave the shape. Orbs are left out
+/// here; the poll adds only the orb (or preview pill) under the cursor.
 pub fn immediate_hit_rects(held: bool, rects: &[HitRect]) -> Vec<HitRect> {
     rects
         .iter()
         .filter(|rect| {
             if rect.w < 1.0 || rect.h < 1.0 {
+                return false;
+            }
+            if held && (is_close_hit(rect) || is_panel_hit(rect)) {
                 return false;
             }
             if is_close_hit(rect) {
@@ -304,8 +308,8 @@ pub fn is_orb_hit(rect: &HitRect) -> bool {
 /// and capture nothing. Orbs stay at `min_opacity` and click-through until the
 /// modifier is held over that orb, which turns it solid and clickable.
 /// A message-preview pill stays visually solid and captures only while the
-/// modifier is held over it. A close button stays solid and captures whenever
-/// the cursor is over it, including while the modifier is held. Toasts stay
+/// modifier is held over it. A close button captures only while the modifier
+/// is up; while it is held the button passes through with the panel. Toasts stay
 /// visually solid. A missing cursor does not capture.
 pub fn interaction_frame(
     held: bool,
@@ -322,7 +326,7 @@ pub fn interaction_frame(
         .map(|rect| {
             let here = cursor.is_some() && under.as_deref() == Some(rect.id.as_str());
             let (opacity, capture) = if is_close_hit(rect) {
-                (1.0, here)
+                (1.0, here && !held)
             } else if is_pill_hit(rect) {
                 (1.0, here && held)
             } else if is_orb_hit(rect) {
@@ -842,6 +846,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             return;
         };
         let mut last_signature = String::new();
+        let mut logged_held: Option<bool> = None;
         let mut ignoring: Option<bool> = None;
         let mut region_signature = String::new();
         let mut arm_at: Option<Instant> = None;
@@ -879,6 +884,41 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 .clone();
             let cursor = cursor_in_view(&window, &device);
             let frames = interaction_frame(held, &latched_ids, cursor, &rects, HIT_MARGIN_PX, &cfg);
+            if logged_held != Some(held) {
+                if rects.iter().any(|rect| is_panel_hit(rect)) {
+                    let region = os_input_rects(held, &rects, &frames);
+                    let shape = region
+                        .iter()
+                        .map(|rect| {
+                            format!(
+                                "{}:{:.0},{:.0},{:.0}x{:.0}",
+                                rect.id, rect.x, rect.y, rect.w, rect.h
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(";");
+                    let live = rects
+                        .iter()
+                        .map(|rect| {
+                            format!(
+                                "{}:{:.0},{:.0},{:.0}x{:.0}",
+                                rect.id, rect.x, rect.y, rect.w, rect.h
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(";");
+                    crate::trace_debug(
+                        "hit-ctrl",
+                        &format!(
+                            "held={} shape={} live={}",
+                            if held { 1 } else { 0 },
+                            shape,
+                            live
+                        ),
+                    );
+                }
+                logged_held = Some(held);
+            }
             sync_os_hit_region(
                 &app,
                 &window,
@@ -2035,7 +2075,7 @@ mod tests {
     }
 
     #[test]
-    fn close_button_captures_while_the_modifier_is_held() {
+    fn close_button_passes_through_while_the_modifier_is_held() {
         let cfg = fade_cfg();
         let rects = vec![
             HitRect {
@@ -2062,10 +2102,13 @@ mod tests {
         assert!(!is_orb_hit(&rects[1]));
         let over = Some((340.0, 40.0));
         let held = interaction_frame(true, &[], over, &rects, HIT_MARGIN_PX, &cfg);
-        assert!(frame_of(&held, "close:a").capture);
+        assert!(!frame_of(&held, "close:a").capture);
         assert_eq!(frame_of(&held, "close:a").opacity, 1.0);
         assert!(!frame_of(&held, "panel:a").capture);
         assert!((frame_of(&held, "panel:a").opacity - 0.18).abs() < 0.001);
+        let shape = os_input_rects(true, &rects, &held);
+        assert!(!shape.iter().any(|rect| rect.id == "close:a" || rect.id == "panel:a"));
+        assert!(!css_point_hits(&shape, 340.0, 40.0));
         let idle = interaction_frame(false, &[], over, &rects, HIT_MARGIN_PX, &cfg);
         assert!(frame_of(&idle, "close:a").capture);
         assert!(!frame_of(&idle, "panel:a").capture);
@@ -2117,14 +2160,16 @@ mod tests {
         let held_far = interaction_frame(true, &[], Some((900.0, 900.0)), &rects, HIT_MARGIN_PX, &cfg);
         let passed = os_input_rects(true, &rects, &held_far);
         assert!(!css_point_hits(&passed, 100.0, 80.0));
-        assert!(css_point_hits(&passed, 470.0, 40.0));
-        assert!(!passed.iter().any(|rect| rect.id == "bot:a"));
+        assert!(!css_point_hits(&passed, 470.0, 40.0));
+        assert!(!passed.iter().any(|rect| rect.id == "bot:a" || rect.id == "close:a" || rect.id == "panel:a"));
         let over_orb = interaction_frame(true, &[], Some((10.0, 710.0)), &rects, HIT_MARGIN_PX, &cfg);
         assert!(frame_of(&over_orb, "bot:a").capture);
         let armed = os_input_rects(true, &rects, &over_orb);
         assert!(armed.iter().any(|rect| rect.id == "bot:a"));
+        assert!(!armed.iter().any(|rect| rect.id == "close:a" || rect.id == "panel:a"));
         assert!(css_point_hits(&armed, 10.0, 710.0));
         assert!(!css_point_hits(&armed, 100.0, 80.0));
+        assert!(!css_point_hits(&armed, 470.0, 40.0));
     }
 
     #[test]

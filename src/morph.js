@@ -484,6 +484,16 @@ export function seamClip(side, t) {
   return `inset(0px ${hidden}% 0px 0px)`;
 }
 
+/** Outer wrapper width for one growth sample. The inner content stays at
+ *  `full`. t is 0..1 over 240ms. A positive t never rounds back to 0. */
+export function seamWidthPx(full, t) {
+  const width = Number(full) || 0;
+  if (!(width > 0) || t <= 0) return 0;
+  const reveal = t >= 1 ? 1 : seamEase(t);
+  if (reveal >= 1) return Math.round(width);
+  return Math.max(1, Math.round(width * reveal));
+}
+
 /** Composited seam. WebKitGTK does not run clip-path on the compositor, so a
  *  240ms inset animation paints on the main thread and the first presented
  *  frame is already most of the way open. scaleX is composited. The inner
