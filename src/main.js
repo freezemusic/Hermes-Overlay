@@ -1477,10 +1477,13 @@ function planInk(plan) {
   return `${title}${text}`.trim().length;
 }
 
-/** Warm is real only after the parked layer has presented with text in it.
- *  A blank foreignObject bitmap does not count. */
+/** Warm is real only after several presented frames, with the same text
+ *  still in the plan. A single currentTime read does not count: on the cold
+ *  open WebKit can report the document timeline (~seconds) as the animation
+ *  clock, so a 6ms sample looks like 120ms. */
 function planPresented(plan) {
   if (!plan || plan.dataset.warmPresented !== "1") return false;
+  if ((Number(plan.dataset.warmFrames) || 0) < 6) return false;
   const ink = planInk(plan);
   return ink > 0 && plan.dataset.warmInk === String(ink);
 }
@@ -1493,22 +1496,23 @@ function forgetPlanWarm(plan) {
   delete plan.dataset.warm;
   delete plan.dataset.warmPresented;
   delete plan.dataset.warmInk;
+  delete plan.dataset.warmFrames;
   delete plan.dataset.painted;
   delete plan.dataset.raster;
 }
 
 /** Lay the plan out and promote a transform layer before the seam clock.
- *  WebKitGTK does not rasterise opacity:0, so the markdown has to be painted
- *  at opacity 1 while the opaque glass still covers it. The animate() turn
- *  must not call this. */
+ *  Opacity 0 and a plan hidden under opaque glass are both skipped by
+ *  WebKitGTK, so the cold open never uploads tiles. The reveal runs at
+ *  0.01, inside the panel clip, and sweeps every plan clip size. */
 function warmPlanLayer(shell) {
   const plan = shell.querySelector(".plan-window");
   if (!plan || shell.dataset.planOpen !== "1" || !planHostReady(shell)) return;
   if (seamLocked(plan)) return;
-  applyParkedPlan(shell, plan);
   const ink = planInk(plan);
   if (plan.dataset.warm === "1" && planPresented(plan)) return;
   if (plan.dataset.warmInk && plan.dataset.warmInk !== String(ink)) forgetPlanWarm(plan);
+  applyParkedPlan(shell, plan);
   armSeamWatch(2000);
   seamMark("plan-seam:warm");
   void plan.offsetWidth;
@@ -1531,49 +1535,100 @@ function warmPlanLayer(shell) {
   plan.dataset.warm = "1";
   plan.dataset.warmInk = String(ink);
   const anim = pumpPlanWarm(shell, plan);
+  // applyParkedPlan just buried the layer. Lift again even when the sweep
+  // is already running, or a second warm call puts it back under the glass.
+  liftPlanWarm(plan);
   watchPlanWarm(plan, anim);
 }
 
-/** Composited transform while the plan is still parked under the glass.
- *  The first open otherwise rasterises the markdown on the first revealed
- *  frames, and the shell clip stops presenting until 100%. */
+/** Above the paper, barely visible, still inside the panel clip via the
+ *  parked translate. z-index -1 under #f8f8fc is occlusion-culled. */
+function liftPlanWarm(plan) {
+  if (!plan) return;
+  plan.style.setProperty("opacity", "0.01");
+  plan.style.zIndex = "4";
+}
+
+/** Full-width throwaway while the panel clip still covers the side.
+ *  The plan's own px clip walks every reveal size so the cold compositor
+ *  uploads those tiles before the real clock. */
 function pumpPlanWarm(shell, plan) {
   const running = plan?.getAnimations?.().find((anim) => anim.id === "plan-warm" && anim.playState === "running");
   if (!plan || running) return running || null;
-  const shift = shell?.dataset.planSide === "left" ? "100%" : "-100%";
+  const side = shell?.dataset.planSide === "left" ? "left" : "right";
+  const shift = side === "left" ? "100%" : "-100%";
+  const width = Math.max(1, Math.round(Number(shell?.dataset.planWidth) || planWidthPx()));
+  const closed = side === "left"
+    ? `inset(0px 0px 0px ${width}px)`
+    : `inset(0px ${width}px 0px 0px)`;
+  const open = "inset(0px 0px 0px 0px)";
   const ink = planInk(plan);
-  debugLog("plan-warm", `side=${shell?.dataset.planSide || "right"} ink=${ink} w=${shell?.dataset.planWidth || ""}`);
+  debugLog("plan-warm", `side=${side} ink=${ink} w=${width} mode=reveal`);
+  liftPlanWarm(plan);
+  let anim = null;
   try {
-    return plan.animate([
-      { transform: `translate3d(${shift},0,0)` },
-      { transform: `translate3d(${shift},0,1px)`, offset: 0.5 },
-      { transform: `translate3d(${shift},0,0)` },
-    ], { duration: 320, easing: "linear", fill: "none", id: "plan-warm" });
+    // Delay until the panel clip is large enough to include the parked plan.
+    // A sweep during the orb-sized clip only rasters a sliver.
+    anim = plan.animate([
+      { transform: `translate3d(${shift},0,0)`, clipPath: closed, offset: 0 },
+      { transform: `translate3d(${shift},0,1px)`, clipPath: open, offset: 0.72 },
+      { transform: `translate3d(${shift},0,0)`, clipPath: open, offset: 1 },
+    ], { duration: 220, delay: 200, easing: "linear", fill: "forwards", id: "plan-warm" });
   } catch {
     return null;
   }
+  const now = document.timeline?.currentTime;
+  if (typeof now === "number") {
+    try { anim.startTime = now; } catch { /* the sweep still runs */ }
+  }
+  return anim;
 }
 
-/** The cold open used to cancel this animation on the same turn it started,
- *  so the markdown was first rasterised by the revealing clip. Wait until
- *  the parked layer has actually presented. */
+/** Keep the full plan layer. Cancelling the sweep during the panel clip,
+ *  not on the seam frame, leaves the backing store in place for the clock. */
+function settleWarmLayer(plan, anim) {
+  const shell = plan.closest?.(".morph");
+  const shift = shell?.dataset.planSide === "left" ? "100%" : "-100%";
+  try { anim?.cancel?.(); } catch { /* already idle */ }
+  plan.style.removeProperty("clip-path");
+  plan.style.transform = `translate3d(${shift},0,0)`;
+  plan.style.willChange = "transform";
+  liftPlanWarm(plan);
+}
+
+/** Presented means vsync gaps, not a lucky currentTime. The cold log marked
+ *  paint 6ms after plan-warm because that read was the document timeline. */
 function watchPlanWarm(plan, anim) {
   if (!anim) return;
   const started = performance.now();
-  const step = () => {
+  let last = 0;
+  let presented = 0;
+  const step = (now) => {
     if (!plan?.isConnected || anim.playState === "idle") return;
+    if (plan.dataset.warmPresented === "1") return;
+    const gap = last ? now - last : 0;
+    last = now;
+    const wall = now - started;
+    // The first 200ms are the delay: the panel clip is still too small.
+    // Frames before that must not count as a presented sweep.
+    if (wall < 200) {
+      requestAnimationFrame(step);
+      return;
+    }
+    if (gap >= 8 && gap <= 48) presented += 1;
+    const sweep = wall - 200;
     const ink = planInk(plan);
-    const current = Number(anim?.currentTime) || 0;
-    const done = anim?.playState === "finished" || current >= 120;
-    if (ink > 0 && done) {
+    if (ink > 0 && presented >= 6 && sweep >= 190) {
+      plan.dataset.warmFrames = String(presented);
       plan.dataset.warmPresented = "1";
       plan.dataset.warmInk = String(ink);
       plan.dataset.painted = "1";
-      debugLog("plan-warm-paint", `current=${current.toFixed(1)} ink=${ink} state=${anim?.playState || ""}`);
+      debugLog("plan-warm-paint", `sweep=${sweep.toFixed(1)} wall=${wall.toFixed(1)} frames=${presented} ink=${ink} state=${anim.playState || ""}`);
+      settleWarmLayer(plan, anim);
       return;
     }
-    if (performance.now() - started > 360) {
-      debugLog("plan-warm-paint", `timeout ink=${ink} current=${current.toFixed(1)}`);
+    if (wall > 460) {
+      debugLog("plan-warm-paint", `timeout ink=${ink} sweep=${sweep.toFixed(1)} wall=${wall.toFixed(1)} frames=${presented}`);
       return;
     }
     requestAnimationFrame(step);
@@ -1667,10 +1722,14 @@ function holdSeamVisual(shell) {
   }
   if (seamPhase(plan) !== "grown") plan.classList.add("is-seam-grow");
   plan.classList.add("is-plan-parked");
-  plan.style.opacity = "1";
+  // A presented warm layer stays above the paper. Putting it back at
+  // z-index -1 drops the tiles the cold sweep just uploaded.
+  if (plan.dataset.warmPresented !== "1") {
+    plan.style.opacity = "1";
+    plan.style.zIndex = "-1";
+  }
   plan.style.pointerEvents = "none";
   plan.style.visibility = "visible";
-  plan.style.zIndex = "-1";
   if (!plan.style.transform) {
     const shift = shell.dataset.planSide === "left" ? "100%" : "-100%";
     plan.style.transform = `translateX(${shift})`;
@@ -1786,12 +1845,39 @@ function pumpSeamPresent(shell, duration) {
   }
 }
 
-/** Pin the seam to this frame's timeline so the first presented sample is
- *  one vsync of PLAN_EASE, not a 30fps phase that lands past 30%. */
+/** Anchor t=0 to the first frame that can be presented, not the rAF that
+ *  created the animation. The warm capture was ~55ms into PLAN_EASE because
+ *  the clock ran through a 26–30ms hiccup before anything reached the screen. */
 function alignSeamClock(anim) {
-  const now = document.timeline?.currentTime;
-  if (!anim || typeof now !== "number") return;
-  try { anim.startTime = now; } catch { /* the clock is already on this frame */ }
+  if (!anim) return;
+  const pin = () => {
+    const now = document.timeline?.currentTime;
+    if (typeof now !== "number") return;
+    try { anim.startTime = now; } catch { /* this frame already owns the clock */ }
+  };
+  try {
+    anim.pause();
+    anim.currentTime = 0;
+  } catch {
+    pin();
+    return;
+  }
+  requestAnimationFrame(() => {
+    // Paint of this callback is the paused t=0 frame.
+    requestAnimationFrame(() => {
+      if (!anim || anim.playState === "idle") return;
+      pin();
+      try { anim.play(); } catch { /* the paused frame stays */ }
+      requestAnimationFrame(() => {
+        if (!anim || anim.playState !== "running") return;
+        let current = 0;
+        try { current = Number(anim.currentTime) || 0; } catch { current = 0; }
+        // The frame we just started was not presented. This paint is the
+        // first one on screen, so it has to be t≈0, not the skipped gap.
+        if (current > 24) pin();
+      });
+    });
+  });
 }
 
 /** Fresh shell clip, fully closed to fully open. The finished panel clip
@@ -1823,7 +1909,9 @@ function beginSeamClip(shell) {
 
 function finishSeamClip(anim) {
   if (!anim) return Promise.resolve(false);
-  return whenAnimEnds(anim, PLAN_GROW_MS);
+  // alignSeamClock holds t=0 until the first presented frame. Seeking to the
+  // end at PLAN_GROW_MS would skip that hold and jump the curve.
+  return whenAnimEnds(anim, PLAN_GROW_MS + 64, false);
 }
 
 function growPlan(shell, token) {
@@ -1880,7 +1968,8 @@ function growPlan(shell, token) {
   plan.style.width = `${Math.round(full)}px`;
   plan.style.pointerEvents = "none";
   plan.style.visibility = "visible";
-  plan.style.zIndex = "";
+  plan.style.opacity = "1";
+  if (plan.dataset.warmPresented !== "1") plan.style.zIndex = "";
   plan.style.willChange = "transform";
   plan.classList.remove("is-plan-parked");
   pinContentOpacity(shell);
@@ -2180,6 +2269,9 @@ async function growAfterPaint(shell, token) {
   const plan = shell.querySelector(".plan-window");
   if (!plan || shell.dataset.planOpen !== "1" || seamLocked(plan)) return;
   if (plan.dataset.warm !== "1") warmPlanLayer(shell);
+  else if (planPresented(plan)) {
+    debugLog("plan-warm", `reuse side=${shell.dataset.planSide || "right"} ink=${planInk(plan)} frames=${plan.dataset.warmFrames || 0}`);
+  }
   await playPlanSeam(shell, token);
 }
 
@@ -2441,6 +2533,7 @@ async function runShellMorph(shell, target) {
     // A layer that already presented during the panel clip starts on this
     // turn. A cold plan stays parked until plan-warm has painted real text.
     if (planPresented(plan)) {
+      debugLog("plan-warm", `reuse side=${shell.dataset.planSide || "right"} ink=${planInk(plan)} frames=${plan.dataset.warmFrames || 0}`);
       await playPlanSeam(shell, token);
     } else if (thread.loaded || thread.messages.length || thread.planCache || planInk(plan) > 0) {
       shell.dataset.paintThrough = "1";

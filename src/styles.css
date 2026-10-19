@@ -1141,10 +1141,11 @@ html, body {
   align-self: flex-end;
 }
 
-/* The parked plan is opacity 1 and visibility visible so WebKitGTK builds
-   its backing store during the panel clip. visibility:hidden skips that
+/* The parked plan stays visibility:visible. visibility:hidden skips the
    paint, and the seam then has nothing to present until growth ends.
-   A translate keeps it under the opaque glass, so it does not show early. */
+   The cold sweep lifts it to opacity 0.01 above the paper (z-index -1 under
+   the opaque fill is never rasterised). The translate keeps that sweep
+   inside the panel clip, so the side stays closed until the real clock. */
 .morph:has(.plan-window.is-plan-parked) .morph-fill {
   background-color: #f8f8fc;
 }
