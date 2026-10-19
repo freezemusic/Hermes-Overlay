@@ -81,6 +81,11 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(grow, /writeSeamScale\(plan, fit, 1\)/);
   assert.match(grow, /writeSeamScale\(plan, fit, SEAM_MIN\)/);
   assert.match(grow, /mode=raf/);
+  assert.match(grow, /Math\.min\(Math\.max\(0, now - last\), 33\)/);
+  assert.match(grow, /gap < 50/);
+  assert.match(grow, /calm < 2/);
+  assert.match(grow, /requestAnimationFrame\(awaitCalm\)/);
+  assert.match(grow, /willChange = "transform"/);
   assert.doesNotMatch(grow, /\.animate\(|fill:\s*"forwards"|whenAnimEnds|onfinish|startTime/);
   assert.doesNotMatch(grow, /offsetWidth|getBoundingClientRect|commitStyles|flushHits|showPlanHost/);
   const scaler = mainSrc.slice(mainSrc.indexOf("function scaleOrb"), mainSrc.indexOf("function moveOrbToHeader"));
@@ -187,6 +192,13 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /cmd=set_hit_rects/);
   assert.match(mainSrc, /function announcePanelHits/);
   assert.match(mainSrc, /function announceOrbHits/);
+  assert.match(mainSrc, /function coverBottomFooter/);
+  const announce = mainSrc.slice(mainSrc.indexOf("function announcePanelHits"), mainSrc.indexOf("function announceOrbHits"));
+  assert.match(announce, /coverBottomFooter\(rect, shell\)/);
+  assert.match(announce, /pushCloseHit\(keep, shell/);
+  const closeHit = mainSrc.slice(mainSrc.indexOf("function pushCloseHit"), mainSrc.indexOf("function collectHits"));
+  assert.match(closeHit, /dataset\.header === "bottom"/);
+  assert.match(closeHit, /CLOSE_PAD_PX/);
   assert.match(mainSrc, /mode=orb/);
   const freezeFn = mainSrc.slice(mainSrc.indexOf("function holdFreeze"), mainSrc.indexOf("function planAnimLocked"));
   assert.doesNotMatch(freezeFn, /cancel\(|cancelAnimationFrame|removeEventListener|pauseHitSync/);

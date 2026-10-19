@@ -1388,25 +1388,64 @@ function growPlan(shell, token) {
   shell.classList.add("is-plan-seam");
   pauseHitSync();
   stopSeamClock(plan);
-  plan.classList.remove("is-plan-parked");
-  plan.style.visibility = "visible";
-  writeSeamScale(plan, fit, SEAM_MIN);
+  // Promote before the first scale. A parked plan stays hidden through the
+  // settle tail so the 0.001 sample is not the frame a stall holds on screen.
+  plan.style.willChange = "transform";
+  fit.style.willChange = "transform";
   pinContentOpacity(shell);
-  const started = performance.now();
-  seamLog("anim-start", `flight=${flight} mode=raf scale=${SEAM_MIN}`);
-  seamMark("plan-seam:clock");
   const run = new Promise((resolve) => {
+    let elapsed = 0;
+    let last = 0;
+    let calm = 0;
+    const alive = () => {
+      if (!plan.isConnected || plan.dataset.seamFlight !== flight) return false;
+      if (token && shell.dataset.morphToken !== token) return false;
+      return true;
+    };
+    // Two short gaps mean the compositor is presenting again. A long gap
+    // resets the count and does not advance the 240ms curve.
+    const awaitCalm = (now) => {
+      plan._seamFrame = 0;
+      if (!alive()) {
+        resolve(false);
+        return;
+      }
+      if (!last) {
+        last = now;
+        plan._seamFrame = requestAnimationFrame(awaitCalm);
+        return;
+      }
+      const gap = now - last;
+      last = now;
+      if (gap < 50) calm += 1;
+      else calm = 0;
+      if (calm < 2) {
+        plan._seamFrame = requestAnimationFrame(awaitCalm);
+        return;
+      }
+      plan.classList.remove("is-plan-parked");
+      plan.style.visibility = "visible";
+      plan.style.willChange = "transform";
+      fit.style.willChange = "transform";
+      writeSeamScale(plan, fit, SEAM_MIN);
+      seamLog("anim-start", `flight=${flight} mode=raf scale=${SEAM_MIN} calm=2`);
+      seamMark("plan-seam:clock");
+      last = now;
+      elapsed = 0;
+      plan._seamFrame = requestAnimationFrame(step);
+    };
     const step = (now) => {
       plan._seamFrame = 0;
-      if (!plan.isConnected || plan.dataset.seamFlight !== flight) {
+      if (!alive()) {
         resolve(false);
         return;
       }
-      if (token && shell.dataset.morphToken !== token) {
-        resolve(false);
-        return;
-      }
-      const t = (now - started) / PLAN_GROW_MS;
+      // Paint-driven: one presented frame moves the curve by at most ~33ms,
+      // so a stall between callbacks cannot skip ahead of what was shown.
+      const delta = Math.min(Math.max(0, now - last), 33);
+      last = now;
+      elapsed += delta;
+      const t = elapsed / PLAN_GROW_MS;
       if (t >= 1) {
         writeSeamScale(plan, fit, 1);
         seamLog("anim-finish", `flight=${flight} mode=raf scale=1`);
@@ -1421,7 +1460,7 @@ function growPlan(shell, token) {
       writeSeamScale(plan, fit, scale);
       plan._seamFrame = requestAnimationFrame(step);
     };
-    plan._seamFrame = requestAnimationFrame(step);
+    plan._seamFrame = requestAnimationFrame(awaitCalm);
   });
   plan._seamRun = run;
   run.finally(() => {
@@ -4725,17 +4764,55 @@ function syncLatch() {
 
 const CLOSE_PAD_PX = 36;
 
+/** Bottom footer border box. The header is the last flex item, and it can
+ *  sit past the shell edge the announce rect was built from. */
+function bottomFooterBox(shell) {
+  if (shell?.dataset.header !== "bottom") return null;
+  const header = shell.querySelector(".center-panel > .panel-header, .settings-head");
+  if (!header || header.hidden || header.closest("[hidden]")) return null;
+  const box = header.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return null;
+  return box;
+}
+
+/** Pull the panel hit down over a bottom footer that paints past the shell. */
+function coverBottomFooter(rect, shell) {
+  const foot = bottomFooterBox(shell);
+  if (!foot || !rect) return rect;
+  const close = shell.querySelector("[data-hit-id^='close:']");
+  const button = close?.getBoundingClientRect();
+  const buttonBottom = button && button.height >= 1 ? button.bottom : foot.bottom;
+  const top = Math.min(rect.y, foot.top);
+  const bottom = Math.max(rect.y + rect.h, foot.bottom, buttonBottom);
+  rect.y = top;
+  rect.h = bottom - top;
+  return rect;
+}
+
 function pushCloseHit(rects, shell, level) {
   const close = shell.querySelector("[data-hit-id^='close:']");
   if (!close || close.hidden || close.closest("[hidden]")) return;
   const box = close.getBoundingClientRect();
   if (box.width < 1 || box.height < 1) return;
+  let y = box.y;
+  let h = box.height;
+  if (shell.dataset.header === "bottom") {
+    const foot = bottomFooterBox(shell);
+    if (foot && foot.height >= box.height) {
+      // The control is centered in the footer. A box pinned to the title row
+      // leaves the visual centre outside the hit.
+      const centered = foot.y + (foot.height - box.height) / 2;
+      if (y + 1 < centered) y = centered;
+      const footBottom = Math.max(y + h, foot.bottom);
+      h = footBottom - y;
+    }
+  }
   rects.push({
     id: close.dataset.hitId,
     x: box.x - CLOSE_PAD_PX,
-    y: box.y - CLOSE_PAD_PX,
+    y: y - CLOSE_PAD_PX,
     w: box.width + CLOSE_PAD_PX * 2,
-    h: box.height + CLOSE_PAD_PX * 2,
+    h: h + CLOSE_PAD_PX * 2,
     z: level + 40,
     round: false,
   });
@@ -4822,6 +4899,7 @@ function collectHits() {
           rect.h = bottom - top;
         }
       }
+      coverBottomFooter(rect, shell);
       rects.push(rect);
     }
     if (shell.dataset.state === "panel") {
@@ -4905,8 +4983,10 @@ function announcePanelHits(shell) {
     rect.x = left;
     rect.w = right - left;
   }
+  coverBottomFooter(rect, shell);
   const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id);
   keep.push(rect);
+  pushCloseHit(keep, shell, rect.z || 1);
   hitSilence.add(shell);
   pauseHitSync();
   sendHitRects(keep, "announce-panel");
