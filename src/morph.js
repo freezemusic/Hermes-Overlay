@@ -262,6 +262,8 @@ export function openPhases() {
  * WAAPI clock for one edge. Left and bottom at 266ms measure 300–333ms.
  * Right at 300ms measured 366ms, so its clock is 233ms.
  * Top at 266ms measured 266ms once, one frame under that window, so its clock is 299ms.
+ * Left once measured 366ms inside 300/366/333. That outlier is a stall frame,
+ * so the 266ms clock stays. Refresh and hit flush wait until the collapse ends.
  */
 export function collapseMs(edge) {
   if (edge === "right") return 233;
@@ -433,8 +435,8 @@ export function dropParkedAnchor(anchors, id) {
 /** First seam scale. 0 is invisible to the compositor; this is about 0% of the plan. */
 export const SEAM_MIN = 0.001;
 
-/** y at time t for cubic-bezier(.2, .8, .2, 1). The plan seam bakes this into
- *  keyframe values so the outer scale and the inner counter-scale stay inverses. */
+/** y at time t for cubic-bezier(.2, .8, .2, 1). The plan seam samples this
+ *  from a rAF clock and writes inline scaleX. There is no WAAPI fill. */
 export function seamEase(t) {
   if (t <= 0) return 0;
   if (t >= 1) return 1;
@@ -461,6 +463,14 @@ export function seamEase(t) {
     u = Math.min(1, Math.max(0, u - ((xAt(u) - t) / dx)));
   }
   return yAt(u);
+}
+
+/** Inline scale for one growth sample. t is 0..1 over 240ms. The resting
+ *  value is 1; 0.001 exists only on the frame the clock starts. */
+export function seamScaleAt(t) {
+  if (t <= 0) return SEAM_MIN;
+  if (t >= 1) return 1;
+  return Math.max(SEAM_MIN, seamEase(t));
 }
 
 /** Composited seam. WebKitGTK does not run clip-path on the compositor, so a

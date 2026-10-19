@@ -17,7 +17,7 @@ import {
   PILL_PANEL_MS,
   PLAN_GROW_MS,
   SEAM_MIN,
-  seamScaleFrames,
+  seamScaleAt,
   clipPath,
   distributeEdges,
   fixedOrbPoint,
@@ -931,6 +931,7 @@ function setSeamPhase(plan, phase, { dom = true } = {}) {
 
 function clearPlanMotion(plan) {
   if (!plan) return;
+  stopSeamClock(plan);
   const fit = planFitEl(plan);
   if (seamPhase(plan) === "grown" || seamPhase(plan) === "growing") {
     return;
@@ -1261,8 +1262,6 @@ function holdSeamVisual(shell) {
   plan.style.setProperty("overflow", "hidden", "important");
   holdMotion(plan);
   holdMotion(fit);
-  plan.style.transform = `scaleX(${SEAM_MIN})`;
-  fit.style.transform = `scaleX(${1 / SEAM_MIN})`;
 }
 
 function seamLocked(plan) {
@@ -1270,9 +1269,8 @@ function seamLocked(plan) {
   return phase === "growing" || phase === "grown";
 }
 
-/** Content is already in the DOM. Paint the plan itself at scaleX(0.001)
- *  (double rAF after a style flush on that node), then start the 240ms clock
- *  so the first growth sample is that painted frame, under 35%. */
+/** Content is already in the DOM. Paint the parked plan while it is hidden.
+ *  The rAF clock starts after that gate and writes the first sample itself. */
 async function playPlanSeam(shell, token) {
   armSeamWatch();
   seamMark("plan-seam:clip-end");
@@ -1297,9 +1295,6 @@ async function playPlanSeam(shell, token) {
   lockPlanBox(shell, plan);
   const flushed = getComputedStyle(plan).transform;
   seamLog("sliver-flush", flushed);
-  plan.classList.remove("is-plan-parked");
-  plan.style.visibility = "visible";
-  void getComputedStyle(plan).transform;
   holdQuiet(shell, PLAN_GROW_MS + 420);
   await nextPaint();
   if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
@@ -1309,6 +1304,26 @@ async function playPlanSeam(shell, token) {
   seamMark("plan-seam:painted");
   watchSeamFrames();
   await growPlan(shell, token);
+}
+
+function stopSeamClock(plan) {
+  if (!plan?._seamFrame) return;
+  cancelAnimationFrame(plan._seamFrame);
+  plan._seamFrame = 0;
+}
+
+/** Inline scale only. The stylesheet has no scaleX resting value, so a
+ *  finished WAAPI fill cannot fall back to scaleX(0.001) for one frame. */
+function writeSeamScale(plan, fit, scale) {
+  const outer = scale >= 0.999 ? 1 : scale;
+  plan.style.transform = `scaleX(${outer})`;
+  if (fit) fit.style.transform = `scaleX(${outer === 1 ? 1 : 1 / outer})`;
+}
+
+function pinContentOpacity(shell) {
+  shell?.querySelectorAll(".content, .morph-body").forEach((el) => {
+    el.style.opacity = "1";
+  });
 }
 
 function growPlan(shell, token) {
@@ -1333,37 +1348,41 @@ function growPlan(shell, token) {
   }
   shell.classList.add("is-plan-seam");
   pauseHitSync();
-  const { outer, inner } = seamScaleFrames();
-  let anim;
-  let fitAnim;
-  try {
-    plan.classList.remove("is-plan-parked");
-    plan.style.visibility = "visible";
-    seamLog("show", "growth-frame");
-    anim = plan.animate(outer, { duration: PLAN_GROW_MS, easing: "linear", fill: "forwards", id: "plan-seam" });
-    fitAnim = fit.animate(inner, { duration: PLAN_GROW_MS, easing: "linear", fill: "forwards", id: "plan-seam-fit" });
-    const now = document.timeline?.currentTime;
-    if (typeof now === "number") {
-      anim.startTime = now;
-      fitAnim.startTime = now;
-    }
-    seamLog("anim-start", `flight=${flight} timeline=${now}`);
-    anim.onfinish = () => seamLog("anim-finish", `flight=${flight}`);
-  } catch {
-    lockPlanRevealed(plan);
-    endPlanSeam(shell);
-    return Promise.resolve();
-  }
+  stopSeamClock(plan);
+  plan.classList.remove("is-plan-parked");
+  plan.style.visibility = "visible";
+  writeSeamScale(plan, fit, SEAM_MIN);
+  pinContentOpacity(shell);
+  const started = performance.now();
+  seamLog("anim-start", `flight=${flight} mode=raf scale=${SEAM_MIN}`);
   seamMark("plan-seam:clock");
-  const run = whenAnimEnds(anim, PLAN_GROW_MS, false).then((finished) => {
-    const current = !token || shell.dataset.morphToken === token;
-    if (plan.dataset.seamFlight !== flight) return;
-    if (current && finished) {
-      holdFreeze(shell, FREEZE_AFTER_GROW_MS);
-      holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
-      setSeamPhase(plan, "grown", { dom: false });
-      armQuietFlush(shell);
-    }
+  const run = new Promise((resolve) => {
+    const step = (now) => {
+      plan._seamFrame = 0;
+      if (!plan.isConnected || plan.dataset.seamFlight !== flight) {
+        resolve(false);
+        return;
+      }
+      if (token && shell.dataset.morphToken !== token) {
+        resolve(false);
+        return;
+      }
+      const t = (now - started) / PLAN_GROW_MS;
+      if (t >= 1) {
+        writeSeamScale(plan, fit, 1);
+        seamLog("anim-finish", `flight=${flight} mode=raf scale=1`);
+        holdFreeze(shell, FREEZE_AFTER_GROW_MS);
+        holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
+        setSeamPhase(plan, "grown", { dom: false });
+        armQuietFlush(shell);
+        resolve(true);
+        return;
+      }
+      const scale = seamScaleAt(t);
+      writeSeamScale(plan, fit, scale);
+      plan._seamFrame = requestAnimationFrame(step);
+    };
+    plan._seamFrame = requestAnimationFrame(step);
   });
   plan._seamRun = run;
   run.finally(() => {
@@ -1374,7 +1393,7 @@ function growPlan(shell, token) {
 
 function visualQuiet(shell) {
   if (!shell) return false;
-  if (shellFrozen(shell)) return true;
+  if (shellFrozen(shell) || shell._settleGate) return true;
   return performance.now() < clockAt(shell, "quiet");
 }
 
@@ -1405,28 +1424,96 @@ function quietWait(shell) {
 
 function freezeCooling(shell) {
   if (!shell) return false;
-  if (shell._motion) return true;
+  if (shell._motion || shell._settleGate) return true;
   if (shell.classList.contains("is-collapsing")
     || shell.classList.contains("is-plan-arming")) return true;
   if (planContentHeld(shell)) return true;
   return performance.now() < clockAt(shell, "freeze");
 }
 
+function framesLater(count, fn) {
+  const step = (left) => {
+    if (left <= 0) fn();
+    else requestAnimationFrame(() => step(left - 1));
+  };
+  if (count <= 0) fn();
+  else requestAnimationFrame(() => step(count - 1));
+}
+
+function pinRestingNodes(shell) {
+  shell?.querySelectorAll(".content, .morph-body, .bubble").forEach((el) => {
+    el.style.opacity = "1";
+    el.style.setProperty("animation", "none", "important");
+    el.style.setProperty("transition", "none", "important");
+  });
+}
+
+function restBubble(node) {
+  if (!node) return node;
+  node.style.opacity = "1";
+  node.style.setProperty("animation", "none", "important");
+  node.style.setProperty("transition", "none", "important");
+  return node;
+}
+
+/** What a deferred render would touch. researcher is called out because its
+ *  wash stayed after the left panel went clean. */
+function deferredParts(shell) {
+  const id = shell?.dataset.botId || "";
+  const panel = panelFor(id);
+  const thread = id ? threadFor(id) : null;
+  const chat = role(panel, "chat");
+  let chatPart = "missing";
+  if (chat && thread) {
+    const stamp = chatStamp(thread);
+    const same = chat.dataset.stamp === stamp && chat.childElementCount === thread.messages.length;
+    chatPart = same ? "same" : (chat.childElementCount > 0 ? "sync" : "mount");
+  }
+  const section = shell?.querySelector?.(".plan-window");
+  let planPart = "none";
+  if (thread && section) {
+    const focus = planForPanel(thread);
+    if (focus) {
+      const body = role(section, "plan-body");
+      const html = renderAssistantMarkdown(focus.markdown || "");
+      const md = body && body.dataset.md !== html ? "markdown" : "same";
+      const key = section.dataset.key !== focus.key ? "key" : "keep";
+      planPart = `${key}:${md}`;
+    }
+  }
+  const select = role(panel, "session");
+  const sessions = orderSessions(thread?.sessions || []);
+  const sessionKey = JSON.stringify([
+    thread?.sessionId || "",
+    sessions.map((session) => [session.id, session.title, session.hidden]),
+  ]);
+  const sessionPart = select && select.dataset.key !== sessionKey ? "rebuild" : "same";
+  const soul = role(panel, "soul");
+  const soulWant = state.souls.get(id) || "";
+  const soulPart = soul && soul.dataset.dirty !== "1" && soul.value !== soulWant ? "write" : "same";
+  const showChat = role(panel, "tab-chat")?.getAttribute("aria-selected") !== "false";
+  const focusBot = id === "researcher" ? " focus=researcher" : "";
+  return `chat=${chatPart} plan=${planPart} session=${sessionPart} soul=${soulPart} tab=${showChat ? "chat" : "bot"} dirty=${shell?.dataset.chatDirty || 0}/${shell?.dataset.planDirty || 0}${focusBot}`;
+}
+
 function applyQueuedShell(shell, tag) {
   if (!shell?.isConnected) return;
-  if (freezeCooling(shell)) {
+  if (freezeCooling(shell) || collapseBusy()) {
     shell.dataset.chatDirty = "1";
     shell.dataset.planDirty = "1";
     armQuietFlush(shell);
     return;
   }
+  const parts = deferredParts(shell);
+  debugLog("queued-apply", `bot=${shell.dataset.botId || ""} tag=${tag} ${parts}`);
+  pinRestingNodes(shell);
   shell.classList.remove("is-morphing", "is-plan-seam", "is-plan-arming");
   delete shell.dataset.chatDirty;
   delete shell.dataset.planDirty;
-  debugLog("queued-apply", `bot=${shell.dataset.botId || ""} tag=${tag}`);
-  renderChat(shell.dataset.botId, { inplace: true, tag });
+  renderChat(shell.dataset.botId, { inplace: true, tag, resting: true });
+  pinRestingNodes(shell);
   requestAnimationFrame(() => {
-    if (!shell.isConnected || freezeCooling(shell)) {
+    if (!shell.isConnected || freezeCooling(shell) || collapseBusy()) {
       armQuietFlush(shell);
       return;
     }
@@ -1438,21 +1525,21 @@ function applyQueuedShell(shell, tag) {
 
 function armQuietFlush(shell) {
   if (!shell || shell._quietFlush) return;
-  const wait = Math.max(quietWait(shell), freezeCooling(shell) ? 32 : 0);
+  const wait = Math.max(quietWait(shell), (freezeCooling(shell) || shell._settleGate) ? 32 : 0);
   shell._quietFlush = window.setTimeout(() => {
     shell._quietFlush = 0;
-    requestAnimationFrame(() => applyQueuedShell(shell, "quiet-flush"));
+    framesLater(2, () => applyQueuedShell(shell, "quiet-flush"));
   }, wait);
 }
 
 function flushDeferredChat(shell) {
   if (!shell) return;
   if (shell.dataset.chatDirty !== "1" && shell.dataset.planDirty !== "1" && !renderBots.pending) return;
-  if (deferShellWork(shell) || planContentHeld(shell) || shellFrozen(shell)) {
+  if (deferShellWork(shell) || planContentHeld(shell) || shellFrozen(shell) || shell._settleGate) {
     armQuietFlush(shell);
     return;
   }
-  requestAnimationFrame(() => applyQueuedShell(shell, "deferred-chat"));
+  framesLater(2, () => applyQueuedShell(shell, "deferred-chat"));
 }
 
 function endPlanSeam(shell) {
@@ -1573,9 +1660,15 @@ function settleShell(shell, target) {
     if (!(clockAt(shell, "freeze") > performance.now())) holdFreeze(shell, FREEZE_AFTER_GROW_MS);
     holdQuiet(shell, FREEZE_AFTER_GROW_MS);
   }
+  shell._settleGate = 1;
   debugLog("morph-settle", `target=${target} bot=${shell.dataset.botId || ""} dom=0`);
-  debugLog("settle-defer", "hits");
-  armQuietFlush(shell);
+  debugLog("settle-defer", `bot=${shell.dataset.botId || ""} ${deferredParts(shell)}`);
+  framesLater(2, () => {
+    if (!shell.isConnected) return;
+    shell._settleGate = 0;
+    if (target === "orb") releaseCollapseGate(shell);
+    armQuietFlush(shell);
+  });
 }
 
 function stopShellTransition(shell, target = "") {
@@ -1663,6 +1756,7 @@ async function runShellMorph(shell, target) {
     holdMotion(shell.querySelector(".morph-fill"));
     shell.dataset.intent = "close";
     shell.classList.add("is-collapsing");
+    holdCollapseGate(shell);
     debugLog("collapse-start", `edge=${shell.dataset.edge || ""} scale=${closingScale}`);
     shell._closingScale = closingScale;
     shell.classList.remove("is-orb-moving", "is-content-hold", "open");
@@ -1717,12 +1811,14 @@ async function runShellMorph(shell, target) {
         return true;
       }
       shell._motion = "";
+      if (target === "orb") releaseCollapseGate(shell);
       return false;
     }
     current = step.state;
   }
   if (!alive()) {
     shell._motion = "";
+    if (target === "orb") releaseCollapseGate(shell);
     return false;
   }
   if (target === "panel" && shell.dataset.planOpen === "1") {
@@ -1754,6 +1850,7 @@ async function runShellMorph(shell, target) {
   }
   if (!alive()) {
     shell._motion = "";
+    if (target === "orb") releaseCollapseGate(shell);
     return false;
   }
   settleShell(shell, target);
@@ -2277,6 +2374,11 @@ function syncCronClock(face) {
 }
 
 function renderCronOrb(options = {}) {
+  if (!options.force && collapseBusy()) {
+    state.cronDeferred = true;
+    debugLog("refresh-tick-defer", "cron-orb");
+    return;
+  }
   ensureChrome();
   const shell = shellFor("cron");
   const btn = shell?.querySelector(".orb--cron");
@@ -2355,15 +2457,18 @@ function ensurePlanChip(node, message, id) {
   node.appendChild(chip);
 }
 
-function syncChatInPlace(chat, thread, id) {
+function syncChatInPlace(chat, thread, id, resting = false) {
   const messages = thread.messages;
   for (let i = 0; i < messages.length; i += 1) {
     const message = messages[i];
     let node = chat.children[i];
     if (!node) {
-      chat.appendChild(bubbleEl(message, id));
+      const created = bubbleEl(message, id);
+      if (resting) restBubble(created);
+      chat.appendChild(created);
       continue;
     }
+    if (resting) restBubble(node);
     const want = message.role === "user" ? "user" : message.role === "bot" ? "bot" : message.role;
     const nextClass = `bubble ${want}`;
     if (node.className !== nextClass) node.className = nextClass;
@@ -2388,9 +2493,13 @@ function syncChatInPlace(chat, thread, id) {
   chat.dataset.stamp = chatStamp(thread);
 }
 
-function mountChat(chat, thread, id) {
+function mountChat(chat, thread, id, resting = false) {
   const frag = document.createDocumentFragment();
-  thread.messages.forEach((message) => frag.appendChild(bubbleEl(message, id)));
+  thread.messages.forEach((message) => {
+    const node = bubbleEl(message, id);
+    if (resting) restBubble(node);
+    frag.appendChild(node);
+  });
   chat.replaceChildren(frag);
   chat.dataset.stamp = chatStamp(thread);
 }
@@ -2440,12 +2549,15 @@ function renderChat(id = state.activeId, options = {}) {
   }
   const stamp = chatStamp(thread);
   const current = chat.dataset.stamp === stamp && chat.childElementCount === thread.messages.length;
+  const resting = options.resting === true;
   if (!current) {
     if (thread.followTail === false) thread.scrollTop = chat.scrollTop;
     markProgrammaticScroll(chat);
-    if (chat.childElementCount > 0) syncChatInPlace(chat, thread, bot.id);
-    else mountChat(chat, thread, bot.id);
+    if (chat.childElementCount > 0) syncChatInPlace(chat, thread, bot.id, resting);
+    else mountChat(chat, thread, bot.id, resting);
     stickChat(id);
+  } else if (resting) {
+    chat.querySelectorAll(".bubble").forEach((node) => restBubble(node));
   }
   paintPlan(id);
   const stop = role(panel, "stop");
@@ -2910,6 +3022,11 @@ function prefetchOrbUnderCursor() {
 }
 
 function refreshBotChats() {
+  if (collapseBusy()) {
+    state.refreshDeferred = true;
+    debugLog("refresh-tick-defer", "frozen=1");
+    return;
+  }
   const frozen = motionFrozen();
   debugLog("refresh-tick", `frozen=${frozen ? 1 : 0}`);
   if (state.mode !== "hermes" || !inTauri()) return;
@@ -4666,8 +4783,46 @@ function publishHits(tag = "publish") {
   if (!inTauri()) paintLocalProximity(rects);
 }
 
+let collapseHold = 0;
+
 function collapseBusy() {
-  return !!document.querySelector(".morph.is-collapsing");
+  return collapseHold > 0 || !!document.querySelector(".morph.is-collapsing");
+}
+
+function holdCollapseGate(shell) {
+  if (!shell || shell._collapseGate) return;
+  shell._collapseGate = 1;
+  collapseHold += 1;
+}
+
+function releaseDeferredTicks() {
+  if (state.refreshDeferred) {
+    state.refreshDeferred = false;
+    debugLog("refresh-tick-release", "chat");
+    refreshBotChats();
+  }
+  if (state.kanbanPending) {
+    const board = state.kanbanPending;
+    state.kanbanPending = null;
+    commitKanban(board);
+  } else if (state.kanbanDeferred) {
+    state.kanbanDeferred = false;
+    refreshKanban();
+  }
+  if (state.cronDeferred) {
+    state.cronDeferred = false;
+    refreshCron();
+  }
+  if (renderBots.pending) renderBots("after-collapse");
+  else scheduleHitSync("after-collapse");
+}
+
+function releaseCollapseGate(shell) {
+  if (!shell?._collapseGate) return;
+  shell._collapseGate = 0;
+  collapseHold = Math.max(0, collapseHold - 1);
+  if (collapseHold > 0) return;
+  releaseDeferredTicks();
 }
 
 let hitDeferLogged = false;
@@ -5118,6 +5273,11 @@ function stopKanbanPoll() {
 }
 
 async function refreshKanban() {
+  if (collapseBusy()) {
+    state.kanbanDeferred = true;
+    debugLog("refresh-tick-defer", "kanban");
+    return;
+  }
   if (state.kanban.saving || state.kanban.dragging) return;
   let payload;
   if (state.mode !== "hermes" || !inTauri()) {
@@ -5134,6 +5294,11 @@ async function refreshKanban() {
 }
 
 function commitKanban(board) {
+  if (collapseBusy()) {
+    state.kanbanPending = board;
+    debugLog("refresh-tick-defer", "kanban-commit");
+    return;
+  }
   const line = kanbanChangeLine(state.kanban.board, board);
   state.kanban.fingerprint = boardFingerprint(board);
   state.kanban.board = board;
@@ -5586,6 +5751,11 @@ function paintCron() {
 }
 
 async function refreshCron() {
+  if (collapseBusy()) {
+    state.cronDeferred = true;
+    debugLog("refresh-tick-defer", "cron");
+    return;
+  }
   if (!inTauri() || state.mode !== "hermes") {
     state.cronGroups = mockCronGroups();
   } else {

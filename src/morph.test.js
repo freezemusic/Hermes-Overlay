@@ -36,6 +36,7 @@ import {
   revealClip,
   seamInsets,
   seamEase,
+  seamScaleAt,
   seamScaleFrames,
   SEAM_MIN,
   cronShellHeight,
@@ -104,6 +105,9 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(seam.inner[0].transform, "scaleX(1000)");
   assert.equal(seam.outer.at(-1).transform, "scaleX(1)");
   assert.equal(seam.inner.at(-1).transform, "scaleX(1)");
+  assert.equal(seamScaleAt(0), SEAM_MIN);
+  assert.equal(seamScaleAt(1), 1);
+  assert.ok(seamScaleAt(0.05) > SEAM_MIN && seamScaleAt(0.05) < 1);
   seam.outer.forEach((frame, index) => {
     const outer = Number(frame.transform.slice(7, -1));
     const inner = Number(seam.inner[index].transform.slice(7, -1));

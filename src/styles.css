@@ -1047,6 +1047,8 @@ html, body {
 
 .plan-window::before { display: none; }
 
+/* Resting transform is none. JS writes inline scaleX only while the plan
+   grows, then leaves scaleX(1). Do not put a near-zero scale in this file. */
 .morph .plan-window {
   position: absolute;
   left: 100%;
@@ -1206,6 +1208,14 @@ html, body {
   word-break: break-word;
   color: #1a1a1a;
   animation: msg-in var(--dur-2) var(--ease-out) 1 both;
+}
+
+/* Entry fade starts at opacity 0. During morph and collapse that frame is
+   the washed panel, so bubbles rest at opacity 1 with no animation. */
+.morph.is-morphing .bubble,
+.morph.is-collapsing .bubble {
+  animation: none !important;
+  opacity: 1;
 }
 
 .bubble.bot {
