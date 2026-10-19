@@ -2139,6 +2139,20 @@ html, body {
   transform: none !important;
 }
 
+/* 1px white tick on the orb centre. A composited transform beside the plan
+   clip, without promoting the orb layer. */
+.seam-tick {
+  position: absolute;
+  left: calc(var(--ax) - 0.5px);
+  top: calc(var(--ay) - 0.5px);
+  width: 1px;
+  height: 1px;
+  background: #fff;
+  opacity: 1;
+  pointer-events: none;
+  z-index: 5;
+}
+
 .morph .morph-orb {
   position: absolute;
   left: calc(var(--ax, 22px) - 22px);

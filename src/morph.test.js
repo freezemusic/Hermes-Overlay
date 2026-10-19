@@ -8,7 +8,10 @@ import {
   CONTENT_IN_MS,
   CONTENT_OUT_MS,
   EASE,
+  PLAN_COLLAPSE_MS,
+  PLAN_EASE,
   PLAN_GROW_MS,
+  planEase,
   ICON,
   ORB,
   ORB_PILL_MS,
@@ -98,7 +101,15 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(CONTENT_IN_MS, 160);
   assert.equal(CONTENT_IN_DELAY_MS, 0);
   assert.ok(CONTENT_IN_MS < PILL_PANEL_MS);
-  assert.equal(PLAN_GROW_MS, 240);
+  assert.equal(PLAN_GROW_MS, 280);
+  assert.ok(PLAN_GROW_MS <= 300);
+  assert.equal(PLAN_COLLAPSE_MS, 200);
+  assert.equal(PLAN_EASE, "cubic-bezier(.3,.6,.2,1)");
+  assert.equal(planEase(0), 0);
+  assert.equal(planEase(1), 1);
+  assert.ok(planEase(16 / 280) <= 0.15);
+  assert.ok(planEase(100 / 280) > 0.55 && planEase(100 / 280) < 0.80);
+  assert.ok(planEase(200 / 280) >= 0.90);
   assert.equal(SEAM_MIN, 0.001);
   const seam = seamScaleFrames(12);
   assert.equal(seam.outer.length, 13);

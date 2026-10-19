@@ -15,9 +15,11 @@ import {
   PANEL_H,
   PANEL_W,
   PILL_PANEL_MS,
+  PLAN_COLLAPSE_MS,
+  PLAN_EASE,
   PLAN_GROW_MS,
-  seamEase,
-  seamScaleAt,
+  COLLAPSE_EASE,
+  planEase,
   clipPath,
   distributeEdges,
   fixedOrbPoint,
@@ -294,16 +296,33 @@ function paintClip(shell, insets, visual = shell.dataset.visual || shell.dataset
     // the layer and the compositor paints one blank frame.
     shell.style.setProperty("overflow", "visible", "important");
   } else {
-    shell.style.removeProperty("clip-path");
-    shell.style.clipPath = outer ? clipPath(outer) : revealClip(visual, shellGeom(shell));
+    const next = outer ? clipPath(outer) : revealClip(visual, shellGeom(shell));
+    const px = clipPath(insets);
+    const held = shell.style.clipPath;
+    // Cron still writes: its outer bleed is wider than the orb disc.
+    // An identical px or calc clip must stay. Swapping the collapse's px
+    // clip for revealClip's calc rebuilds the orb about a second later.
+    if (!outer && held && (held === next || held === px)) {
+      /* resting clip already matches */
+    } else {
+      shell.style.removeProperty("clip-path");
+      shell.style.clipPath = next;
+    }
   }
   const fill = shell.querySelector(".morph-fill");
-  if (fill) fill.style.clipPath = clipPath(tighten(insets));
-  shell.dataset.clipTop = String(insets.top);
-  shell.dataset.clipRight = String(insets.right);
-  shell.dataset.clipBottom = String(insets.bottom);
-  shell.dataset.clipLeft = String(insets.left);
-  shell.dataset.clipRadius = String(insets.radius);
+  if (fill) {
+    const fillClip = clipPath(tighten(insets));
+    if (fill.style.clipPath !== fillClip) fill.style.clipPath = fillClip;
+  }
+  const clipNote = (key, value) => {
+    const text = String(value);
+    if (shell.dataset[key] !== text) shell.dataset[key] = text;
+  };
+  clipNote("clipTop", insets.top);
+  clipNote("clipRight", insets.right);
+  clipNote("clipBottom", insets.bottom);
+  clipNote("clipLeft", insets.left);
+  clipNote("clipRadius", insets.radius);
 }
 
 function shellGeom(shell) {
@@ -348,6 +367,17 @@ function placeShellElement(shell) {
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
   const placed = placeShell(point.x, point.y, size.w, size.h, vw, vh);
+  const ax = String(placed.anchor.x);
+  const ay = String(placed.anchor.y);
+  if (shell.style.width === `${placed.width}px`
+    && shell.style.height === `${placed.height}px`
+    && shell.style.left === `${placed.left}px`
+    && shell.style.top === `${placed.top}px`
+    && shell.dataset.edge === placed.edge
+    && shell.dataset.ax === ax
+    && shell.dataset.ay === ay) {
+    return placed;
+  }
   shell.style.width = `${placed.width}px`;
   shell.style.height = `${placed.height}px`;
   shell.style.left = `${placed.left}px`;
@@ -559,6 +589,15 @@ function bleedInsets(insets, px) {
   };
 }
 
+/** Panel bleed is -4px on every side. That last 4px is the plan stub.
+ *  Hold the plan edge at 0 until the growth clock opens it. */
+function sealPlanSide(shell, insets) {
+  if (shell?.dataset.planOpen !== "1" || !insets) return insets;
+  const side = shell.dataset.planSide === "left" ? "left" : "right";
+  if (insets[side] < 0) insets[side] = 0;
+  return insets;
+}
+
 function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const fill = shell.querySelector(".morph-fill");
   const stroke = shell.querySelector(".morph-stroke");
@@ -572,6 +611,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const cornerRoom = FRAME_BLEED + HAIRLINE;
   const shellFrom = toState === "panel" ? bleedInsets(from, cornerRoom) : from;
   const shellTo = toState === "panel" ? bleedInsets(to, cornerRoom) : to;
+  if (toState === "panel") sealPlanSide(shell, shellTo);
   const fillFrom = tighten(from);
   const fillTo = tighten(to);
   if (shell.dataset.morphToken !== token) return Promise.resolve(false);
@@ -733,6 +773,11 @@ function commitClosedShell(shell) {
     plan.hidden = true;
     plan.style.visibility = "hidden";
   }
+  const orb = shell.querySelector(".morph-orb");
+  if (orb?.classList.contains("active") && !state.openIds.includes(shell.dataset.botId)) {
+    orb.classList.remove("active");
+    debugLog("orb-restyle", "when=collapse-end class=active-off");
+  }
 }
 
 function planWidthPx() {
@@ -747,10 +792,11 @@ function sideFromStyle(shell) {
   return roomRight >= planWidthPx() ? "right" : "left";
 }
 
-/** Shell clip that reveals `t` of the plan (0..1 through seamEase).
- *  The plan box stays full size. Only this outward inset changes. */
+/** Shell clip that reveals `t` of the plan (0..1 through planEase).
+ *  The plan box stays full size. Only this outward inset changes.
+ *  t = 0 keeps the plan edge at 0 so the panel bleed cannot show a stub. */
 function planRevealClip(shell, t) {
-  const reveal = t <= 0 ? 0 : t >= 1 ? 1 : seamEase(t);
+  const reveal = t <= 0 ? 0 : t >= 1 ? 1 : planEase(t);
   const base = bleedInsets(insetsFor("panel", shellGeom(shell)), FRAME_BLEED + HAIRLINE);
   const extra = (Number(shell.dataset.planWidth) || planWidthPx()) + FRAME_BLEED + HAIRLINE;
   const shown = extra * reveal;
@@ -1599,34 +1645,36 @@ function watchPresent(shell, anim, tag) {
   requestAnimationFrame(step);
 }
 
-/** Panel open paints because the orb's composited transform runs the whole
- *  480ms beside the shell clip. The plan clip used to start after that
- *  transform had finished, and WebKitGTK then kept the last inset on screen.
- *  translateZ does not move the orb: the shell has no perspective. */
+/** A 1px tick at the orb centre keeps a composited transform beside the
+ *  shell clip. The orb layer itself is left alone. */
 function pumpSeamPresent(shell, duration) {
-  const orb = shell.querySelector(".morph-orb");
-  if (!orb || !(duration > 0)) return null;
-  const scale = ICON / ORB;
-  holdMotion(orb);
-  orb.style.willChange = "transform";
+  if (!shell || !(duration > 0)) return null;
+  let tick = shell.querySelector(":scope > .seam-tick");
+  if (!tick) {
+    tick = document.createElement("span");
+    tick.className = "seam-tick";
+    tick.setAttribute("aria-hidden", "true");
+    shell.append(tick);
+  }
+  holdMotion(tick);
+  tick.style.willChange = "transform";
   try {
-    return orb.animate([
-      { transform: `scale(${scale}) translateZ(0px)` },
-      { transform: `scale(${scale}) translateZ(1px)`, offset: 0.5 },
-      { transform: `scale(${scale}) translateZ(0px)` },
+    return tick.animate([
+      { transform: "translate3d(0,0,0)" },
+      { transform: "translate3d(0,0,1px)", offset: 0.5 },
+      { transform: "translate3d(0,0,0)" },
     ], { duration, easing: "linear", fill: "forwards", id: "seam-pump" });
   } catch {
     return null;
   }
 }
 
-/** Same element, same property, same animate() shape as the panel clip.
- *  v54 retimed the finished panel animation and GTK held the 12ms sample,
- *  then jumped. This opens a new animation instead. */
+/** Fresh shell clip, fully closed to fully open. The finished panel clip
+ *  stays where it ended. A new animation on the same property paints over it. */
 function beginSeamClip(shell) {
-  const from = planRevealClip(shell, 12 / PLAN_GROW_MS).value;
+  const from = planRevealClip(shell, 0).value;
   const to = planRevealClip(shell, 1).value;
-  const duration = PLAN_GROW_MS - 12;
+  const duration = PLAN_GROW_MS;
   holdMotion(shell);
   const previous = shell._clipHold;
   let anim = null;
@@ -1634,7 +1682,7 @@ function beginSeamClip(shell) {
     anim = shell.animate([
       { clipPath: from },
       { clipPath: to },
-    ], { duration, easing: EASE, fill: "forwards", id: "seam-clip" });
+    ], { duration, easing: PLAN_EASE, fill: "forwards", id: "seam-clip" });
   } catch {
     shell.style.clipPath = to;
     return null;
@@ -1649,7 +1697,7 @@ function beginSeamClip(shell) {
 
 function finishSeamClip(anim) {
   if (!anim) return Promise.resolve(false);
-  return whenAnimEnds(anim, PLAN_GROW_MS - 12);
+  return whenAnimEnds(anim, PLAN_GROW_MS);
 }
 
 function growPlan(shell, token) {
@@ -1705,7 +1753,6 @@ function growPlan(shell, token) {
   plan.style.willChange = "transform";
   plan.classList.remove("is-plan-parked");
   pinContentOpacity(shell);
-  const FIRST_PAINT_MS = 12;
   const alive = () => {
     if (!plan.isConnected || plan.dataset.seamFlight !== flight) return false;
     if (token && shell.dataset.morphToken !== token) return false;
@@ -1713,16 +1760,15 @@ function growPlan(shell, token) {
   };
   const run = (async () => {
     const anim = beginSeamClip(shell);
-    const first = seamScaleAt(FIRST_PAINT_MS / PLAN_GROW_MS);
-    seamLog("anim-start", `flight=${flight} mode=clip same=shell raster=${plan.dataset.raster || "live"} reveal=${first.toFixed(3)} motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
+    seamLog("anim-start", `flight=${flight} mode=clip same=shell raster=${plan.dataset.raster || "live"} reveal=0 motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
     seamMark("plan-seam:clock");
     if (!alive()) return false;
     const started = performance.now();
     const sample = (i) => {
       if (!alive() || seamPhase(plan) === "grown") return;
       const wall = performance.now() - started;
-      const t = Math.min(1, (FIRST_PAINT_MS + wall) / PLAN_GROW_MS);
-      seamLog("seam-sample", `i=${i} wall=${wall.toFixed(1)} reveal=${seamEase(t).toFixed(3)} motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
+      const t = Math.min(1, wall / PLAN_GROW_MS);
+      seamLog("seam-sample", `i=${i} wall=${wall.toFixed(1)} reveal=${planEase(t).toFixed(3)} motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
       if (wall < PLAN_GROW_MS) setTimeout(() => sample(i + 1), 32);
     };
     setTimeout(() => sample(0), 32);
@@ -2080,6 +2126,50 @@ function stopShellTransition(shell, target = "") {
   shell.classList.remove("is-growing-pill", "is-growing-panel", "is-orb-moving", "is-content-promoted", "is-plan-seam", "is-plan-arming");
 }
 
+function planSeamLive(shell) {
+  if (!shell || shell.dataset.planOpen !== "1") return false;
+  const phase = seamPhase(shell.querySelector(".plan-window"));
+  return phase === "grown" || phase === "growing";
+}
+
+/** Plan clips shut before the panel collapse. Same ease, its own 200ms. */
+async function collapsePlanSeam(shell, token) {
+  if (!planSeamLive(shell)) return;
+  const plan = shell.querySelector(".plan-window");
+  const closed = planRevealClip(shell, 0).value;
+  if (reducedMotion()) {
+    shell.style.clipPath = closed;
+    applyParkedPlan(shell, plan);
+    setSeamPhase(plan, "", { dom: false });
+    return;
+  }
+  const from = planRevealClip(shell, 1).value;
+  const duration = PLAN_COLLAPSE_MS;
+  holdMotion(shell);
+  debugLog("collapse-start", `plan=first edge=${shell.dataset.edge || ""} ms=${duration}`);
+  let anim = null;
+  try {
+    anim = shell.animate([
+      { clipPath: from },
+      { clipPath: closed },
+    ], { duration, easing: COLLAPSE_EASE, fill: "forwards", id: "plan-collapse" });
+  } catch {
+    shell.style.clipPath = closed;
+    applyParkedPlan(shell, plan);
+    setSeamPhase(plan, "", { dom: false });
+    return;
+  }
+  shell._clipHold = anim;
+  shell.style.clipPath = closed;
+  pumpSeamPresent(shell, duration);
+  watchPresent(shell, anim, "plan-collapse");
+  await whenAnimEnds(anim, duration);
+  if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
+  applyParkedPlan(shell, plan);
+  setSeamPhase(plan, "", { dom: false });
+  debugLog("collapse-finish", `plan=0 edge=${shell.dataset.edge || ""}`);
+}
+
 async function runShellMorph(shell, target) {
   if (!shell) return false;
   if (target !== "orb" && shell.dataset.intent === "close") return false;
@@ -2173,6 +2263,14 @@ async function runShellMorph(shell, target) {
     announcePanelHits(shell);
   } else if (target === "orb") {
     announceOrbHits(shell);
+  }
+  if (target === "orb") {
+    await collapsePlanSeam(shell, token);
+    if (!alive()) {
+      shell._motion = "";
+      releaseCollapseGate(shell);
+      return false;
+    }
   }
   let current = from;
   for (const step of phaseList(shell.dataset.edge || "bottom", from, target)) {
@@ -5430,6 +5528,10 @@ function releaseCollapseGate(shell) {
     collapseReleaseTimer = 0;
     if (collapseBusy()) return;
     collapseQuietUntil = 0;
+    debugLog(
+      "collapse-release",
+      `bots=${renderBots.pending ? 1 : 0} refresh=${state.refreshDeferred ? 1 : 0} kanban=${state.kanbanDeferred || state.kanbanPending ? 1 : 0} cron=${state.cronDeferred ? 1 : 0}`,
+    );
     releaseDeferredTicks();
   }, 1100);
 }

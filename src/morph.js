@@ -18,7 +18,14 @@ export const CONTENT_OUT_MS = 80;
 export const CONTENT_IN_MS = 160;
 /** The fade starts with the clip. A delay makes WebKitGTK replay opacity from 0. */
 export const CONTENT_IN_DELAY_MS = 0;
-export const PLAN_GROW_MS = 240;
+export const PLAN_GROW_MS = 280;
+/** Plan closes before the panel. Do not add this onto the per-edge panel clocks. */
+export const PLAN_COLLAPSE_MS = 200;
+/**
+ * Plan growth only. One string: if a 30fps box is over 80% at 100ms, swap to
+ * cubic-bezier(.35,.5,.25,1). Do not raise PLAN_GROW_MS above 300.
+ */
+export const PLAN_EASE = "cubic-bezier(.3,.6,.2,1)";
 export const STACK_GAP = 12;
 /** HUD corner L sits this far outside the frame. Both sides count toward the visible gap. */
 export const FRAME_BLEED = 3;
@@ -436,15 +443,10 @@ export function dropParkedAnchor(anchors, id) {
 /** First seam scale. 0 is invisible to the compositor; this is about 0% of the plan. */
 export const SEAM_MIN = 0.001;
 
-/** y at time t for cubic-bezier(.2, .8, .2, 1). The plan seam samples this
- *  from a rAF clock and writes inline scaleX. There is no WAAPI fill. */
-export function seamEase(t) {
+/** y at time t for a cubic-bezier. Newton on x, then the bezier y. */
+export function cubicBezierY(x1, y1, x2, y2, t) {
   if (t <= 0) return 0;
   if (t >= 1) return 1;
-  const x1 = 0.2;
-  const y1 = 0.8;
-  const x2 = 0.2;
-  const y2 = 1;
   const xAt = (u) => {
     const a = 1 - u;
     return (3 * a * a * u * x1) + (3 * a * u * u * x2) + (u * u * u);
@@ -464,6 +466,17 @@ export function seamEase(t) {
     u = Math.min(1, Math.max(0, u - ((xAt(u) - t) / dx)));
   }
   return yAt(u);
+}
+
+/** y at time t for cubic-bezier(.2, .8, .2, 1). The panel clip uses this. */
+export function seamEase(t) {
+  return cubicBezierY(0.2, 0.8, 0.2, 1, t);
+}
+
+/** y at time t for PLAN_EASE. The string is the only growth curve to edit. */
+export function planEase(t) {
+  const parts = String(PLAN_EASE).match(/[\d.]+/g) || [];
+  return cubicBezierY(Number(parts[0]), Number(parts[1]), Number(parts[2]), Number(parts[3]), t);
 }
 
 /** Inline scale for one growth sample. t is 0..1 over 240ms. The resting
