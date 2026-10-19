@@ -369,7 +369,8 @@ function placeShellElement(shell) {
 }
 
 function layoutShell(shell) {
-  if (!shell || shell.classList.contains("is-morphing")) return;
+  if (!shell || shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+  if (document.querySelector(".morph.is-collapsing")) return;
   if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return;
   const placed = placeShellElement(shell);
   const visual = shell.dataset.visual || "orb";
@@ -575,6 +576,18 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   shell.classList.remove("is-growing-pill", "is-growing-panel");
   holdMotion(shell);
   holdMotion(fill);
+  if (toState === "orb") {
+    holdMotion(stroke);
+    holdMotion(shell.querySelector(".morph-orb"));
+    holdMotion(shell.querySelector(".morph-glow"));
+    const plan = shell.querySelector(".plan-window");
+    if (plan) {
+      plan.hidden = true;
+      plan.style.visibility = "hidden";
+      plan.classList.remove("is-seam-grow", "is-plan-parked");
+    }
+    pauseHitSync();
+  }
   cancelClipAnims(shell);
   if (reducedMotion() || !(duration > 0)) {
     writeClip(shell, to);
@@ -655,7 +668,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     };
     requestAnimationFrame(track);
   } else {
-    scheduleHitSync();
+    pauseHitSync();
   }
   return whenAnimEnds(shellAnim, duration).then((finished) => {
     if (shell.dataset.morphToken !== token) return false;
@@ -746,20 +759,45 @@ function hideUnwarmedPlan(shell) {
   if (shell) delete shell.dataset.planOpen;
 }
 
+function cancelPlanAnims(plan, fit) {
+  plan?.getAnimations?.().forEach((anim) => {
+    seamLog("anim-cancel", anim.id || anim.playState || "");
+    anim.cancel();
+  });
+  fit?.getAnimations?.().forEach((anim) => anim.cancel());
+}
+
+/** Full size with no transform left to replay. Write it before cancel, and
+ *  again after, so WebKit never paints the underlying seam sliver. */
+function lockPlanRevealed(plan) {
+  if (!plan) return;
+  const fit = planFitEl(plan);
+  plan.style.transform = "none";
+  if (fit) fit.style.transform = "none";
+  cancelPlanAnims(plan, fit);
+  plan.style.transform = "none";
+  if (fit) fit.style.transform = "none";
+  plan.style.opacity = "";
+  plan.style.removeProperty("z-index");
+  plan.style.removeProperty("clip-path");
+  plan.style.removeProperty("will-change");
+  plan.style.removeProperty("pointer-events");
+  plan.style.removeProperty("visibility");
+  plan.classList.remove("is-plan-parked");
+  if (fit) fit.style.removeProperty("will-change");
+  plan.dataset.seam = "grown";
+  seamLog("lock", "transform=none");
+}
+
 function clearPlanMotion(plan) {
   if (!plan) return;
   const fit = planFitEl(plan);
-  const grown = plan.dataset.seam === "grown" || plan.dataset.seam === "growing";
-  // Cancel from a full-size base. The animation's underlying value is the
-  // seam sliver; cancelling that first paints one frame at ~2% and then
-  // the next grow starts over.
-  if (grown) {
-    plan.style.transform = "scaleX(1)";
-    if (fit) fit.style.transform = "scaleX(1)";
+  if (plan.dataset.seam === "grown") {
+    lockPlanRevealed(plan);
+    return;
   }
-  plan.getAnimations?.().forEach((anim) => anim.cancel());
-  fit?.getAnimations?.().forEach((anim) => anim.cancel());
-  plan.style.transform = grown ? "scaleX(1)" : "";
+  cancelPlanAnims(plan, fit);
+  plan.style.transform = "";
   plan.style.opacity = "";
   plan.style.removeProperty("z-index");
   plan.style.removeProperty("clip-path");
@@ -768,7 +806,7 @@ function clearPlanMotion(plan) {
   plan.style.removeProperty("visibility");
   plan.classList.remove("is-plan-parked");
   if (fit) {
-    fit.style.transform = grown ? "scaleX(1)" : "";
+    fit.style.transform = "";
     fit.style.removeProperty("will-change");
   }
 }
@@ -784,6 +822,32 @@ function seamMark(name) {
   const line = `[plan-seam] ${name}${prev ? ` +${dt.toFixed(0)}ms` : ""}`;
   if (dt > 40) console.warn(line);
   else console.info(line);
+}
+
+function seamLog(event, detail = "") {
+  const plan = document.querySelector(".plan-window");
+  const scale = plan ? (plan.style.transform || "style-empty") : "no-plan";
+  console.info(`[plan-seam] ${event} t=${performance.now().toFixed(1)} seam=${plan?.dataset.seam || "-"} node=${plan?.dataset.seamNode || "-"} ${scale} ${detail}`);
+}
+
+function installPlanDomLog() {
+  if (installPlanDomLog.installed || typeof MutationObserver !== "function") return;
+  installPlanDomLog.installed = true;
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        const plan = node.classList?.contains("plan-window") ? node : node.querySelector?.(".plan-window");
+        if (plan) seamLog("dom-add", `id=${plan.dataset.seamNode || "new"}`);
+      }
+      for (const node of record.removedNodes) {
+        if (node.nodeType !== 1) continue;
+        const plan = node.classList?.contains("plan-window") ? node : node.querySelector?.(".plan-window");
+        if (plan) seamLog("dom-remove", `id=${plan.dataset.seamNode || "?"}`);
+      }
+    }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
 }
 
 let seamWatchUntil = 0;
@@ -867,6 +931,7 @@ function planHostReady(shell) {
 function warmPlanLayer(shell) {
   const plan = shell.querySelector(".plan-window");
   if (!plan || shell.dataset.planOpen !== "1" || !planHostReady(shell)) return;
+  if (seamLocked(plan)) return;
   applyParkedPlan(shell, plan);
   if (plan.dataset.warm === "1") return;
   armSeamWatch(2000);
@@ -948,7 +1013,10 @@ function holdSeamVisual(shell) {
   const fit = ensurePlanFit(plan);
   const origin = seamOrigin(shell);
   plan.classList.remove("is-plan-parked");
-  plan.classList.add("is-seam-grow");
+  if (plan.dataset.seam !== "grown" && !plan.classList.contains("is-seam-grow")) {
+    seamLog("class-add", "is-seam-grow");
+  }
+  if (plan.dataset.seam !== "grown") plan.classList.add("is-seam-grow");
   plan.style.removeProperty("z-index");
   plan.style.opacity = "1";
   plan.style.pointerEvents = "";
@@ -970,28 +1038,40 @@ function seamLocked(plan) {
   return plan?.dataset.seam === "growing" || plan?.dataset.seam === "grown";
 }
 
-/** Unclip and paint the seam, then start the clock on that same turn.
- *  A second call never rewinds scaleX. Markdown stays outside this gap.
- *  One frame of parked (hidden) plan, then the 240ms clock — no 2% stub. */
+/** Keep the plan parked under the glass until it can grow on the next frame.
+ *  The sliver is painted for one frame, then the clock starts. A second call
+ *  never rewinds scaleX. Markdown stays outside this gap. */
 async function playPlanSeam(shell, token) {
   armSeamWatch();
   seamMark("plan-seam:clip-end");
   const plan = shell.querySelector(".plan-window");
   if (!plan || shell.dataset.planOpen !== "1") return;
   if (token && shell.dataset.morphToken !== token) return;
-  if (seamLocked(plan)) return;
-  if (plan.dataset.warm !== "1" || !plan.dataset.key) {
-    // No plan raster yet. A seam stub would sit at ~2% until the session arrives.
+  if (seamLocked(plan)) {
+    seamLog("skip-locked", plan.dataset.seam);
     return;
   }
+  if (plan.dataset.warm !== "1" || !plan.dataset.key) {
+    seamLog("skip-unready");
+    hideUnwarmedPlan(shell);
+    return;
+  }
+  applyParkedPlan(shell, plan);
   plan.dataset.seam = "growing";
   shell.classList.add("is-plan-seam", "is-plan-arming");
   pauseHitSync();
   showPlanHost(shell);
+  seamLog("parked");
   await nextFrame();
   if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
   if (plan.dataset.seam !== "growing") return;
   holdSeamVisual(shell);
+  const flushed = getComputedStyle(plan).transform;
+  seamLog("sliver-flush", flushed);
+  await nextFrame();
+  if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
+  if (plan.dataset.seam !== "growing") return;
+  seamLog("sliver-painted", getComputedStyle(plan).transform);
   shell.classList.remove("is-plan-arming");
   seamMark("plan-seam:painted");
   watchSeamFrames();
@@ -1003,6 +1083,10 @@ function growPlan(shell, token) {
   if (!plan || shell.dataset.planOpen !== "1") return Promise.resolve();
   if (token && shell.dataset.morphToken !== token) return Promise.resolve();
   if (plan.dataset.seam === "grown") return Promise.resolve();
+  if (plan._seamRun) {
+    seamLog("anim-skip", "already-running");
+    return plan._seamRun;
+  }
   const fit = ensurePlanFit(plan);
   const flight = String((Number(plan.dataset.seamFlight) || 0) + 1);
   plan.dataset.seamFlight = flight;
@@ -1021,34 +1105,26 @@ function growPlan(shell, token) {
   let anim;
   let fitAnim;
   try {
-    anim = plan.animate(outer, { duration: PLAN_GROW_MS, easing: "linear", fill: "both" });
-    fitAnim = fit.animate(inner, { duration: PLAN_GROW_MS, easing: "linear", fill: "both" });
+    anim = plan.animate(outer, { duration: PLAN_GROW_MS, easing: "linear", fill: "both", id: "plan-seam" });
+    fitAnim = fit.animate(inner, { duration: PLAN_GROW_MS, easing: "linear", fill: "both", id: "plan-seam-fit" });
     const now = document.timeline?.currentTime;
     if (typeof now === "number") {
       anim.startTime = now;
       fitAnim.startTime = now;
     }
+    seamLog("anim-start", `flight=${flight} timeline=${now}`);
+    anim.onfinish = () => seamLog("anim-finish", `flight=${flight}`);
   } catch {
-    plan.dataset.seam = "grown";
-    plan.style.transform = "scaleX(1)";
-    fit.style.transform = "scaleX(1)";
+    lockPlanRevealed(plan);
     endPlanSeam(shell);
     return Promise.resolve();
   }
   seamMark("plan-seam:clock");
-  return whenAnimEnds(anim, PLAN_GROW_MS).then((finished) => {
+  const run = whenAnimEnds(anim, PLAN_GROW_MS).then((finished) => {
     const current = !token || shell.dataset.morphToken === token;
     if (plan.dataset.seamFlight !== flight) return;
     if (current && finished) {
-      plan.style.transform = "scaleX(1)";
-      fit.style.transform = "scaleX(1)";
-      plan.style.opacity = "";
-      plan.style.clipPath = "none";
-      plan.style.removeProperty("will-change");
-      fit.style.removeProperty("will-change");
-      anim.cancel();
-      fitAnim.cancel();
-      plan.dataset.seam = "grown";
+      lockPlanRevealed(plan);
       holdMotion(plan);
       holdMotion(fit);
       if (!shell.classList.contains("is-morphing")) {
@@ -1060,6 +1136,11 @@ function growPlan(shell, token) {
       endPlanSeam(shell);
     }
   });
+  plan._seamRun = run;
+  run.finally(() => {
+    if (plan._seamRun === run) plan._seamRun = null;
+  });
+  return run;
 }
 
 function deferShellWork(shell) {
@@ -1076,12 +1157,17 @@ function flushDeferredChat(shell) {
   delete shell.dataset.chatDirty;
   delete shell.dataset.planDirty;
   const id = shell.dataset.botId;
+  // Two frames so the locked plan paints at full size before chat markdown
+  // rebuilds. That rebuild was holding a cancelled mid-scale frame on screen.
   requestAnimationFrame(() => {
-    if (deferShellWork(shell)) {
-      shell.dataset.chatDirty = "1";
-      return;
-    }
-    renderChat(id);
+    requestAnimationFrame(() => {
+      if (deferShellWork(shell)) {
+        shell.dataset.chatDirty = "1";
+        shell.dataset.planDirty = "1";
+        return;
+      }
+      renderChat(id);
+    });
   });
 }
 
@@ -1204,7 +1290,8 @@ function settleShell(shell, target) {
   releaseMotion(shell);
   releaseMotion(fill);
   if (plan) {
-    clearPlanMotion(plan);
+    if (plan.dataset.seam === "grown") lockPlanRevealed(plan);
+    else clearPlanMotion(plan);
     plan.classList.remove("is-seam-grow");
     plan.style.removeProperty("display");
     plan.style.removeProperty("overflow");
@@ -1233,6 +1320,7 @@ function settleShell(shell, target) {
   if (target === "panel" && shell.dataset.kind === "bot") stickChat(shell.dataset.botId);
   if (target === "panel" && shell.dataset.botId === "cron") syncCronBox();
   flushDeferredChat(shell);
+  if (renderBots.pending) renderBots();
   separateOpenShells([...document.querySelectorAll(".morph")]);
   scheduleHitSync();
 }
@@ -1613,7 +1701,15 @@ function mountBotPanel(shell, id) {
   const close = role(panel, "close");
   if (close) close.dataset.hitId = `close:${id}`;
   shell.append(panel);
-  if (plan) shell.append(plan);
+  if (plan) {
+    if (!plan.dataset.seamNode) {
+      mountBotPanel.serial = (mountBotPanel.serial || 0) + 1;
+      plan.dataset.seamNode = String(mountBotPanel.serial);
+    }
+    shell.append(plan);
+    installPlanDomLog();
+    seamLog("create", `id=${plan.dataset.seamNode} bot=${id}`);
+  }
   wireBotPanel(panel, id);
   wirePlanWindow(plan, id);
   bindPanelDrag(panel);
@@ -1713,6 +1809,11 @@ function ensureChrome() {
 }
 
 function renderBots() {
+  if (collapseBusy()) {
+    renderBots.pending = true;
+    return;
+  }
+  renderBots.pending = false;
   const rail = $("#bot-rail");
   ensureChrome();
   const pulse = nextOrbPulse(renderedActiveId, state.activeId);
@@ -1999,7 +2100,8 @@ function paintPlan(id) {
   const focus = planForPanel(thread);
   const open = !!focus;
   const wasOpen = shell.dataset.planOpen === "1";
-  section.hidden = !open;
+  seamLog("paint", `open=${open ? 1 : 0} was=${wasOpen ? 1 : 0} key=${focus?.key || ""}`);
+  if (section.hidden !== !open) section.hidden = !open;
   if (open) shell.dataset.planOpen = "1";
   else delete shell.dataset.planOpen;
   if (!open) {
@@ -2033,8 +2135,10 @@ function paintPlan(id) {
         body.dataset.md = html;
         body.innerHTML = html;
         decorateCodeBlocks(body);
-        // A grown seam keeps its scale. Swapping markdown must not rewind it.
-        if (!seamLocked(section)) {
+        // A grown seam keeps its node and its transform. Swapping markdown
+        // must not rewind scaleX or re-add the seam class.
+        if (seamLocked(section)) seamLog("content-swap", `key=${section.dataset.key || ""}`);
+        else {
           delete section.dataset.warm;
           delete section.dataset.painted;
         }
@@ -2044,6 +2148,10 @@ function paintPlan(id) {
   if (source) {
     source.hidden = mode !== "source";
     if (mode === "source" && source.textContent !== focus.markdown) source.textContent = focus.markdown;
+  }
+  if (seamLocked(section)) {
+    if (!shell.classList.contains("is-plan-seam") && !collapseBusy()) scheduleHitSync();
+    return;
   }
   const morphing = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
   if (morphing) {
@@ -2057,7 +2165,6 @@ function paintPlan(id) {
   syncPlanSide(shell);
   separateOpenShells([...document.querySelectorAll(".morph")]);
   const settledPanel = (shell.dataset.visual || shell.dataset.state) === "panel";
-  if (seamLocked(section)) return;
   if (open && !wasOpen && settledPanel) {
     const token = shell.dataset.morphToken || "";
     warmPlanLayer(shell);
@@ -4078,7 +4185,12 @@ function publishHits() {
   if (!inTauri()) paintLocalProximity(rects);
 }
 
+function collapseBusy() {
+  return !!document.querySelector(".morph.is-collapsing");
+}
+
 function scheduleHitSync() {
+  if (collapseBusy()) return;
   if (document.querySelector(".morph.is-plan-seam, .morph.is-plan-arming")) return;
   cancelAnimationFrame(hitFrame);
   hitFrame = requestAnimationFrame(publishHits);
@@ -4090,6 +4202,7 @@ function pauseHitSync() {
 }
 
 function flushHits() {
+  if (collapseBusy()) return;
   cancelAnimationFrame(hitFrame);
   publishHits();
 }

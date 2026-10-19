@@ -119,11 +119,12 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /requestAnimationFrame\(\(\) => requestAnimationFrame\(resolve\)\)/);
   const reveal = mainSrc.slice(mainSrc.indexOf("async function playPlanSeam"), mainSrc.indexOf("function growPlan"));
   assert.equal(reveal.split("await nextPaint()").length - 1, 0);
-  assert.equal(reveal.split("await nextFrame()").length - 1, 1);
+  assert.equal(reveal.split("await nextFrame()").length - 1, 2);
   assert.match(reveal, /seamLocked\(plan\)/);
-  const afterFrame = reveal.slice(reveal.indexOf("await nextFrame()"));
-  assert.match(afterFrame, /holdSeamVisual[\s\S]*growPlan/);
   assert.match(reveal, /holdSeamVisual/);
+  assert.match(reveal, /getComputedStyle\(plan\)\.transform/);
+  const afterPaint = reveal.slice(reveal.lastIndexOf("await nextFrame()"));
+  assert.match(afterPaint, /growPlan/);
   assert.doesNotMatch(reveal, /flushHits|offsetWidth|getBoundingClientRect/);
   const opened = mainSrc.slice(mainSrc.indexOf("async function runShellMorph"), mainSrc.indexOf("function raisePanel"));
   const seamCall = opened.slice(opened.lastIndexOf("planOpen"));
@@ -156,6 +157,10 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph\.is-orb-moving \.morph-orb::before,\s*\n\.morph\.is-orb-docked \.morph-orb::before \{[^}]*transition:\s*none/s);
   assert.match(css, /\.open \.content \{[^}]*opacity:\s*1/s);
   assert.match(css, /\.morph\.is-collapsing \.content,[\s\S]*?transition:\s*opacity 80ms linear/);
+  assert.match(css, /\.morph\.is-collapsing,\n\.morph\.is-collapsing \.morph-fill,[\s\S]*?transition:\s*none !important/);
+  assert.match(mainSrc, /function lockPlanRevealed/);
+  assert.match(mainSrc, /transform = "none"/);
+  assert.match(mainSrc, /if \(collapseBusy\(\)\)/);
   assert.match(css, /\.morph-pill \{[^}]*height:\s*44px/s);
   assert.match(css, /\.morph-pill \{[^}]*width:\s*320px/s);
   assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-morphing\) \.morph-orb \{[^}]*scale\(calc\(28 \/ 44\)\)/s);

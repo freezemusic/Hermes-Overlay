@@ -1927,6 +1927,16 @@ html, body {
   pointer-events: none;
 }
 
+/* One clock. A stylesheet clip or transform must not run beside the WAAPI,
+   or the left and right edges keep moving after the animation duration. */
+.morph.is-collapsing,
+.morph.is-collapsing .morph-fill,
+.morph.is-collapsing .morph-stroke,
+.morph.is-collapsing .morph-orb,
+.morph.is-collapsing .morph-glow {
+  transition: none !important;
+}
+
 .morph-fill {
   position: absolute;
   inset: 0;
