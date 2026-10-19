@@ -376,8 +376,10 @@ function placeShellElement(shell) {
     && shell.dataset.edge === placed.edge
     && shell.dataset.ax === ax
     && shell.dataset.ay === ay) {
+    shell._geomHeld = 1;
     return placed;
   }
+  shell._geomHeld = 0;
   shell.style.width = `${placed.width}px`;
   shell.style.height = `${placed.height}px`;
   shell.style.left = `${placed.left}px`;
@@ -405,6 +407,9 @@ function layoutShell(shell) {
   if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return;
   const placed = placeShellElement(shell);
   const visual = shell.dataset.visual || "orb";
+  // collapse-release lays the resting orb out again. An identical box with
+  // a clip already set must not rewrite it: that rebuilds the orb tile.
+  if (shell._geomHeld && visual !== "panel" && shell.dataset.botId !== "cron" && shell.style.clipPath) return;
   paintClip(shell, insetsFor(visual, {
     boxW: placed.width,
     boxH: placed.height,
@@ -774,6 +779,10 @@ function commitClosedShell(shell) {
     plan.style.visibility = "hidden";
   }
   const orb = shell.querySelector(".morph-orb");
+  // Header docking leaves an inline will-change. A resting orb does not
+  // have one, and keeping it retitles the orb a different colour after close.
+  shell.style.removeProperty("will-change");
+  if (orb) orb.style.removeProperty("will-change");
   if (orb?.classList.contains("active") && !state.openIds.includes(shell.dataset.botId)) {
     orb.classList.remove("active");
     debugLog("orb-restyle", "when=collapse-end class=active-off");
@@ -1345,6 +1354,10 @@ function styleRasterBox(node, width, height) {
  *  A blank canvas is discarded so the seam never reveals an empty bitmap. */
 function capturePlanRaster(plan) {
   if (!plan || plan.dataset.raster || plan._rasterTask) return;
+  // A style walk after the clock has started is a main-thread gap, and the
+  // clip then stops presenting until the animation is already finished.
+  const phase = seamPhase(plan);
+  if (phase === "growing" || phase === "grown") return;
   const fit = planFitEl(plan);
   const shell = plan.closest?.(".morph");
   const width = Math.round(Number(shell?.dataset.planWidth) || plan.offsetWidth || 0);
@@ -1469,6 +1482,7 @@ function warmPlanLayer(shell) {
   plan.style.willChange = "transform";
   fit.style.willChange = "transform";
   plan.dataset.warm = "1";
+  pumpPlanWarm(shell, plan);
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       if (!plan.isConnected) return;
@@ -1477,6 +1491,21 @@ function warmPlanLayer(shell) {
       capturePlanRaster(plan);
     });
   });
+}
+
+/** Composited transform while the plan is still parked under the glass.
+ *  The first open otherwise rasterises the markdown on the first revealed
+ *  frames, and the shell clip stops presenting until 100%. */
+function pumpPlanWarm(shell, plan) {
+  if (!plan || plan.getAnimations?.().some((anim) => anim.id === "plan-warm")) return;
+  const shift = shell?.dataset.planSide === "left" ? "100%" : "-100%";
+  try {
+    plan.animate([
+      { transform: `translate3d(${shift},0,0)` },
+      { transform: `translate3d(${shift},0,1px)`, offset: 0.5 },
+      { transform: `translate3d(${shift},0,0)` },
+    ], { duration: 320, easing: "linear", fill: "none", id: "plan-warm" });
+  } catch { /* the parked inline transform still paints */ }
 }
 
 /** Park the seam while the panel clip is still covering it, before content
@@ -1645,16 +1674,18 @@ function watchPresent(shell, anim, tag) {
   requestAnimationFrame(step);
 }
 
-/** A 1px tick at the orb centre keeps a composited transform beside the
- *  shell clip. The orb layer itself is left alone. */
+/** A 1px tick outside the viewport keeps a composited transform beside the
+ *  shell clip. It is not a child of the shell, so the orb tile is not retiled. */
 function pumpSeamPresent(shell, duration) {
-  if (!shell || !(duration > 0)) return null;
-  let tick = shell.querySelector(":scope > .seam-tick");
+  if (!(duration > 0)) return null;
+  shell?.querySelectorAll(":scope > .seam-tick").forEach((node) => node.remove());
+  const root = document.documentElement;
+  let tick = root.querySelector(":scope > .seam-tick");
   if (!tick) {
     tick = document.createElement("span");
     tick.className = "seam-tick";
     tick.setAttribute("aria-hidden", "true");
-    shell.append(tick);
+    root.append(tick);
   }
   holdMotion(tick);
   tick.style.willChange = "transform";
@@ -1744,6 +1775,9 @@ function growPlan(shell, token) {
   fit.style.visibility = "visible";
   fit.style.willChange = "transform";
   plan.style.transformOrigin = origin;
+  plan.getAnimations?.().forEach((anim) => {
+    if (anim.id === "plan-warm") anim.cancel();
+  });
   plan.style.transform = "none";
   plan.style.removeProperty("clip-path");
   plan.style.width = `${Math.round(full)}px`;
@@ -2123,7 +2157,7 @@ function stopShellTransition(shell, target = "") {
   } else if (plan && target === "orb") {
     debugLog("collapse-plan-keep", `seam=${seamPhase(plan) || "-"}`);
   }
-  shell.classList.remove("is-growing-pill", "is-growing-panel", "is-orb-moving", "is-content-promoted", "is-plan-seam", "is-plan-arming");
+  shell.classList.remove("is-growing-pill", "is-growing-panel", "is-orb-moving", "is-content-promoted", "is-plan-seam", "is-plan-arming", "is-plan-collapse");
 }
 
 function planSeamLive(shell) {
@@ -2132,9 +2166,17 @@ function planSeamLive(shell) {
   return phase === "grown" || phase === "growing";
 }
 
+/** Chat stays up through the plan clip. The panel clip is what fades it. */
+function beginPanelCollapseContent(shell) {
+  shell.classList.remove("is-plan-collapse", "is-content-hold", "open");
+  shell.dataset.contentOnce = "";
+  releaseContent(shell);
+}
+
 /** Plan clips shut before the panel collapse. Same ease, its own 200ms. */
 async function collapsePlanSeam(shell, token) {
   if (!planSeamLive(shell)) return;
+  shell.classList.add("is-plan-collapse");
   const plan = shell.querySelector(".plan-window");
   const closed = planRevealClip(shell, 0).value;
   if (reducedMotion()) {
@@ -2220,10 +2262,8 @@ async function runShellMorph(shell, target) {
     holdCollapseGate(shell);
     debugLog("collapse-start", `edge=${shell.dataset.edge || ""} scale=${closingScale}`);
     shell._closingScale = closingScale;
-    shell.classList.remove("is-orb-moving", "is-content-hold", "open");
-    shell.dataset.contentOnce = "";
+    shell.classList.remove("is-orb-moving");
     shell.dataset.opening = "";
-    releaseContent(shell);
   } else {
     shell.classList.remove("is-collapsing");
     if (shell.dataset.intent === "close") {
@@ -2267,10 +2307,12 @@ async function runShellMorph(shell, target) {
   if (target === "orb") {
     await collapsePlanSeam(shell, token);
     if (!alive()) {
+      shell.classList.remove("is-plan-collapse");
       shell._motion = "";
       releaseCollapseGate(shell);
       return false;
     }
+    beginPanelCollapseContent(shell);
   }
   let current = from;
   for (const step of phaseList(shell.dataset.edge || "bottom", from, target)) {
@@ -2755,10 +2797,13 @@ function renderBots(tag = "renderBots") {
     if (btn.className !== nextClass) btn.className = nextClass;
     applyBotColor(shell, bot.color);
     applyBotColor(btn, bot.color);
-    btn.setAttribute("aria-label", bot.name);
-    btn.title = bot.name;
-    btn.querySelector(".orb-glyph").textContent = bot.short || "";
-    btn.querySelector(".bot-label").textContent = bot.name;
+    if (btn.getAttribute("aria-label") !== bot.name) btn.setAttribute("aria-label", bot.name);
+    if (btn.title !== bot.name) btn.title = bot.name;
+    const glyph = btn.querySelector(".orb-glyph");
+    const nameLabel = btn.querySelector(".bot-label");
+    const shortText = bot.short || "";
+    if (glyph && glyph.textContent !== shortText) glyph.textContent = shortText;
+    if (nameLabel && nameLabel.textContent !== bot.name) nameLabel.textContent = bot.name;
     layoutShell(shell);
     }
     // Moving a node that is already in the rail restarts CSS transitions on it,

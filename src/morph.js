@@ -22,8 +22,9 @@ export const PLAN_GROW_MS = 280;
 /** Plan closes before the panel. Do not add this onto the per-edge panel clocks. */
 export const PLAN_COLLAPSE_MS = 200;
 /**
- * Plan growth only. One string: if a 30fps box is over 80% at 100ms, swap to
- * cubic-bezier(.35,.5,.25,1). Do not raise PLAN_GROW_MS above 300.
+ * Plan growth only. Art direction kept this curve; do not swap it.
+ * Box gate: first painted frame ≤30%, ~100ms ≤80%, ~200ms ≥90%,
+ * and at least five visibly changing frames.
  */
 export const PLAN_EASE = "cubic-bezier(.3,.6,.2,1)";
 export const STACK_GAP = 12;
