@@ -1909,7 +1909,7 @@ html, body {
   background: transparent;
   filter: none;
   box-shadow: none;
-  clip-path: none !important;
+  /* The morph clip stays at its final keyframe. Clearing it drops the layer. */
 }
 
 .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .center-panel,

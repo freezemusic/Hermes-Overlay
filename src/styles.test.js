@@ -183,6 +183,12 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /refresh-tick-defer/);
   assert.match(mainSrc, /holdCollapseGate\(shell\)/);
   assert.match(mainSrc, /releaseCollapseGate\(shell\)/);
+  assert.match(mainSrc, /collapseQuietUntil = performance\.now\(\) \+ 1100/);
+  assert.match(mainSrc, /shell\._clipHold = shellAnim/);
+  assert.match(mainSrc, /mode=widen/);
+  assert.match(mainSrc, /function holdPlanClip/);
+  assert.match(mainSrc, /dataset\.cronSig/);
+  assert.match(mainSrc, /print === state\.kanban\.fingerprint/);
   assert.match(css, /\.morph\.is-morphing \.bubble,\s*\n\.morph\.is-collapsing \.bubble \{[^}]*animation:\s*none !important/s);
   assert.match(css, /\.morph\.is-morphing \.bubble,\s*\n\.morph\.is-collapsing \.bubble \{[^}]*opacity:\s*1/s);
   assert.match(mainSrc, /function planSwapBlocked/);
@@ -361,7 +367,7 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.plan-window \{[^}]*border-radius:\s*var\(--r-panel\)/s);
   assert.match(css, /\.plan-window \{[^}]*rgba\(248,\s*248,\s*252,\s*\.92\)/s);
   assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-morphing\):not\(\.is-collapsing\) \{[^}]*overflow:\s*visible/s);
-  assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-morphing\):not\(\.is-collapsing\) \{[^}]*clip-path:\s*none !important/s);
+  assert.doesNotMatch(css, /clip-path:\s*none !important/);
   assert.match(css, /\.morph \.plan-window \{[^}]*left:\s*100%/s);
   assert.match(css, /\.morph \.plan-window \{[^}]*margin-left:\s*0/s);
   assert.match(css, /\.morph \.plan-window \{[^}]*border-left:\s*none/s);

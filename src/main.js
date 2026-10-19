@@ -290,7 +290,8 @@ function paintClip(shell, insets, visual = shell.dataset.visual || shell.dataset
     }
     : null;
   if (visual === "panel") {
-    shell.style.setProperty("clip-path", "none", "important");
+    // The open clip stays where the morph left it. Clearing it here drops
+    // the layer and the compositor paints one blank frame.
     shell.style.setProperty("overflow", "visible", "important");
   } else {
     shell.style.removeProperty("clip-path");
@@ -621,6 +622,10 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       { clipPath: clipPath(shellTo) },
     ], timing);
     if (toState === "panel") {
+      // Underlying opacity is 1 before the fade exists, so a later fill drop
+      // cannot present the stylesheet's opacity 0. Setting it after animate()
+      // would restart the fade.
+      pinContentOpacity(shell);
       playContentIn(shell, duration);
       moveOrbToHeader(shell, token);
     } else if (toState === "orb") {
@@ -638,6 +643,12 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
         { clipPath: clipPath(fillFrom) },
         { clipPath: clipPath(fillTo) },
       ], timing);
+    }
+    if (toState === "panel") {
+      // Resting clip is the final keyframe. The animation paints the from
+      // frame; the inline value is what remains if that fill drops.
+      shell.style.clipPath = clipPath(shellTo);
+      if (fill) fill.style.clipPath = clipPath(fillTo);
     }
     if (toState === "orb") {
       const now = document.timeline?.currentTime;
@@ -674,29 +685,31 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     // or transition here restarts it and drops the seam's first frame.
     holdMotion(shell);
     holdMotion(fill);
-    if (toState === "orb") commitClosedShell(shell);
-    if (toState === "panel") {
-      const fillEl = shell.querySelector(".morph-fill");
-      if (fillEl) {
-        fillEl.style.clipPath = clipPath(to);
-        fillEl.style.boxShadow = "inset 0 0 0 1px #0000f2";
-      }
-      if (stroke) stroke.style.clipPath = "";
-      // none, not inset(-3px): the corner stroke lives on that pixel.
-      shell.style.clipPath = "none";
-      if (shell.dataset.planOpen === "1") seamMark("plan-seam:unclip");
-      shell.dataset.clipTop = String(to.top);
-      shell.dataset.clipRight = String(to.right);
-      shell.dataset.clipBottom = String(to.bottom);
-      shell.dataset.clipLeft = String(to.left);
-      shell.dataset.clipRadius = String(to.radius);
-    } else {
+    if (toState === "orb") {
+      commitClosedShell(shell);
       writeClip(shell, to);
+      shell.classList.remove("is-growing-pill", "is-growing-panel");
+      shellAnim.cancel();
+      fillAnim?.cancel();
+      strokeAnim?.cancel();
+      return true;
     }
+    // Leave the clip animation in place. Cancelling it, or swapping the
+    // clip to none, drops the layer and one frame paints blank at settle.
+    shell._clipHold = shellAnim;
+    const fillEl = shell.querySelector(".morph-fill");
+    shell.style.clipPath = clipPath(shellTo);
+    if (fillEl) {
+      fillEl.style.clipPath = clipPath(fillTo);
+      fillEl.style.boxShadow = "inset 0 0 0 1px #0000f2";
+    }
+    shell.dataset.clipTop = String(shellTo.top);
+    shell.dataset.clipRight = String(shellTo.right);
+    shell.dataset.clipBottom = String(shellTo.bottom);
+    shell.dataset.clipLeft = String(shellTo.left);
+    shell.dataset.clipRadius = String(shellTo.radius);
     shell.classList.remove("is-growing-pill", "is-growing-panel");
-    shellAnim.cancel();
-    fillAnim?.cancel();
-    strokeAnim?.cancel();
+    debugLog("clip-hold", `bot=${shell.dataset.botId || ""} mode=final`);
     return true;
   });
 }
@@ -731,13 +744,37 @@ function sideFromStyle(shell) {
   return roomRight >= planWidthPx() ? "right" : "left";
 }
 
-/** The plan sits outside the shell box. A shell clip or overflow:hidden
- *  hides the seam grow, then the open rect appears in one frame. */
+/** Widen the held clip over the plan. The plan is still hidden, so the
+ *  panel pixels stay the same and the clip layer is not removed. */
+function holdPlanClip(shell) {
+  if (!shell || shell.dataset.planOpen !== "1") return;
+  const base = bleedInsets(insetsFor("panel", shellGeom(shell)), FRAME_BLEED + HAIRLINE);
+  const extra = planWidthPx() + FRAME_BLEED + HAIRLINE;
+  if (shell.dataset.planSide === "left") base.left = -extra;
+  else base.right = -extra;
+  const value = clipPath(base);
+  const anim = shell._clipHold;
+  if (anim?.effect?.setKeyframes) {
+    try {
+      anim.effect.setKeyframes([{ clipPath: value }, { clipPath: value }]);
+    } catch { /* inline value below matches if the effect is already gone */ }
+  }
+  shell.style.clipPath = value;
+  shell.dataset.clipTop = String(base.top);
+  shell.dataset.clipRight = String(base.right);
+  shell.dataset.clipBottom = String(base.bottom);
+  shell.dataset.clipLeft = String(base.left);
+  shell.dataset.clipRadius = String(base.radius);
+  debugLog("clip-hold", `bot=${shell.dataset.botId || ""} mode=widen side=${shell.dataset.planSide || "right"}`);
+}
+
+/** The plan sits outside the shell box. Keep the clip layer and stretch it
+ *  over the plan; removing the clip paints one blank frame at settle. */
 function showPlanHost(shell) {
   shell.style.setProperty("overflow", "visible", "important");
   shell.style.background = "transparent";
   shell.style.setProperty("filter", "none", "important");
-  shell.style.clipPath = "none";
+  holdPlanClip(shell);
   const fill = shell.querySelector(".morph-fill");
   if (fill && !fill.style.clipPath) fill.style.clipPath = "inset(0px 0px 0px 0px round 3px)";
 }
@@ -1290,8 +1327,8 @@ async function playPlanSeam(shell, token) {
   setSeamPhase(plan, "growing");
   shell.classList.add("is-plan-seam", "is-plan-arming");
   pauseHitSync();
-  showPlanHost(shell);
   holdSeamVisual(shell);
+  showPlanHost(shell);
   lockPlanBox(shell, plan);
   const flushed = getComputedStyle(plan).transform;
   seamLog("sliver-flush", flushed);
@@ -1608,10 +1645,12 @@ function moveOrbToHeader(shell, token) {
   return scaleOrb(shell, token, 1, scale, PILL_PANEL_MS, EASE).then((anim) => {
     if (token && shell.dataset.morphToken !== token) return;
     shell.classList.add("is-orb-docked");
+    if (orb) {
+      orb.style.willChange = "transform";
+      orb.style.transform = `scale(${scale})`;
+    }
     shell.classList.remove("is-orb-moving");
-    anim?.cancel();
-    releaseMotion(orb);
-    releaseMotion(glow);
+    void anim;
   });
 }
 
@@ -2211,12 +2250,38 @@ function ensureChrome() {
   if (cron) ensureChromeShell(cron, "cron", "時", "排程", "orb--cron");
 }
 
+function botPaintSig() {
+  return state.bots.map((bot) => {
+    const thread = threadFor(bot.id);
+    const open = state.openIds.includes(bot.id) ? 1 : 0;
+    return [
+      bot.id,
+      bot.name,
+      bot.color,
+      bot.short,
+      open,
+      thread.activity || "",
+      thread.statusState || "",
+      thread.unread ? 1 : 0,
+    ].join(":");
+  }).join("|") + `|${state.activeId || ""}`;
+}
+
 function renderBots(tag = "renderBots") {
-  if (collapseBusy() || motionFrozen()) {
+  if (collapseBusy() || collapseQuiet() || motionFrozen()) {
     renderBots.pending = true;
-    debugLog("render-bots-defer", `tag=${tag}`);
+    debugLog("render-bots-defer", `tag=${tag} quiet=${collapseQuiet() ? 1 : 0}`);
     return;
   }
+  const sig = botPaintSig();
+  if (sig === renderBots.sig && state.bots.every((bot) => shellFor(bot.id))) {
+    renderBots.pending = false;
+    renderKanbanOrb();
+    renderCronOrb();
+    renderSettingsOrb();
+    return;
+  }
+  renderBots.sig = sig;
   if (debugFile.enabled) debugLog("render-bots", `tag=${tag} call=${callerTag("renderBots")}`);
   renderBots.pending = false;
   const rail = $("#bot-rail");
@@ -2276,7 +2341,9 @@ function renderSettingsOrb() {
   const shell = shellFor("settings");
   const btn = shell?.querySelector(".orb--settings");
   if (!btn) return;
-  btn.className = ["bot-btn", "morph-orb", "orb--settings", settingsOpen() ? "active" : ""].filter(Boolean).join(" ");
+  const next = ["bot-btn", "morph-orb", "orb--settings", settingsOpen() ? "active" : ""].filter(Boolean).join(" ");
+  if (btn.className === next && shell.style.width) return;
+  btn.className = next;
   applyBotColor(shell, NOUS.blue);
   applyBotColor(btn, NOUS.blue);
   btn.setAttribute("aria-label", "Hermes 設定");
@@ -2305,9 +2372,11 @@ function renderKanbanOrb() {
   const shell = shellFor("kanban");
   const btn = shell?.querySelector(".orb--kanban");
   if (!btn) return;
-  btn.className = ["bot-btn", "morph-orb", "orb--kanban", state.kanbanOpen ? "active" : "", state.kanban.unread ? "has-unread" : ""]
+  const next = ["bot-btn", "morph-orb", "orb--kanban", state.kanbanOpen ? "active" : "", state.kanban.unread ? "has-unread" : ""]
     .filter(Boolean)
     .join(" ");
+  if (btn.className === next && shell.style.width) return;
+  btn.className = next;
   applyBotColor(shell, NOUS.neutral);
   applyBotColor(btn, NOUS.neutral);
   btn.setAttribute("aria-label", "看板");
@@ -2374,7 +2443,7 @@ function syncCronClock(face) {
 }
 
 function renderCronOrb(options = {}) {
-  if (!options.force && collapseBusy()) {
+  if (!options.force && (collapseBusy() || collapseQuiet())) {
     state.cronDeferred = true;
     debugLog("refresh-tick-defer", "cron-orb");
     return;
@@ -2393,14 +2462,19 @@ function renderCronOrb(options = {}) {
     }, 400);
   }
   const live = face.mode === "spin" || face.mode === "progress";
-  shell.classList.toggle("is-cron-live", live);
-  shell.classList.toggle("is-cron-fail", face.mode === "failed");
   const classes = ["bot-btn", "morph-orb", "orb--cron"];
   if (state.cronOpen) classes.push("active");
   if (face.mode === "spin") classes.push("is-running");
   if (face.mode === "progress") classes.push("is-progress");
   if (face.mode === "failed") classes.push("is-failed");
   if (state.cronBurst) classes.push("is-done");
+  const label = face.label || "";
+  const show = !!label && (shell.dataset.visual || shell.dataset.state) === "orb";
+  const sig = `${classes.join(" ")}|${face.p}|${label}|${show ? 1 : 0}|${live ? 1 : 0}`;
+  if (shell.dataset.cronSig === sig) return;
+  shell.dataset.cronSig = sig;
+  shell.classList.toggle("is-cron-live", live);
+  shell.classList.toggle("is-cron-fail", face.mode === "failed");
   btn.className = classes.join(" ");
   if (face.mode === "progress" || face.mode === "failed") btn.style.setProperty("--p", String(face.p));
   else btn.style.removeProperty("--p");
@@ -3022,7 +3096,7 @@ function prefetchOrbUnderCursor() {
 }
 
 function refreshBotChats() {
-  if (collapseBusy()) {
+  if (collapseBusy() || collapseQuiet()) {
     state.refreshDeferred = true;
     debugLog("refresh-tick-defer", "frozen=1");
     return;
@@ -4789,12 +4863,6 @@ function collapseBusy() {
   return collapseHold > 0 || !!document.querySelector(".morph.is-collapsing");
 }
 
-function holdCollapseGate(shell) {
-  if (!shell || shell._collapseGate) return;
-  shell._collapseGate = 1;
-  collapseHold += 1;
-}
-
 function releaseDeferredTicks() {
   if (state.refreshDeferred) {
     state.refreshDeferred = false;
@@ -4817,12 +4885,37 @@ function releaseDeferredTicks() {
   else scheduleHitSync("after-collapse");
 }
 
+let collapseQuietUntil = 0;
+let collapseReleaseTimer = 0;
+
+function collapseQuiet() {
+  return performance.now() < collapseQuietUntil;
+}
+
+function holdCollapseGate(shell) {
+  if (!shell || shell._collapseGate) return;
+  shell._collapseGate = 1;
+  collapseHold += 1;
+  window.clearTimeout(collapseReleaseTimer);
+  collapseReleaseTimer = 0;
+}
+
 function releaseCollapseGate(shell) {
   if (!shell?._collapseGate) return;
   shell._collapseGate = 0;
   collapseHold = Math.max(0, collapseHold - 1);
   if (collapseHold > 0) return;
-  releaseDeferredTicks();
+  // A flush two frames after the panel is gone repaints the edge and
+  // stretches the measured close. Hold ticks past one second, then let
+  // unchanged refreshes return without touching the DOM.
+  collapseQuietUntil = performance.now() + 1100;
+  window.clearTimeout(collapseReleaseTimer);
+  collapseReleaseTimer = window.setTimeout(() => {
+    collapseReleaseTimer = 0;
+    if (collapseBusy()) return;
+    collapseQuietUntil = 0;
+    releaseDeferredTicks();
+  }, 1100);
 }
 
 let hitDeferLogged = false;
@@ -5273,7 +5366,7 @@ function stopKanbanPoll() {
 }
 
 async function refreshKanban() {
-  if (collapseBusy()) {
+  if (collapseBusy() || collapseQuiet()) {
     state.kanbanDeferred = true;
     debugLog("refresh-tick-defer", "kanban");
     return;
@@ -5294,13 +5387,15 @@ async function refreshKanban() {
 }
 
 function commitKanban(board) {
-  if (collapseBusy()) {
+  if (collapseBusy() || collapseQuiet()) {
     state.kanbanPending = board;
     debugLog("refresh-tick-defer", "kanban-commit");
     return;
   }
+  const print = boardFingerprint(board);
+  if (state.kanban.board && print === state.kanban.fingerprint) return;
   const line = kanbanChangeLine(state.kanban.board, board);
-  state.kanban.fingerprint = boardFingerprint(board);
+  state.kanban.fingerprint = print;
   state.kanban.board = board;
   if (line) {
     showToast("kanban", { kind: "message", text: line });
@@ -5751,26 +5846,34 @@ function paintCron() {
 }
 
 async function refreshCron() {
-  if (collapseBusy()) {
+  if (collapseBusy() || collapseQuiet()) {
     state.cronDeferred = true;
     debugLog("refresh-tick-defer", "cron");
     return;
   }
+  let next;
   if (!inTauri() || state.mode !== "hermes") {
-    state.cronGroups = mockCronGroups();
+    next = mockCronGroups();
   } else {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const rows = await invoke("list_cron_jobs");
-      state.cronGroups = (rows || []).map((row) => normalizeCronGroup(row));
+      next = (rows || []).map((row) => normalizeCronGroup(row));
     } catch (err) {
-      state.cronGroups = [normalizeCronGroup({
+      next = [normalizeCronGroup({
         unavailable: true,
         name: "排程",
         message: String(err),
       })];
     }
   }
+  const sig = JSON.stringify(next);
+  if (sig === state.cronSig) {
+    renderCronOrb();
+    return;
+  }
+  state.cronSig = sig;
+  state.cronGroups = next;
   renderCronOrb();
   if (state.cronOpen) paintCron();
 }
