@@ -767,26 +767,25 @@ function cancelPlanAnims(plan, fit) {
   fit?.getAnimations?.().forEach((anim) => anim.cancel());
 }
 
-/** Full size with no transform left to replay. Write it before cancel, and
- *  again after, so WebKit never paints the underlying seam sliver. */
+/** Full size. Leave the finished animation at fill:forwards. Cancelling it
+ *  paints one frame of the underlying seam on a warm layer (about 26%). */
 function lockPlanRevealed(plan) {
   if (!plan) return;
   const fit = planFitEl(plan);
-  plan.style.transform = "none";
-  if (fit) fit.style.transform = "none";
-  cancelPlanAnims(plan, fit);
-  plan.style.transform = "none";
-  if (fit) fit.style.transform = "none";
+  plan.style.visibility = "visible";
+  plan.classList.remove("is-plan-parked");
+  plan.style.transform = "scaleX(1)";
+  if (fit) fit.style.transform = "scaleX(1)";
+  void getComputedStyle(plan).transform;
+  if (fit) void getComputedStyle(fit).transform;
   plan.style.opacity = "";
   plan.style.removeProperty("z-index");
   plan.style.removeProperty("clip-path");
   plan.style.removeProperty("will-change");
   plan.style.removeProperty("pointer-events");
-  plan.style.removeProperty("visibility");
-  plan.classList.remove("is-plan-parked");
   if (fit) fit.style.removeProperty("will-change");
   plan.dataset.seam = "grown";
-  seamLog("lock", "transform=none");
+  seamLog("lock", "transform=scaleX(1) kept-fill");
 }
 
 function clearPlanMotion(plan) {
@@ -902,7 +901,7 @@ function applyParkedPlan(shell, plan) {
   plan.classList.add("is-seam-grow", "is-plan-parked");
   plan.style.setProperty("display", "flex", "important");
   plan.style.setProperty("overflow", "hidden", "important");
-  plan.style.visibility = "visible";
+  plan.style.visibility = "hidden";
   plan.style.pointerEvents = "none";
   plan.style.opacity = "1";
   plan.style.zIndex = "-1";
@@ -962,29 +961,36 @@ function armPlanSeam(shell) {
 }
 
 function cancelContentIn(shell) {
-  shell.querySelectorAll(".content, .morph-body").forEach((el) => {
+  shell.querySelectorAll(".content, .morph-body, .morph-pill").forEach((el) => {
     el.getAnimations?.().forEach((anim) => {
       if (anim.id === "content-in") anim.cancel();
     });
   });
 }
 
-/** One opacity animation, started in the same turn as the panel clip.
- *  No delay and no later inline opacity: a delay makes WebKitGTK replay from 0. */
+/** Opacity rides the clip's own clock. It reaches 1 at 160ms and stays there
+ *  until the clip ends, so the 160ms finish cannot replay from 0 on the left title. */
 function playContentIn(shell, duration) {
   const nodes = [...shell.querySelectorAll(".content, .morph-body")];
   cancelContentIn(shell);
+  nodes.forEach((el) => holdMotion(el));
+  shell.querySelectorAll(".morph-pill, .panel-header, .morph-orb").forEach((el) => holdMotion(el));
+  const fadeAt = duration > 0 ? Math.min(1, CONTENT_IN_MS / duration) : 1;
   const frames = duration > 0
-    ? [{ opacity: 0 }, { opacity: 1 }]
+    ? [{ opacity: 0, offset: 0 }, { opacity: 1, offset: fadeAt }, { opacity: 1, offset: 1 }]
     : [{ opacity: 1 }, { opacity: 1 }];
   const timing = {
-    duration: duration > 0 ? CONTENT_IN_MS : 1,
+    duration: duration > 0 ? duration : 1,
     easing: "linear",
     fill: "forwards",
     id: "content-in",
   };
+  const now = document.timeline?.currentTime;
   nodes.forEach((el) => {
-    try { el.animate(frames, timing); } catch { /* .open keeps the resting opacity */ }
+    try {
+      const anim = el.animate(frames, timing);
+      if (duration > 0 && typeof now === "number") anim.startTime = now;
+    } catch { /* .open keeps the resting opacity */ }
   });
 }
 
@@ -1012,15 +1018,15 @@ function holdSeamVisual(shell) {
   if (!plan) return;
   const fit = ensurePlanFit(plan);
   const origin = seamOrigin(shell);
-  plan.classList.remove("is-plan-parked");
   if (plan.dataset.seam !== "grown" && !plan.classList.contains("is-seam-grow")) {
     seamLog("class-add", "is-seam-grow");
   }
   if (plan.dataset.seam !== "grown") plan.classList.add("is-seam-grow");
+  plan.classList.add("is-plan-parked");
   plan.style.removeProperty("z-index");
   plan.style.opacity = "1";
   plan.style.pointerEvents = "";
-  plan.style.visibility = "visible";
+  plan.style.visibility = "hidden";
   plan.style.transformOrigin = origin;
   fit.style.transformOrigin = origin;
   plan.style.willChange = "transform";
@@ -1038,9 +1044,8 @@ function seamLocked(plan) {
   return plan?.dataset.seam === "growing" || plan?.dataset.seam === "grown";
 }
 
-/** Keep the plan parked under the glass until it can grow on the next frame.
- *  The sliver is painted for one frame, then the clock starts. A second call
- *  never rewinds scaleX. Markdown stays outside this gap. */
+/** Stay visibility:hidden until the same turn that starts the 240ms clock.
+ *  A visible scaleX(0.001) reads as a 2% seam for the whole wait. */
 async function playPlanSeam(shell, token) {
   armSeamWatch();
   seamMark("plan-seam:clip-end");
@@ -1105,6 +1110,9 @@ function growPlan(shell, token) {
   let anim;
   let fitAnim;
   try {
+    plan.classList.remove("is-plan-parked");
+    plan.style.visibility = "visible";
+    seamLog("show", "growth-frame");
     anim = plan.animate(outer, { duration: PLAN_GROW_MS, easing: "linear", fill: "both", id: "plan-seam" });
     fitAnim = fit.animate(inner, { duration: PLAN_GROW_MS, easing: "linear", fill: "both", id: "plan-seam-fit" });
     const now = document.timeline?.currentTime;
@@ -1336,8 +1344,10 @@ function stopShellTransition(shell) {
   if (fill) fill.style.removeProperty("box-shadow");
   const plan = shell.querySelector(".plan-window");
   if (plan) {
+    plan.style.visibility = "hidden";
     holdMotion(plan);
     const fit = planFitEl(plan);
+    void getComputedStyle(plan).transform;
     plan.getAnimations?.().forEach((anim) => anim.cancel());
     fit?.getAnimations?.().forEach((anim) => anim.cancel());
     // Keep a warmed layer across the open. display:none drops the backing
@@ -1385,6 +1395,9 @@ async function runShellMorph(shell, target) {
   window.clearTimeout(shell._pillTimer);
   if (target === "orb" && dropParkedAnchor(state.anchors, shell.dataset.botId)) layoutShell(shell);
   shell.classList.add("is-morphing");
+  if (target !== "orb") {
+    shell.querySelectorAll(".content, .morph-body, .morph-pill, .panel-header, .morph-orb").forEach((el) => holdMotion(el));
+  }
   if (from === target && !shell.classList.contains("is-collapsing")) {
     if (alive()) settleShell(shell, target);
     return true;
@@ -1830,6 +1843,10 @@ function renderBots() {
     const morphing = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
     const btn = shell.querySelector(".morph-orb");
     const thread = threadFor(bot.id);
+    if (morphing) {
+      // Rewriting className restarts the orb ::before transition. On the left
+      // edge that glow sits on the title and washes it for one frame.
+    } else {
     const keepEnter = btn.classList.contains("orb-enter") && bot.id === state.activeId;
     const classes = ["bot-btn", "morph-orb"];
     if (state.openIds.includes(bot.id) || shell.dataset.state === "panel") classes.push("active");
@@ -1846,7 +1863,8 @@ function renderBots() {
     btn.title = bot.name;
     btn.querySelector(".orb-glyph").textContent = bot.short || "";
     btn.querySelector(".bot-label").textContent = bot.name;
-    if (!morphing) layoutShell(shell);
+    layoutShell(shell);
+    }
     // Moving a node that is already in the rail restarts CSS transitions on it,
     // which replays the content fade and snaps a clip that is still running.
     if (shell.parentElement !== rail) rail.appendChild(shell);

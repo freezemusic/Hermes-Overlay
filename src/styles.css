@@ -1104,6 +1104,10 @@ html, body {
   background-color: #f8f8fc;
 }
 
+.plan-window.is-plan-parked {
+  visibility: hidden !important;
+}
+
 .chat-block {
   flex: 1;
   min-height: 0;
@@ -2012,6 +2016,40 @@ html, body {
   opacity: 0.85;
   transform: none;
   transition: none;
+}
+
+/* Entire open, pill included. Hover, a className rewrite, or the pill's
+   120ms delay must not fade the left title under the orb. */
+.morph.is-morphing .morph-orb,
+.morph.is-morphing .morph-orb::before,
+.morph.is-morphing .morph-orb::after,
+.morph.is-morphing .bot-btn,
+.morph.is-morphing .bot-btn::before,
+.morph.is-morphing .bot-btn::after,
+.morph.is-morphing .bot-btn:hover::before,
+.morph.is-morphing .morph-orb:hover::before,
+.morph.is-morphing .content,
+.morph.is-morphing .content::before,
+.morph.is-morphing .content::after,
+.morph.is-morphing .morph-body,
+.morph.is-morphing .morph-body::before,
+.morph.is-morphing .morph-body::after,
+.morph.is-morphing .morph-pill,
+.morph.is-morphing .morph-pill::before,
+.morph.is-morphing .panel-header,
+.morph.is-morphing .panel-header *,
+.morph.is-morphing .panel-header *::before,
+.morph.is-morphing .panel-header *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
+.morph.is-morphing .morph-orb::before,
+.morph.is-morphing .bot-btn::before,
+.morph.is-morphing .bot-btn:hover::before,
+.morph.is-morphing .morph-orb:hover::before {
+  opacity: 0.85 !important;
+  transform: none !important;
 }
 
 .morph .morph-orb {

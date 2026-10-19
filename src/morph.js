@@ -259,13 +259,11 @@ export function openPhases() {
  * 300ms, so the fade does not add time and there is no pill rest on close.
  */
 /**
- * WAAPI clock for one edge. Bottom at 266ms measured 300ms. Top at 233ms
- * measured 267ms, one frame under the floor, so it uses the same 266ms.
- * Right stays 300ms. Left stays 266ms: it measured slow because hit-sync
- * and a second clock stalled the clip, not because the duration was long.
+ * WAAPI clock for one edge. Left, bottom, and top at 266ms measured 300–333ms.
+ * Right at 300ms measured 366ms, the same ~66ms overhead, so its clock is 233ms.
  */
 export function collapseMs(edge) {
-  if (edge === "right") return COLLAPSE_MS;
+  if (edge === "right") return 233;
   return 266;
 }
 

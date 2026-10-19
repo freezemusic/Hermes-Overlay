@@ -67,6 +67,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph\.is-orb-moving \.morph-orb \{[^}]*contain:\s*none/s);
   assert.match(css, /\.morph\.is-orb-docked \.morph-orb,[\s\S]*contain:\s*none/);
   assert.match(css, /\.morph\.is-morphing \.morph-pill \{[^}]*transition:\s*none/s);
+  assert.match(css, /\.morph\.is-morphing \.bot-btn::before,[\s\S]*?transition:\s*none !important/);
+  assert.match(css, /\.plan-window\.is-plan-parked \{[^}]*visibility:\s*hidden !important/s);
   assert.match(css, /\.morph\[data-state="panel"\] \.morph-orb:hover::before \{[^}]*transition:\s*none/s);
   assert.match(css, /\.morph\.is-morphing:not\(\.is-orb-docked\):not\(\.is-orb-moving\) \.morph-orb,[\s\S]{0,120}scale\(1\)/);
   const mainSrc = readFileSync(new URL("./main.js", import.meta.url), "utf8");
@@ -125,6 +127,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(reveal, /getComputedStyle\(plan\)\.transform/);
   const afterPaint = reveal.slice(reveal.lastIndexOf("await nextFrame()"));
   assert.match(afterPaint, /growPlan/);
+  assert.doesNotMatch(reveal, /visibility = "visible"/);
+  const beforeClock = grow.slice(0, grow.indexOf("startTime = now"));
+  assert.match(beforeClock, /visibility = "visible"/);
   assert.doesNotMatch(reveal, /flushHits|offsetWidth|getBoundingClientRect/);
   const opened = mainSrc.slice(mainSrc.indexOf("async function runShellMorph"), mainSrc.indexOf("function raisePanel"));
   const seamCall = opened.slice(opened.lastIndexOf("planOpen"));
@@ -149,8 +154,10 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(fade, /opacity:\s*0/);
   assert.match(fade, /opacity:\s*1/);
   assert.match(fade, /fill:\s*"forwards"/);
-  assert.match(fade, /duration: duration > 0 \? CONTENT_IN_MS/);
-  assert.doesNotMatch(fade, /delay|startTime|holdContent|style\.opacity/);
+  assert.match(fade, /CONTENT_IN_MS \/ duration/);
+  assert.match(fade, /duration: duration > 0 \? duration/);
+  assert.match(fade, /startTime = now/);
+  assert.doesNotMatch(fade, /delay|holdContent|style\.opacity/);
   assert.match(mainSrc, /playContentIn\(shell, duration\)/);
   const clipEnd = mainSrc.slice(mainSrc.indexOf("return whenAnimEnds(shellAnim"), mainSrc.indexOf("function planWidthPx"));
   assert.doesNotMatch(clipEnd, /holdContent|style\.opacity/);
@@ -159,7 +166,10 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph\.is-collapsing \.content,[\s\S]*?transition:\s*opacity 80ms linear/);
   assert.match(css, /\.morph\.is-collapsing,\n\.morph\.is-collapsing \.morph-fill,[\s\S]*?transition:\s*none !important/);
   assert.match(mainSrc, /function lockPlanRevealed/);
-  assert.match(mainSrc, /transform = "none"/);
+  const lock = mainSrc.slice(mainSrc.indexOf("function lockPlanRevealed"), mainSrc.indexOf("function clearPlanMotion"));
+  assert.match(lock, /scaleX\(1\)/);
+  assert.match(lock, /getComputedStyle\(plan\)\.transform/);
+  assert.doesNotMatch(lock, /cancelPlanAnims|transform = "none"/);
   assert.match(mainSrc, /if \(collapseBusy\(\)\)/);
   assert.match(css, /\.morph-pill \{[^}]*height:\s*44px/s);
   assert.match(css, /\.morph-pill \{[^}]*width:\s*320px/s);

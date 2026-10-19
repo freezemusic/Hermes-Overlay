@@ -229,7 +229,7 @@ test("plan seam and cron height and chat tail use explicit pixels", () => {
 });
 
 test("collapse is one ease-in and the clock is pinned per edge", () => {
-  assert.equal(collapseMs("right"), COLLAPSE_MS);
+  assert.equal(collapseMs("right"), 233);
   assert.equal(collapseMs("left"), 266);
   assert.equal(collapseMs("bottom"), 266);
   assert.equal(collapseMs("top"), 266);
