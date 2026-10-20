@@ -468,7 +468,7 @@ fn hit_candidates(rects: &[HitRect]) -> String {
     if parts.is_empty() {
         format!("orbs=0 panels={panels}")
     } else {
-        format!("{} panels={panels}", parts.join(";"), panels)
+        format!("{} panels={panels}", parts.join(";"))
     }
 }
 
