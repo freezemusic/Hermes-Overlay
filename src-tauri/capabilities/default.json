@@ -43,6 +43,8 @@
     "allow-map-overlay-for-layout",
     "allow-wait-presented-frames",
     "allow-modifier-down-now",
+    "allow-armed-press",
+    "allow-drive-presented-seam",
     "allow-reveal-overlay"
   ]
 }

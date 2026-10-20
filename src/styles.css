@@ -1933,6 +1933,17 @@ html, body {
 
 .morph[data-state="panel"] {
   filter: drop-shadow(var(--shadow-pop));
+  /* The layer already exists, so an inline opacity write is one frame.
+     A transition or an inherited custom property lags the key. */
+  will-change: clip-path, transform, opacity;
+  transition-property: clip-path !important;
+  transition-delay: 0s !important;
+}
+
+.morph[data-state="panel"] .plan-window {
+  will-change: transform, opacity;
+  transition-property: clip-path !important;
+  transition-delay: 0s !important;
 }
 
 .morph[data-kind="bot"] {
@@ -2509,6 +2520,14 @@ html.overlay-passthrough .morph[data-state="panel"] :is(input, textarea):focus {
     transition: opacity 120ms linear !important;
   }
   .morph.is-morphing { will-change: auto; }
+  /* Later and more specific than the 120ms opacity transition above.
+     That duration is the press dim and the release lag on a settled panel. */
+  .morph[data-state="panel"],
+  .morph[data-state="panel"] .plan-window {
+    transition-property: clip-path !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+  }
   .is-thinking .spinner,
   .bot-btn.orb--cron.is-running::after {
     animation: none;

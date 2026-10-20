@@ -20,6 +20,7 @@ import {
   PLAN_GROW_MS,
   COLLAPSE_EASE,
   planEase,
+  seamFrameStep,
   clipPath,
   distributeEdges,
   fixedOrbPoint,
@@ -106,6 +107,7 @@ import {
   rehearsalDeferReason,
   pressOrbId,
   orbOpenFromPress,
+  botIdFromHit,
   POINTER_QUIET_MS,
   composerKeyAction,
   ownComposerKey,
@@ -351,9 +353,17 @@ function hitFor(id, visual) {
 }
 
 function markVisual(shell, visual) {
+  const next = visual === "orb" || visual === "pill" ? visual : "panel";
+  const wasPanel = shell.dataset.state === "panel";
   shell.dataset.visual = visual;
-  shell.dataset.state = visual === "orb" || visual === "pill" ? visual : "panel";
+  shell.dataset.state = next;
   shell.dataset.hitId = hitFor(shell.dataset.botId, shell.dataset.state);
+  if (wasPanel && next !== "panel") {
+    shell.style.removeProperty("opacity");
+    shell.querySelector(".plan-window")?.style.removeProperty("opacity");
+  } else if (next === "panel") {
+    paintOpenedHeldLook();
+  }
 }
 
 function rememberAnchor(shell) {
@@ -1979,39 +1989,119 @@ function alignSeamClock(anim, onPresented) {
   requestAnimationFrame(sampleLate);
 }
 
-/** Fresh shell clip, fully closed to fully open. The finished panel clip
- *  stays where it ended. A new animation on the same property paints over it. */
+/** Presented elapsed time, not the document timeline. A first sample already
+ *  past 45ms would show planEase above 45%; that sample stays closed and the
+ *  origin moves to it. Each later sample writes a new clip, so a hold cannot
+ *  span two presented frames. */
+function onPresentedSeamFrame(shell, from, elapsed) {
+  const slot = onPresentedSeamFrame.slot;
+  if (!slot || slot.shell !== shell || !shell.isConnected) return;
+  const ms = Number(elapsed) || 0;
+  if (ms <= 0) {
+    shell.style.clipPath = from;
+    if (!slot.sawClosed) {
+      slot.sawClosed = true;
+      debugLog("seam-clock", "present-hold frame=1");
+    } else if (!slot.live) {
+      debugLog("seam-clock", "reanchor gap=late frame=1");
+    }
+    return;
+  }
+  const step = seamFrameStep(ms, { first: !slot.live, duration: PLAN_GROW_MS });
+  if (step.restart) {
+    shell.style.clipPath = from;
+    debugLog("seam-clock", `reanchor gap=${ms.toFixed(1)} frame=1`);
+    return;
+  }
+  slot.live = true;
+  if (slot.anim) slot.anim.currentTime = ms;
+  const next = planRevealClip(shell, step.t).value;
+  if (shell.style.clipPath !== next) shell.style.clipPath = next;
+}
+
+function runRafSeam(shell, to, duration) {
+  let origin = 0;
+  let live = false;
+  let restarts = 0;
+  return new Promise((resolve) => {
+    const step = (stamp) => {
+      if (!shell.isConnected) {
+        resolve(false);
+        return;
+      }
+      if (!origin) {
+        origin = stamp;
+        window.__hermesSeamFrame?.(0);
+        requestAnimationFrame(step);
+        return;
+      }
+      const dt = stamp - origin;
+      if (!live && dt > 45 && restarts < 3) {
+        origin = stamp;
+        restarts += 1;
+        window.__hermesSeamFrame?.(0);
+        requestAnimationFrame(step);
+        return;
+      }
+      live = true;
+      window.__hermesSeamFrame?.(dt);
+      if (dt >= duration) {
+        shell.style.clipPath = to;
+        resolve(true);
+        return;
+      }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+function drivePresentedSeam(shell, to, duration) {
+  const open = () => {
+    if (shell.isConnected) {
+      shell.style.clipPath = to;
+      if (shell.style.transition === "none") shell.style.removeProperty("transition");
+    }
+    return true;
+  };
+  if (!inTauri()) return runRafSeam(shell, to, duration).then(open);
+  return import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("drive_presented_seam"))
+    .then((ok) => (ok ? open() : runRafSeam(shell, to, duration).then(open)))
+    .catch(() => runRafSeam(shell, to, duration).then(open));
+}
+
+/** Fresh shell clip, fully closed to fully open. Progress follows frames
+ *  the compositor actually presented. The curve stays PLAN_EASE / 280ms. */
 function beginSeamClip(shell) {
   const from = planRevealClip(shell, 0).value;
   const to = planRevealClip(shell, 1).value;
   const duration = PLAN_GROW_MS;
+  const easing = PLAN_EASE;
+  const presented = { duration, easing: PLAN_EASE, fill: "both", id: "seam-clip" };
   holdMotion(shell);
   const previous = shell._clipHold;
-  let anim = null;
-  try {
-    anim = shell.animate([
-      { clipPath: from },
-      { clipPath: to },
-    ], { duration, easing: PLAN_EASE, fill: "both", id: "seam-clip" });
-  } catch {
-    shell.style.clipPath = to;
-    return null;
-  }
-  shell._clipHold = anim;
-  // Stay on the closed inset until a callback confirms a frame can be on
-  // the glass. The open inline style was painting ahead of the first scan.
+  shell.style.transition = "none";
   shell.style.clipPath = from;
-  alignSeamClock(anim, () => {
-    shell.style.clipPath = to;
-  });
+  const anim = { playState: "running", currentTime: 0, id: presented.id };
+  onPresentedSeamFrame.slot = { shell, live: false, sawClosed: false, anim };
+  window.__hermesSeamFrame = (elapsed) => onPresentedSeamFrame(shell, from, elapsed);
+  anim.finished = drivePresentedSeam(shell, to, duration);
+  shell._clipHold = null;
   pumpSeamPresent(shell, duration);
   watchPresent(shell, anim, "plan");
-  seamLog("clip-open", `prev=${previous?.playState || "none"} dur=${duration}`);
+  seamLog("clip-open", `prev=${previous?.playState || "none"} dur=${presented.duration} easing=${easing}`);
   return anim;
 }
 
 function finishSeamClip(anim) {
   if (!anim) return Promise.resolve(false);
+  if (anim.id === "seam-clip" && anim.finished && typeof anim.finished.then === "function") {
+    return anim.finished.then((ok) => {
+      anim.playState = "finished";
+      return ok !== false;
+    });
+  }
   // Do not seek to the end on the wall timeout: that is the one-frame jump
   // to open. If the clock never left the closed keyframe, run it once more.
   return whenAnimEnds(anim, PLAN_GROW_MS + 64, false).then((ok) => {
@@ -2158,6 +2248,7 @@ function growPlan(shell, token) {
     shell.style.clipPath = planRevealClip(shell, 1).value;
     plan.style.pointerEvents = "";
     fit.style.visibility = "visible";
+    paintOpenedHeldLook();
     seamLog("anim-finish", `flight=${flight} mode=clip raster=${plan.dataset.raster || "live"} reveal=1`);
     holdFreeze(shell, FREEZE_AFTER_GROW_MS);
     holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
@@ -2740,6 +2831,7 @@ async function runShellMorph(shell, target) {
     return false;
   }
   settleShell(shell, target);
+  if (target === "panel") paintOpenedHeldLook();
   return true;
 }
 
@@ -6035,22 +6127,46 @@ function pageOpenBlocked() {
   return false;
 }
 
-function sampleModifierDown() {
+function sampleModifierDown(event, domId = "") {
   if (state.interaction.supported === false || !inTauri()) {
-    orbGesture.ctrlAtDown = state.interaction.supported === false;
+    orbGesture.ctrlAtDown = state.interaction.supported === false || !!(event && modifierHeld(event));
     orbGesture.ctrlSample = null;
-    return Promise.resolve(orbGesture.ctrlAtDown);
+    return Promise.resolve(orbGesture.ctrlAtDown === true);
   }
-  orbGesture.ctrlAtDown = null;
+  // DOM ctrlKey is the state on this event. A later OS sample must not
+  // clear it, and a latch from the hit check must not be cleared either.
+  if (event && modifierHeld(event)) orbGesture.ctrlAtDown = true;
+  else if (orbGesture.ctrlAtDown !== true) orbGesture.ctrlAtDown = null;
   const sample = import("@tauri-apps/api/core")
-    .then(({ invoke }) => invoke("modifier_down_now"))
-    .then((down) => {
-      const held = down === true;
-      if (orbGesture.ctrlSample === sample) orbGesture.ctrlAtDown = held;
-      return held;
+    .then(({ invoke }) => invoke("armed_press"))
+    .then((armed) => {
+      if (orbGesture.ctrlSample !== sample) return orbGesture.ctrlAtDown === true;
+      const hitId = typeof armed === "string" ? armed : "";
+      const bot = botIdFromHit(hitId);
+      const under = event
+        ? (orbShellAtPoint(event.clientX, event.clientY)?.shell?.dataset?.botId || "")
+        : "";
+      // An empty DOM id is the late click: the pill moved while the page was
+      // busy. The hit-check id is still this press. A different live orb
+      // does not inherit it.
+      if (bot && (!domId || bot === domId || bot === under || bot === orbGesture.orbId)) {
+        orbGesture.ctrlAtDown = true;
+        if (!orbGesture.orbId) orbGesture.orbId = bot;
+        if (event && orbGesture.pointerId < 0) orbGesture.pointerId = event.pointerId;
+        return invoke("armed_press", { consume: true }).then(() => true);
+      }
+      if (orbGesture.ctrlAtDown === true) return true;
+      return invoke("modifier_down_now").then((down) => {
+        if (orbGesture.ctrlSample !== sample || orbGesture.ctrlAtDown === true) {
+          return orbGesture.ctrlAtDown === true;
+        }
+        orbGesture.ctrlAtDown = down === true;
+        return orbGesture.ctrlAtDown === true;
+      });
     })
     .catch(() => {
-      if (orbGesture.ctrlSample === sample) orbGesture.ctrlAtDown = false;
+      if (orbGesture.ctrlAtDown === true) return true;
+      orbGesture.ctrlAtDown = false;
       return false;
     });
   orbGesture.ctrlSample = sample;
@@ -6415,15 +6531,66 @@ function flushHits(tag = "flush") {
   publishHits(tag);
 }
 
+function modifierKeyName() {
+  const kind = state.interaction?.modifier || "ctrl";
+  if (kind === "shift") return "Shift";
+  if (kind === "alt") return "Alt";
+  return "Control";
+}
+
+function paintLayerOpacity(el, next) {
+  if (!el) return false;
+  // Drop a stale custom property in the same write as the inline value.
+  // Leaving it lets one later frame paint the floor after the key is up.
+  let changed = false;
+  if (el.style.getPropertyValue("--hit-opacity")) {
+    el.style.removeProperty("--hit-opacity");
+    changed = true;
+  }
+  if (el.style.opacity !== next) {
+    el.style.opacity = next;
+    changed = true;
+  }
+  return changed;
+}
+
+function modifierVisuallyDown(down = state.osModifierDown) {
+  return down === true || state.heldKeys?.has(modifierKeyName()) === true;
+}
+
+/** Settled panel. The OS flag, the DOM key, or one fresh sample. */
+function paintOpenedHeldLook() {
+  paintHeldPanels(modifierVisuallyDown());
+  if (modifierVisuallyDown() || !inTauri()) return;
+  const generation = (paintOpenedHeldLook.gen = (paintOpenedHeldLook.gen || 0) + 1);
+  const seq = modifierSeq;
+  import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("modifier_down_now"))
+    .then((down) => {
+      if (paintOpenedHeldLook.gen !== generation || modifierSeq !== seq) return;
+      if (down === true) {
+        state.osModifierDown = true;
+        paintHeldPanels(true);
+      }
+    })
+    .catch(() => {});
+}
+
 function paintHeldPanels(down) {
   const floor = Number(state.interaction?.minOpacity);
   const next = down ? String(Number.isFinite(floor) ? floor : 0.18) : "1";
   const panels = document.querySelectorAll('.morph[data-state="panel"]');
+  let changed = false;
   panels.forEach((shell) => {
-    if (shell.style.getPropertyValue("--hit-opacity") !== next) {
-      shell.style.setProperty("--hit-opacity", next);
-    }
+    // Inline opacity on the shell. The plan stays at 1 so the two layers
+    // do not multiply. A custom property here restyles the whole tree.
+    // will-change stays in CSS: writing it here rebuilds the layer and
+    // costs the frame the key was supposed to paint in.
+    if (paintLayerOpacity(shell, next)) changed = true;
+    const plan = shell.querySelector(".plan-window");
+    if (plan && paintLayerOpacity(plan, "1")) changed = true;
   });
+  if (changed) requestAnimationFrame(() => {});
   return panels.length;
 }
 
@@ -6433,8 +6600,12 @@ function acceptModifier(payload) {
   const seq = Number(payload?.modifier_seq);
   if (Number.isFinite(seq) && seq < modifierSeq) return false;
   if (Number.isFinite(seq)) modifierSeq = seq;
-  if (payload?.modifier_down === true || payload?.held === true) state.osModifierDown = true;
-  else if (payload?.modifier_down === false && payload?.held === false) state.osModifierDown = false;
+  // The physical key is the panel look. `held` can still be true for one
+  // poll after the key is up, and that one sample was a full-panel flash.
+  if (payload?.modifier_down === true) state.osModifierDown = true;
+  else if (payload?.modifier_down === false) state.osModifierDown = false;
+  else if (payload?.held === true) state.osModifierDown = true;
+  else if (payload?.held === false) state.osModifierDown = false;
   return true;
 }
 
@@ -6452,7 +6623,8 @@ function applyFrames(frames, interactiveAll = false) {
       if (known == null && nextOpacity === "1") return;
       anim.cancel();
     });
-    if (el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
+    const panelShell = el.classList?.contains("morph") && el.dataset.state === "panel";
+    if (!panelShell && el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
       el.style.setProperty("--hit-opacity", nextOpacity);
     }
     if (interactiveAll || known?.capture) el.dataset.hitCapture = "1";
@@ -6652,14 +6824,23 @@ function setupProximity() {
     orbGesture.rejected = false;
     orbGesture.ctrlAtDown = null;
     orbGesture.ctrlSample = null;
-    const domId = orbIdFromEventTarget(event.target);
+    const domId = orbIdFromEventTarget(event.target)
+      || orbShellAtPoint(event.clientX, event.clientY)?.shell?.dataset?.botId
+      || "";
     logPointer("down", event, domId);
-    const capture = event.button === 0 && !!domId && orbClickAllowed(event);
-    if (capture) {
-      orbGesture.pointerId = event.pointerId;
-      orbGesture.orbId = domId;
-      sampleModifierDown();
-      try { document.documentElement.setPointerCapture(event.pointerId); } catch { /* already released */ }
+    orbGesture.ctrlKey = modifierHeld(event);
+    const capture = event.button === 0 && !!domId;
+    if (event.button === 0) {
+      if (capture) {
+        orbGesture.pointerId = event.pointerId;
+        orbGesture.orbId = domId;
+      }
+      // Always ask the hit-check latch. The shell may already have left
+      // orb/pill, and the current Ctrl key is the wrong clock.
+      sampleModifierDown(event, domId);
+      if (capture) {
+        try { document.documentElement.setPointerCapture(event.pointerId); } catch { /* already released */ }
+      }
     } else {
       orbGesture.pointerId = -1;
       orbGesture.orbId = "";
@@ -6679,25 +6860,26 @@ function setupProximity() {
     const gestureAt = orbGesture.at;
     const finishOpen = (ctrlAtDown) => {
       if (orbGesture.at !== gestureAt) return;
+      const pressed = orbGesture.orbId || orbId;
       const open = orbOpenFromPress({
         supported: state.interaction.supported,
         button: event.button,
-        captured,
-        orbId,
-        ctrlAtDown,
+        captured: captured || orbGesture.pointerId === event.pointerId,
+        orbId: pressed,
+        ctrlAtDown: ctrlAtDown === true || orbGesture.ctrlAtDown === true,
+        ctrlKey: orbGesture.ctrlKey === true,
       });
-      if (!open && captured) orbGesture.rejected = true;
-      logPointer("up", event, orbId, ` open=${open ? 1 : 0} down=${ctrlAtDown ? 1 : 0}`);
+      if (!open && (captured || orbGesture.pointerId === event.pointerId)) orbGesture.rejected = true;
+      logPointer("up", event, pressed, ` open=${open ? 1 : 0} down=${ctrlAtDown ? 1 : 0}`);
       try { document.documentElement.releasePointerCapture(event.pointerId); } catch { /* not captured */ }
-      if (open) openPressedOrb(orbId, domId);
+      if (open) openPressedOrb(pressed, domId);
       orbGesture.pointerId = -1;
       orbGesture.ctrlSample = null;
       postponeOrbWork();
     };
     if (state.interaction.supported === false) finishOpen(true);
-    else if (orbGesture.ctrlAtDown != null) finishOpen(orbGesture.ctrlAtDown);
-    else if (orbGesture.ctrlSample) orbGesture.ctrlSample.then((down) => finishOpen(down));
-    else finishOpen(false);
+    else if (orbGesture.ctrlSample) orbGesture.ctrlSample.then((down) => finishOpen(down === true || orbGesture.ctrlAtDown === true));
+    else finishOpen(orbGesture.ctrlAtDown === true);
   }, true);
   window.addEventListener("pointercancel", (event) => {
     pointerButtons = Math.max(0, pointerButtons - 1);
@@ -6746,11 +6928,14 @@ function setupProximity() {
           return;
         }
         if (payload.focus_owner) applyOsFocus(payload.focus_owner);
+        const beforeModifier = state.osModifierDown;
         const freshModifier = acceptModifier(payload);
         if (typeof payload.latched_orb === "string") state.latchedOrbId = payload.latched_orb;
         state.pressFrozen = payload.press_frozen === true;
         applyFrames(payload.opacities || []);
-        if (!freshModifier) paintHeldPanels(state.osModifierDown);
+        if (freshModifier && beforeModifier !== state.osModifierDown) {
+          paintHeldPanels(state.osModifierDown);
+        }
       });
     });
     window.addEventListener("mousemove", (event) => {

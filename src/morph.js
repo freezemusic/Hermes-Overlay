@@ -482,6 +482,19 @@ export function planEase(t) {
   return cubicBezierY(Number(parts[0]), Number(parts[1]), Number(parts[2]), Number(parts[3]), t);
 }
 
+/**
+ * One presented-frame sample of the 280ms seam. `elapsedMs` is the time
+ * since the origin frame that actually reached the glass. The first sample
+ * only restarts: planEase(64/280) is already ~56%, past the 45% gate, while
+ * planEase(45/280) is still ~38%. Later samples are the curve itself.
+ */
+export function seamFrameStep(elapsedMs, { first = false, duration = PLAN_GROW_MS } = {}) {
+  const elapsed = Math.max(0, Number(elapsedMs) || 0);
+  if (first && elapsed > 45) return { restart: true, t: 0 };
+  const t = duration > 0 ? Math.min(1, elapsed / duration) : 1;
+  return { restart: false, t };
+}
+
 /** Inline scale for one growth sample. t is 0..1 over 240ms. The resting
  *  value is 1; 0.001 exists only on the frame the clock starts. */
 export function seamScaleAt(t) {

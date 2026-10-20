@@ -420,6 +420,13 @@ pub struct ShapeGuard {
     pub button_down: bool,
     frozen: Option<Vec<HitRect>>,
     last_log: String,
+    /// Orb hit id whose press began while the modifier was down. Survives
+    /// the key going up and the button going up, until the page takes it
+    /// or a later press begins without the modifier.
+    armed_id: String,
+    armed_down_ms: u64,
+    /// `0` while the button is still down.
+    armed_up_ms: u64,
 }
 
 impl Default for ShapeGuard {
@@ -430,6 +437,9 @@ impl Default for ShapeGuard {
             button_down: false,
             frozen: None,
             last_log: String::new(),
+            armed_id: String::new(),
+            armed_down_ms: 0,
+            armed_up_ms: 0,
         }
     }
 }
@@ -454,6 +464,46 @@ pub fn shape_guard_lock() -> std::sync::MutexGuard<'static, ShapeGuard> {
 
 pub fn press_frozen(guard: &ShapeGuard) -> bool {
     guard.button_down && guard.frozen.is_some()
+}
+
+const ARMED_PRESS_MS: u64 = 800;
+
+/// Hit id of a press that began with the modifier down, or empty.
+/// A button that is down again after the armed press already ended is a
+/// new click and must not inherit the old id. The page's later key sample
+/// does not come through here.
+pub fn armed_press_id(guard: &ShapeGuard, now_ms: u64) -> String {
+    if guard.armed_id.is_empty() {
+        return String::new();
+    }
+    if guard.armed_up_ms != 0 && now_ms.saturating_sub(guard.armed_up_ms) > ARMED_PRESS_MS {
+        return String::new();
+    }
+    if guard.button_down && guard.armed_up_ms != 0 {
+        return String::new();
+    }
+    guard.armed_id.clone()
+}
+
+fn clear_armed_press(guard: &mut ShapeGuard) {
+    guard.armed_id.clear();
+    guard.armed_down_ms = 0;
+    guard.armed_up_ms = 0;
+}
+
+/// `consume` drops the latch so a later plain click cannot reuse it.
+pub fn read_armed_press(consume: bool) -> String {
+    let mut guard = shape_guard_lock();
+    let now = mono_ms();
+    let id = armed_press_id(&guard, now);
+    if id.is_empty() || consume {
+        if guard.armed_up_ms != 0 && now.saturating_sub(guard.armed_up_ms) > ARMED_PRESS_MS {
+            clear_armed_press(&mut guard);
+        } else if consume {
+            clear_armed_press(&mut guard);
+        }
+    }
+    id
 }
 
 fn push_unique(out: &mut Vec<HitRect>, rect: &HitRect) {
@@ -575,7 +625,8 @@ pub fn resolve_input_shape(
     if press_began && modifier {
         // The button went down since the previous sample, while the shape was
         // already the orb. A republish in this same sample must not talk us
-        // out of that shape.
+        // out of that shape. The armed id is the modifier state at this
+        // hit check: a later key-up must not erase it.
         let painted = orbs_and_pills(last_painted);
         if !painted.is_empty() {
             if guard.latched.is_none() {
@@ -591,6 +642,27 @@ pub fn resolve_input_shape(
             guard.latched = Some(rect.clone());
             guard.frozen = Some(vec![rect]);
         }
+        if let Some(id) = guard
+            .frozen
+            .as_ref()
+            .and_then(|rects| rects.iter().find(|rect| is_orb_hit(rect) || is_pill_hit(rect)))
+            .map(|rect| rect.id.clone())
+        {
+            guard.armed_id = id;
+            guard.armed_down_ms = mono_ms();
+            guard.armed_up_ms = 0;
+        }
+    } else if press_began {
+        // This press began without the modifier. A click at the instant of
+        // release must not open, and must not reuse the previous arm.
+        guard.armed_id.clear();
+        guard.armed_down_ms = 0;
+        guard.armed_up_ms = 0;
+    }
+    if !pointer_down && !guard.armed_id.is_empty() && guard.armed_up_ms == 0 {
+        // `0` means the button is still down. The clock can still read 0
+        // in the first millisecond, so a finished press stores at least 1.
+        guard.armed_up_ms = mono_ms().max(1);
     }
 
     if pointer_down {
@@ -1348,6 +1420,132 @@ fn wait_presented_frames_inner(app: &AppHandle, frames: u32) -> u32 {
         return 0;
     }
     rx.recv_timeout(Duration::from_millis(160)).unwrap_or(0)
+}
+
+static SEAM_TOKEN: AtomicU64 = AtomicU64::new(0);
+
+/// Drive the plan seam from GTK after-paint timestamps. Each presented frame
+/// evals `window.__hermesSeamFrame(elapsedMs)` on the webview. The first gap
+/// over 45ms restarts the origin so the next presented frame is still on the
+/// early part of the curve. Returns false when the clock cannot start.
+pub fn drive_presented_seam(window: tauri::WebviewWindow) -> bool {
+    drive_presented_seam_inner(window)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn drive_presented_seam_inner(_window: tauri::WebviewWindow) -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn drive_presented_seam_inner(window: tauri::WebviewWindow) -> bool {
+    use std::sync::atomic::AtomicU8;
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let token = SEAM_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    let posted = window.with_webview(move |webview| {
+        use gtk::prelude::*;
+        let view = webview.inner();
+        let Some(clock) = view.frame_clock() else {
+            let _ = tx.send(false);
+            return;
+        };
+        let origin = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let restarts = Arc::new(AtomicU8::new(0));
+        let live = Arc::new(AtomicBool::new(false));
+        let tx_slot = Arc::new(Mutex::new(Some(tx)));
+        let handler_slot: Arc<Mutex<Option<gtk::glib::signal::SignalHandlerId>>> =
+            Arc::new(Mutex::new(None));
+        let origin_cb = Arc::clone(&origin);
+        let restarts_cb = Arc::clone(&restarts);
+        let live_cb = Arc::clone(&live);
+        let handler_cb = Arc::clone(&handler_slot);
+        let tx_cb = Arc::clone(&tx_slot);
+        let clock_cb = clock.clone();
+        let view_cb = view.clone();
+        let id = clock.connect_after_paint(move |paint_clock| {
+            if SEAM_TOKEN.load(Ordering::Relaxed) != token {
+                end_presented_seam(token, &clock_cb, &handler_cb, &tx_cb, true);
+                return;
+            }
+            let now = paint_clock.frame_time();
+            let start = origin_cb.load(Ordering::Relaxed);
+            if start == 0 {
+                origin_cb.store(now, Ordering::Relaxed);
+                eval_seam_frame(&view_cb, 0.0);
+                clock_cb.request_phase(gtk::gdk::FrameClockPhase::AFTER_PAINT);
+                return;
+            }
+            let mut dt = (now.saturating_sub(start) as f64) / 1000.0;
+            let running = live_cb.load(Ordering::Relaxed);
+            if !running && dt > 45.0 && restarts_cb.load(Ordering::Relaxed) < 3 {
+                restarts_cb.fetch_add(1, Ordering::Relaxed);
+                origin_cb.store(now, Ordering::Relaxed);
+                eval_seam_frame(&view_cb, 0.0);
+                clock_cb.request_phase(gtk::gdk::FrameClockPhase::AFTER_PAINT);
+                return;
+            }
+            if !running && dt > 45.0 {
+                // Restarts are spent and this presented frame is still late.
+                // Show it at 45ms on the curve (about 38%) and keep going.
+                origin_cb.store(now.saturating_sub(45_000), Ordering::Relaxed);
+                dt = 45.0;
+            }
+            live_cb.store(true, Ordering::Relaxed);
+            eval_seam_frame(&view_cb, dt);
+            if dt >= 280.0 {
+                end_presented_seam(token, &clock_cb, &handler_cb, &tx_cb, true);
+                return;
+            }
+            clock_cb.request_phase(gtk::gdk::FrameClockPhase::AFTER_PAINT);
+        });
+        *handler_slot
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(id);
+        let origin_timeout = Arc::clone(&origin);
+        let handler_timeout = Arc::clone(&handler_slot);
+        let tx_timeout = Arc::clone(&tx_slot);
+        let clock_timeout = clock.clone();
+        gtk::glib::timeout_add_local(Duration::from_millis(460), move || {
+            let started = origin_timeout.load(Ordering::Relaxed) != 0;
+            end_presented_seam(token, &clock_timeout, &handler_timeout, &tx_timeout, started);
+            gtk::glib::ControlFlow::Break
+        });
+        clock.request_phase(gtk::gdk::FrameClockPhase::AFTER_PAINT);
+    });
+    if posted.is_err() {
+        return false;
+    }
+    rx.recv_timeout(Duration::from_millis(520)).unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn end_presented_seam(
+    token: u64,
+    clock: &gtk::gdk::FrameClock,
+    handler_slot: &Mutex<Option<gtk::glib::signal::SignalHandlerId>>,
+    tx_slot: &Mutex<Option<std::sync::mpsc::SyncSender<bool>>>,
+    ok: bool,
+) {
+    use gtk::prelude::*;
+    let _ = token;
+    if let Some(handler) = handler_slot
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .take()
+    {
+        clock.disconnect(handler);
+    }
+    if let Some(sender) = tx_slot.lock().unwrap_or_else(|err| err.into_inner()).take() {
+        let _ = sender.send(ok);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(deprecated)]
+fn eval_seam_frame(view: &webkit2gtk::WebView, elapsed_ms: f64) {
+    use webkit2gtk::WebViewExt;
+    let script = format!("window.__hermesSeamFrame&&window.__hermesSeamFrame({elapsed_ms:.3})");
+    view.run_javascript(&script, None::<&gtk::gio::Cancellable>, |_| {});
 }
 
 /// Opacity 0 lets Linux map the window so WebKit receives the monitor
@@ -3434,6 +3632,50 @@ mod tests {
         assert!(
             !up.is_empty(),
             "a missing cursor sample must not publish n=0 while Ctrl is held"
+        );
+    }
+
+    #[test]
+    fn ctrl_press_arms_the_orb_after_the_key_comes_up() {
+        let orb = orb_at("bot:a", 100.0, 700.0);
+        let cursor = Some((110.0, 710.0));
+        let mut guard = ShapeGuard::default();
+        let _ = resolve_input_shape(true, true, false, cursor, &[orb.clone()], &[], &[], &[], &mut guard);
+        let _ = resolve_input_shape(
+            true,
+            true,
+            true,
+            cursor,
+            &[orb.clone()],
+            &[],
+            &[orb.clone()],
+            &[orb.clone()],
+            &mut guard,
+        );
+        assert_eq!(guard.armed_id, "bot:a");
+        assert_eq!(guard.armed_up_ms, 0);
+        let _ = resolve_input_shape(false, false, true, cursor, &[orb.clone()], &[], &[], &[], &mut guard);
+        assert_eq!(
+            guard.armed_id, "bot:a",
+            "a later key-up must not cancel a press that began with Ctrl"
+        );
+        let _ = resolve_input_shape(false, false, false, cursor, &[orb.clone()], &[], &[], &[], &mut guard);
+        assert_eq!(guard.armed_id, "bot:a");
+        assert!(guard.armed_up_ms > 0);
+        assert_eq!(armed_press_id(&guard, guard.armed_up_ms + 100), "bot:a");
+        assert_eq!(armed_press_id(&guard, guard.armed_up_ms + 801), "");
+        let ended = guard.armed_up_ms;
+        guard.button_down = true;
+        assert_eq!(
+            armed_press_id(&guard, ended + 10),
+            "",
+            "a new button-down is not the armed press"
+        );
+        guard.button_down = false;
+        let _ = resolve_input_shape(false, false, true, cursor, &[orb.clone()], &[], &[], &[], &mut guard);
+        assert!(
+            guard.armed_id.is_empty(),
+            "a press that begins without Ctrl clears the arm"
         );
     }
 

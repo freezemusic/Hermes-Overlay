@@ -2087,6 +2087,25 @@ fn modifier_down_now(state: State<'_, AppState>) -> bool {
     interaction::modifier_down_now(state.interaction.as_ref())
 }
 
+/// Orb id latched when the hit check saw Ctrl+press. The page reads this
+/// from a late pointerdown; a newer key sample is not the answer.
+#[tauri::command]
+fn armed_press(consume: Option<bool>) -> String {
+    interaction::read_armed_press(consume.unwrap_or(false))
+}
+
+/// Presented-frame clock for the plan seam. False means the page should
+/// fall back to its own frame loop.
+#[tauri::command]
+async fn drive_presented_seam(app: AppHandle) -> bool {
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+    tauri::async_runtime::spawn_blocking(move || interaction::drive_presented_seam(window))
+        .await
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 fn reveal_overlay(app: AppHandle, state: State<'_, AppState>) {
     let Some(window) = app.get_webview_window("main") else {
@@ -2190,6 +2209,8 @@ pub fn run() {
             map_overlay_for_layout,
             wait_presented_frames,
             modifier_down_now,
+            armed_press,
+            drive_presented_seam,
             reveal_overlay,
             set_hit_rects,
             set_interaction_latch,

@@ -124,8 +124,9 @@ export function pressOrbId({ domId = "", pressFrozen = false, latchedHitId = "" 
 
 /**
  * pointerup opens only when this press began with the modifier held.
- * `ctrlAtDown` is a fresh OS sample from pointerdown, not the page key
- * and not the last poll. Browser preview (supported false) stays allowed.
+ * `ctrlAtDown` is the hit-check latch or a sample that was not cleared
+ * by a later key. `ctrlKey` is the DOM state from pointerdown. Browser
+ * preview (supported false) stays allowed.
  */
 export function orbOpenFromPress({
   supported = true,
@@ -133,10 +134,11 @@ export function orbOpenFromPress({
   captured = false,
   orbId = "",
   ctrlAtDown = false,
+  ctrlKey = false,
 } = {}) {
   if (button !== 0 || !captured || !orbId) return false;
   if (supported === false) return true;
-  return ctrlAtDown === true;
+  return ctrlAtDown === true || ctrlKey === true;
 }
 
 /**
@@ -415,9 +417,9 @@ export function composerKeyAction({
     return "remember";
   }
   if (!composerConnected) return "ignore";
-  // A stuck DOM ctrlKey (keyup missed while click-through) and a stale OS
-  // flag are different clocks. Enter sends unless both still say the key is down.
-  const ctrl = !!ctrlKey && osModifierDown !== false;
+  // Focused-webview ctrlKey is authoritative. OR the OS flag: either one
+  // is Ctrl+Enter. AND missed the key when the monitor was a poll behind.
+  const ctrl = !!ctrlKey || osModifierDown === true;
   if (ctrl || altKey || metaKey) return "ignore";
   // Enter is not a character. The field listener sends when focus is still
   // there; `send` covers the seam stealing focus after the click.

@@ -12,6 +12,7 @@ import {
   PLAN_EASE,
   PLAN_GROW_MS,
   planEase,
+  seamFrameStep,
   ICON,
   ORB,
   ORB_PILL_MS,
@@ -110,6 +111,13 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.ok(planEase(16 / 280) <= 0.15);
   assert.ok(planEase(100 / 280) > 0.55 && planEase(100 / 280) < 0.80);
   assert.ok(planEase(200 / 280) >= 0.90);
+  assert.equal(seamFrameStep(0, { first: true }).restart, false);
+  assert.equal(seamFrameStep(16, { first: true }).restart, false);
+  assert.ok(planEase(seamFrameStep(16, { first: true }).t) <= 0.45);
+  assert.equal(seamFrameStep(64, { first: true }).restart, true);
+  assert.equal(seamFrameStep(64, { first: false }).restart, false);
+  assert.ok(planEase(seamFrameStep(64, { first: false }).t) > 0.45);
+  assert.equal(seamFrameStep(280, { first: false }).t, 1);
   assert.equal(SEAM_MIN, 0.001);
   const seam = seamScaleFrames(12);
   assert.equal(seam.outer.length, 13);

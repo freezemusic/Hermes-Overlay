@@ -144,6 +144,16 @@ description = "Read the OS modifier at pointerdown, not the last poll."
 commands.allow = ["modifier_down_now"]
 
 [[permission]]
+identifier = "allow-armed-press"
+description = "Read the orb id latched when a press began with the modifier down."
+commands.allow = ["armed_press"]
+
+[[permission]]
+identifier = "allow-drive-presented-seam"
+description = "Advance the plan seam from GTK after-paint timestamps."
+commands.allow = ["drive_presented_seam"]
+
+[[permission]]
 identifier = "allow-reveal-overlay"
 description = "Show the overlay after the first transparent paint."
 commands.allow = ["reveal_overlay"]

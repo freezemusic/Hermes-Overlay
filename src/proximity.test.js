@@ -272,6 +272,14 @@ test("a frozen ctrl press opens the latched orb and rehearsal waits out the poin
     orbId: "planner",
     ctrlAtDown: true,
   }), false);
+  assert.equal(orbOpenFromPress({
+    supported: true,
+    button: 0,
+    captured: true,
+    orbId: "planner",
+    ctrlAtDown: false,
+    ctrlKey: true,
+  }), true);
 });
 
 test("a flush keeps the orb under the cursor while the modifier is held", () => {
@@ -361,13 +369,13 @@ test("a composer keeps the next key after the modifier comes up", () => {
     ctrlKey: false,
     composerConnected: true,
     osModifierDown: true,
-  }), "send");
+  }), "ignore");
   assert.equal(composerKeyAction({
     key: "Enter",
     ctrlKey: true,
     composerConnected: true,
     osModifierDown: false,
-  }), "send");
+  }), "ignore");
   assert.equal(composerKeyAction({
     key: "Enter",
     ctrlKey: true,
