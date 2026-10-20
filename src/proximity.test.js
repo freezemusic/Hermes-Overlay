@@ -356,6 +356,24 @@ test("a composer keeps the next key after the modifier comes up", () => {
     ctrlKey: true,
     composerConnected: true,
   }), "ignore");
+  assert.equal(composerKeyAction({
+    key: "Enter",
+    ctrlKey: false,
+    composerConnected: true,
+    osModifierDown: true,
+  }), "send");
+  assert.equal(composerKeyAction({
+    key: "Enter",
+    ctrlKey: true,
+    composerConnected: true,
+    osModifierDown: false,
+  }), "send");
+  assert.equal(composerKeyAction({
+    key: "Enter",
+    ctrlKey: true,
+    composerConnected: true,
+    osModifierDown: true,
+  }), "ignore");
   assert.equal(composerKeyAction({ key: "Escape", composerConnected: true }), "ignore");
 });
 

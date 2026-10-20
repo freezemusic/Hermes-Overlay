@@ -4387,7 +4387,15 @@ function wireBotPanel(panel, id) {
         return;
       }
     }
-    if (event.key === "Enter") sendActive(id);
+    if (event.key === "Enter" && composerKeyAction({
+      key: "Enter",
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+      activeIsComposer: true,
+      composerConnected: true,
+      osModifierDown: state.osModifierDown,
+    }) === "send") sendActive(id);
   });
 }
 
@@ -5523,6 +5531,7 @@ function setupComposer() {
       metaKey: event.metaKey,
       activeIsComposer: !!composerField && (document.activeElement === composerField || event.target === composerField),
       composerConnected: composerHostOpen(composerField),
+      osModifierDown: state.osModifierDown,
     });
     if (action === "remember") {
       rememberComposer();
@@ -6406,6 +6415,29 @@ function flushHits(tag = "flush") {
   publishHits(tag);
 }
 
+function paintHeldPanels(down) {
+  const floor = Number(state.interaction?.minOpacity);
+  const next = down ? String(Number.isFinite(floor) ? floor : 0.18) : "1";
+  const panels = document.querySelectorAll('.morph[data-state="panel"]');
+  panels.forEach((shell) => {
+    if (shell.style.getPropertyValue("--hit-opacity") !== next) {
+      shell.style.setProperty("--hit-opacity", next);
+    }
+  });
+  return panels.length;
+}
+
+let modifierSeq = 0;
+
+function acceptModifier(payload) {
+  const seq = Number(payload?.modifier_seq);
+  if (Number.isFinite(seq) && seq < modifierSeq) return false;
+  if (Number.isFinite(seq)) modifierSeq = seq;
+  if (payload?.modifier_down === true || payload?.held === true) state.osModifierDown = true;
+  else if (payload?.modifier_down === false && payload?.held === false) state.osModifierDown = false;
+  return true;
+}
+
 function applyFrames(frames, interactiveAll = false) {
   const map = new Map((frames || []).map((item) => [item.id, item]));
   document.querySelectorAll("[data-hit-id]").forEach((el) => {
@@ -6706,12 +6738,19 @@ function setupProximity() {
           applyFrames([], true);
           return;
         }
+        if (payload.key_edge === true) {
+          if (acceptModifier(payload)) {
+            const panels = paintHeldPanels(state.osModifierDown);
+            debugLog("key-edge", `down=${state.osModifierDown ? 1 : 0} panels=${panels}`);
+          }
+          return;
+        }
         if (payload.focus_owner) applyOsFocus(payload.focus_owner);
-        if (payload.modifier_down === true || payload.held === true) state.osModifierDown = true;
-        else if (payload.modifier_down === false && payload.held === false) state.osModifierDown = false;
+        const freshModifier = acceptModifier(payload);
         if (typeof payload.latched_orb === "string") state.latchedOrbId = payload.latched_orb;
         state.pressFrozen = payload.press_frozen === true;
         applyFrames(payload.opacities || []);
+        if (!freshModifier) paintHeldPanels(state.osModifierDown);
       });
     });
     window.addEventListener("mousemove", (event) => {

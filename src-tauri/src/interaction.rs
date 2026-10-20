@@ -344,6 +344,23 @@ pub fn os_modifier_down() -> bool {
     KEY_DOWN.load(Ordering::Relaxed)
 }
 
+/// Page-facing modifier. A live `device_query` monitor wins over the hit-poll
+/// sample, which can still say the key is down after it blocked on shape or
+/// focus work. Morph, collapse, and rehearsal never delay this choice.
+pub fn page_modifier(
+    monitor: bool,
+    live_held: bool,
+    live_key: bool,
+    sampled_held: bool,
+    sampled_key: bool,
+) -> (bool, bool) {
+    if monitor {
+        (live_held, live_key)
+    } else {
+        (sampled_held, sampled_key)
+    }
+}
+
 pub fn should_keep_hit_rects(
     held: bool,
     pointer_down: bool,
@@ -1192,6 +1209,10 @@ static LAST_HELD: AtomicBool = AtomicBool::new(false);
 /// Physical modifier from `device_query`, not the webview keydown.
 static KEY_DOWN: AtomicBool = AtomicBool::new(false);
 static POINTER_DOWN: AtomicBool = AtomicBool::new(false);
+/// Set once the dedicated key monitor owns `KEY_DOWN` / `LAST_HELD`.
+static MODIFIER_MONITOR: AtomicBool = AtomicBool::new(false);
+/// Bumps on every key edge so a late hit-poll sample cannot rewind the page.
+static MODIFIER_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Left, right, and middle. `device_query` is 1-based; indexes 4 and 5 are
 /// the X11 wheel and must not freeze the orb shape.
@@ -1545,6 +1566,69 @@ fn cover_windows_monitor(_window: &tauri::WebviewWindow) -> bool {
     false
 }
 
+fn publish_key_edge(app: &AppHandle, held: bool, key_down: bool) {
+    KEY_DOWN.store(key_down, Ordering::Release);
+    LAST_HELD.store(held, Ordering::Release);
+    let seq = MODIFIER_SEQ.fetch_add(1, Ordering::Release) + 1;
+    crate::trace_debug(
+        "key-edge",
+        &format!(
+            "held={} key={} seq={seq}",
+            u8::from(held),
+            u8::from(key_down)
+        ),
+    );
+    let _ = app.emit(
+        "overlay-interaction",
+        serde_json::json!({
+            "type": "modifier",
+            "key_edge": true,
+            "supported": true,
+            "held": held,
+            "modifier_down": key_down,
+            "modifier_seq": seq,
+        }),
+    );
+}
+
+/// Reads `device_query` and emits Ctrl up/down on the change itself.
+/// This thread never touches the input shape, focus, or the page's morph
+/// deferral, so a release is not stuck behind a frozen shape or a rehearsal.
+fn spawn_modifier_monitor(app: AppHandle, hub: Arc<InteractionHub>) {
+    std::thread::spawn(move || {
+        let Some(device) = DeviceState::checked_new() else {
+            return;
+        };
+        MODIFIER_MONITOR.store(true, Ordering::Release);
+        let mut arm_at: Option<Instant> = None;
+        let mut chord_suppressed = false;
+        let mut last: Option<(bool, bool)> = None;
+        loop {
+            let modifier = hub
+                .config
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .modifier
+                .clone();
+            let keys = device.get_keys();
+            let physical = modifier_held(&keys, &modifier);
+            let held = modifier_engages(
+                &keys,
+                &modifier,
+                Instant::now(),
+                &mut arm_at,
+                &mut chord_suppressed,
+            );
+            let key_down = physical && !chord_suppressed;
+            if last != Some((held, key_down)) {
+                last = Some((held, key_down));
+                publish_key_edge(&app, held, key_down);
+            }
+            std::thread::sleep(Duration::from_millis(16));
+        }
+    });
+}
+
 pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
     if !hub.supported {
         let _ = app.emit(
@@ -1558,6 +1642,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
         );
         return;
     }
+    spawn_modifier_monitor(app.clone(), hub.clone());
     std::thread::spawn(move || {
         let Some(device) = DeviceState::checked_new() else {
             let _ = app.emit(
@@ -1572,6 +1657,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             return;
         };
         let mut last_signature = String::new();
+        let mut last_edge: Option<(bool, bool)> = None;
         let mut logged_held: Option<bool> = None;
         let mut ignoring: Option<bool> = None;
         let mut region_signature = String::new();
@@ -1610,8 +1696,14 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             // Copy/paste keeps the key from capturing. The page's ctrl flag
             // is never stored here.
             let key_down = physical && !chord_suppressed;
-            KEY_DOWN.store(key_down, Ordering::Relaxed);
-            LAST_HELD.store(held, Ordering::Relaxed);
+            // The monitor already pushed this edge. Publishing again from
+            // here would wait until shape and focus work return.
+            if !MODIFIER_MONITOR.load(Ordering::Acquire) {
+                if last_edge != Some((held, key_down)) {
+                    last_edge = Some((held, key_down));
+                    publish_key_edge(&app, held, key_down);
+                }
+            }
             let pointer_down = pointer_is_down(&device);
             POINTER_DOWN.store(pointer_down, Ordering::Relaxed);
             let mouse = device.get_mouse();
@@ -1730,6 +1822,27 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                     .unwrap_or_default();
                 (id, press_frozen(&guard))
             };
+            let monitor = MODIFIER_MONITOR.load(Ordering::Acquire);
+            let (page_held, page_key) = page_modifier(
+                monitor,
+                LAST_HELD.load(Ordering::Acquire),
+                KEY_DOWN.load(Ordering::Acquire),
+                held,
+                key_down,
+            );
+            let items = if page_held == held {
+                items
+            } else {
+                interaction_frame(page_held, &latched_ids, cursor, &rects, HIT_MARGIN_PX, &cfg)
+                    .iter()
+                    .map(|item| OpacityItem {
+                        id: item.id.clone(),
+                        opacity: item.opacity,
+                        capture: item.capture,
+                    })
+                    .collect()
+            };
+            let modifier_seq = MODIFIER_SEQ.load(Ordering::Acquire);
             let signature = format!(
                 "{}|focus={focus_owner}|held={}|key={}|latch={latched_orb}|frozen={}",
                 items
@@ -1737,8 +1850,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                     .map(|item| format!("{}={:.2}:{}", item.id, item.opacity, item.capture))
                     .collect::<Vec<_>>()
                     .join("|"),
-                u8::from(held),
-                u8::from(key_down),
+                u8::from(page_held),
+                u8::from(page_key),
                 u8::from(frozen_press),
             );
             if signature == last_signature {
@@ -1751,8 +1864,9 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                     "type": "proximity",
                     "supported": true,
                     "focus_owner": focus_owner,
-                    "held": held,
-                    "modifier_down": key_down,
+                    "held": page_held,
+                    "modifier_down": page_key,
+                    "modifier_seq": modifier_seq,
                     "latched_orb": latched_orb,
                     "press_frozen": frozen_press,
                     "opacities": items,
@@ -2606,6 +2720,13 @@ mod tests {
         assert!(!modifier_physically_down(&[], "ctrl"));
         assert!(modifier_physically_down(&[Keycode::LShift], "shift"));
         assert!(!modifier_physically_down(&[Keycode::LControl], "shift"));
+    }
+
+    #[test]
+    fn page_modifier_prefers_the_live_monitor_over_a_stale_sample() {
+        assert_eq!(page_modifier(true, false, false, true, true), (false, false));
+        assert_eq!(page_modifier(true, true, true, false, false), (true, true));
+        assert_eq!(page_modifier(false, false, false, true, true), (true, true));
     }
 
     #[test]

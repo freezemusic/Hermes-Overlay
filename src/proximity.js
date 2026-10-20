@@ -409,12 +409,16 @@ export function composerKeyAction({
   metaKey = false,
   activeIsComposer = false,
   composerConnected = false,
+  osModifierDown = null,
 } = {}) {
   if (key === "Control" || key === "Shift" || key === "Alt" || key === "Meta") {
     return "remember";
   }
   if (!composerConnected) return "ignore";
-  if (ctrlKey || altKey || metaKey) return "ignore";
+  // A stuck DOM ctrlKey (keyup missed while click-through) and a stale OS
+  // flag are different clocks. Enter sends unless both still say the key is down.
+  const ctrl = !!ctrlKey && osModifierDown !== false;
+  if (ctrl || altKey || metaKey) return "ignore";
   // Enter is not a character. The field listener sends when focus is still
   // there; `send` covers the seam stealing focus after the click.
   if (key === "Enter") return "send";
