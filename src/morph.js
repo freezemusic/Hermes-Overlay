@@ -13,7 +13,7 @@ export const PANEL_RADIUS = 3;
 export const HAIRLINE = 1;
 export const ORB_PILL_MS = 200;
 export const PILL_PANEL_MS = 480;
-export const COLLAPSE_MS = 333;
+export const COLLAPSE_MS = 382;
 export const CONTENT_OUT_MS = 80;
 export const CONTENT_IN_MS = 160;
 /** The fade starts with the clip. A delay makes WebKitGTK replay opacity from 0. */
@@ -270,14 +270,16 @@ export function openPhases() {
  * WAAPI clock for one edge. v53 painted the clock itself: left 266→267,
  * right 233→267, top 299→267, bottom 266→300. The visible window is
  * 300–333ms, so the three short edges move up. Bottom already lands on
- * 300, and its clock stays. Refresh, hit flush, and orb repaint wait more
+ * 300, and its clock stays. v62 painted the top panel segment at about
+ * 267ms; a 2k px tail was what reached 300. 382ms puts that segment
+ * clearly inside 300–333ms. Refresh, hit flush, and orb repaint wait more
  * than a second after the collapse, and an unchanged tick does not write the DOM.
  */
 export function collapseMs(edge) {
   if (edge === "bottom") return 266;
   if (edge === "right") return 300;
   if (edge === "left") return 316;
-  return 333;
+  return 382;
 }
 
 export function collapsePhases(edge, from = "panel") {

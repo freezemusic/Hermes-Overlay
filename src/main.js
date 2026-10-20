@@ -2471,6 +2471,7 @@ async function collapsePlanSeam(shell, token) {
 
 async function runShellMorph(shell, target) {
   if (!shell) return false;
+  abortPlanRehearsal(shell);
   if (target !== "orb" && shell.dataset.intent === "close") return false;
   let closingScale = 1;
   if (target === "orb") {
@@ -4032,6 +4033,7 @@ function openBotPanel(id) {
   const bot = state.bots.find((item) => item.id === id);
   const shell = shellFor(id) || (bot ? ensureBotShell(bot) : null);
   if (!shell) return null;
+  abortPlanRehearsal(shell);
   threadFor(id).followTail = true;
   state.openIds = openPanel(state.openIds, id);
   window.clearTimeout(shell._pillTimer);
@@ -5671,6 +5673,17 @@ function collectHits() {
         z: 1000,
         round: false,
       });
+    } else if (shell.dataset.rehearsal === "1" && shell._rehearsalHit) {
+      const hit = shell._rehearsalHit;
+      rects.push({
+        id,
+        x: hit.x,
+        y: hit.y,
+        w: hit.w,
+        h: hit.h,
+        z: 0,
+        round: true,
+      });
     } else {
       const box = visibleBox(shell);
       if (box.w < 1 || box.h < 1) return;
@@ -6950,17 +6963,17 @@ function rehearsalHandedOff(shell) {
   return shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
 }
 
-/** Same-opacity stand-in so the real shell can sit at 0.01 without blinking the orb. */
+/** Same-opacity stand-in. The real shell is parked off-screen, so this orb
+ *  stays clickable and forwards into the normal open path. */
 function placeRehearsalStand(shell) {
   const orb = shell.querySelector(".morph-orb");
   const box = orb?.getBoundingClientRect?.();
   if (!orb || !box || box.width < 1 || box.height < 1) return null;
   const stand = orb.cloneNode(true);
+  const id = shell.dataset.botId || "";
   stand.classList.add("plan-rehearsal-stand");
   stand.setAttribute("aria-hidden", "true");
   stand.tabIndex = -1;
-  stand.disabled = true;
-  stand.inert = true;
   const opacity = getComputedStyle(shell).opacity || "1";
   stand.style.position = "fixed";
   stand.style.left = `${box.left}px`;
@@ -6968,73 +6981,105 @@ function placeRehearsalStand(shell) {
   stand.style.width = `${box.width}px`;
   stand.style.height = `${box.height}px`;
   stand.style.margin = "0";
-  stand.style.pointerEvents = "none";
+  stand.style.pointerEvents = "auto";
   stand.style.opacity = opacity;
   stand.style.zIndex = "30";
+  stand.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (state.interaction.supported !== false && !modifierHeld(event)) return;
+    selectBot(id);
+  });
+  stand.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!modifierHeld(event)) return;
+    openOrbMenu(id, event.clientX, event.clientY);
+  });
   document.documentElement.append(stand);
   return stand;
 }
 
+/** 1px host outside the viewport. The shell keeps opacity 1 and a real
+ *  clip-path animation so the layer is composited, and overflow clips
+ *  every painted pixel off the screen. */
+function parkRehearsalHost(shell) {
+  const host = document.createElement("div");
+  host.className = "plan-rehearsal-host";
+  host.setAttribute("aria-hidden", "true");
+  host.style.cssText = "position:fixed;left:-4px;top:-4px;width:1px;height:1px;overflow:hidden;opacity:1;pointer-events:none;z-index:0;";
+  document.documentElement.append(host);
+  host.append(shell);
+  return host;
+}
+
 function restorePlanRehearsal(shell, saved, stand) {
   stand?.remove();
+  if (shell?._rehearsalRestored) return;
+  if (shell) shell._rehearsalRestored = 1;
+  if (shell && saved?.rail && shell.parentElement !== saved.rail) saved.rail.append(shell);
+  saved?.host?.remove();
   if (!shell?.isConnected) {
-    hitSilence.delete(shell);
     if (!hitsBlocked()) scheduleHitSync("plan-rehearsal");
     return;
   }
-  const handed = rehearsalHandedOff(shell);
+  const morphOwns = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
   delete shell.dataset.rehearsal;
-  if (saved.opacity) shell.style.opacity = saved.opacity;
+  delete shell._rehearsalHit;
+  if (saved?.rail && shell.parentElement !== saved.rail) saved.rail.append(shell);
+  if (saved?.opacity) shell.style.opacity = saved.opacity;
   else shell.style.removeProperty("opacity");
-  if (saved.pointer) shell.style.pointerEvents = saved.pointer;
+  if (saved?.pointer) shell.style.pointerEvents = saved.pointer;
   else shell.style.removeProperty("pointer-events");
-  if (!saved.background) shell.style.removeProperty("background");
+  if (!saved?.background) shell.style.removeProperty("background");
   else shell.style.background = saved.background;
-  const plan = shell.querySelector(".plan-window");
-  if (handed) {
-    if (plan) plan.classList.remove("is-seam-grow");
-    if (plan && shell.dataset.planOpen !== "1") {
-      plan.hidden = saved.planHidden;
-      if (!saved.planWidth) plan.style.removeProperty("width");
-      if (!saved.planVisibility) plan.style.removeProperty("visibility");
-      if (!saved.planPointer) plan.style.removeProperty("pointer-events");
-    }
-    return;
-  }
+  if (saved?.transform) shell.style.transform = saved.transform;
+  else shell.style.removeProperty("transform");
   shell.getAnimations?.().forEach((anim) => {
     const name = anim.id || "";
     if (name === "plan-rehearsal" || name === "plan-rehearsal-close") anim.cancel();
   });
+  if (morphOwns) return;
   shell.style.removeProperty("overflow");
-  if (saved.will) shell.style.willChange = saved.will;
+  if (saved?.will) shell.style.willChange = saved.will;
   else shell.style.removeProperty("will-change");
   releaseMotion(shell);
+  const plan = shell.querySelector(".plan-window");
   if (plan) {
     plan.classList.remove("is-seam-grow");
-    plan.hidden = saved.planHidden;
-    if (saved.planWidth) plan.style.width = saved.planWidth;
+    plan.hidden = saved?.planHidden ?? true;
+    if (saved?.planWidth) plan.style.width = saved.planWidth;
     else plan.style.removeProperty("width");
-    if (saved.planVisibility) plan.style.visibility = saved.planVisibility;
+    if (saved?.planVisibility) plan.style.visibility = saved.planVisibility;
     else plan.style.removeProperty("visibility");
-    if (saved.planPointer) plan.style.pointerEvents = saved.planPointer;
+    if (saved?.planPointer) plan.style.pointerEvents = saved.planPointer;
     else plan.style.removeProperty("pointer-events");
   }
-  if (saved.planWidthData) shell.dataset.planWidth = saved.planWidthData;
+  if (saved?.planWidthData) shell.dataset.planWidth = saved.planWidthData;
   else delete shell.dataset.planWidth;
-  if (saved.clip) shell.style.clipPath = saved.clip;
+  if (saved?.clip) shell.style.clipPath = saved.clip;
   else shell.style.removeProperty("clip-path");
   layoutShell(shell);
-  hitSilence.delete(shell);
   if (!hitsBlocked()) scheduleHitSync("plan-rehearsal");
 }
 
-/** Hidden open → 280ms grow → close on the real shell. Opacity stays ~0.01.
- *  Hit IPC stays silent until the orb geometry is restored. */
+function abortPlanRehearsal(shell) {
+  if (!shell || shell.dataset.rehearsal !== "1" || shell._rehearsalRestored) return;
+  restorePlanRehearsal(shell, shell._rehearsalSaved, shell._rehearsalStand);
+}
+
+/** Hidden open → 280ms grow → close on the real shell. The shell stays at
+ *  opacity 1 inside a 1px host outside the screen, so the clip is composited
+ *  and no pixel lands on the desktop. Orb hits were already published. */
 async function rehearseOnePlan(shell) {
   const id = shell.dataset.botId || "";
   if (!id || rehearsalBlocked(shell) || rehearsedProfiles.has(id)) return false;
+  const orbBox = visibleBox(shell);
   const stand = placeRehearsalStand(shell);
-  if (!stand) return false;
+  if (!stand || orbBox.w < 1 || orbBox.h < 1) {
+    stand?.remove();
+    return false;
+  }
   const plan = shell.querySelector(".plan-window");
   const saved = {
     opacity: shell.style.opacity,
@@ -7042,24 +7087,29 @@ async function rehearseOnePlan(shell) {
     background: shell.style.background,
     will: shell.style.willChange,
     clip: shell.style.clipPath,
+    transform: shell.style.transform,
+    rail: shell.parentElement,
     planHidden: plan ? plan.hidden : true,
     planVisibility: plan ? plan.style.visibility : "",
     planWidth: plan ? plan.style.width : "",
     planPointer: plan ? plan.style.pointerEvents : "",
     planWidthData: shell.dataset.planWidth || "",
   };
+  shell._rehearsalHit = { x: orbBox.x, y: orbBox.y, w: orbBox.w, h: orbBox.h };
+  shell._rehearsalSaved = saved;
+  shell._rehearsalStand = stand;
+  shell._rehearsalRestored = 0;
   rehearsedProfiles.add(id);
   shell.dataset.rehearsal = "1";
-  hitSilence.add(shell);
-  pauseHitSync();
+  saved.host = parkRehearsalHost(shell);
   debugLog("plan-rehearsal", `start profile=${id}`);
   let anim = null;
   try {
     holdMotion(shell);
     shell.style.pointerEvents = "none";
-    shell.style.setProperty("opacity", "0.01");
+    shell.style.opacity = "1";
     shell.style.background = "transparent";
-    shell.style.setProperty("overflow", "visible", "important");
+    shell.style.transform = "translate3d(-300vw, -300vh, 0)";
     shell.style.willChange = "clip-path";
     if (!shell.dataset.planSide) shell.dataset.planSide = sideFromStyle(shell);
     shell.dataset.planWidth = String(Math.round(planWidthPx()));
@@ -7086,7 +7136,7 @@ async function rehearseOnePlan(shell) {
       pumpSeamPresent(shell, PLAN_GROW_MS);
       await whenAnimEnds(anim, PLAN_GROW_MS + 64, false);
     }
-    if (anim && !rehearsalHandedOff(shell) && shell.dataset.rehearsal === "1") {
+    if (anim && !rehearsalHandedOff(shell) && shell.dataset.rehearsal === "1" && !shell._rehearsalRestored) {
       try { anim.cancel(); } catch { /* the close clip replaces it */ }
       const rest = saved.clip || from;
       let closing = null;
@@ -7140,6 +7190,7 @@ async function rehearsePlanShells() {
 }
 
 function schedulePlanRehearsal() {
+  if (!hitsBlocked()) publishHits("first-paint");
   if (schedulePlanRehearsal.armed || rehearsePlanShells.running) return;
   const waiting = state.bots.some((bot) => bot?.id && !rehearsedProfiles.has(bot.id) && shellFor(bot.id));
   if (!waiting) return;
@@ -7179,6 +7230,7 @@ async function boot() {
   await armDebugLog();
   setupComposer();
   requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (!hitsBlocked()) publishHits("first-paint");
     primePlanCompositor();
     schedulePlanRehearsal();
   }));
