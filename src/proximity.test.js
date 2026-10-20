@@ -20,6 +20,7 @@ import {
   ownComposerKey,
   modifierMatches,
   modifierEngages,
+  guardPublishedHits,
   MODIFIER_ARM_MS,
   nextOrbPulse,
   nextDropdownOpen,
@@ -210,6 +211,48 @@ test("a message preview pill stays solid and click-through until the modifier is
   assert.equal(byId(held, "bot:b").capture, false);
   assert.equal(byId(held, "panel:a").opacity, 0.18);
   assert.equal(byId(held, "panel:a").capture, false);
+});
+
+test("a flush keeps the orb under the cursor while the modifier is held", () => {
+  const orb = { id: "bot:a", x: 10, y: 10, w: 44, h: 44, z: 0, round: true };
+  const kept = guardPublishedHits({
+    rects: [],
+    previous: [orb],
+    held: true,
+    pointerDown: false,
+    cursor: { x: 20, y: 20 },
+  });
+  assert.equal(kept.kept, true);
+  assert.equal(kept.rects[0].id, "bot:a");
+  const away = guardPublishedHits({
+    rects: [],
+    previous: [orb],
+    held: true,
+    pointerDown: false,
+    cursor: { x: 400, y: 400 },
+  });
+  assert.equal(away.kept, false);
+  assert.equal(away.rects.length, 0);
+  const press = guardPublishedHits({
+    rects: [],
+    previous: [orb],
+    held: false,
+    pointerDown: true,
+    cursor: { x: 400, y: 400 },
+  });
+  assert.equal(press.kept, true);
+  assert.equal(press.rects[0].id, "bot:a");
+  const injected = guardPublishedHits({
+    rects: [{ id: "kanban", x: 0, y: 0, w: 400, h: 400, round: false }],
+    previous: [],
+    held: true,
+    pointerDown: false,
+    cursor: { x: 20, y: 20 },
+    orb,
+  });
+  assert.equal(injected.kept, false);
+  assert.equal(injected.rects.some((rect) => rect.id === "bot:a"), true);
+  assert.equal(injected.rects.some((rect) => rect.id === "kanban"), true);
 });
 
 test("light swatches use dark ink", () => {

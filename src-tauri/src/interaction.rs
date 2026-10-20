@@ -264,6 +264,77 @@ pub fn immediate_hit_rects(held: bool, rects: &[HitRect]) -> Vec<HitRect> {
         .collect()
 }
 
+/// Orb or preview pill the cursor is actually on. Panels do not count: while
+/// the modifier is held they leave the shape, and a flush must not treat that
+/// as "nothing under the cursor".
+fn interactive_shape_target<'a>(
+    cursor: Option<(f64, f64)>,
+    rects: &'a [HitRect],
+) -> Option<&'a HitRect> {
+    let rect = element_under_cursor(cursor, rects, HIT_MARGIN_PX, &[])?;
+    if is_orb_hit(rect) || is_pill_hit(rect) {
+        Some(rect)
+    } else {
+        None
+    }
+}
+
+/// `set_hit_rects` with an empty list. Keeps the rects already stored when a
+/// press is active, or when the modifier is held over an orb. A missing cursor
+/// sample also keeps the list: the poll will shrink it.
+pub fn keep_empty_hit_publish(window: &tauri::WebviewWindow, existing: &[HitRect]) -> bool {
+    should_keep_hit_rects(
+        LAST_HELD.load(Ordering::Relaxed),
+        POINTER_DOWN.load(Ordering::Relaxed),
+        stored_css_cursor(window),
+        existing,
+    )
+}
+
+pub fn should_keep_hit_rects(
+    held: bool,
+    pointer_down: bool,
+    cursor: Option<(f64, f64)>,
+    existing: &[HitRect],
+) -> bool {
+    if existing.is_empty() {
+        return false;
+    }
+    if pointer_down {
+        return true;
+    }
+    if !held {
+        return false;
+    }
+    cursor.is_none() || interactive_shape_target(cursor, existing).is_some()
+}
+
+/// OS shape after any flush. An empty fresh region is replaced with the orb
+/// under the cursor (from this list, then the previous one) while the modifier
+/// is held. An active press never drops a shape that was already painted.
+pub fn shape_after_flush(
+    held: bool,
+    pointer_down: bool,
+    cursor: Option<(f64, f64)>,
+    rects: &[HitRect],
+    frames: &[ElementFrame],
+    previous_rects: &[HitRect],
+    last_painted: &[HitRect],
+) -> Vec<HitRect> {
+    let mut fresh = os_input_rects(held, rects, frames);
+    if fresh.is_empty() && held {
+        if let Some(rect) = interactive_shape_target(cursor, rects)
+            .or_else(|| interactive_shape_target(cursor, previous_rects))
+        {
+            fresh.push(rect.clone());
+        }
+    }
+    if fresh.is_empty() && pointer_down && !last_painted.is_empty() {
+        return last_painted.to_vec();
+    }
+    fresh
+}
+
 /// OS input region: panels that are already open, plus whatever the hover poll
 /// is currently capturing (an orb under the modifier, a preview pill).
 pub fn os_input_rects(held: bool, rects: &[HitRect], frames: &[ElementFrame]) -> Vec<HitRect> {
@@ -678,6 +749,16 @@ static SHAPE_DIRTY: AtomicBool = AtomicBool::new(false);
 static SHAPE_GEN: AtomicU64 = AtomicU64::new(0);
 static EMPTY_BLOCK_UNTIL: AtomicU64 = AtomicU64::new(0);
 static LAST_HELD: AtomicBool = AtomicBool::new(false);
+static POINTER_DOWN: AtomicBool = AtomicBool::new(false);
+
+fn pointer_is_down(device: &DeviceState) -> bool {
+    device
+        .get_mouse()
+        .button_pressed
+        .iter()
+        .copied()
+        .any(|pressed| pressed)
+}
 
 fn screen_cursor() -> &'static Mutex<Option<(f64, f64)>> {
     static CURSOR: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
@@ -947,6 +1028,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
         let mut logged_held: Option<bool> = None;
         let mut ignoring: Option<bool> = None;
         let mut region_signature = String::new();
+        let mut remembered_rects: Vec<HitRect> = Vec::new();
+        let mut painted_shape: Vec<HitRect> = Vec::new();
         let mut arm_at: Option<Instant> = None;
         let mut chord_suppressed = false;
         let mut focus_probe = FocusProbe::open();
@@ -976,6 +1059,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 &mut chord_suppressed,
             );
             LAST_HELD.store(held, Ordering::Relaxed);
+            let pointer_down = pointer_is_down(&device);
+            POINTER_DOWN.store(pointer_down, Ordering::Relaxed);
             remember_screen_cursor(&window, &device);
             if SHAPE_DIRTY.swap(false, Ordering::Relaxed) {
                 region_signature.clear();
@@ -1022,15 +1107,29 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 }
                 logged_held = Some(held);
             }
-            sync_os_hit_region(
+            let region = sync_os_hit_region(
                 &app,
                 &window,
                 held,
+                pointer_down,
+                cursor,
                 &rects,
                 &frames,
+                &remembered_rects,
+                &painted_shape,
                 &mut ignoring,
                 &mut region_signature,
             );
+            if rects.iter().any(|rect| is_orb_hit(rect) || is_pill_hit(rect)) {
+                remembered_rects = rects.clone();
+            }
+            // A real empty publish forgets the old shape. Keeping it would
+            // resurrect an orb under a later press that started on the desktop.
+            if region.is_empty() {
+                painted_shape.clear();
+            } else {
+                painted_shape = region;
+            }
             let items: Vec<OpacityItem> = frames
                 .iter()
                 .map(|item| OpacityItem {
@@ -1092,18 +1191,30 @@ fn sync_os_hit_region(
     app: &AppHandle,
     window: &tauri::WebviewWindow,
     held: bool,
+    pointer_down: bool,
+    cursor: Option<(f64, f64)>,
     rects: &[HitRect],
     frames: &[ElementFrame],
+    previous_rects: &[HitRect],
+    last_painted: &[HitRect],
     ignoring: &mut Option<bool>,
     region_signature: &mut String,
-) {
+) -> Vec<HitRect> {
     #[cfg(any(windows, target_os = "linux"))]
     {
-        let region = os_input_rects(held, rects, frames);
+        let region = shape_after_flush(
+            held,
+            pointer_down,
+            cursor,
+            rects,
+            frames,
+            previous_rects,
+            last_painted,
+        );
         // Show clears the Linux input shape. For a short beat after reveal,
         // an empty poll must not replace the orb that was just applied.
         if region.is_empty() && mono_ms() < EMPTY_BLOCK_UNTIL.load(Ordering::Relaxed) {
-            return;
+            return last_painted.to_vec();
         }
         let origin = window.inner_position().ok();
         let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
@@ -1124,7 +1235,7 @@ fn sync_os_hit_region(
                 .join(";")
         );
         if signature == *region_signature {
-            return;
+            return region;
         }
         *region_signature = signature;
         #[cfg(windows)]
@@ -1142,14 +1253,16 @@ fn sync_os_hit_region(
             *ignoring = Some(region.is_empty());
         }
         let _ = window;
+        return region;
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        let _ = (app, held, rects, region_signature);
+        let _ = (app, held, pointer_down, cursor, rects, previous_rects, last_painted, region_signature);
         let ignore = !frames.iter().any(|item| item.capture);
         if *ignoring != Some(ignore) && window.set_ignore_cursor_events(ignore).is_ok() {
             *ignoring = Some(ignore);
         }
+        Vec::new()
     }
 }
 
@@ -1442,9 +1555,18 @@ pub fn reapply_live_input_shape(app: &AppHandle, hub: &InteractionHub) {
         .unwrap_or_else(|err| err.into_inner())
         .clone();
     let held = LAST_HELD.load(Ordering::Relaxed);
+    let pointer_down = POINTER_DOWN.load(Ordering::Relaxed);
     let cursor = stored_css_cursor(&window);
     let frames = interaction_frame(held, &latched, cursor, &rects, HIT_MARGIN_PX, &cfg);
-    let region = os_input_rects(held, &rects, &frames);
+    let region = shape_after_flush(
+        held,
+        pointer_down,
+        cursor,
+        &rects,
+        &frames,
+        &rects,
+        &[],
+    );
     SHAPE_GEN.fetch_add(1, Ordering::Relaxed);
     if region.is_empty() {
         SHAPE_DIRTY.store(true, Ordering::Relaxed);
@@ -2398,6 +2520,47 @@ mod tests {
         assert!(css_point_hits(&armed, 10.0, 710.0));
         assert!(!css_point_hits(&armed, 100.0, 80.0));
         assert!(!css_point_hits(&armed, 470.0, 40.0));
+    }
+
+    fn orb_at(id: &str, x: f64, y: f64) -> HitRect {
+        HitRect {
+            id: id.into(),
+            x,
+            y,
+            w: 44.0,
+            h: 44.0,
+            z: 0,
+            round: true,
+        }
+    }
+
+    #[test]
+    fn flush_keeps_the_orb_under_ctrl_and_a_press() {
+        let cfg = fade_cfg();
+        let orb = orb_at("bot:a", 10.0, 10.0);
+        let cursor = Some((20.0, 20.0));
+        let empty_frames = interaction_frame(true, &[], cursor, &[], HIT_MARGIN_PX, &cfg);
+        let kept = shape_after_flush(true, false, cursor, &[], &empty_frames, &[orb.clone()], &[]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, "bot:a");
+        let away = shape_after_flush(
+            true,
+            false,
+            Some((400.0, 400.0)),
+            &[],
+            &empty_frames,
+            &[orb.clone()],
+            &[],
+        );
+        assert!(away.is_empty());
+        let painted = vec![orb.clone()];
+        let press = shape_after_flush(false, true, Some((400.0, 400.0)), &[], &empty_frames, &[], &painted);
+        assert_eq!(press.len(), 1);
+        assert_eq!(press[0].id, "bot:a");
+        assert!(should_keep_hit_rects(true, false, cursor, &[orb.clone()]));
+        assert!(!should_keep_hit_rects(true, false, Some((400.0, 400.0)), &[orb.clone()]));
+        assert!(should_keep_hit_rects(false, true, Some((400.0, 400.0)), &[orb]));
+        assert!(!should_keep_hit_rects(false, false, cursor, &[]));
     }
 
     #[test]

@@ -79,6 +79,36 @@ export function isOrbHit(rect) {
 /** CSS pixels around a hit rect that still count as under the cursor. */
 export const HIT_MARGIN_PX = 12;
 
+/**
+ * A hit flush must not publish an empty shape while the modifier is held over
+ * an orb or preview pill, or while a pointer button is already down.
+ * `orb` is the live orb/pill under the cursor when the fresh list missed it.
+ * `kept` means the previous list should stay on the OS shape (`n=0` is not sent).
+ */
+export function guardPublishedHits({
+  rects = [],
+  previous = [],
+  held = false,
+  pointerDown = false,
+  cursor = null,
+  orb = null,
+} = {}) {
+  const next = rects.map((rect) => ({ ...rect }));
+  if (held && orb && orb.w >= 1 && orb.h >= 1 && !next.some((rect) => rect.id === orb.id)) {
+    next.push({ ...orb });
+  }
+  if (next.length > 0) return { rects: next, kept: false };
+  const cursorKnown = !!cursor && Number.isFinite(cursor.x) && Number.isFinite(cursor.y);
+  const overInteractive = cursorKnown && previous.some((rect) => (
+    (isOrbHit(rect) || isPillHit(rect))
+    && distanceToHit(cursor.x, cursor.y, rect) <= HIT_MARGIN_PX
+  ));
+  if ((pointerDown || (held && (overInteractive || !cursorKnown))) && previous.length > 0) {
+    return { rects: previous.map((rect) => ({ ...rect })), kept: true };
+  }
+  return { rects: next, kept: false };
+}
+
 /** One element under the cursor. Inside a rect beats margin-only neighbours. */
 export function elementUnderCursor(cursor, rects, margin = HIT_MARGIN_PX, latchedIds = []) {
   if (!cursor) return null;

@@ -102,6 +102,7 @@ import {
   modifierLabel,
   modifierMatches,
   modifierEngages,
+  guardPublishedHits,
   composerKeyAction,
   ownComposerKey,
   MODIFIER_ARM_MS,
@@ -5848,17 +5849,70 @@ function collectHits() {
 
 let hitFrame = 0;
 let lastHits = "";
+let lastHitList = [];
+let pointerButtons = 0;
 const hitSilence = new Set();
+
+function orbShellAtPoint(x, y) {
+  let best = null;
+  let bestZ = -Infinity;
+  document.querySelectorAll(".morph").forEach((shell) => {
+    const visual = shell.dataset.state;
+    if (visual !== "orb" && visual !== "pill") return;
+    if (shell.classList.contains("is-collapsing")) return;
+    const visible = visibleBox(shell);
+    let box = visible;
+    if (box.w < 1 || box.h < 1) {
+      const host = shell.getBoundingClientRect();
+      const ax = Number(shell.dataset.ax) || ORB / 2;
+      const ay = Number(shell.dataset.ay) || ORB / 2;
+      box = { x: host.x + ax - ORB / 2, y: host.y + ay - ORB / 2, w: ORB, h: ORB };
+    }
+    if (!pointInBox(x, y, box)) return;
+    const level = shellHitLevel(shell);
+    if (!best || level >= bestZ) {
+      best = { shell, box, level };
+      bestZ = level;
+    }
+  });
+  return best;
+}
+
+function ctrlOrbRect() {
+  if (state.interaction.supported === false || !engagedModifier()) return null;
+  const hit = orbShellAtPoint(cursorPoint.x, cursorPoint.y);
+  if (!hit) return null;
+  const shell = hit.shell;
+  return {
+    id: shell.dataset.hitId || hitFor(shell.dataset.botId, shell.dataset.state),
+    x: hit.box.x,
+    y: hit.box.y,
+    w: hit.box.w,
+    h: hit.box.h,
+    z: hit.level,
+    round: shell.dataset.state === "orb",
+  };
+}
 
 function hitsBlocked() {
   return hitSilence.size > 0 || collapseBusy() || collapseQuiet() || motionFrozen();
 }
 
 function sendHitRects(rects, tag, force = false) {
-  if (!rects.length && lastHits && lastHits !== "[]") {
+  const held = state.interaction.supported !== false && engagedModifier();
+  const guarded = guardPublishedHits({
+    rects,
+    previous: lastHitList,
+    held,
+    pointerDown: pointerButtons > 0,
+    cursor: cursorPoint.x <= -9000 ? null : { x: cursorPoint.x, y: cursorPoint.y },
+    orb: ctrlOrbRect(),
+  });
+  if (guarded.kept || (!guarded.rects.length && lastHits && lastHits !== "[]")) {
     debugLog("hit-flush", `tag=${tag} n=0 kept=1`);
     return Promise.resolve();
   }
+  rects = guarded.rects;
   const key = JSON.stringify(
     rects.map((rect) => ({
       id: rect.id,
@@ -5871,9 +5925,10 @@ function sendHitRects(rects, tag, force = false) {
     })),
   );
   const same = key === lastHits;
-  debugLog("hit-flush", `tag=${tag} n=${rects.length} same=${same ? 1 : 0}`);
+  debugLog("hit-flush", `tag=${tag} n=${rects.length} same=${same ? 1 : 0} ctrl=${held ? 1 : 0}`);
   if (same && !force) return Promise.resolve();
   lastHits = key;
+  lastHitList = rects.map((rect) => ({ ...rect }));
   debugLog("hit-ipc", `cmd=set_hit_rects tag=${tag} n=${rects.length}`);
   if (inTauri()) {
     return import("@tauri-apps/api/core")
@@ -6322,13 +6377,24 @@ function setupProximity() {
     if (!document.querySelector(".morph[data-state='panel']")) return;
     debugLog("hit-ctrl", `phase=${phase} ctrl=${ctrl ? 1 : 0} published=${lastHits || "-"}`);
   };
+  window.addEventListener("pointerdown", () => {
+    pointerButtons += 1;
+  }, true);
+  window.addEventListener("pointerup", () => {
+    pointerButtons = Math.max(0, pointerButtons - 1);
+  }, true);
+  window.addEventListener("pointercancel", () => {
+    pointerButtons = Math.max(0, pointerButtons - 1);
+  }, true);
   window.addEventListener("keydown", (event) => {
     if (event.repeat) return;
     if (event.key !== "Control" && event.key !== "Shift" && event.key !== "Alt") return;
+    state.heldKeys.add(event.key);
     logCtrlEdge("down", event.ctrlKey || event.key === "Control");
   });
   window.addEventListener("keyup", (event) => {
     if (event.key !== "Control" && event.key !== "Shift" && event.key !== "Alt") return;
+    state.heldKeys.delete(event.key);
     logCtrlEdge("up", event.ctrlKey);
   });
   if (inTauri()) {

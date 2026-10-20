@@ -436,11 +436,16 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /publishHits\("final-size"\)/);
   assert.match(mainSrc, /publishHits\("after-reveal", true\)/);
   assert.match(mainSrc, /n=0 kept=1/);
+  assert.match(mainSrc, /guardPublishedHits/);
+  assert.match(mainSrc, /ctrlOrbRect/);
   assert.match(libRs, /cmd=set_hit_rects/);
   assert.match(libRs, /let mapped: Vec<interaction::HitRect>/);
   assert.match(interactionRs, /hit-ctrl/);
   assert.match(mainSrc, /hit-ctrl/);
   assert.match(css, /\.plan-window\.is-seam-grow > \.plan-fit \{[^}]*flex:\s*none/s);
+  assert.match(interactionRs, /fn shape_after_flush/);
+  assert.match(interactionRs, /fn should_keep_hit_rects/);
+  assert.match(libRs, /n=0 kept=1/);
   assert.match(interactionRs, /cmd=input-shape n=\{\} platform=linux/);
   assert.match(interactionRs, /cmd=input-shape n=\{\} platform=windows/);
   assert.match(css, /\.morph-pill \{[^}]*height:\s*44px/s);

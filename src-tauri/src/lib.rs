@@ -1405,7 +1405,11 @@ pub(crate) fn trace_debug(event: &str, detail: &str) {
 }
 
 #[tauri::command]
-fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<(), String> {
+fn set_hit_rects(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    rects: Vec<HitRectIn>,
+) -> Result<(), String> {
     let mapped: Vec<interaction::HitRect> = rects
         .into_iter()
         .map(|rect| interaction::HitRect {
@@ -1419,11 +1423,16 @@ fn set_hit_rects(state: State<'_, AppState>, rects: Vec<HitRectIn>) -> Result<()
         })
         .collect();
     let count = mapped.len();
-    *state
+    let mut slot = state
         .interaction
         .rects
         .lock()
-        .unwrap_or_else(|err| err.into_inner()) = mapped;
+        .unwrap_or_else(|err| err.into_inner());
+    if mapped.is_empty() && interaction::keep_empty_hit_publish(&window, &slot) {
+        trace_debug("hit-ipc", "cmd=set_hit_rects n=0 kept=1");
+        return Ok(());
+    }
+    *slot = mapped;
     trace_debug("hit-ipc", &format!("cmd=set_hit_rects n={count}"));
     Ok(())
 }
