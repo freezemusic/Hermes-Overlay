@@ -1052,9 +1052,7 @@ async fn open_bot(
     let result = async {
         let mut sessions = hermes::list_sessions(&state.http, &root, &key).await?;
         let resolved = hermes::resolve_session(&sessions, &pin.id, pin.explicit, pin.anchor);
-        let has_bot_chat = sessions
-            .iter()
-            .any(|session| hermes::is_bot_chat_title(&session.title));
+        let has_bot_chat = hermes::most_recent_bot_chat(&sessions).is_some();
         let (session_id, explicit, anchor) = if let Some(resolved) = resolved {
             if resolved.explicit || has_bot_chat {
                 (resolved.id, resolved.explicit, resolved.anchor)
@@ -1066,7 +1064,10 @@ async fn open_bot(
                         }
                         (id, false, 0.0)
                     }
-                    Err(_) => (resolved.id, false, resolved.anchor),
+                    Err(err) => match hermes::fallback_session(&sessions) {
+                        Some(other) => (other.id.clone(), false, other.last_active),
+                        None => return Err(err),
+                    },
                 }
             }
         } else {

@@ -12,8 +12,8 @@ import {
 } from "./sessions.js";
 
 const sessions = [
-  { id: "older", title: "Bot Chat", last_active: 50, hidden: false },
-  { id: "newer", title: "Bot Chat", last_active: 80, hidden: true },
+  { id: "older", title: "Bot Chat", source: "api_server", last_active: 50, hidden: false },
+  { id: "newer", title: "Bot Chat", source: "desktop", last_active: 80, hidden: true },
   { id: "split", title: "_splitLot", last_active: 10, hidden: true },
   { id: "desktop", title: "System Architect", last_active: 200, hidden: false },
 ];
@@ -31,8 +31,8 @@ test("Bot Chat is the default even when another session is newer", () => {
   assert.equal(resolveSession([], { id: "split", explicit: true, anchor: 1 }), null);
   assert.equal(sessionLabel(sessions[2]), "_splitLot（隱藏）");
   const tied = [
-    { id: "b", title: "Bot Chat", last_active: 5 },
-    { id: "a", title: "Bot Chat", last_active: 5 },
+    { id: "b", title: "Bot Chat", source: "api_server", last_active: 5 },
+    { id: "a", title: "Bot Chat", source: "api_server", last_active: 5 },
   ];
   assert.equal(resolveSession(tied, {}).id, "a");
   const plain = [
@@ -41,6 +41,14 @@ test("Bot Chat is the default even when another session is newer", () => {
   ];
   assert.equal(resolveSession(plain, {}).id, "desktop");
   assert.deepEqual(orderSessions(sessions).map((session) => session.id), ["newer", "older", "desktop", "split"]);
+  const tui = { id: "tui-chat", title: "Bot Chat", source: "tui", last_active: 500 };
+  const desk = { id: "desk-chat", title: "Bot Chat", source: "desktop", last_active: 40 };
+  const mixed = [tui, desk, { id: "notes", title: "Notes", source: "cli", last_active: 900 }];
+  assert.equal(mostRecentBotChat(mixed).id, "desk-chat");
+  assert.equal(resolveSession(mixed, {}).id, "desk-chat");
+  assert.equal(resolveSession(mixed, { id: "tui-chat", explicit: true, anchor: 1 }).id, "tui-chat");
+  assert.equal(mostRecentBotChat([tui]), null);
+  assert.deepEqual(orderSessions(mixed).map((session) => session.id), ["tui-chat", "desk-chat", "notes"]);
 });
 
 test("cron messages already on screen are not appended again", () => {

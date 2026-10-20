@@ -44,6 +44,8 @@ pub struct SessionSummary {
     pub hidden: Option<bool>,
     pub last_active: f64,
     pub preview: String,
+    /// Hermes session source (`api_server`, `desktop`, `tui`, …).
+    pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -142,11 +144,29 @@ pub fn most_recent_session(sessions: &[SessionSummary]) -> Option<&SessionSummar
     sessions.iter().max_by(|a, b| session_rank(a, b))
 }
 
-/// Most recently active session whose title is exactly `Bot Chat`.
+/// Overlay and Hermes Desktop chats. A TUI `Bot Chat` has no desktop tools.
+pub fn is_overlay_chat_source(source: &str) -> bool {
+    matches!(source.trim(), "api_server" | "desktop")
+}
+
+pub fn is_overlay_bot_chat(session: &SessionSummary) -> bool {
+    is_bot_chat_title(&session.title) && is_overlay_chat_source(&session.source)
+}
+
+/// Most recently active `Bot Chat` whose source is `api_server` or `desktop`.
+/// A same-titled `tui` (or other) session is left for the picker.
 pub fn most_recent_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
     sessions
         .iter()
-        .filter(|session| is_bot_chat_title(&session.title))
+        .filter(|session| is_overlay_bot_chat(session))
+        .max_by(|a, b| session_rank(a, b))
+}
+
+/// Latest session that is not a Bot Chat from another surface.
+pub fn fallback_session(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+    sessions
+        .iter()
+        .filter(|session| !is_bot_chat_title(&session.title) || is_overlay_bot_chat(session))
         .max_by(|a, b| session_rank(a, b))
 }
 
@@ -237,12 +257,19 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
+            let source = item
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             Some(SessionSummary {
                 id,
                 title,
                 hidden,
                 last_active,
                 preview,
+                source,
             })
         })
         .collect()
@@ -424,20 +451,37 @@ pub async fn list_sessions(
     Ok(parse_session_list(&value))
 }
 
+/// A 400 that names an `api_server` or `desktop` Bot Chat returns that id.
+/// Another source holding the title (a `tui` Bot Chat) is not adopted.
+/// An id missing from this listing keeps the previous hidden-occupant behaviour.
+fn adopt_title_conflict(sessions: &[SessionSummary], body: &str) -> Option<String> {
+    let id = conflict_session_id(body)?;
+    match sessions.iter().find(|session| session.id == id) {
+        Some(session) if is_overlay_bot_chat(session) => Some(id),
+        Some(_) => None,
+        None => Some(id),
+    }
+}
+
 /// `POST /api/sessions` with `{title: "Bot Chat", source: "api_server"}`, the same
-/// create Hermes Desktop uses. A 400 that names the occupying session returns that id.
+/// create Hermes Desktop uses. A 400 adopts the occupant only when that session
+/// is an overlay or desktop Bot Chat.
 pub async fn create_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
     match create_session(http, root, key, Some(BOT_CHAT_TITLE)).await {
         Ok(id) => Ok(id),
-        Err(HermesError::Http { status: 400, body }) => {
-            conflict_session_id(&body).ok_or(HermesError::Http { status: 400, body })
-        }
+        Err(HermesError::Http { status: 400, body }) => match list_sessions(http, root, key).await {
+            Ok(sessions) => {
+                adopt_title_conflict(&sessions, &body).ok_or(HermesError::Http { status: 400, body })
+            }
+            Err(_) => conflict_session_id(&body).ok_or(HermesError::Http { status: 400, body }),
+        },
         Err(err) => Err(err),
     }
 }
 
-/// Most recently active Bot Chat. If none exists, create one. If create is not
-/// feasible, fall back to the latest session of any title.
+/// Most recently active overlay Bot Chat. If none exists, create one. If create
+/// is not feasible, fall back to the latest session that is not another
+/// surface's Bot Chat.
 pub async fn ensure_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
     let sessions = list_sessions(http, root, key).await?;
     if let Some(session) = most_recent_bot_chat(&sessions) {
@@ -445,7 +489,7 @@ pub async fn ensure_bot_chat(http: &Client, root: &str, key: &str) -> Result<Str
     }
     match create_bot_chat(http, root, key).await {
         Ok(id) => Ok(id),
-        Err(err) => most_recent_session(&sessions)
+        Err(err) => fallback_session(&sessions)
             .map(|session| session.id.clone())
             .ok_or(err),
     }
@@ -1796,12 +1840,17 @@ mod tests {
     }
 
     fn summary(id: &str, title: &str, last_active: f64) -> SessionSummary {
+        summary_source(id, title, last_active, "api_server")
+    }
+
+    fn summary_source(id: &str, title: &str, last_active: f64, source: &str) -> SessionSummary {
         SessionSummary {
             id: id.into(),
             title: title.into(),
             hidden: None,
             last_active,
             preview: String::new(),
+            source: source.into(),
         }
     }
 
@@ -1957,6 +2006,54 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["newer", "older", "desktop", "split"]
         );
+        let tui = summary_source("tui-chat", "Bot Chat", 500.0, "tui");
+        let desktop_chat = summary_source("desk-chat", "Bot Chat", 40.0, "desktop");
+        let mixed = vec![
+            tui.clone(),
+            desktop_chat,
+            summary_source("notes", "Notes", 900.0, "cli"),
+        ];
+        assert_eq!(most_recent_bot_chat(&mixed).unwrap().id, "desk-chat");
+        assert_eq!(resolve_session(&mixed, "", false, 0.0).unwrap().id, "desk-chat");
+        let picked_tui = resolve_session(&mixed, "tui-chat", true, 1.0).unwrap();
+        assert_eq!(picked_tui.id, "tui-chat");
+        assert!(picked_tui.explicit);
+        assert!(most_recent_bot_chat(&[tui.clone()]).is_none());
+        assert_eq!(fallback_session(&[tui.clone()]).map(|session| session.id.as_str()), None);
+        assert_eq!(fallback_session(&mixed).unwrap().id, "notes");
+        assert_eq!(
+            fallback_session(&[
+                tui.clone(),
+                summary_source("desk-only", "Bot Chat", 40.0, "desktop"),
+            ])
+            .unwrap()
+            .id,
+            "desk-only"
+        );
+        assert_eq!(
+            session_menu_order(&mixed)
+                .into_iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tui-chat", "desk-chat", "notes"]
+        );
+        let conflict = "Title 'Bot Chat' is already in use by session tui-chat";
+        assert_eq!(adopt_title_conflict(&mixed, conflict), None);
+        let ours = "Title 'Bot Chat' is already in use by session desk-chat";
+        assert_eq!(adopt_title_conflict(&mixed, ours).as_deref(), Some("desk-chat"));
+        let hidden = "Title 'Bot Chat' is already in use by session api_hidden";
+        assert_eq!(
+            adopt_title_conflict(&mixed, hidden).as_deref(),
+            Some("api_hidden")
+        );
+        let parsed = parse_session_list(&json!({
+            "data": [
+                {"id": "t", "title": "Bot Chat", "source": "tui", "last_active": 3},
+                {"id": "a", "title": "Bot Chat", "source": "api_server", "last_active": 1}
+            ]
+        }));
+        assert_eq!(parsed[0].source, "tui");
+        assert_eq!(most_recent_bot_chat(&parsed).unwrap().id, "a");
         let seen = vec![ui_message("user", "hi")];
         let next = vec![ui_message("user", "hi"), ui_message("bot", "cron")];
         assert_eq!(fresh_messages(&seen, &next).unwrap(), &next[1..]);

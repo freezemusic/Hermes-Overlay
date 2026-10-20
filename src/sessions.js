@@ -6,6 +6,16 @@ export function isBotChat(session) {
   return String(session?.title || "").trim() === BOT_CHAT_TITLE;
 }
 
+/** Overlay and Desktop chats. A TUI Bot Chat stays in the picker only. */
+export function isOverlayChatSource(source) {
+  const value = String(source || "").trim();
+  return value === "api_server" || value === "desktop";
+}
+
+export function isOverlayBotChat(session) {
+  return isBotChat(session) && isOverlayChatSource(session?.source);
+}
+
 export function mostRecentSession(sessions) {
   const list = (sessions || []).filter((session) => session && session.id);
   if (!list.length) return null;
@@ -19,7 +29,7 @@ export function mostRecentSession(sessions) {
 }
 
 export function mostRecentBotChat(sessions) {
-  return mostRecentSession((sessions || []).filter(isBotChat));
+  return mostRecentSession((sessions || []).filter(isOverlayBotChat));
 }
 
 function byRecent(a, b) {

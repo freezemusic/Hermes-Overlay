@@ -60,8 +60,8 @@
 
 ## 5. 對話
 
-1. Hermes 把 cron 輸出寫入每個 profile 標題剛好是 `Bot Chat` 的 session。打開 Bot 面板時，若使用者沒有明確選過其他 session，預設必須是該 profile 最近活躍的 `Bot Chat`。有多條時 `last_active` 較大者勝；仍相同則 id 較小者勝。隱藏的 `Bot Chat` 一樣計算，但不因為隱藏而優先。列表為 `{root}/api/sessions?limit=200&include_hidden=true`。
-2. 完全沒有 `Bot Chat` 時，必須先按 Hermes Desktop 的方式建立：`POST {root}/api/sessions`，內容為 `{ "title": "Bot Chat", "source": "api_server" }`。若 400 寫明標題已被某 session 佔用，就用該 id。只有建立不可行時，才改開最近活躍的任何 session。
+1. Hermes 把 cron 輸出寫入每個 profile 標題剛好是 `Bot Chat` 的 session。打開 Bot 面板時，若使用者沒有明確選過其他 session，預設必須是該 profile 最近活躍、而且 `source` 為 `api_server` 或 `desktop` 的 `Bot Chat`。`tui` 或其他 source 的同名 session 不得當成預設（佢冇 desktop 工具）。有多條符合時 `last_active` 較大者勝；仍相同則 id 較小者勝。隱藏的符合 session 一樣計算，但不因為隱藏而優先。列表為 `{root}/api/sessions?limit=200&include_hidden=true`。選擇器仍可手動選任何 session，包括 `tui` 的 `Bot Chat`。
+2. 完全沒有 `source` 為 `api_server` 或 `desktop` 的 `Bot Chat` 時，必須先按 Hermes Desktop 的方式建立：`POST {root}/api/sessions`，內容為 `{ "title": "Bot Chat", "source": "api_server" }`。若 400 寫明標題已被某 session 佔用，只有該 session 的 `source` 係 `api_server` 或 `desktop` 先用該 id；其他 source 唔採用。列表搵唔到該 id 時仍用該 id（隱藏佔用者）。只有建立不可行時，才改開最近活躍、而且唔係其他 source 的 `Bot Chat` 的 session。
 3. 面板必須保留 session 選擇器，其他 session 仍可選。標題為 `Bot Chat` 的列必須排在最頂，其餘再按最近活躍排序。
 4. 使用者明確選過的 session 要按 Bot 記住，直到使用者再改，或該 id 已不在列表／回 404。Bot Chat 因 cron 更新 `last_active`，不得把明確選擇搶走。
 5. 舊設定若只存著 session id、而 `session_explicit` 不是 true，打開時必須改跟最近活躍的 `Bot Chat`，不得停在過期對話。

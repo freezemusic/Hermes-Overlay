@@ -4683,7 +4683,7 @@ function useMock(reason, bannerAction = "") {
     const thread = threadFor(bot.id);
     const sessions = [
       { id: `${bot.id}-desktop`, title: bot.name, last_active: 200, hidden: false, preview: "" },
-      { id: `${bot.id}-bot-chat`, title: "Bot Chat", last_active: 80, hidden: false, preview: "" },
+      { id: `${bot.id}-bot-chat`, title: "Bot Chat", source: "api_server", last_active: 80, hidden: false, preview: "" },
       { id: `${bot.id}-splitLot`, title: "_splitLot", last_active: 40, hidden: true, preview: "" },
     ];
     const choice = resolveSession(sessions, { id: "", explicit: false, anchor: 0 });
