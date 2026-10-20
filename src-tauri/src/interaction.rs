@@ -264,19 +264,66 @@ pub fn immediate_hit_rects(held: bool, rects: &[HitRect]) -> Vec<HitRect> {
         .collect()
 }
 
-/// Orb or preview pill the cursor is actually on. Panels do not count: while
-/// the modifier is held they leave the shape, and a flush must not treat that
-/// as "nothing under the cursor".
+/// Orb or preview pill the cursor is actually on. A covering panel does not
+/// count: while the modifier is held the panel leaves the shape, and the orb
+/// underneath must stay. Higher z, then the smaller rect, wins among orbs and
+/// pills only.
+pub fn orb_or_pill_under_cursor<'a>(
+    cursor: Option<(f64, f64)>,
+    rects: &'a [HitRect],
+) -> Option<&'a HitRect> {
+    let (x, y) = cursor?;
+    let mut best: Option<usize> = None;
+    for (index, rect) in rects.iter().enumerate() {
+        if !(is_orb_hit(rect) || is_pill_hit(rect)) || rect.w < 1.0 || rect.h < 1.0 {
+            continue;
+        }
+        let distance = distance_to_hit(x, y, rect);
+        if distance > HIT_MARGIN_PX {
+            continue;
+        }
+        let replace = match best {
+            None => true,
+            Some(best_index) => prefers_hit(rect, distance, &[], &rects[best_index], x, y),
+        };
+        if replace {
+            best = Some(index);
+        }
+    }
+    best.map(|index| &rects[index])
+}
+
 fn interactive_shape_target<'a>(
     cursor: Option<(f64, f64)>,
     rects: &'a [HitRect],
 ) -> Option<&'a HitRect> {
-    let rect = element_under_cursor(cursor, rects, HIT_MARGIN_PX, &[])?;
-    if is_orb_hit(rect) || is_pill_hit(rect) {
-        Some(rect)
-    } else {
-        None
+    orb_or_pill_under_cursor(cursor, rects)
+}
+
+/// Put the orb or pill under the cursor back on a flush list. `held` is the
+/// engaged modifier; `key_down` is the physical key from the same OS monitor.
+/// A page that logged `ctrl=0` does not get a say.
+pub fn ensure_modifier_target(
+    held: bool,
+    key_down: bool,
+    cursor: Option<(f64, f64)>,
+    incoming: &mut Vec<HitRect>,
+    existing: &[HitRect],
+) -> bool {
+    if !(held || key_down) {
+        return false;
     }
+    let Some(rect) = orb_or_pill_under_cursor(cursor, incoming)
+        .or_else(|| orb_or_pill_under_cursor(cursor, existing))
+        .cloned()
+    else {
+        return false;
+    };
+    if incoming.iter().any(|item| item.id == rect.id) {
+        return false;
+    }
+    incoming.push(rect);
+    true
 }
 
 /// `set_hit_rects` with an empty list. Keeps the rects already stored when a
@@ -284,11 +331,22 @@ fn interactive_shape_target<'a>(
 /// sample also keeps the list: the poll will shrink it.
 pub fn keep_empty_hit_publish(window: &tauri::WebviewWindow, existing: &[HitRect]) -> bool {
     should_keep_hit_rects(
-        LAST_HELD.load(Ordering::Relaxed),
+        os_modifier_engaged() || os_modifier_down(),
         POINTER_DOWN.load(Ordering::Relaxed),
         stored_css_cursor(window),
         existing,
     )
+}
+
+/// Engaged modifier (after the arm delay). Written only by the OS key monitor.
+pub fn os_modifier_engaged() -> bool {
+    LAST_HELD.load(Ordering::Relaxed)
+}
+
+/// Physical modifier key, excluding a copy/paste chord. Written only by the
+/// OS key monitor. A webview `ctrl=0` cannot clear it.
+pub fn os_modifier_down() -> bool {
+    KEY_DOWN.load(Ordering::Relaxed)
 }
 
 pub fn should_keep_hit_rects(
@@ -309,11 +367,14 @@ pub fn should_keep_hit_rects(
     cursor.is_none() || interactive_shape_target(cursor, existing).is_some()
 }
 
-/// OS shape after any flush. An empty fresh region is replaced with the orb
-/// under the cursor (from this list, then the previous one) while the modifier
-/// is held. An active press never drops a shape that was already painted.
+/// OS shape after any flush. While the engaged modifier or the physical key
+/// is down, the orb or pill under the cursor stays in the region even if a
+/// panel won the hit test or the fresh region is empty. An active press never
+/// drops a shape that was already painted. Panel and close filtering still
+/// follow `held` only, so a plain click and Ctrl+close stay click-through.
 pub fn shape_after_flush(
     held: bool,
+    key_down: bool,
     pointer_down: bool,
     cursor: Option<(f64, f64)>,
     rects: &[HitRect],
@@ -322,11 +383,13 @@ pub fn shape_after_flush(
     last_painted: &[HitRect],
 ) -> Vec<HitRect> {
     let mut fresh = os_input_rects(held, rects, frames);
-    if fresh.is_empty() && held {
-        if let Some(rect) = interactive_shape_target(cursor, rects)
-            .or_else(|| interactive_shape_target(cursor, previous_rects))
+    if held || key_down {
+        if let Some(rect) = orb_or_pill_under_cursor(cursor, rects)
+            .or_else(|| orb_or_pill_under_cursor(cursor, previous_rects))
         {
-            fresh.push(rect.clone());
+            if !fresh.iter().any(|item| item.id == rect.id) {
+                fresh.push(rect.clone());
+            }
         }
     }
     if fresh.is_empty() && pointer_down && !last_painted.is_empty() {
@@ -749,6 +812,8 @@ static SHAPE_DIRTY: AtomicBool = AtomicBool::new(false);
 static SHAPE_GEN: AtomicU64 = AtomicU64::new(0);
 static EMPTY_BLOCK_UNTIL: AtomicU64 = AtomicU64::new(0);
 static LAST_HELD: AtomicBool = AtomicBool::new(false);
+/// Physical modifier from `device_query`, not the webview keydown.
+static KEY_DOWN: AtomicBool = AtomicBool::new(false);
 static POINTER_DOWN: AtomicBool = AtomicBool::new(false);
 
 fn pointer_is_down(device: &DeviceState) -> bool {
@@ -1051,13 +1116,19 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .clone();
+            let keys = device.get_keys();
+            let physical = modifier_held(&keys, &cfg.modifier);
             let held = modifier_engages(
-                &device.get_keys(),
+                &keys,
                 &cfg.modifier,
                 Instant::now(),
                 &mut arm_at,
                 &mut chord_suppressed,
             );
+            // Copy/paste keeps the key from capturing. The page's ctrl flag
+            // is never stored here.
+            let key_down = physical && !chord_suppressed;
+            KEY_DOWN.store(key_down, Ordering::Relaxed);
             LAST_HELD.store(held, Ordering::Relaxed);
             let pointer_down = pointer_is_down(&device);
             POINTER_DOWN.store(pointer_down, Ordering::Relaxed);
@@ -1111,6 +1182,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 &app,
                 &window,
                 held,
+                key_down,
                 pointer_down,
                 cursor,
                 &rects,
@@ -1163,12 +1235,14 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             }
             let focus_owner = focus_owner_name(owner);
             let signature = format!(
-                "{}|focus={focus_owner}",
+                "{}|focus={focus_owner}|held={}|key={}",
                 items
                     .iter()
                     .map(|item| format!("{}={:.2}:{}", item.id, item.opacity, item.capture))
                     .collect::<Vec<_>>()
-                    .join("|")
+                    .join("|"),
+                u8::from(held),
+                u8::from(key_down),
             );
             if signature == last_signature {
                 continue;
@@ -1180,6 +1254,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                     "type": "proximity",
                     "supported": true,
                     "focus_owner": focus_owner,
+                    "held": held,
+                    "modifier_down": key_down,
                     "opacities": items,
                 }),
             );
@@ -1191,6 +1267,7 @@ fn sync_os_hit_region(
     app: &AppHandle,
     window: &tauri::WebviewWindow,
     held: bool,
+    key_down: bool,
     pointer_down: bool,
     cursor: Option<(f64, f64)>,
     rects: &[HitRect],
@@ -1204,6 +1281,7 @@ fn sync_os_hit_region(
     {
         let region = shape_after_flush(
             held,
+            key_down,
             pointer_down,
             cursor,
             rects,
@@ -1257,7 +1335,17 @@ fn sync_os_hit_region(
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        let _ = (app, held, pointer_down, cursor, rects, previous_rects, last_painted, region_signature);
+        let _ = (
+            app,
+            held,
+            key_down,
+            pointer_down,
+            cursor,
+            rects,
+            previous_rects,
+            last_painted,
+            region_signature,
+        );
         let ignore = !frames.iter().any(|item| item.capture);
         if *ignoring != Some(ignore) && window.set_ignore_cursor_events(ignore).is_ok() {
             *ignoring = Some(ignore);
@@ -1514,6 +1602,10 @@ fn screen_point(window: &tauri::WebviewWindow, device: &DeviceState) -> Option<(
     }
 }
 
+pub fn css_cursor(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
+    stored_css_cursor(window)
+}
+
 fn stored_css_cursor(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
     let (x, y) = (*screen_cursor()
         .lock()
@@ -1555,11 +1647,13 @@ pub fn reapply_live_input_shape(app: &AppHandle, hub: &InteractionHub) {
         .unwrap_or_else(|err| err.into_inner())
         .clone();
     let held = LAST_HELD.load(Ordering::Relaxed);
+    let key_down = KEY_DOWN.load(Ordering::Relaxed);
     let pointer_down = POINTER_DOWN.load(Ordering::Relaxed);
     let cursor = stored_css_cursor(&window);
     let frames = interaction_frame(held, &latched, cursor, &rects, HIT_MARGIN_PX, &cfg);
     let region = shape_after_flush(
         held,
+        key_down,
         pointer_down,
         cursor,
         &rects,
@@ -2540,10 +2634,32 @@ mod tests {
         let orb = orb_at("bot:a", 10.0, 10.0);
         let cursor = Some((20.0, 20.0));
         let empty_frames = interaction_frame(true, &[], cursor, &[], HIT_MARGIN_PX, &cfg);
-        let kept = shape_after_flush(true, false, cursor, &[], &empty_frames, &[orb.clone()], &[]);
+        let kept = shape_after_flush(
+            true,
+            false,
+            false,
+            cursor,
+            &[],
+            &empty_frames,
+            &[orb.clone()],
+            &[],
+        );
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].id, "bot:a");
+        let physical = shape_after_flush(
+            false,
+            true,
+            false,
+            cursor,
+            &[],
+            &empty_frames,
+            &[orb.clone()],
+            &[],
+        );
+        assert_eq!(physical.len(), 1);
+        assert_eq!(physical[0].id, "bot:a");
         let away = shape_after_flush(
+            true,
             true,
             false,
             Some((400.0, 400.0)),
@@ -2554,13 +2670,70 @@ mod tests {
         );
         assert!(away.is_empty());
         let painted = vec![orb.clone()];
-        let press = shape_after_flush(false, true, Some((400.0, 400.0)), &[], &empty_frames, &[], &painted);
+        let press = shape_after_flush(
+            false,
+            false,
+            true,
+            Some((400.0, 400.0)),
+            &[],
+            &empty_frames,
+            &[],
+            &painted,
+        );
         assert_eq!(press.len(), 1);
         assert_eq!(press[0].id, "bot:a");
         assert!(should_keep_hit_rects(true, false, cursor, &[orb.clone()]));
         assert!(!should_keep_hit_rects(true, false, Some((400.0, 400.0)), &[orb.clone()]));
         assert!(should_keep_hit_rects(false, true, Some((400.0, 400.0)), &[orb]));
         assert!(!should_keep_hit_rects(false, false, cursor, &[]));
+    }
+
+    #[test]
+    fn ctrl_keeps_the_orb_under_a_covering_panel() {
+        let cfg = fade_cfg();
+        let orb = orb_at("bot:a", 100.0, 100.0);
+        let panel = HitRect {
+            id: "kanban".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 800.0,
+            h: 600.0,
+            z: 40,
+            round: false,
+        };
+        let rects = vec![orb.clone(), panel];
+        let cursor = Some((110.0, 110.0));
+        let frames = interaction_frame(true, &[], cursor, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(
+            !frames
+                .iter()
+                .any(|frame| frame.id == "bot:a" && frame.capture),
+            "a covering panel wins the hit test, so capture stays off the orb"
+        );
+        let shape = shape_after_flush(true, true, false, cursor, &rects, &frames, &[], &[]);
+        assert!(shape.iter().any(|rect| rect.id == "bot:a"));
+        assert!(!shape.iter().any(|rect| rect.id == "kanban" || rect.id.starts_with("close:")));
+        let physical = shape_after_flush(false, true, false, cursor, &rects, &frames, &[], &[]);
+        assert!(physical.iter().any(|rect| rect.id == "bot:a"));
+        let idle = interaction_frame(false, &[], cursor, &rects, HIT_MARGIN_PX, &cfg);
+        let plain = shape_after_flush(false, false, false, cursor, &rects, &idle, &[], &[]);
+        assert!(!plain.iter().any(|rect| rect.id == "bot:a"));
+        let mut published = vec![rects[1].clone()];
+        assert!(ensure_modifier_target(
+            false,
+            true,
+            cursor,
+            &mut published,
+            &rects
+        ));
+        assert!(published.iter().any(|rect| rect.id == "bot:a"));
+        assert!(!ensure_modifier_target(
+            false,
+            false,
+            cursor,
+            &mut published,
+            &rects
+        ));
     }
 
     #[test]

@@ -1422,18 +1422,46 @@ fn set_hit_rects(
             round: rect.round,
         })
         .collect();
-    let count = mapped.len();
+    let mut mapped = mapped;
     let mut slot = state
         .interaction
         .rects
         .lock()
         .unwrap_or_else(|err| err.into_inner());
+    // Ctrl comes from the OS key monitor (the same one that paints n=1).
+    // The page does not send a ctrl flag; a flush logged as ctrl=0 cannot
+    // clear KEY_DOWN or drop the orb under the cursor.
+    let held = interaction::os_modifier_engaged();
+    let key_down = interaction::os_modifier_down();
     if mapped.is_empty() && interaction::keep_empty_hit_publish(&window, &slot) {
-        trace_debug("hit-ipc", "cmd=set_hit_rects n=0 kept=1");
+        trace_debug(
+            "hit-ipc",
+            &format!(
+                "cmd=set_hit_rects n=0 kept=1 held={} key={}",
+                u8::from(held),
+                u8::from(key_down)
+            ),
+        );
         return Ok(());
     }
+    let added = interaction::ensure_modifier_target(
+        held,
+        key_down,
+        interaction::css_cursor(&window),
+        &mut mapped,
+        &slot,
+    );
+    let count = mapped.len();
     *slot = mapped;
-    trace_debug("hit-ipc", &format!("cmd=set_hit_rects n={count}"));
+    trace_debug(
+        "hit-ipc",
+        &format!(
+            "cmd=set_hit_rects n={count} held={} key={} added={}",
+            u8::from(held),
+            u8::from(key_down),
+            u8::from(added)
+        ),
+    );
     Ok(())
 }
 

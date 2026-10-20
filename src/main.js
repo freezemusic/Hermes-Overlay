@@ -1892,8 +1892,10 @@ function pumpSeamPresent(shell, duration) {
  *  still in effect on a later frame never resumes on a cold compositor:
  *  the shell stays on the closed keyframe until the finish write jumps
  *  to open. Play before yielding. A document-timeline currentTime (seconds
- *  into the page, not the animation) must not be treated as progress. */
-function alignSeamClock(anim) {
+ *  into the page, not the animation) must not be treated as progress.
+ *  The first two callbacks can run without reaching the glass. The third
+ *  one is often the first scan, already ~46ms down the curve. */
+function alignSeamClock(anim, onPresented) {
   if (!anim) return;
   const pin = (ahead = 0) => {
     const now = document.timeline?.currentTime;
@@ -1907,12 +1909,17 @@ function alignSeamClock(anim) {
       if (anim.playState !== "running") anim.play();
     } catch { /* the paused frame stays */ }
   };
+  const confirm = (presented) => {
+    debugLog("seam-clock", `present-hold frame=${presented}`);
+    if (typeof onPresented === "function") onPresented();
+  };
   try {
     anim.pause();
     anim.currentTime = 0;
   } catch {
     pin(0);
     resume();
+    confirm(0);
     return;
   }
   // Play this turn so a cold compositor is not left paused. The closed
@@ -1921,42 +1928,49 @@ function alignSeamClock(anim) {
   pin(0);
   resume();
   let presented = 0;
-  let prior = 0;
-  const revealOf = (ms) => planEase(Math.max(0, Math.min(1, ms / PLAN_GROW_MS)));
-  const sampleLate = () => {
+  let lastStamp = 0;
+  let heldOpen = false;
+  const sampleLate = (stamp) => {
     if (!anim || anim.playState === "finished" || anim.playState === "idle") return;
     let current = 0;
     try { current = Number(anim.currentTime) || 0; } catch { current = 0; }
     presented += 1;
+    const gap = lastStamp ? Math.abs(lastStamp - stamp) : 0;
+    lastStamp = stamp;
     const lie = current > 400;
     if (anim.playState === "paused" || lie) {
       try { anim.currentTime = 0; } catch { /* keep the pin */ }
       pin(0);
       resume();
-      if (presented < 2) requestAnimationFrame(sampleLate);
+      if (presented < 3) requestAnimationFrame(sampleLate);
       return;
     }
-    // First two presented frames. Warm2's late sample was the second frame
-    // (42ms). Once the reveal already passed ~30%, leave the curve alone.
-    const late = current > 33 || (presented > 1 && current > prior + 33);
-    if (presented <= 2 && revealOf(prior) <= 0.30 && late) {
+    // Frame 1 drops the startup hole. Frames 2 and 3 are the ones a cold
+    // compositor actually scans: a ~46ms hole, or a clock already near 70%.
+    const startup = presented === 1 && current > 16;
+    const hole = presented > 1 && presented <= 3 && (gap > 40 || current > 75);
+    if (startup || hole) {
       try { anim.pause(); } catch { /* the pin still moves the start */ }
       try { anim.currentTime = 0; } catch { /* the closed keyframe stays */ }
       pin(0);
       resume();
-      debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented}`);
+      const late = hole && gap > 0 ? gap : current;
+      debugLog("seam-clock", `reanchor gap=${late.toFixed(1)} frame=${presented}`);
+      if (presented < 3) {
+        requestAnimationFrame(sampleLate);
+        return;
+      }
+      if (!heldOpen) {
+        heldOpen = true;
+        confirm(presented);
+      }
       return;
     }
-    // First presented frame stays closed. The next vsync is the t≈0 sample,
-    // so a 25–29ms hole in front of i=1 does not land on the curve.
-    if (presented === 1) {
-      try { anim.currentTime = 0; } catch { /* the closed keyframe stays */ }
-      pin(0);
-      if (current > 24) pin(0);
-      resume();
-      prior = 0;
-      requestAnimationFrame(sampleLate);
+    if (!heldOpen && (current <= 16 || (presented >= 2 && gap > 0 && gap <= 40))) {
+      heldOpen = true;
+      confirm(presented);
     }
+    if (presented < 3) requestAnimationFrame(sampleLate);
   };
   requestAnimationFrame(sampleLate);
 }
@@ -1980,8 +1994,12 @@ function beginSeamClip(shell) {
     return null;
   }
   shell._clipHold = anim;
-  alignSeamClock(anim);
-  shell.style.clipPath = to;
+  // Stay on the closed inset until a callback confirms a frame can be on
+  // the glass. The open inline style was painting ahead of the first scan.
+  shell.style.clipPath = from;
+  alignSeamClock(anim, () => {
+    shell.style.clipPath = to;
+  });
   pumpSeamPresent(shell, duration);
   watchPresent(shell, anim, "plan");
   seamLog("clip-open", `prev=${previous?.playState || "none"} dur=${duration}`);
@@ -2764,6 +2782,7 @@ const state = {
   },
   pointerHitId: "",
   heldKeys: new Set(),
+  osModifierDown: false,
   latchedIds: [],
   windowFocused: true,
   dropdownOpen: false,
@@ -6310,6 +6329,9 @@ function queryOsFocus() {
 const modifierArm = { at: null, suppressed: false, timer: 0 };
 
 function engagedModifier(now = performance.now()) {
+  // The OS monitor is the authority. Webview keydown never fires when the
+  // press started on a click-through, unfocused overlay.
+  if (state.osModifierDown) return true;
   const next = modifierEngages({
     modifier: state.interaction.modifier,
     keys: [...state.heldKeys],
@@ -6416,6 +6438,8 @@ function setupProximity() {
           return;
         }
         if (payload.focus_owner) applyOsFocus(payload.focus_owner);
+        if (payload.modifier_down === true || payload.held === true) state.osModifierDown = true;
+        else if (payload.modifier_down === false && payload.held === false) state.osModifierDown = false;
         applyFrames(payload.opacities || []);
       });
     });
