@@ -1904,35 +1904,45 @@ function alignSeamClock(anim) {
   // (about 25ms at the first sample) is discarded on that frame.
   pin(0);
   resume();
-  requestAnimationFrame(() => {
+  let presented = 0;
+  let prior = 0;
+  const revealOf = (ms) => planEase(Math.max(0, Math.min(1, ms / PLAN_GROW_MS)));
+  const sampleLate = () => {
     if (!anim || anim.playState === "finished" || anim.playState === "idle") return;
     let current = 0;
     try { current = Number(anim.currentTime) || 0; } catch { current = 0; }
+    presented += 1;
     const lie = current > 400;
     if (anim.playState === "paused" || lie) {
       try { anim.currentTime = 0; } catch { /* keep the pin */ }
       pin(0);
       resume();
+      if (presented < 2) requestAnimationFrame(sampleLate);
       return;
     }
-    // One late presented frame (Cold A was 48ms, painted at 64%). Re-anchor
-    // startTime to this frame so the visible sample is t≈0. The curve and
-    // the 280ms duration stay. A same-turn play does not leave the clock paused.
-    if (current > 33) {
+    // First two presented frames. Warm2's late sample was the second frame
+    // (42ms). Once the reveal already passed ~30%, leave the curve alone.
+    const late = current > 33 || (presented > 1 && current > prior + 33);
+    if (presented <= 2 && revealOf(prior) <= 0.30 && late) {
       try { anim.pause(); } catch { /* the pin still moves the start */ }
       try { anim.currentTime = 0; } catch { /* the closed keyframe stays */ }
       pin(0);
       resume();
-      debugLog("seam-clock", `reanchor gap=${current.toFixed(1)}`);
+      debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented}`);
       return;
     }
     // First presented frame stays closed. The next vsync is the t≈0 sample,
     // so a 25–29ms hole in front of i=1 does not land on the curve.
-    try { anim.currentTime = 0; } catch { /* the closed keyframe stays */ }
-    pin(0);
-    if (current > 24) pin(0);
-    resume();
-  });
+    if (presented === 1) {
+      try { anim.currentTime = 0; } catch { /* the closed keyframe stays */ }
+      pin(0);
+      if (current > 24) pin(0);
+      resume();
+      prior = 0;
+      requestAnimationFrame(sampleLate);
+    }
+  };
+  requestAnimationFrame(sampleLate);
 }
 
 /** Fresh shell clip, fully closed to fully open. The finished panel clip
@@ -5758,7 +5768,11 @@ function hitsBlocked() {
   return hitSilence.size > 0 || collapseBusy() || collapseQuiet() || motionFrozen();
 }
 
-function sendHitRects(rects, tag) {
+function sendHitRects(rects, tag, force = false) {
+  if (!rects.length && lastHits && lastHits !== "[]") {
+    debugLog("hit-flush", `tag=${tag} n=0 kept=1`);
+    return Promise.resolve();
+  }
   const key = JSON.stringify(
     rects.map((rect) => ({
       id: rect.id,
@@ -5772,28 +5786,28 @@ function sendHitRects(rects, tag) {
   );
   const same = key === lastHits;
   debugLog("hit-flush", `tag=${tag} n=${rects.length} same=${same ? 1 : 0}`);
-  if (same) return;
+  if (same && !force) return Promise.resolve();
   lastHits = key;
   debugLog("hit-ipc", `cmd=set_hit_rects tag=${tag} n=${rects.length}`);
   if (inTauri()) {
-    import("@tauri-apps/api/core")
+    return import("@tauri-apps/api/core")
       .then(({ invoke }) => invoke("set_hit_rects", { rects }))
       .catch(() => {});
-  } else {
-    paintLocalProximity(rects);
   }
+  paintLocalProximity(rects);
+  return Promise.resolve();
 }
 
-function publishHits(tag = "publish") {
+function publishHits(tag = "publish", force = false) {
   if (hitsBlocked()) {
     if (!hitDeferLogged) {
       hitDeferLogged = true;
       debugLog("hit-flush-defer", `tag=${tag}`);
     }
-    return;
+    return Promise.resolve();
   }
   hitDeferLogged = false;
-  sendHitRects(collectHits(), tag);
+  return sendHitRects(collectHits(), tag, force);
 }
 
 /** Final geometry, announced once before the clip. Later frames must not
@@ -7201,6 +7215,7 @@ async function rehearsePlanShells() {
 }
 
 function schedulePlanRehearsal() {
+  if (inTauri() && !revealOverlay.shown) return;
   if (!hitsBlocked()) publishHits("first-paint");
   if (schedulePlanRehearsal.armed || rehearsePlanShells.running) return;
   const waiting = state.bots.some((bot) => bot?.id && !rehearsedProfiles.has(bot.id) && shellFor(bot.id));
@@ -7237,12 +7252,41 @@ function primePlanCompositor() {
   whenAnimEnds(anim, PLAN_GROW_MS + 64, false).then(() => node.remove());
 }
 
-/** Map the native window after the transparent page has composited.
- *  A hidden document does not run rAF; the timeout is that same paint. */
+function viewportMatches(target) {
+  const width = window.innerWidth || 0;
+  const height = window.innerHeight || 0;
+  const goalW = target?.width || window.screen?.width || 0;
+  const goalH = target?.height || window.screen?.height || 0;
+  if (goalW < 100 || goalH < 100) return width >= 100;
+  return width + 8 >= goalW && height + 8 >= goalH;
+}
+
+function afterNextPaint() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, 50);
+  });
+}
+
+function fitOverlay() {
+  if (!inTauri()) return Promise.resolve(null);
+  return import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("fit_overlay"))
+    .catch(() => null);
+}
+
+/** Map the native window after the transparent page has composited at the
+ *  monitor size. A hidden document does not run rAF; the timeout is that paint. */
 function revealOverlay() {
-  if (!inTauri() || revealOverlay.shown) return;
+  if (!inTauri() || revealOverlay.shown) return Promise.resolve();
   revealOverlay.shown = true;
-  import("@tauri-apps/api/core")
+  return import("@tauri-apps/api/core")
     .then(({ invoke }) => invoke("reveal_overlay"))
     .catch(() => {
       revealOverlay.shown = false;
@@ -7250,19 +7294,49 @@ function revealOverlay() {
 }
 
 function scheduleOverlayReveal() {
-  if (!inTauri()) return;
-  // Hidden documents skip rAF. This still maps an already-transparent page.
-  setTimeout(revealOverlay, 250);
+  if (!inTauri() || scheduleOverlayReveal.started) return;
+  scheduleOverlayReveal.started = true;
+  revealWhenCovered();
+}
+
+async function revealWhenCovered() {
+  let target = await fitOverlay();
+  const deadline = performance.now() + 1200;
+  let refit = false;
+  while (!viewportMatches(target) && performance.now() < deadline) {
+    if (!refit && performance.now() > deadline - 800) {
+      refit = true;
+      const again = await fitOverlay();
+      if (again?.width) target = again;
+    }
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        window.removeEventListener("resize", onResize);
+        resolve();
+      }, 32);
+      const onResize = () => {
+        clearTimeout(timer);
+        window.removeEventListener("resize", onResize);
+        resolve();
+      };
+      window.addEventListener("resize", onResize);
+    });
+  }
+  layoutShells();
+  await afterNextPaint();
+  await publishHits("final-size");
+  await revealOverlay();
+  layoutShells();
+  await publishHits("after-reveal", true);
+  primePlanCompositor();
+  schedulePlanRehearsal();
 }
 
 async function boot() {
   await armDebugLog();
   setupComposer();
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (!hitsBlocked()) publishHits("first-paint");
-    revealOverlay();
     primePlanCompositor();
-    schedulePlanRehearsal();
   }));
   scheduleOverlayReveal();
   setupWindowChrome();

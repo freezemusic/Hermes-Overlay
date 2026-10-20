@@ -1938,21 +1938,42 @@ async fn replace_missing_session(
     Ok(id)
 }
 
-/// First map. The window is created hidden and undecorated; showing any
-/// earlier paints the toolkit's titled 1280×800 frame. Linux tao maps the
-/// window inside `set_visible` before `set_decorated`, so `visible: false`
-/// is what lets decorations land first. Windows applies the undecorated
-/// style at `CreateWindowEx` and would still show during `WM_CREATE` if
-/// `visible` were true.
+/// Monitor size while the window is still hidden. The page waits until its
+/// viewport matches, paints once, then calls `reveal_overlay`.
 #[tauri::command]
-fn reveal_overlay(app: AppHandle) {
+fn fit_overlay(app: AppHandle) -> OverlayCssSize {
+    let Some(window) = app.get_webview_window("main") else {
+        return OverlayCssSize { width: 0, height: 0 };
+    };
+    let _ = window.set_decorations(false);
+    interaction::place_overlay(&window);
+    let (width, height) = interaction::monitor_css_size(&window).unwrap_or((0, 0));
+    OverlayCssSize { width, height }
+}
+
+#[derive(serde::Serialize)]
+struct OverlayCssSize {
+    width: u32,
+    height: u32,
+}
+
+/// First map. The window is created hidden and undecorated, and already
+/// sized to the monitor. Showing any earlier paints the toolkit's titled
+/// 1280×800 frame. Linux tao maps inside `set_visible` before
+/// `set_decorated`, so `visible: false` lets decorations land first.
+/// Windows applies the undecorated style at `CreateWindowEx` and would
+/// still show during `WM_CREATE` if `visible` were true. Do not place
+/// again here: a maximize on this turn is the fullscreen jump.
+#[tauri::command]
+fn reveal_overlay(app: AppHandle, state: State<'_, AppState>) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
     let _ = window.set_decorations(false);
-    interaction::place_overlay(&window);
     let _ = window.show();
     let _ = window.set_focus();
+    interaction::hold_empty_input_shape();
+    interaction::reapply_live_input_shape(&app, state.interaction.as_ref());
 }
 
 #[tauri::command]
@@ -2041,6 +2062,7 @@ pub fn run() {
             list_cron_jobs,
             debug_log_enabled,
             debug_log,
+            fit_overlay,
             reveal_overlay,
             set_hit_rects,
             set_interaction_latch,
@@ -2145,6 +2167,7 @@ mod tests {
         assert_eq!(window["visible"], false);
         assert_eq!(window["decorations"], false);
         assert_eq!(window["transparent"], true);
+        assert_eq!(window["maximized"], false);
         let src = include_str!("lib.rs");
         assert!(src.contains("icons/tray.png"));
         assert!(src.contains("icon_as_template"));

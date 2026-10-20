@@ -227,7 +227,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 | `decorations` | `false` | 無標題列 |
 | `alwaysOnTop` | `true` | 長期置頂 |
 | `shadow` | `false` | 減少邊框陰影 |
-| `maximized` | `true` | 大範圍 overlay |
+| `maximized` | `false` | 唔好等 show 之後先 maximize；隱藏時先鋪滿螢幕 |
 | `macOSPrivateApi` | `true` | macOS 透明背景 |
 | `identifier` | `com.freezemusic.hermes-overlay` | bundle id |
 

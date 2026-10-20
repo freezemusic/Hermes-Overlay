@@ -39,6 +39,7 @@
     "allow-set-profile-enabled",
     "allow-debug-log-enabled",
     "allow-debug-log",
+    "allow-fit-overlay",
     "allow-reveal-overlay"
   ]
 }

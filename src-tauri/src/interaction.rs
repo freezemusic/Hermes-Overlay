@@ -4,9 +4,9 @@
 use crate::config::InteractionConfig;
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 #[cfg(windows)]
-use std::sync::atomic::{AtomicBool, AtomicPtr};
+use std::sync::atomic::AtomicPtr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -674,19 +674,40 @@ struct OpacityItem {
 }
 
 static RECOVER_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
+static SHAPE_DIRTY: AtomicBool = AtomicBool::new(false);
+static SHAPE_GEN: AtomicU64 = AtomicU64::new(0);
+static EMPTY_BLOCK_UNTIL: AtomicU64 = AtomicU64::new(0);
+static LAST_HELD: AtomicBool = AtomicBool::new(false);
+
+fn screen_cursor() -> &'static Mutex<Option<(f64, f64)>> {
+    static CURSOR: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
+    CURSOR.get_or_init(|| Mutex::new(None))
+}
 
 /// Cover the monitor without mapping the window. The first `show` is
-/// `reveal_overlay`, after the page has painted transparency. Focusing
-/// here would map the decorated creation frame.
-/// `center` plus `maximized` can leave a borderless window at the configured
-/// 1280×800, and a later position change restores that size.
+/// `reveal_overlay`, after the page has painted at this size. Focusing
+/// here would map the creation frame. A later maximize is what leaves the
+/// webview at 1280×800 for the first visible frames.
 pub fn place_overlay(window: &tauri::WebviewWindow) {
     let _ = window.set_always_on_top(true);
     #[cfg(windows)]
     if cover_windows_monitor(window) {
         return;
     }
+    #[cfg(target_os = "linux")]
+    if cover_linux_monitor(window) {
+        return;
+    }
     let _ = window.maximize();
+}
+
+/// CSS pixels of the monitor the overlay should cover. Zero means unknown.
+pub fn monitor_css_size(window: &tauri::WebviewWindow) -> Option<(u32, u32)> {
+    let (_, _, w, h) = monitor_logical_rect(window)?;
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    Some((w as u32, h as u32))
 }
 
 /// A cold start that stayed at the config size is not covering the monitor.
@@ -717,6 +738,65 @@ fn monitor_size(window: &tauri::WebviewWindow) -> Option<(u32, u32)> {
         .or_else(|| window.primary_monitor().ok().flatten())?;
     let size = monitor.size();
     Some((size.width, size.height))
+}
+
+fn monitor_logical_rect(window: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())?;
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+    let pos = monitor.position();
+    let size = monitor.size();
+    let x = (f64::from(pos.x) / scale).round() as i32;
+    let y = (f64::from(pos.y) / scale).round() as i32;
+    let width = (f64::from(size.width) / scale).round() as i32;
+    let height = (f64::from(size.height) / scale).round() as i32;
+    Some((x, y, width, height))
+}
+
+/// Size and place the window while it is still unmapped, so the first map
+/// is already the monitor. tao's maximize waits for the first configure,
+/// which is the show, and that is the 1280×800 orb frame.
+#[cfg(target_os = "linux")]
+fn cover_linux_monitor(window: &tauri::WebviewWindow) -> bool {
+    use gtk::prelude::*;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return false;
+    };
+    let Some((x, y, width, height)) = monitor_logical_rect(window) else {
+        return false;
+    };
+    if width <= 0 || height <= 0 {
+        return false;
+    }
+    gtk_window.set_decorated(false);
+    gtk_window.set_default_size(width, height);
+    gtk_window.resize(width, height);
+    gtk_window.move_(x, y);
+    if !gtk_window.is_realized() {
+        gtk_window.realize();
+    }
+    allocate_webkit(gtk_window.upcast_ref::<gtk::Widget>(), width, height);
+    if let Some(gdk_window) = gtk_window.window() {
+        gdk_window.move_resize(x, y, width, height);
+    }
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn allocate_webkit(widget: &gtk::Widget, width: i32, height: i32) {
+    use gtk::prelude::*;
+
+    if widget.is::<webkit2gtk::WebView>() {
+        let mut allocation = gtk::Allocation::new(0, 0, width, height);
+        widget.size_allocate(&mut allocation);
+    }
+    if let Some(container) = widget.downcast_ref::<gtk::Container>() {
+        container.foreach(|child| allocate_webkit(child, width, height));
+    }
 }
 
 #[cfg(windows)]
@@ -879,6 +959,11 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 &mut arm_at,
                 &mut chord_suppressed,
             );
+            LAST_HELD.store(held, Ordering::Relaxed);
+            remember_screen_cursor(&window, &device);
+            if SHAPE_DIRTY.swap(false, Ordering::Relaxed) {
+                region_signature.clear();
+            }
             let rects = hub
                 .rects
                 .lock()
@@ -999,6 +1084,11 @@ fn sync_os_hit_region(
     #[cfg(any(windows, target_os = "linux"))]
     {
         let region = os_input_rects(held, rects, frames);
+        // Show clears the Linux input shape. For a short beat after reveal,
+        // an empty poll must not replace the orb that was just applied.
+        if region.is_empty() && mono_ms() < EMPTY_BLOCK_UNTIL.load(Ordering::Relaxed) {
+            return;
+        }
         let origin = window.inner_position().ok();
         let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
         let (origin_x, origin_y) = origin
@@ -1209,42 +1299,162 @@ static HIT_PROC_PREVIOUS: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr:
 fn apply_linux_input_shape(app: &AppHandle, rects: &[HitRect], scale: f64) {
     let rects = rects.to_vec();
     let scale = if scale > 0.0 { scale } else { 1.0 };
+    let gen = SHAPE_GEN.fetch_add(1, Ordering::Relaxed) + 1;
     let app = app.clone();
     let handle = app.clone();
     let _ = handle.run_on_main_thread(move || {
-        use gtk::prelude::*;
-        let Some(window) = app.get_webview_window("main") else {
+        if SHAPE_GEN.load(Ordering::Relaxed) != gen {
+            SHAPE_DIRTY.store(true, Ordering::Relaxed);
             return;
-        };
-        let Ok(gtk_window) = window.gtk_window() else {
-            return;
-        };
-        let Some(gdk_window) = gtk_window.window() else {
-            return;
-        };
-        let pixels: Vec<gtk::cairo::RectangleInt> = rects
-            .iter()
-            .filter(|rect| rect.w >= 1.0 && rect.h >= 1.0)
-            .map(|rect| {
-                gtk::cairo::RectangleInt::new(
-                    (rect.x * scale).floor() as i32,
-                    (rect.y * scale).floor() as i32,
-                    ((rect.w * scale).ceil() as i32).max(1),
-                    ((rect.h * scale).ceil() as i32).max(1),
-                )
-            })
-            .collect();
-        let region = if pixels.is_empty() {
-            gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, 1, 1))
-        } else {
-            gtk::cairo::Region::create_rectangles(&pixels)
-        };
-        crate::trace_debug(
-            "hit-ipc",
-            &format!("cmd=input-shape n={} platform=linux", pixels.len()),
-        );
-        gdk_window.input_shape_combine_region(&region, 0, 0);
+        }
+        if !paint_linux_input_shape(&app, &rects, scale) {
+            SHAPE_DIRTY.store(true, Ordering::Relaxed);
+        }
     });
+}
+
+#[cfg(target_os = "linux")]
+fn paint_linux_input_shape(app: &AppHandle, rects: &[HitRect], scale: f64) -> bool {
+    use gtk::prelude::*;
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+    let Ok(gtk_window) = window.gtk_window() else {
+        return false;
+    };
+    let Some(gdk_window) = gtk_window.window() else {
+        return false;
+    };
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let pixels: Vec<gtk::cairo::RectangleInt> = rects
+        .iter()
+        .filter(|rect| rect.w >= 1.0 && rect.h >= 1.0)
+        .map(|rect| {
+            gtk::cairo::RectangleInt::new(
+                (rect.x * scale).floor() as i32,
+                (rect.y * scale).floor() as i32,
+                ((rect.w * scale).ceil() as i32).max(1),
+                ((rect.h * scale).ceil() as i32).max(1),
+            )
+        })
+        .collect();
+    if pixels.is_empty() && mono_ms() < EMPTY_BLOCK_UNTIL.load(Ordering::Relaxed) {
+        return true;
+    }
+    let region = if pixels.is_empty() {
+        gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, 1, 1))
+    } else {
+        gtk::cairo::Region::create_rectangles(&pixels)
+    };
+    crate::trace_debug(
+        "hit-ipc",
+        &format!("cmd=input-shape n={} platform=linux", pixels.len()),
+    );
+    gdk_window.input_shape_combine_region(&region, 0, 0);
+    true
+}
+
+/// After show, ignore empty shapes briefly. A reveal/resize poll was clearing
+/// the orb (`n=1` then `n=0`) before the click landed.
+pub fn hold_empty_input_shape() {
+    EMPTY_BLOCK_UNTIL.store(mono_ms().saturating_add(400), Ordering::Relaxed);
+    SHAPE_DIRTY.store(true, Ordering::Relaxed);
+}
+
+fn remember_screen_cursor(window: &tauri::WebviewWindow, device: &DeviceState) {
+    let Some(point) = screen_point(window, device) else {
+        return;
+    };
+    *screen_cursor()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner()) = Some(point);
+}
+
+fn screen_point(window: &tauri::WebviewWindow, device: &DeviceState) -> Option<(f64, f64)> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = window;
+        let mouse = device.get_mouse();
+        Some((f64::from(mouse.coords.0), f64::from(mouse.coords.1)))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = device;
+        let cursor = window.cursor_position().ok()?;
+        Some((cursor.x, cursor.y))
+    }
+}
+
+fn stored_css_cursor(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
+    let (x, y) = (*screen_cursor()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner()))?;
+    let origin = window.inner_position().ok()?;
+    let scale = window.scale_factor().ok()?;
+    if scale <= 0.0 {
+        return None;
+    }
+    Some(css_point_from_screen(
+        x,
+        y,
+        f64::from(origin.x),
+        f64::from(origin.y),
+        scale,
+    ))
+}
+
+/// Recompute the OS shape from the rects just published and the latest
+/// cursor, on the same turn as `show`. The poll's cached signature would
+/// otherwise skip a window that GDK cleared when it mapped.
+pub fn reapply_live_input_shape(app: &AppHandle, hub: &InteractionHub) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let rects = hub
+        .rects
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    let cfg = hub
+        .config
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    let latched = hub
+        .latched_ids
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    let held = LAST_HELD.load(Ordering::Relaxed);
+    let cursor = stored_css_cursor(&window);
+    let frames = interaction_frame(held, &latched, cursor, &rects, HIT_MARGIN_PX, &cfg);
+    let region = os_input_rects(held, &rects, &frames);
+    SHAPE_GEN.fetch_add(1, Ordering::Relaxed);
+    if region.is_empty() {
+        SHAPE_DIRTY.store(true, Ordering::Relaxed);
+        return;
+    }
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+    #[cfg(target_os = "linux")]
+    {
+        if !paint_linux_input_shape(app, &region, scale) {
+            SHAPE_DIRTY.store(true, Ordering::Relaxed);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let origin = window.inner_position().ok();
+        let (origin_x, origin_y) = origin
+            .map(|point| (f64::from(point.x), f64::from(point.y)))
+            .unwrap_or((0.0, 0.0));
+        remember_hit_region(&region, origin_x, origin_y, scale);
+        queue_windows_hit_style(app, false);
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = (app, scale);
+    }
+    SHAPE_DIRTY.store(true, Ordering::Relaxed);
 }
 
 /// Screen pixels to CSS pixels inside the window.

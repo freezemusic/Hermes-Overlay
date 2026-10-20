@@ -124,6 +124,11 @@ description = "Append one line when HERMES_OVERLAY_DEBUG_LOG is set."
 commands.allow = ["debug_log"]
 
 [[permission]]
+identifier = "allow-fit-overlay"
+description = "Size the hidden overlay to the monitor before the first paint."
+commands.allow = ["fit_overlay"]
+
+[[permission]]
 identifier = "allow-reveal-overlay"
 description = "Show the overlay after the first transparent paint."
 commands.allow = ["reveal_overlay"]
