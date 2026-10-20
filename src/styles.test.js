@@ -55,6 +55,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph \{[^}]*--pill-h:\s*44px/s);
   assert.match(css, /\.morph \{[^}]*--pill-w:\s*320px/s);
   assert.match(css, /\.morph \{[^}]*clip-path:\s*inset\(/s);
+  assert.match(css, /\.morph \{[^}]*pointer-events:\s*none/s);
+  assert.match(css, /\.morph\[data-state="pill"\]:not\(\.is-collapsing\):not\(\[data-opening="panel"\]\) \.morph-pill \{[^}]*pointer-events:\s*auto/s);
   assert.match(css, /\.morph\.is-growing-pill \{[^}]*transition:\s*clip-path 200ms cubic-bezier\(\.2,\s*\.8,\s*\.2,\s*1\) 0s/s);
   assert.match(css, /\.morph\.is-growing-panel \{[^}]*transition:\s*clip-path 480ms cubic-bezier\(\.2,\s*\.8,\s*\.2,\s*1\) 0s/s);
   assert.match(css, /\.morph\.is-collapsing \{[^}]*pointer-events:\s*none/s);
@@ -206,7 +208,12 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.doesNotMatch(seamCall, /flushHits|revealPlanFrame|offsetWidth|getBoundingClientRect/);
   const picked = mainSrc.slice(mainSrc.indexOf("async function selectBot"), mainSrc.indexOf("function openBotPanel"));
   assert.match(picked, /renderChat\(id\);\n  openBotPanel\(id\)/);
-  assert.ok(picked.indexOf("await pending") >= 0 && picked.indexOf("await pending") < picked.indexOf("renderChat(id)"));
+  assert.ok(picked.indexOf("openBotPanel(id)") > 0 && picked.indexOf("openBotPanel(id)") < picked.indexOf("await pending"));
+  assert.ok(picked.indexOf("await pending") < picked.lastIndexOf("renderChat(id)"));
+  assert.match(mainSrc, /function presentationBusy/);
+  assert.match(mainSrc, /function visibleShellAt/);
+  assert.match(mainSrc, /click-retarget/);
+  assert.match(mainSrc, /backgroundBlocked\(\)/);
   const prefetch = mainSrc.slice(mainSrc.indexOf("function prefetchBotChats"), mainSrc.indexOf("function prefetchOrbUnderCursor"));
   assert.match(prefetch, /for \(const bot of state\.bots\)/);
   assert.match(prefetch, /beginBotHistory\(bot\.id\)/);

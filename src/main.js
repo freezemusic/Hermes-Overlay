@@ -967,6 +967,21 @@ function motionFrozen() {
   return [...document.querySelectorAll(".morph")].some((shell) => shell._motion || now < clockAt(shell, "freeze"));
 }
 
+/** Any shell still on a morph, plan, or settle clock. Background paints wait. */
+function presentationBusy() {
+  if (motionFrozen()) return true;
+  if (document.querySelector(".morph.is-morphing, .morph.is-plan-seam, .morph.is-plan-arming")) return true;
+  const now = performance.now();
+  return [...document.querySelectorAll(".morph")].some((shell) => {
+    if (shell._settleGate || shell._motion) return true;
+    return now < clockAt(shell, "quiet") || now < clockAt(shell, "freeze");
+  });
+}
+
+function backgroundBlocked() {
+  return collapseBusy() || collapseQuiet() || presentationBusy();
+}
+
 /** Timestamp only. Settle must not cancel an animation, stop an rAF loop,
  *  or remove a listener in the same turn. */
 function holdFreeze(shell, ms) {
@@ -2767,6 +2782,8 @@ const state = {
   souls: new Map(),
   kanbanOpen: false,
   kanban: { board: null, fingerprint: "", unread: false, saving: false, dragging: false },
+  prefetchDeferred: false,
+  kanbanPaintDue: null,
   kanbanTimer: 0,
   cronOpen: false,
   cronGroups: [],
@@ -2863,12 +2880,63 @@ function previewNode() {
   return pill;
 }
 
+function pointInBox(x, y, box) {
+  return !!box && box.w >= 1 && box.h >= 1
+    && x >= box.x && x <= box.x + box.w
+    && y >= box.y && y <= box.y + box.h;
+}
+
+function shellHitLevel(shell) {
+  const z = Number.parseInt(shell.style.zIndex, 10);
+  if (Number.isFinite(z)) return z;
+  if (shell.dataset.state === "pill") return 40;
+  if (shell.dataset.state === "panel") return 1;
+  return 0;
+}
+
+/** Visible clip, not the pre-sized layout box. A finished clip animation can
+ *  leave WebKitGTK hit-testing the border box for a few frames. */
+function visibleShellAt(x, y) {
+  let best = null;
+  let bestZ = -Infinity;
+  document.querySelectorAll(".morph").forEach((shell) => {
+    if (shell.classList.contains("is-collapsing")) return;
+    const box = visibleBox(shell);
+    if (!pointInBox(x, y, box)) return;
+    const level = shellHitLevel(shell);
+    if (!best || level >= bestZ) {
+      best = shell;
+      bestZ = level;
+    }
+  });
+  return best;
+}
+
+function activateHitShell(shell) {
+  const hitId = shell?.dataset.botId || "";
+  if (!hitId) return;
+  if (hitId === "settings") focusSettings();
+  else if (hitId === "kanban") toggleKanban();
+  else if (hitId === "cron") toggleCron();
+  else selectBot(hitId);
+}
+
 function attachShell(shell, id) {
   shell.addEventListener("pointerenter", () => {
     if (id === "settings" || id === "kanban" || id === "cron") return;
     prefetchBotChats();
   });
   shell.addEventListener("click", (event) => {
+    const mine = visibleBox(shell);
+    const inside = pointInBox(event.clientX, event.clientY, mine);
+    if (!inside) {
+      const foreign = visibleShellAt(event.clientX, event.clientY);
+      if (!foreign || foreign === shell || foreign.dataset.state === "panel") return;
+      if (state.interaction.supported !== false && !modifierHeld(event)) return;
+      debugLog("click-retarget", `from=${id} to=${foreign.dataset.botId || ""}`);
+      activateHitShell(foreign);
+      return;
+    }
     const orb = event.target.closest?.(".morph-orb");
     if (shell.dataset.state === "panel" && !orb) return;
     if (shell.dataset.state === "panel") {
@@ -2877,10 +2945,7 @@ function attachShell(shell, id) {
     }
     if (!orb && shell.dataset.state === "orb") return;
     if (state.interaction.supported !== false && !modifierHeld(event)) return;
-    if (id === "settings") focusSettings();
-    else if (id === "kanban") toggleKanban();
-    else if (id === "cron") toggleCron();
-    else selectBot(id);
+    activateHitShell(shell);
   });
   shell.addEventListener("contextmenu", (event) => {
     event.preventDefault();
@@ -3032,7 +3097,7 @@ function botPaintSig() {
 }
 
 function renderBots(tag = "renderBots") {
-  if (collapseBusy() || collapseQuiet() || motionFrozen()) {
+  if (backgroundBlocked()) {
     renderBots.pending = true;
     debugLog("render-bots-defer", `tag=${tag} quiet=${collapseQuiet() ? 1 : 0}`);
     return;
@@ -3211,9 +3276,11 @@ function syncCronClock(face) {
 }
 
 function renderCronOrb(options = {}) {
-  if (!options.force && (collapseBusy() || collapseQuiet())) {
-    state.cronDeferred = true;
-    debugLog("refresh-tick-defer", "cron-orb");
+  if (!options.force && backgroundBlocked()) {
+    if (collapseBusy() || collapseQuiet()) {
+      state.cronDeferred = true;
+      debugLog("refresh-tick-defer", "cron-orb");
+    }
     return;
   }
   ensureChrome();
@@ -3760,8 +3827,9 @@ function appendMessage(id, message) {
   const thread = threadFor(id);
   thread.messages.push(message);
   const shell = shellFor(id);
-  if (deferShellWork(shell)) {
+  if (shell && (deferShellWork(shell) || presentationBusy())) {
     shell.dataset.chatDirty = "1";
+    if (presentationBusy()) armPresentationFlush();
     return;
   }
   const chat = chatOf(id);
@@ -3779,11 +3847,12 @@ function setBotStatus(id, text, statusState) {
   if (statusState === "busy") state.busy.add(id);
   else state.busy.delete(id);
   const shell = shellFor(id);
-  if (visualQuiet(shell)) {
+  if (shell && (visualQuiet(shell) || presentationBusy())) {
     setStatusText(id, text);
     const statusEl = role(panelFor(id), "status");
     if (statusEl) statusEl.dataset.state = statusState || "idle";
     shell.dataset.chatDirty = "1";
+    if (presentationBusy()) armPresentationFlush();
     return;
   }
   if (panelFor(id)) renderChat(id);
@@ -3809,13 +3878,14 @@ function applyOpened(id, opened) {
   rememberPlan(thread, thread.messages);
   clearConnectionBanner();
   const shell = shellFor(id);
-  if (visualQuiet(shell)) {
+  if (shell && (visualQuiet(shell) || presentationBusy())) {
     thread.status = "閒置";
     thread.statusState = "idle";
     state.busy.delete(id);
     setStatusText(id, "閒置");
     shell.dataset.chatDirty = "1";
     shell.dataset.planDirty = "1";
+    armPresentationFlush();
     return;
   }
   setBotStatus(id, "閒置", "idle");
@@ -3839,6 +3909,12 @@ function beginBotHistory(id) {
 
 function prefetchBotChats() {
   if (state.mode !== "hermes" || !inTauri()) return;
+  if (backgroundBlocked()) {
+    state.prefetchDeferred = true;
+    debugLog("refresh-tick-defer", "prefetch");
+    armPresentationFlush();
+    return;
+  }
   for (const bot of state.bots) {
     if (bot.hasKey === false) continue;
     beginBotHistory(bot.id)?.catch(() => {});
@@ -3865,12 +3941,17 @@ function refreshBotChats() {
   if (collapseBusy() || collapseQuiet()) {
     state.refreshDeferred = true;
     debugLog("refresh-tick-defer", "frozen=1");
+    armPresentationFlush();
     return;
   }
-  const frozen = motionFrozen();
+  const frozen = presentationBusy();
   debugLog("refresh-tick", `frozen=${frozen ? 1 : 0}`);
   if (state.mode !== "hermes" || !inTauri()) return;
-  if (frozen) return;
+  if (frozen) {
+    state.refreshDeferred = true;
+    armPresentationFlush();
+    return;
+  }
   for (const bot of state.bots) {
     if (bot.hasKey === false) continue;
     const shell = shellFor(bot.id);
@@ -4034,16 +4115,19 @@ async function selectBot(id) {
   }
   const thread = threadFor(id);
   const pending = thread.loaded ? null : (thread.historyPromise || null);
+  // The morph starts on this click. Another shell's pill, and this bot's
+  // history round-trip, must not delay morph-start.
+  renderBots();
+  renderChat(id);
+  openBotPanel(id);
   if (pending) {
     try {
       await pending;
     } catch (err) {
       noteHistoryError(id, err);
     }
+    renderChat(id);
   }
-  renderBots();
-  renderChat(id);
-  openBotPanel(id);
   if (thread.loaded) return;
   const host = shellFor(id);
   if (host) host.dataset.seamWait = "1";
@@ -4323,8 +4407,9 @@ function ensureLiveBubble(id) {
     live = { role: "bot", text: "", live: true };
     thread.messages.push(live);
     const shell = shellFor(id);
-    if (deferShellWork(shell)) {
+    if (shell && (deferShellWork(shell) || presentationBusy())) {
       shell.dataset.chatDirty = "1";
+      if (presentationBusy()) armPresentationFlush();
       return live;
     }
     const chat = chatOf(id);
@@ -4339,8 +4424,9 @@ function ensureLiveBubble(id) {
 
 function paintLiveNow(id) {
   const shell = shellFor(id);
-  if (deferShellWork(shell)) {
+  if (shell && (deferShellWork(shell) || presentationBusy())) {
     shell.dataset.chatDirty = "1";
+    if (presentationBusy()) armPresentationFlush();
     return;
   }
   const chat = chatOf(id);
@@ -5904,7 +5990,37 @@ function collapseBusy() {
   return collapseHold > 0 || !!document.querySelector(".morph.is-collapsing");
 }
 
+function armPresentationFlush() {
+  if (armPresentationFlush.armed) return;
+  armPresentationFlush.armed = true;
+  const tick = () => {
+    if (backgroundBlocked()) {
+      armPresentationFlush.timer = window.setTimeout(tick, 48);
+      return;
+    }
+    armPresentationFlush.armed = false;
+    armPresentationFlush.timer = 0;
+    releaseDeferredTicks();
+  };
+  armPresentationFlush.timer = window.setTimeout(tick, 48);
+}
+
+function flushIdleChats() {
+  document.querySelectorAll(".morph").forEach((shell) => {
+    if (shell.dataset.chatDirty !== "1" && shell.dataset.planDirty !== "1") return;
+    flushDeferredChat(shell);
+  });
+}
+
 function releaseDeferredTicks() {
+  if (backgroundBlocked()) {
+    armPresentationFlush();
+    return;
+  }
+  if (state.prefetchDeferred) {
+    state.prefetchDeferred = false;
+    prefetchBotChats();
+  }
   if (state.refreshDeferred) {
     state.refreshDeferred = false;
     debugLog("refresh-tick-release", "chat");
@@ -5918,12 +6034,22 @@ function releaseDeferredTicks() {
     state.kanbanDeferred = false;
     refreshKanban();
   }
+  if (backgroundBlocked()) {
+    armPresentationFlush();
+    return;
+  }
+  if (state.kanbanPaintDue) {
+    const board = state.kanbanPaintDue;
+    state.kanbanPaintDue = null;
+    paintKanban(board);
+  }
   if (state.cronDeferred) {
     state.cronDeferred = false;
     refreshCron();
   }
   if (renderBots.pending) renderBots("after-collapse");
   releaseHitSilence("after-collapse");
+  flushIdleChats();
 }
 
 let collapseQuietUntil = 0;
@@ -6431,9 +6557,10 @@ function stopKanbanPoll() {
 }
 
 async function refreshKanban() {
-  if (collapseBusy() || collapseQuiet()) {
+  if (backgroundBlocked()) {
     state.kanbanDeferred = true;
     debugLog("refresh-tick-defer", "kanban");
+    armPresentationFlush();
     return;
   }
   if (state.kanban.saving || state.kanban.dragging) return;
@@ -6452,9 +6579,10 @@ async function refreshKanban() {
 }
 
 function commitKanban(board) {
-  if (collapseBusy() || collapseQuiet()) {
+  if (backgroundBlocked()) {
     state.kanbanPending = board;
     debugLog("refresh-tick-defer", "kanban-commit");
+    armPresentationFlush();
     return;
   }
   const print = boardFingerprint(board);
@@ -6484,6 +6612,13 @@ function mockKanban() {
 }
 
 function paintKanban(board) {
+  if (backgroundBlocked()) {
+    state.kanbanPaintDue = board;
+    debugLog("refresh-tick-defer", "kanban-paint");
+    armPresentationFlush();
+    return;
+  }
+  state.kanbanPaintDue = null;
   const empty = $("#kanban-empty");
   const root = $("#kanban-board");
   const title = $("#kanban-title");
@@ -6911,9 +7046,10 @@ function paintCron() {
 }
 
 async function refreshCron() {
-  if (collapseBusy() || collapseQuiet()) {
+  if (backgroundBlocked()) {
     state.cronDeferred = true;
     debugLog("refresh-tick-defer", "cron");
+    armPresentationFlush();
     return;
   }
   let next;
@@ -6931,6 +7067,12 @@ async function refreshCron() {
         message: String(err),
       })];
     }
+  }
+  if (backgroundBlocked()) {
+    state.cronDeferred = true;
+    debugLog("refresh-tick-defer", "cron-apply");
+    armPresentationFlush();
+    return;
   }
   const sig = JSON.stringify(next);
   if (sig === state.cronSig) {

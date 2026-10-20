@@ -1836,7 +1836,9 @@ html, body {
   background: var(--nous-blue);
   color: var(--text);
   overflow: hidden;
-  pointer-events: auto;
+  /* The shell is the full panel box. Only the clipped shape may take a hit;
+     WebKitGTK hit-tests the border box once a clip animation fills forwards. */
+  pointer-events: none;
   will-change: auto;
   clip-path: inset(0px 0px 0px 0px round 3px);
   transform-origin: var(--ax, 22px) var(--ay, 22px);
@@ -2274,6 +2276,7 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 
 .morph[data-state="pill"]:not(.is-collapsing):not([data-opening="panel"]) .morph-pill {
   opacity: 1;
+  pointer-events: auto;
 }
 
 /* Plan collapse keeps the chat. Opacity drops only when the panel clip
