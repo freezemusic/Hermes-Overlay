@@ -1433,35 +1433,89 @@ fn set_hit_rects(
     // clear KEY_DOWN or drop the orb under the cursor.
     let held = interaction::os_modifier_engaged();
     let key_down = interaction::os_modifier_down();
+    let cursor = interaction::css_cursor(&window);
+    let cursor_text = match cursor {
+        Some((x, y)) => format!("{x:.0},{y:.0}"),
+        None => "none".to_string(),
+    };
+    let mut guard = interaction::shape_guard_lock();
+    if interaction::press_frozen(&guard) {
+        trace_debug(
+            "hit-ipc",
+            &format!(
+                "cmd=set_hit_rects n={} ignored=1 reason=frozen held={} key={} button=1 cursor={cursor_text}",
+                mapped.len(),
+                u8::from(held),
+                u8::from(key_down)
+            ),
+        );
+        trace_debug(
+            "hit-shape",
+            &format!(
+                "reason=frozen cursor={cursor_text} button=1 held={} key={} n={} ignored=1",
+                u8::from(held),
+                u8::from(key_down),
+                slot.len()
+            ),
+        );
+        return Ok(());
+    }
     if mapped.is_empty() && interaction::keep_empty_hit_publish(&window, &slot) {
         trace_debug(
             "hit-ipc",
             &format!(
-                "cmd=set_hit_rects n=0 kept=1 held={} key={}",
+                "cmd=set_hit_rects n=0 kept=1 held={} key={} cursor={cursor_text}",
                 u8::from(held),
                 u8::from(key_down)
             ),
         );
         return Ok(());
     }
-    let added = interaction::ensure_modifier_target(
+    let sample = cursor.or(guard.last_cursor);
+    let latched = guard.latched.clone();
+    let why = interaction::retain_modifier_orb(
         held,
         key_down,
-        interaction::css_cursor(&window),
+        sample,
         &mut mapped,
         &slot,
+        &latched,
     );
+    if matches!(why, "hit-new" | "hit-prev" | "latched" | "cursor-missing") {
+        if let Some(rect) = interaction::orb_or_pill_under_cursor(sample, &mapped).cloned() {
+            guard.latched = Some(rect);
+        }
+    }
+    if cursor.is_some() {
+        guard.last_cursor = cursor;
+    }
+    let added = u8::from(why != "up" && why != "hit-new");
     let count = mapped.len();
     *slot = mapped;
     trace_debug(
         "hit-ipc",
         &format!(
-            "cmd=set_hit_rects n={count} held={} key={} added={}",
+            "cmd=set_hit_rects n={count} held={} key={} added={added} button={} cursor={cursor_text} why={why}",
             u8::from(held),
             u8::from(key_down),
-            u8::from(added)
+            u8::from(guard.button_down)
         ),
     );
+    if !matches!(why, "up" | "hit-new") {
+        trace_debug(
+            "hit-shape",
+            &format!(
+                "reason={why} cursor={cursor_text} last={} button={} held={} key={} n={count}",
+                guard
+                    .last_cursor
+                    .map(|(x, y)| format!("{x:.0},{y:.0}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                u8::from(guard.button_down),
+                u8::from(held),
+                u8::from(key_down)
+            ),
+        );
+    }
     Ok(())
 }
 

@@ -310,20 +310,9 @@ pub fn ensure_modifier_target(
     incoming: &mut Vec<HitRect>,
     existing: &[HitRect],
 ) -> bool {
-    if !(held || key_down) {
-        return false;
-    }
-    let Some(rect) = orb_or_pill_under_cursor(cursor, incoming)
-        .or_else(|| orb_or_pill_under_cursor(cursor, existing))
-        .cloned()
-    else {
-        return false;
-    };
-    if incoming.iter().any(|item| item.id == rect.id) {
-        return false;
-    }
-    incoming.push(rect);
-    true
+    let before = incoming.len();
+    let why = retain_modifier_orb(held, key_down, cursor, incoming, existing, &None);
+    why != "up" && why != "hit-new" && incoming.len() > before
 }
 
 /// `set_hit_rects` with an empty list. Keeps the rects already stored when a
@@ -382,20 +371,402 @@ pub fn shape_after_flush(
     previous_rects: &[HitRect],
     last_painted: &[HitRect],
 ) -> Vec<HitRect> {
-    let mut fresh = os_input_rects(held, rects, frames);
-    if held || key_down {
-        if let Some(rect) = orb_or_pill_under_cursor(cursor, rects)
-            .or_else(|| orb_or_pill_under_cursor(cursor, previous_rects))
-        {
-            if !fresh.iter().any(|item| item.id == rect.id) {
-                fresh.push(rect.clone());
+    let mut guard = ShapeGuard::default();
+    resolve_input_shape(
+        held,
+        key_down,
+        pointer_down,
+        cursor,
+        rects,
+        frames,
+        previous_rects,
+        last_painted,
+        &mut guard,
+    )
+    .0
+}
+
+/// Cursor and mouse-button memory for the OS shape. The poll and
+/// `set_hit_rects` share one of these. `latched` is the orb geometry that
+/// last contained the cursor while Ctrl was down (the same CSS pixel space
+/// that produced `n=1`). `frozen` is that input shape held until mouseup.
+#[derive(Debug, Clone)]
+pub struct ShapeGuard {
+    pub latched: Option<HitRect>,
+    pub last_cursor: Option<(f64, f64)>,
+    pub button_down: bool,
+    frozen: Option<Vec<HitRect>>,
+    last_log: String,
+}
+
+impl Default for ShapeGuard {
+    fn default() -> Self {
+        Self {
+            latched: None,
+            last_cursor: None,
+            button_down: false,
+            frozen: None,
+            last_log: String::new(),
+        }
+    }
+}
+
+pub struct ShapeNote {
+    pub reason: &'static str,
+    pub interesting: bool,
+    pub n: usize,
+    pub detail: String,
+}
+
+fn shape_guard() -> &'static Mutex<ShapeGuard> {
+    static GUARD: OnceLock<Mutex<ShapeGuard>> = OnceLock::new();
+    GUARD.get_or_init(|| Mutex::new(ShapeGuard::default()))
+}
+
+pub fn shape_guard_lock() -> std::sync::MutexGuard<'static, ShapeGuard> {
+    shape_guard()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
+pub fn press_frozen(guard: &ShapeGuard) -> bool {
+    guard.button_down && guard.frozen.is_some()
+}
+
+fn push_unique(out: &mut Vec<HitRect>, rect: &HitRect) {
+    if out.iter().any(|item| item.id == rect.id && (item.x - rect.x).abs() < 0.5 && (item.y - rect.y).abs() < 0.5) {
+        return;
+    }
+    if let Some(slot) = out.iter_mut().find(|item| item.id == rect.id) {
+        *slot = rect.clone();
+        return;
+    }
+    out.push(rect.clone());
+}
+
+fn orbs_and_pills(rects: &[HitRect]) -> Vec<HitRect> {
+    rects
+        .iter()
+        .filter(|rect| is_orb_hit(rect) || is_pill_hit(rect))
+        .cloned()
+        .collect()
+}
+
+fn hit_candidates(rects: &[HitRect]) -> String {
+    let mut parts = Vec::new();
+    let mut panels = 0u32;
+    for rect in rects {
+        if is_orb_hit(rect) || is_pill_hit(rect) {
+            parts.push(format!(
+                "{}:{:.0},{:.0},{:.0}x{:.0}",
+                rect.id, rect.x, rect.y, rect.w, rect.h
+            ));
+        } else {
+            panels += 1;
+        }
+    }
+    if parts.is_empty() {
+        format!("orbs=0 panels={panels}")
+    } else {
+        format!("{} panels={panels}", parts.join(";"), panels)
+    }
+}
+
+fn shape_detail(
+    reason: &str,
+    cursor: Option<(f64, f64)>,
+    last_cursor: Option<(f64, f64)>,
+    button: bool,
+    held: bool,
+    key_down: bool,
+    n: usize,
+    rects: &[HitRect],
+    previous: &[HitRect],
+    latched: &Option<HitRect>,
+) -> String {
+    let cursor = match cursor {
+        Some((x, y)) => format!("{x:.0},{y:.0}"),
+        None => "none".to_string(),
+    };
+    let last = match last_cursor {
+        Some((x, y)) => format!("{x:.0},{y:.0}"),
+        None => "none".to_string(),
+    };
+    let latch = match latched {
+        Some(rect) => format!("{}:{:.0},{:.0},{:.0}x{:.0}", rect.id, rect.x, rect.y, rect.w, rect.h),
+        None => "none".to_string(),
+    };
+    format!(
+        "reason={reason} cursor={cursor} last={last} button={} held={} key={} n={n} latch={latch} new={} prev={}",
+        u8::from(button),
+        u8::from(held),
+        u8::from(key_down),
+        hit_candidates(rects),
+        hit_candidates(previous),
+    ) + " space=css"
+}
+
+fn contains_orb(cursor: Option<(f64, f64)>, rect: &HitRect) -> bool {
+    orb_or_pill_under_cursor(cursor, std::slice::from_ref(rect)).is_some()
+}
+
+/// Hit-test `cursor` in the CSS pixel space used for `n=1`. A missing sample
+/// reuses the last CSS point. A press that starts while Ctrl is down over an
+/// orb freezes that shape until mouseup. Ctrl plus a cursor that still sits
+/// in the previous shape's orb never yields an empty region.
+pub fn resolve_input_shape(
+    held: bool,
+    key_down: bool,
+    pointer_down: bool,
+    cursor: Option<(f64, f64)>,
+    rects: &[HitRect],
+    frames: &[ElementFrame],
+    previous_rects: &[HitRect],
+    last_painted: &[HitRect],
+    guard: &mut ShapeGuard,
+) -> (Vec<HitRect>, ShapeNote) {
+    let modifier = held || key_down;
+    let press_began = pointer_down && !guard.button_down;
+    if !pointer_down {
+        guard.frozen = None;
+    }
+    guard.button_down = pointer_down;
+    if let Some(point) = cursor {
+        guard.last_cursor = Some(point);
+    }
+    if !modifier && !pointer_down {
+        guard.latched = None;
+    }
+    let sample = cursor.or(guard.last_cursor);
+    let over_new = orb_or_pill_under_cursor(sample, rects).cloned();
+    let over_prev = orb_or_pill_under_cursor(sample, previous_rects).cloned();
+    let over_paint = orb_or_pill_under_cursor(sample, last_painted).cloned();
+    let over_latch = guard.latched.as_ref().and_then(|rect| {
+        if sample.is_none() || contains_orb(sample, rect) {
+            Some(rect.clone())
+        } else {
+            None
+        }
+    });
+
+    if press_began && modifier {
+        // The button went down since the previous sample, while the shape was
+        // already the orb. A republish in this same sample must not talk us
+        // out of that shape.
+        let painted = orbs_and_pills(last_painted);
+        if !painted.is_empty() {
+            if guard.latched.is_none() {
+                guard.latched = painted.first().cloned();
             }
+            guard.frozen = Some(painted);
+        } else if let Some(rect) = over_new
+            .clone()
+            .or_else(|| over_prev.clone())
+            .or_else(|| over_paint.clone())
+            .or_else(|| over_latch.clone())
+        {
+            guard.latched = Some(rect.clone());
+            guard.frozen = Some(vec![rect]);
+        }
+    }
+
+    if pointer_down {
+        if let Some(frozen) = guard.frozen.clone() {
+            let detail = shape_detail(
+                "frozen",
+                cursor,
+                guard.last_cursor,
+                true,
+                held,
+                key_down,
+                frozen.len(),
+                rects,
+                previous_rects,
+                &guard.latched,
+            );
+            let n = frozen.len();
+            return (
+                frozen,
+                ShapeNote {
+                    reason: "frozen",
+                    interesting: true,
+                    n,
+                    detail,
+                },
+            );
+        }
+    }
+
+    let mut fresh = os_input_rects(held, rects, frames);
+    let mut reason = if fresh.is_empty() { "empty" } else { "open" };
+    if modifier {
+        if let Some(rect) = over_new.clone() {
+            push_unique(&mut fresh, &rect);
+            guard.latched = Some(rect);
+            reason = if cursor.is_none() { "cursor-missing" } else { "hit-new" };
+        } else if let Some(rect) = over_prev.clone() {
+            push_unique(&mut fresh, &rect);
+            guard.latched = Some(rect);
+            reason = "hit-prev";
+        } else if let Some(rect) = over_paint.clone() {
+            push_unique(&mut fresh, &rect);
+            guard.latched = Some(rect);
+            reason = "hit-painted";
+        } else if cursor.is_none() {
+            if let Some(rect) = guard.latched.clone().or(over_latch) {
+                push_unique(&mut fresh, &rect);
+                guard.latched = Some(rect);
+            }
+            reason = "cursor-missing";
+        } else if let Some(rect) = over_latch.clone() {
+            push_unique(&mut fresh, &rect);
+            reason = "latched";
+        } else {
+            if !pointer_down {
+                guard.latched = None;
+            }
+            reason = "outside";
         }
     }
     if fresh.is_empty() && pointer_down && !last_painted.is_empty() {
-        return last_painted.to_vec();
+        let detail = shape_detail(
+            "press-hold",
+            cursor,
+            guard.last_cursor,
+            true,
+            held,
+            key_down,
+            last_painted.len(),
+            rects,
+            previous_rects,
+            &guard.latched,
+        );
+        return (
+            last_painted.to_vec(),
+            ShapeNote {
+                reason: "press-hold",
+                interesting: true,
+                n: last_painted.len(),
+                detail,
+            },
+        );
     }
-    fresh
+    if fresh.is_empty() && modifier {
+        let keep = over_prev
+            .clone()
+            .or(over_paint)
+            .or_else(|| guard.latched.clone())
+            .filter(|rect| sample.is_none() || contains_orb(sample, rect));
+        if let Some(rect) = keep {
+            fresh.push(rect.clone());
+            guard.latched = Some(rect);
+            reason = "keep-prev";
+        }
+    }
+    let interesting = !matches!(reason, "hit-new" | "open") && !(reason == "outside" && !fresh.is_empty());
+    let n = fresh.len();
+    let detail = shape_detail(
+        reason,
+        cursor,
+        guard.last_cursor,
+        pointer_down,
+        held,
+        key_down,
+        fresh.len(),
+        rects,
+        previous_rects,
+        &guard.latched,
+    );
+    (
+        fresh,
+        ShapeNote {
+            reason,
+            interesting,
+            n,
+            detail,
+        },
+    )
+}
+
+fn note_shape(guard: &mut ShapeGuard, note: &ShapeNote) {
+    if !note.interesting {
+        return;
+    }
+    let marks = note
+        .detail
+        .find("new=")
+        .map(|index| &note.detail[index..])
+        .unwrap_or("");
+    let sig = format!("{}|{}|{marks}", note.reason, note.n);
+    if sig == guard.last_log {
+        return;
+    }
+    guard.last_log = sig;
+    crate::trace_debug("hit-shape", &note.detail);
+}
+
+fn guarded_input_shape(
+    held: bool,
+    key_down: bool,
+    pointer_down: bool,
+    cursor: Option<(f64, f64)>,
+    rects: &[HitRect],
+    frames: &[ElementFrame],
+    previous_rects: &[HitRect],
+    last_painted: &[HitRect],
+) -> Vec<HitRect> {
+    let mut guard = shape_guard()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let (region, note) = resolve_input_shape(
+        held,
+        key_down,
+        pointer_down,
+        cursor,
+        rects,
+        frames,
+        previous_rects,
+        last_painted,
+        &mut guard,
+    );
+    note_shape(&mut guard, &note);
+    region
+}
+
+/// On a republish, hit-test the cursor against the new rects first, then the
+/// previous shape, then the latched orb. A missing cursor does not drop the
+/// latched orb. Returns why the orb was kept, for the opt-in debug log.
+pub fn retain_modifier_orb(
+    held: bool,
+    key_down: bool,
+    cursor: Option<(f64, f64)>,
+    incoming: &mut Vec<HitRect>,
+    existing: &[HitRect],
+    latched: &Option<HitRect>,
+) -> &'static str {
+    if !(held || key_down) {
+        return "up";
+    }
+    if orb_or_pill_under_cursor(cursor, incoming).is_some() {
+        return "hit-new";
+    }
+    if let Some(rect) = orb_or_pill_under_cursor(cursor, existing).cloned() {
+        push_unique(incoming, &rect);
+        return "hit-prev";
+    }
+    if cursor.is_none() {
+        if let Some(rect) = latched.clone() {
+            push_unique(incoming, &rect);
+        }
+        return "cursor-missing";
+    }
+    if let Some(rect) = latched.clone() {
+        if contains_orb(cursor, &rect) {
+            push_unique(incoming, &rect);
+            return "latched";
+        }
+    }
+    "outside"
 }
 
 /// OS input region: panels that are already open, plus whatever the hover poll
@@ -816,13 +1187,15 @@ static LAST_HELD: AtomicBool = AtomicBool::new(false);
 static KEY_DOWN: AtomicBool = AtomicBool::new(false);
 static POINTER_DOWN: AtomicBool = AtomicBool::new(false);
 
+/// Left, right, and middle. `device_query` is 1-based; indexes 4 and 5 are
+/// the X11 wheel and must not freeze the orb shape.
 fn pointer_is_down(device: &DeviceState) -> bool {
     device
         .get_mouse()
         .button_pressed
         .iter()
-        .copied()
-        .any(|pressed| pressed)
+        .enumerate()
+        .any(|(index, pressed)| *pressed && (1..=3).contains(&index))
 }
 
 fn screen_cursor() -> &'static Mutex<Option<(f64, f64)>> {
@@ -1279,7 +1652,7 @@ fn sync_os_hit_region(
 ) -> Vec<HitRect> {
     #[cfg(any(windows, target_os = "linux"))]
     {
-        let region = shape_after_flush(
+        let region = guarded_input_shape(
             held,
             key_down,
             pointer_down,
@@ -1651,7 +2024,7 @@ pub fn reapply_live_input_shape(app: &AppHandle, hub: &InteractionHub) {
     let pointer_down = POINTER_DOWN.load(Ordering::Relaxed);
     let cursor = stored_css_cursor(&window);
     let frames = interaction_frame(held, &latched, cursor, &rects, HIT_MARGIN_PX, &cfg);
-    let region = shape_after_flush(
+    let region = guarded_input_shape(
         held,
         key_down,
         pointer_down,
@@ -2734,6 +3107,122 @@ mod tests {
             &mut published,
             &rects
         ));
+    }
+
+    #[test]
+    fn ctrl_press_freezes_the_orb_until_mouseup() {
+        let orb = orb_at("bot:a", 100.0, 700.0);
+        let cursor = Some((110.0, 710.0));
+        let frames = vec![];
+        let mut guard = ShapeGuard::default();
+        let (first, note) = resolve_input_shape(
+            true,
+            true,
+            false,
+            cursor,
+            &[orb.clone()],
+            &frames,
+            &[],
+            &[],
+            &mut guard,
+        );
+        assert_eq!(note.reason, "hit-new");
+        assert_eq!(first[0].id, "bot:a");
+        let (down, _) = resolve_input_shape(
+            true,
+            true,
+            true,
+            cursor,
+            &[orb.clone()],
+            &frames,
+            &[orb.clone()],
+            &first,
+            &mut guard,
+        );
+        assert!(guard.frozen.is_some());
+        assert!(down.iter().any(|rect| rect.id == "bot:a"));
+        let moved = orb_at("bot:a", 800.0, 10.0);
+        let (held_down, note) = resolve_input_shape(
+            true,
+            true,
+            true,
+            None,
+            &[moved.clone()],
+            &frames,
+            &[moved.clone()],
+            &down,
+            &mut guard,
+        );
+        assert_eq!(note.reason, "frozen");
+        assert!(
+            held_down
+                .iter()
+                .any(|rect| rect.id == "bot:a" && (rect.x - 100.0).abs() < 1.0),
+            "republish while the button is down must not move or drop the orb"
+        );
+        assert!(!held_down.iter().any(|rect| rect.id.starts_with("close:")));
+        let (up, note) = resolve_input_shape(
+            true,
+            true,
+            false,
+            None,
+            &[moved.clone()],
+            &frames,
+            &[moved.clone()],
+            &[],
+            &mut guard,
+        );
+        assert!(guard.frozen.is_none());
+        assert_eq!(note.reason, "cursor-missing");
+        assert!(
+            !up.is_empty(),
+            "a missing cursor sample must not publish n=0 while Ctrl is held"
+        );
+    }
+
+    #[test]
+    fn republish_keeps_the_previous_orb_under_ctrl() {
+        let previous = orb_at("bot:a", 100.0, 700.0);
+        let moved = orb_at("bot:a", 0.0, 0.0);
+        let cursor = Some((110.0, 710.0));
+        let mut guard = ShapeGuard::default();
+        let (shape, note) = resolve_input_shape(
+            true,
+            true,
+            false,
+            cursor,
+            &[moved],
+            &[],
+            &[previous],
+            &[],
+            &mut guard,
+        );
+        assert_eq!(note.reason, "hit-prev");
+        assert!(shape.iter().any(|rect| (rect.x - 100.0).abs() < 1.0));
+        assert!(!shape.is_empty());
+        let mut incoming = vec![orb_at("pill:kanban", 0.0, 0.0)];
+        let why = retain_modifier_orb(
+            true,
+            true,
+            cursor,
+            &mut incoming,
+            &[orb_at("bot:a", 100.0, 700.0)],
+            &guard.latched,
+        );
+        assert_eq!(why, "hit-prev");
+        assert!(incoming.iter().any(|rect| rect.id == "bot:a"));
+        let away = resolve_input_shape(
+            true,
+            true,
+            false,
+            Some((10.0, 10.0)),
+            &[],
+            &[],
+            &[orb_at("bot:a", 100.0, 700.0)],
+            &[],
+            &mut ShapeGuard::default(),
+        );
+        assert!(away.0.is_empty(), "a cursor that left the orb may publish n=0");
     }
 
     #[test]
