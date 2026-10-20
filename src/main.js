@@ -6644,7 +6644,9 @@ function setupProximity() {
       pressFrozen: state.pressFrozen,
       latchedHitId: state.latchedOrbId,
     });
+    const gestureAt = orbGesture.at;
     const finishOpen = (ctrlAtDown) => {
+      if (orbGesture.at !== gestureAt) return;
       const open = orbOpenFromPress({
         supported: state.interaction.supported,
         button: event.button,
