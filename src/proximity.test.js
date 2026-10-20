@@ -17,6 +17,7 @@ import {
   latchedElementIds,
   linuxAltWarning,
   composerKeyAction,
+  ownComposerKey,
   modifierMatches,
   modifierEngages,
   MODIFIER_ARM_MS,
@@ -252,6 +253,15 @@ test("a composer keeps the next key after the modifier comes up", () => {
     composerConnected: true,
   }), "ignore");
   assert.equal(composerKeyAction({ key: "Escape", composerConnected: true }), "ignore");
+});
+
+test("a busy open owns composer keys until the seam settles", () => {
+  assert.equal(ownComposerKey({ action: "type", busy: true, settling: true }), true);
+  assert.equal(ownComposerKey({ action: "insert", busy: true, settling: true }), true);
+  assert.equal(ownComposerKey({ action: "send", busy: true, settling: true }), false);
+  assert.equal(ownComposerKey({ action: "type", busy: true, settling: false }), false);
+  assert.equal(ownComposerKey({ action: "type", busy: false, settling: true }), false);
+  assert.equal(ownComposerKey({ action: "ignore", busy: true, settling: true }), false);
 });
 
 test("modifier keys", () => {

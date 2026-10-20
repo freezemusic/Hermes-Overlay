@@ -546,6 +546,8 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(main, /dropParkedAnchor/);
   assert.match(main, /includePlan/);
   assert.match(main, /composerKeyAction/);
+  assert.match(main, /ownComposerKey/);
+  assert.match(main, /composer-own/);
   assert.match(main, /action === "send"/);
   assert.match(main, /event\.target !== composerField/);
   assert.match(main, /CRON_ORB_BLEED/);

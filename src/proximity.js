@@ -332,6 +332,21 @@ export function composerKeyAction({
   return activeIsComposer ? "type" : "insert";
 }
 
+/**
+ * A streaming reply leaves 停止 visible. During the open clip and the seam,
+ * the focused field's default insert never lands (a click can also hit 停止
+ * and forget the composer). Own the character so it queues in the input.
+ * Enter stays on the send path. A settled panel keeps native typing.
+ */
+export function ownComposerKey({
+  action = "ignore",
+  busy = false,
+  settling = false,
+} = {}) {
+  if (!busy || !settling) return false;
+  return action === "type" || action === "insert";
+}
+
 export function modifierLabel(kind) {
   if (kind === "shift") return "Shift";
   if (kind === "alt") return "Alt";

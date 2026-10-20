@@ -103,6 +103,7 @@ import {
   modifierMatches,
   modifierEngages,
   composerKeyAction,
+  ownComposerKey,
   MODIFIER_ARM_MS,
   nextDropdownOpen,
   selectKeyOpensDropdown,
@@ -5276,8 +5277,50 @@ function insertComposerKey(field, key) {
   field.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function composerShellSettling(shell) {
+  if (!shell) return false;
+  return visualQuiet(shell)
+    || !!shell._motion
+    || shell.classList.contains("is-morphing")
+    || shell.classList.contains("is-plan-seam")
+    || shell.classList.contains("is-plan-arming");
+}
+
+function openPanelComposer() {
+  const ordered = [];
+  const preferred = shellFor(state.activeId);
+  if (preferred) ordered.push(preferred);
+  document.querySelectorAll(".morph[data-kind='bot']").forEach((node) => {
+    if (node !== preferred) ordered.push(node);
+  });
+  for (const shell of ordered) {
+    if (shell.classList.contains("is-collapsing")) continue;
+    if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel") continue;
+    const input = role(shell, "input");
+    if (input) return input;
+  }
+  return null;
+}
+
+function foreignFieldFocus() {
+  const active = document.activeElement;
+  if (!active) return false;
+  if (active.tagName === "SELECT") return true;
+  if (!isTextField(active)) return false;
+  return active.dataset?.role !== "input";
+}
+
+function composerIsBusy(field) {
+  const id = field?.closest?.(".morph")?.dataset?.botId || "";
+  return !!id && state.busy.has(id);
+}
+
 function setupComposer() {
   window.addEventListener("keydown", (event) => {
+    if (!foreignFieldFocus() && event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      const latched = openPanelComposer();
+      if (latched && !composerHostOpen(composerField)) composerField = latched;
+    }
     const action = composerKeyAction({
       key: event.key,
       ctrlKey: event.ctrlKey,
@@ -5290,6 +5333,18 @@ function setupComposer() {
       rememberComposer();
       return;
     }
+    const shell = composerField?.closest?.(".morph");
+    if (!event.isComposing && !foreignFieldFocus() && composerField && ownComposerKey({
+      action,
+      busy: composerIsBusy(composerField),
+      settling: composerShellSettling(shell),
+    })) {
+      event.preventDefault();
+      restoreComposer();
+      insertComposerKey(composerField, event.key);
+      debugLog("composer-own", `key=${event.key} busy=1 settling=1`);
+      return;
+    }
     if (action === "send" && composerField?.dataset.role === "input" && event.target !== composerField && !slashPopupOpen()) {
       event.preventDefault();
       const id = composerField.closest(".morph")?.dataset.botId
@@ -5298,7 +5353,7 @@ function setupComposer() {
       sendActive(id);
       return;
     }
-    if (action === "insert" && composerField) {
+    if (action === "insert" && composerField && !foreignFieldFocus()) {
       restoreComposer();
       if (event.target !== composerField) {
         insertComposerKey(composerField, event.key);
@@ -5320,6 +5375,25 @@ function setupComposer() {
     if (isTextField(event.target)) rememberComposer();
   });
   document.addEventListener("pointerdown", (event) => {
+    const control = event.target?.closest?.("button, select, a, textarea, .panel-header, .settings-head");
+    const shell = event.target?.closest?.(".morph");
+    if (control) {
+      // 停止 sits in the composer row while a reply streams. Clearing the
+      // remembered field here dropped the keys that followed that click.
+      const keep = shell && composerField && shell.contains(composerField) && composerShellSettling(shell);
+      if (!keep && composerField && !composerField.contains(event.target)) composerField = null;
+      return;
+    }
+    const bot = event.target?.closest?.(".morph[data-kind='bot']");
+    const input = role(bot, "input");
+    const open = bot && !bot.classList.contains("is-collapsing")
+      && (bot.dataset.state === "panel" || bot.dataset.opening === "panel");
+    const onComposer = !!(input && (event.target === input || event.target.closest?.(".composer")));
+    if (input && open && (onComposer || composerShellSettling(bot))) {
+      composerField = input;
+      if (document.activeElement !== input) input.focus({ preventScroll: true });
+      return;
+    }
     if (composerField && !composerField.contains(event.target)) composerField = null;
   }, true);
   window.addEventListener("keydown", (event) => {
