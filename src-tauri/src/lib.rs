@@ -2075,6 +2075,19 @@ fn map_overlay_for_layout(app: AppHandle) {
 /// still show during `WM_CREATE` if `visible` were true. Do not place
 /// again here: a maximize on this turn is the fullscreen jump.
 #[tauri::command]
+async fn wait_presented_frames(app: AppHandle, frames: Option<u32>) -> u32 {
+    let count = frames.unwrap_or(2);
+    tauri::async_runtime::spawn_blocking(move || interaction::wait_presented_frames(&app, count))
+        .await
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+fn modifier_down_now(state: State<'_, AppState>) -> bool {
+    interaction::modifier_down_now(state.interaction.as_ref())
+}
+
+#[tauri::command]
 fn reveal_overlay(app: AppHandle, state: State<'_, AppState>) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -2175,6 +2188,8 @@ pub fn run() {
             debug_log,
             fit_overlay,
             map_overlay_for_layout,
+            wait_presented_frames,
+            modifier_down_now,
             reveal_overlay,
             set_hit_rects,
             set_interaction_latch,

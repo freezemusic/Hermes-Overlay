@@ -24,6 +24,7 @@ import {
   rehearsalDeferReason,
   botIdFromHit,
   pressOrbId,
+  orbOpenFromPress,
   POINTER_QUIET_MS,
   MODIFIER_ARM_MS,
   nextOrbPulse,
@@ -243,6 +244,34 @@ test("a frozen ctrl press opens the latched orb and rehearsal waits out the poin
   assert.equal(rehearsalDeferReason({ pointerDown: true, planLive: true }), "plan-open");
   assert.equal(rehearsalDeferReason({ morphLive: true }), "morph");
   assert.equal(rehearsalDeferReason({}), "");
+  assert.equal(orbOpenFromPress({
+    supported: false,
+    button: 0,
+    captured: true,
+    orbId: "planner",
+    ctrlAtDown: false,
+  }), true);
+  assert.equal(orbOpenFromPress({
+    supported: true,
+    button: 0,
+    captured: true,
+    orbId: "planner",
+    ctrlAtDown: false,
+  }), false);
+  assert.equal(orbOpenFromPress({
+    supported: true,
+    button: 0,
+    captured: true,
+    orbId: "planner",
+    ctrlAtDown: true,
+  }), true);
+  assert.equal(orbOpenFromPress({
+    supported: true,
+    button: 0,
+    captured: false,
+    orbId: "planner",
+    ctrlAtDown: true,
+  }), false);
 });
 
 test("a flush keeps the orb under the cursor while the modifier is held", () => {

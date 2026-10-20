@@ -123,6 +123,23 @@ export function pressOrbId({ domId = "", pressFrozen = false, latchedHitId = "" 
 }
 
 /**
+ * pointerup opens only when this press began with the modifier held.
+ * `ctrlAtDown` is a fresh OS sample from pointerdown, not the page key
+ * and not the last poll. Browser preview (supported false) stays allowed.
+ */
+export function orbOpenFromPress({
+  supported = true,
+  button = 0,
+  captured = false,
+  orbId = "",
+  ctrlAtDown = false,
+} = {}) {
+  if (button !== 0 || !captured || !orbId) return false;
+  if (supported === false) return true;
+  return ctrlAtDown === true;
+}
+
+/**
  * A hit flush must not publish an empty shape while the modifier is held over
  * an orb or preview pill, or while a pointer button is already down.
  * `orb` is the live orb/pill under the cursor when the fresh list missed it.

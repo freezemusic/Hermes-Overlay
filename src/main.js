@@ -105,6 +105,7 @@ import {
   guardPublishedHits,
   rehearsalDeferReason,
   pressOrbId,
+  orbOpenFromPress,
   POINTER_QUIET_MS,
   composerKeyAction,
   ownComposerKey,
@@ -2041,6 +2042,37 @@ function kickSeamClock(anim) {
   try { anim.play(); } catch { /* the closed keyframe stays */ }
 }
 
+/** GTK after-paint. A double rAF is not a presented frame on this webview. */
+function waitPresentedFrames(count) {
+  const need = Math.max(1, Math.min(8, count | 0));
+  if (!inTauri()) return Promise.resolve(0);
+  return import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("wait_presented_frames", { frames: need }))
+    .then((got) => Number(got) || 0)
+    .catch(() => 0);
+}
+
+function promoteLayer(el) {
+  if (!el) return;
+  holdMotion(el);
+  el.style.willChange = "clip-path, transform";
+  const current = el.style.transform || "";
+  if (!current || current === "none") el.style.transform = "translateZ(0)";
+  else if (!/translateZ|translate3d/.test(current)) el.style.transform = `${current} translateZ(0)`;
+}
+
+/** Closed plan clip, already composited, for at least two presented frames.
+ *  The 280ms clock starts only after this returns. */
+async function promoteClosedSeam(shell) {
+  const closed = planRevealClip(shell, 0).value;
+  promoteLayer(shell);
+  shell.style.clipPath = closed;
+  promoteLayer(shell.querySelector(".plan-window"));
+  const frames = await waitPresentedFrames(2);
+  debugLog("seam-present", `frames=${frames} clip=closed`);
+  return frames;
+}
+
 function growPlan(shell, token) {
   const plan = shell.querySelector(".plan-window");
   if (!plan || shell.dataset.planOpen !== "1") return Promise.resolve();
@@ -2106,6 +2138,8 @@ function growPlan(shell, token) {
     return true;
   };
   const run = (async () => {
+    await promoteClosedSeam(shell);
+    if (!alive()) return false;
     const anim = beginSeamClip(shell);
     seamLog("anim-start", `flight=${flight} mode=clip same=shell raster=${plan.dataset.raster || "live"} reveal=0 motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
     seamMark("plan-seam:clock");
@@ -2481,7 +2515,17 @@ function planSeamLive(shell) {
   return phase === "grown" || phase === "growing";
 }
 
-/** Chat stays up through the plan clip. The panel clip is what fades it. */
+/** Keep the panel clip layer hot through the plan collapse that follows. */
+function promoteCollapseLayer(shell) {
+  if (!shell) return;
+  promoteLayer(shell);
+  promoteLayer(shell.querySelector(".morph-fill"));
+  promoteLayer(shell.querySelector(".content"));
+  promoteLayer(shell.querySelector(".morph-body"));
+  debugLog("collapse-promote", `edge=${shell.dataset.edge || ""}`);
+}
+
+/** Class bookkeeping only. Opacity stays put so the handoff is not a blank card. */
 function beginPanelCollapseContent(shell) {
   shell.classList.remove("is-plan-collapse", "is-content-hold", "open");
   shell.dataset.contentOnce = "";
@@ -2492,6 +2536,7 @@ function beginPanelCollapseContent(shell) {
 async function collapsePlanSeam(shell, token) {
   if (!planSeamLive(shell)) return;
   shell.classList.add("is-plan-collapse");
+  promoteCollapseLayer(shell);
   const plan = shell.querySelector(".plan-window");
   const closed = planRevealClip(shell, 0).value;
   if (reducedMotion()) {
@@ -2522,7 +2567,6 @@ async function collapsePlanSeam(shell, token) {
   watchPresent(shell, anim, "plan-collapse");
   await whenAnimEnds(anim, duration);
   if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
-  applyParkedPlan(shell, plan);
   setSeamPhase(plan, "", { dom: false });
   debugLog("collapse-finish", `plan=0 edge=${shell.dataset.edge || ""}`);
 }
@@ -2576,6 +2620,8 @@ async function runShellMorph(shell, target) {
     shell.dataset.intent = "close";
     shell.classList.add("is-collapsing");
     holdCollapseGate(shell);
+    pauseHitSync();
+    promoteCollapseLayer(shell);
     debugLog("collapse-start", `edge=${shell.dataset.edge || ""} scale=${closingScale}`);
     shell._closingScale = closingScale;
     shell.classList.remove("is-orb-moving");
@@ -2958,8 +3004,8 @@ function attachShell(shell, id) {
     if (!inside) {
       const foreign = visibleShellAt(event.clientX, event.clientY);
       if (!foreign || foreign === shell || foreign.dataset.state === "panel") return;
-      if (!orbClickAllowed(event)) return;
-      debugLog("click-retarget", `from=${id} to=${foreign.dataset.botId || ""}`);
+    if (pageOpenBlocked() || !orbClickAllowed(event)) return;
+    debugLog("click-retarget", `from=${id} to=${foreign.dataset.botId || ""}`);
       activateHitShell(foreign);
       return;
     }
@@ -2970,7 +3016,7 @@ function attachShell(shell, id) {
       return;
     }
     if (!orb && shell.dataset.state === "orb") return;
-    if (!orbClickAllowed(event)) return;
+    if (pageOpenBlocked() || !orbClickAllowed(event)) return;
     activateHitShell(shell);
   });
   shell.addEventListener("contextmenu", (event) => {
@@ -4227,6 +4273,7 @@ function wireBotPanel(panel, id) {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
+    holdMotion(event.currentTarget);
     closeBotPanel(id);
   });
   role(panel, "tab-chat")?.addEventListener("click", () => showBotTab(panel, "chat"));
@@ -5893,6 +5940,9 @@ const orbGesture = {
   orbId: "",
   at: 0,
   opened: false,
+  ctrlAtDown: null,
+  ctrlSample: null,
+  rejected: false,
 };
 
 function pointerAge() {
@@ -5966,6 +6016,36 @@ function logPointer(phase, event, orbId, extra = "") {
 function orbClickAllowed(event) {
   if (state.interaction.supported === false) return true;
   return modifierHeld(event) || engagedModifier() || state.pressFrozen;
+}
+
+/** A fresh OS sample is in flight or said the modifier was up at pointerdown. */
+function pageOpenBlocked() {
+  if (state.interaction.supported === false) return false;
+  if (orbGesture.rejected) return true;
+  if (orbGesture.ctrlSample && orbGesture.ctrlAtDown !== true) return true;
+  return false;
+}
+
+function sampleModifierDown() {
+  if (state.interaction.supported === false || !inTauri()) {
+    orbGesture.ctrlAtDown = state.interaction.supported === false;
+    orbGesture.ctrlSample = null;
+    return Promise.resolve(orbGesture.ctrlAtDown);
+  }
+  orbGesture.ctrlAtDown = null;
+  const sample = import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("modifier_down_now"))
+    .then((down) => {
+      const held = down === true;
+      if (orbGesture.ctrlSample === sample) orbGesture.ctrlAtDown = held;
+      return held;
+    })
+    .catch(() => {
+      if (orbGesture.ctrlSample === sample) orbGesture.ctrlAtDown = false;
+      return false;
+    });
+  orbGesture.ctrlSample = sample;
+  return sample;
 }
 
 function orbOpenedThisPress() {
@@ -6537,12 +6617,16 @@ function setupProximity() {
     pointerButtons += 1;
     orbGesture.at = performance.now();
     orbGesture.opened = false;
+    orbGesture.rejected = false;
+    orbGesture.ctrlAtDown = null;
+    orbGesture.ctrlSample = null;
     const domId = orbIdFromEventTarget(event.target);
     logPointer("down", event, domId);
     const capture = event.button === 0 && !!domId && orbClickAllowed(event);
     if (capture) {
       orbGesture.pointerId = event.pointerId;
       orbGesture.orbId = domId;
+      sampleModifierDown();
       try { document.documentElement.setPointerCapture(event.pointerId); } catch { /* already released */ }
     } else {
       orbGesture.pointerId = -1;
@@ -6560,12 +6644,26 @@ function setupProximity() {
       pressFrozen: state.pressFrozen,
       latchedHitId: state.latchedOrbId,
     });
-    const open = event.button === 0 && captured && !!orbId && orbClickAllowed(event);
-    logPointer("up", event, orbId, ` open=${open ? 1 : 0}`);
-    try { document.documentElement.releasePointerCapture(event.pointerId); } catch { /* not captured */ }
-    if (open) openPressedOrb(orbId, domId);
-    orbGesture.pointerId = -1;
-    postponeOrbWork();
+    const finishOpen = (ctrlAtDown) => {
+      const open = orbOpenFromPress({
+        supported: state.interaction.supported,
+        button: event.button,
+        captured,
+        orbId,
+        ctrlAtDown,
+      });
+      if (!open && captured) orbGesture.rejected = true;
+      logPointer("up", event, orbId, ` open=${open ? 1 : 0} down=${ctrlAtDown ? 1 : 0}`);
+      try { document.documentElement.releasePointerCapture(event.pointerId); } catch { /* not captured */ }
+      if (open) openPressedOrb(orbId, domId);
+      orbGesture.pointerId = -1;
+      orbGesture.ctrlSample = null;
+      postponeOrbWork();
+    };
+    if (state.interaction.supported === false) finishOpen(true);
+    else if (orbGesture.ctrlAtDown != null) finishOpen(orbGesture.ctrlAtDown);
+    else if (orbGesture.ctrlSample) orbGesture.ctrlSample.then((down) => finishOpen(down));
+    else finishOpen(false);
   }, true);
   window.addEventListener("pointercancel", (event) => {
     pointerButtons = Math.max(0, pointerButtons - 1);
@@ -7417,7 +7515,7 @@ function placeRehearsalStand(shell) {
     event.preventDefault();
     event.stopPropagation();
     if (orbOpenedThisPress()) return;
-    if (!orbClickAllowed(event)) return;
+    if (pageOpenBlocked() || !orbClickAllowed(event)) return;
     selectBot(id);
   });
   stand.addEventListener("contextmenu", (event) => {

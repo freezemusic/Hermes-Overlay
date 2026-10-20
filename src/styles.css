@@ -765,6 +765,17 @@ html, body {
 
 .icon-btn:hover { background: var(--bot-10); }
 
+/* The close control must not ease its background. That 120ms transition
+   is the two frames the panel sits still while 關閉 is pressed. */
+.panel-header .icon-btn,
+.panel-header .icon-btn:hover,
+.panel-header .icon-btn:active,
+.panel-header .icon-btn.danger,
+.panel-header .icon-btn.danger:hover,
+.panel-header .icon-btn.danger:active {
+  transition: none;
+}
+
 .icon-btn.danger:hover { color: var(--nous-red); }
 
 .icon-btn[aria-pressed="true"] { background: var(--bot-10); }
@@ -2279,14 +2290,14 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   pointer-events: auto;
 }
 
-/* Plan collapse keeps the chat. Opacity drops only when the panel clip
-   itself starts (is-plan-collapse is already gone). */
-.morph.is-collapsing:not(.is-plan-collapse) .morph-body,
-.morph.is-collapsing:not(.is-plan-collapse) .content,
-.morph.is-collapsing:not(.is-plan-collapse) .morph-pill {
-  opacity: 0;
+/* Dropping is-plan-collapse must not fade the chat. That fade is the blank
+   card between the plan clip and the panel clip. The shell clip hides it. */
+.morph.is-collapsing .morph-body,
+.morph.is-collapsing .content,
+.morph.is-collapsing .morph-pill {
+  opacity: 1;
   pointer-events: none;
-  transition: opacity 80ms linear;
+  transition: none;
 }
 
 .morph-pill {

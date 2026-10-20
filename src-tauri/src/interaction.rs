@@ -93,6 +93,12 @@ pub fn modifier_engages(
     now.saturating_duration_since(*start) >= MODIFIER_ARM
 }
 
+/// Physical modifier at the moment of a sample. A copy/paste chord does not count.
+/// This is not the armed `KEY_DOWN` flag from the last poll.
+pub fn modifier_physically_down(keys: &[Keycode], modifier: &str) -> bool {
+    modifier_held(keys, modifier) && !copy_paste_chord(keys, modifier)
+}
+
 pub fn modifier_held(keys: &[Keycode], modifier: &str) -> bool {
     match modifier {
         "shift" => keys
@@ -1198,6 +1204,23 @@ fn pointer_is_down(device: &DeviceState) -> bool {
         .any(|(index, pressed)| *pressed && (1..=3).contains(&index))
 }
 
+/// Live OS modifier. Not `KEY_DOWN`, which the 16ms poll can still say is down
+/// after the key has already gone up. `DeviceState` holds an `Rc`, so this
+/// sample stays on the calling thread instead of sharing the poll's device.
+pub fn modifier_down_now(hub: &InteractionHub) -> bool {
+    let modifier = hub
+        .config
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .modifier
+        .clone();
+    let Some(device) = DeviceState::checked_new() else {
+        return false;
+    };
+    let keys = device.get_keys();
+    modifier_physically_down(&keys, &modifier)
+}
+
 fn screen_cursor() -> &'static Mutex<Option<(f64, f64)>> {
     static CURSOR: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
     CURSOR.get_or_init(|| Mutex::new(None))
@@ -1218,6 +1241,92 @@ pub fn place_overlay(window: &tauri::WebviewWindow) {
         return;
     }
     let _ = window.maximize();
+}
+
+/// How many GTK after-paint frames actually ran. Zero means the clock did
+/// not report, and the caller should start anyway. Does not block the GTK
+/// thread: the wait sits on a worker until the main thread signals.
+pub fn wait_presented_frames(app: &AppHandle, frames: u32) -> u32 {
+    let frames = frames.clamp(1, 8);
+    wait_presented_frames_inner(app, frames)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn wait_presented_frames_inner(_app: &AppHandle, _frames: u32) -> u32 {
+    0
+}
+
+#[cfg(target_os = "linux")]
+fn wait_presented_frames_inner(app: &AppHandle, frames: u32) -> u32 {
+    use std::sync::atomic::AtomicU32;
+    let Some(window) = app.get_webview_window("main") else {
+        return 0;
+    };
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let posted = app.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        let Ok(gtk_window) = window.gtk_window() else {
+            let _ = tx.send(0);
+            return;
+        };
+        let Some(clock) = gtk_window.upcast_ref::<gtk::Widget>().frame_clock() else {
+            let _ = tx.send(0);
+            return;
+        };
+        let seen = Arc::new(AtomicU32::new(0));
+        let tx_slot = Arc::new(Mutex::new(Some(tx)));
+        let handler_slot: Arc<Mutex<Option<gtk::glib::signal::SignalHandlerId>>> =
+            Arc::new(Mutex::new(None));
+        let seen_cb = Arc::clone(&seen);
+        let tx_cb = Arc::clone(&tx_slot);
+        let handler_cb = Arc::clone(&handler_slot);
+        let clock_cb = clock.clone();
+        let id = clock.connect_after_paint(move |_clock| {
+            let n = seen_cb.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+            if n < frames {
+                clock_cb.request_phase(gtk::gdk::FrameClockPhase::AFTER_PAINT);
+                return;
+            }
+            if let Some(handler) = handler_cb
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take()
+            {
+                clock_cb.disconnect(handler);
+            }
+            if let Some(sender) = tx_cb.lock().unwrap_or_else(|err| err.into_inner()).take() {
+                let _ = sender.send(n);
+            }
+        });
+        *handler_slot
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(id);
+        let clock_timeout = clock.clone();
+        let handler_timeout = Arc::clone(&handler_slot);
+        let tx_timeout = Arc::clone(&tx_slot);
+        gtk::glib::timeout_add_local(Duration::from_millis(120), move || {
+            if let Some(handler) = handler_timeout
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take()
+            {
+                clock_timeout.disconnect(handler);
+            }
+            if let Some(sender) = tx_timeout
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take()
+            {
+                let _ = sender.send(0);
+            }
+            gtk::glib::ControlFlow::Break
+        });
+        clock.request_phase(gtk::gdk::FrameClockPhase::AFTER_PAINT);
+    });
+    if posted.is_err() {
+        return 0;
+    }
+    rx.recv_timeout(Duration::from_millis(160)).unwrap_or(0)
 }
 
 /// Opacity 0 lets Linux map the window so WebKit receives the monitor
@@ -1505,7 +1614,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             LAST_HELD.store(held, Ordering::Relaxed);
             let pointer_down = pointer_is_down(&device);
             POINTER_DOWN.store(pointer_down, Ordering::Relaxed);
-            remember_screen_cursor(&window, &device);
+            let mouse = device.get_mouse();
+            remember_screen_cursor(&window, f64::from(mouse.coords.0), f64::from(mouse.coords.1));
             if SHAPE_DIRTY.swap(false, Ordering::Relaxed) {
                 region_signature.clear();
             }
@@ -1514,7 +1624,11 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .clone();
-            let cursor = cursor_in_view(&window, &device);
+            let cursor = cursor_in_view(
+                &window,
+                f64::from(mouse.coords.0),
+                f64::from(mouse.coords.1),
+            );
             let frames = interaction_frame(held, &latched_ids, cursor, &rects, HIT_MARGIN_PX, &cfg);
             if logged_held != Some(held) {
                 if rects.iter().any(|rect| is_panel_hit(rect)) {
@@ -1963,8 +2077,8 @@ pub fn hold_empty_input_shape() {
     SHAPE_DIRTY.store(true, Ordering::Relaxed);
 }
 
-fn remember_screen_cursor(window: &tauri::WebviewWindow, device: &DeviceState) {
-    let Some(point) = screen_point(window, device) else {
+fn remember_screen_cursor(window: &tauri::WebviewWindow, mouse_x: f64, mouse_y: f64) {
+    let Some(point) = screen_point(window, mouse_x, mouse_y) else {
         return;
     };
     *screen_cursor()
@@ -1972,16 +2086,15 @@ fn remember_screen_cursor(window: &tauri::WebviewWindow, device: &DeviceState) {
         .unwrap_or_else(|err| err.into_inner()) = Some(point);
 }
 
-fn screen_point(window: &tauri::WebviewWindow, device: &DeviceState) -> Option<(f64, f64)> {
+fn screen_point(window: &tauri::WebviewWindow, mouse_x: f64, mouse_y: f64) -> Option<(f64, f64)> {
     #[cfg(target_os = "linux")]
     {
         let _ = window;
-        let mouse = device.get_mouse();
-        Some((f64::from(mouse.coords.0), f64::from(mouse.coords.1)))
+        Some((mouse_x, mouse_y))
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = device;
+        let _ = (mouse_x, mouse_y);
         let cursor = window.cursor_position().ok()?;
         Some((cursor.x, cursor.y))
     }
@@ -2085,7 +2198,7 @@ pub fn css_point_from_screen(
     ((x - origin_x) / scale, (y - origin_y) / scale)
 }
 
-fn cursor_in_view(window: &tauri::WebviewWindow, device: &DeviceState) -> Option<(f64, f64)> {
+fn cursor_in_view(window: &tauri::WebviewWindow, mouse_x: f64, mouse_y: f64) -> Option<(f64, f64)> {
     let origin = window.inner_position().ok()?;
     let scale = window.scale_factor().ok()?;
     if scale <= 0.0 {
@@ -2095,13 +2208,10 @@ fn cursor_in_view(window: &tauri::WebviewWindow, device: &DeviceState) -> Option
     // drag, so a rejected kanban drop leaves the board faded until the next
     // modifier hover. XQueryPointer on our own display follows the pointer.
     #[cfg(target_os = "linux")]
-    let (x, y) = {
-        let mouse = device.get_mouse();
-        (f64::from(mouse.coords.0), f64::from(mouse.coords.1))
-    };
+    let (x, y) = (mouse_x, mouse_y);
     #[cfg(not(target_os = "linux"))]
     let (x, y) = {
-        let _ = device;
+        let _ = (mouse_x, mouse_y);
         let cursor = window.cursor_position().ok()?;
         (cursor.x, cursor.y)
     };
@@ -2482,6 +2592,20 @@ mod tests {
             z: 0,
             round: false,
         }
+    }
+
+    #[test]
+    fn fresh_modifier_sample_requires_the_key_and_ignores_copy_paste() {
+        assert!(modifier_physically_down(&[Keycode::LControl], "ctrl"));
+        assert!(modifier_physically_down(&[Keycode::RControl], "ctrl"));
+        assert!(!modifier_physically_down(
+            &[Keycode::LControl, Keycode::C],
+            "ctrl"
+        ));
+        assert!(!modifier_physically_down(&[Keycode::LControl, Keycode::V], "ctrl"));
+        assert!(!modifier_physically_down(&[], "ctrl"));
+        assert!(modifier_physically_down(&[Keycode::LShift], "shift"));
+        assert!(!modifier_physically_down(&[Keycode::LControl], "shift"));
     }
 
     #[test]

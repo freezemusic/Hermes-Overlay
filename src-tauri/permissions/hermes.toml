@@ -134,6 +134,16 @@ description = "Map the overlay at opacity 0 so the page can lay out at the monit
 commands.allow = ["map_overlay_for_layout"]
 
 [[permission]]
+identifier = "allow-wait-presented-frames"
+description = "Wait until the GTK frame clock has presented closed seam frames."
+commands.allow = ["wait_presented_frames"]
+
+[[permission]]
+identifier = "allow-modifier-down-now"
+description = "Read the OS modifier at pointerdown, not the last poll."
+commands.allow = ["modifier_down_now"]
+
+[[permission]]
 identifier = "allow-reveal-overlay"
 description = "Show the overlay after the first transparent paint."
 commands.allow = ["reveal_overlay"]
