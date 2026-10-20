@@ -79,6 +79,49 @@ export function isOrbHit(rect) {
 /** CSS pixels around a hit rect that still count as under the cursor. */
 export const HIT_MARGIN_PX = 12;
 
+/** Orb DOM writes and the plan rehearsal wait this long after pointerdown. */
+export const POINTER_QUIET_MS = 300;
+
+/**
+ * Why a plan rehearsal or an orb re-render must wait.
+ * A live plan open wins, then a panel morph, then a pointer that is still
+ * down or that went down inside POINTER_QUIET_MS. Empty means it may run.
+ */
+export function rehearsalDeferReason({
+  pointerDown = false,
+  sincePointerDown = null,
+  planLive = false,
+  morphLive = false,
+} = {}) {
+  if (planLive) return "plan-open";
+  if (morphLive) return "morph";
+  if (pointerDown) return "pointer";
+  if (sincePointerDown != null && sincePointerDown >= 0 && sincePointerDown < POINTER_QUIET_MS) {
+    return "pointer-quiet";
+  }
+  return "";
+}
+
+/** Orb hit ids are `bot:<id>`. Preview pills are `pill:<id>`. */
+export function botIdFromHit(hitId) {
+  const id = String(hitId || "");
+  if (id.startsWith("bot:")) return id.slice(4);
+  if (id.startsWith("pill:")) return id.slice(5);
+  return "";
+}
+
+/**
+ * Which profile a Ctrl press should open. A frozen press uses the hit id
+ * Rust latched when the button went down. Otherwise the id from pointerdown.
+ */
+export function pressOrbId({ domId = "", pressFrozen = false, latchedHitId = "" } = {}) {
+  if (pressFrozen) {
+    const latched = botIdFromHit(latchedHitId);
+    if (latched) return latched;
+  }
+  return domId || "";
+}
+
 /**
  * A hit flush must not publish an empty shape while the modifier is held over
  * an orb or preview pill, or while a pointer button is already down.

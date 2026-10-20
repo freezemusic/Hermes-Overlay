@@ -103,6 +103,9 @@ import {
   modifierMatches,
   modifierEngages,
   guardPublishedHits,
+  rehearsalDeferReason,
+  pressOrbId,
+  POINTER_QUIET_MS,
   composerKeyAction,
   ownComposerKey,
   MODIFIER_ARM_MS,
@@ -2783,6 +2786,8 @@ const state = {
   pointerHitId: "",
   heldKeys: new Set(),
   osModifierDown: false,
+  latchedOrbId: "",
+  pressFrozen: false,
   latchedIds: [],
   windowFocused: true,
   dropdownOpen: false,
@@ -2947,12 +2952,13 @@ function attachShell(shell, id) {
     prefetchBotChats();
   });
   shell.addEventListener("click", (event) => {
+    if (orbOpenedThisPress()) return;
     const mine = visibleBox(shell);
     const inside = pointInBox(event.clientX, event.clientY, mine);
     if (!inside) {
       const foreign = visibleShellAt(event.clientX, event.clientY);
       if (!foreign || foreign === shell || foreign.dataset.state === "panel") return;
-      if (state.interaction.supported !== false && !modifierHeld(event)) return;
+      if (!orbClickAllowed(event)) return;
       debugLog("click-retarget", `from=${id} to=${foreign.dataset.botId || ""}`);
       activateHitShell(foreign);
       return;
@@ -2964,7 +2970,7 @@ function attachShell(shell, id) {
       return;
     }
     if (!orb && shell.dataset.state === "orb") return;
-    if (state.interaction.supported !== false && !modifierHeld(event)) return;
+    if (!orbClickAllowed(event)) return;
     activateHitShell(shell);
   });
   shell.addEventListener("contextmenu", (event) => {
@@ -3117,6 +3123,14 @@ function botPaintSig() {
 }
 
 function renderBots(tag = "renderBots") {
+  let wait = rehearsalWaitReason();
+  if (tag === "pointer-release" && wait !== "plan-open" && wait !== "morph") wait = "";
+  if (wait) {
+    renderBots.pending = true;
+    debugLog("render-bots-defer", `tag=${tag} reason=${wait}`);
+    postponeOrbWork();
+    return;
+  }
   if (backgroundBlocked()) {
     renderBots.pending = true;
     debugLog("render-bots-defer", `tag=${tag} quiet=${collapseQuiet() ? 1 : 0}`);
@@ -5872,6 +5886,123 @@ let lastHitList = [];
 let pointerButtons = 0;
 const hitSilence = new Set();
 
+/** One press. `at` is pointerdown. Capture lives on documentElement so a
+ *  rehearsal that reparents the orb cannot split pointerdown from pointerup. */
+const orbGesture = {
+  pointerId: -1,
+  orbId: "",
+  at: 0,
+  opened: false,
+};
+
+function pointerAge() {
+  if (!orbGesture.at) return null;
+  return performance.now() - orbGesture.at;
+}
+
+function rehearsalWaitReason() {
+  const age = pointerAge();
+  const stuck = age != null && age > 2000;
+  return rehearsalDeferReason({
+    pointerDown: pointerButtons > 0 && !stuck,
+    sincePointerDown: age,
+    planLive: !!document.querySelector(".morph.is-plan-seam, .morph.is-plan-arming"),
+    morphLive: !!document.querySelector(".morph.is-morphing"),
+  });
+}
+
+function noteRehearsalDefer(reason, profile = "") {
+  const key = `${reason}|${profile}`;
+  if (noteRehearsalDefer.last === key) return;
+  noteRehearsalDefer.last = key;
+  const detail = profile ? `defer profile=${profile} reason=${reason}` : `defer reason=${reason}`;
+  debugLog("plan-rehearsal", detail);
+}
+
+function postponeOrbWork() {
+  window.clearTimeout(postponeOrbWork.timer);
+  const age = pointerAge();
+  const remain = age == null ? 48 : Math.max(48, POINTER_QUIET_MS - age + 16);
+  postponeOrbWork.timer = window.setTimeout(() => {
+    postponeOrbWork.timer = 0;
+    const wait = rehearsalWaitReason();
+    if (wait) {
+      noteRehearsalDefer(wait);
+      postponeOrbWork();
+      return;
+    }
+    noteRehearsalDefer.last = "";
+    if (renderBots.pending) renderBots("pointer-release");
+    schedulePlanRehearsal();
+  }, remain);
+}
+
+function pointerTargetText(node) {
+  if (!node || node.nodeType !== 1) return "none";
+  const cls = typeof node.className === "string" ? node.className.trim().slice(0, 80) : "";
+  return `${node.nodeName}${cls ? `.${cls.replace(/\s+/g, ".")}` : ""}`;
+}
+
+function orbIdFromEventTarget(node) {
+  if (!node?.closest) return "";
+  const stand = node.closest(".plan-rehearsal-stand");
+  if (stand?.dataset?.botId) return stand.dataset.botId;
+  const shell = node.closest(".morph");
+  if (!shell) return "";
+  const onOrb = !!node.closest(".morph-orb");
+  const visual = shell.dataset.state || shell.dataset.visual || "";
+  if (visual === "panel" && !onOrb) return "";
+  if (visual !== "orb" && visual !== "pill" && shell.dataset.rehearsal !== "1") return "";
+  return shell.dataset.botId || "";
+}
+
+function logPointer(phase, event, orbId, extra = "") {
+  debugLog(
+    "pointer",
+    `phase=${phase} orb=${orbId || ""} target=${pointerTargetText(event.target)} button=${event.button ?? ""} frozen=${state.pressFrozen ? 1 : 0} latch=${state.latchedOrbId || ""}${extra}`,
+  );
+}
+
+function orbClickAllowed(event) {
+  if (state.interaction.supported === false) return true;
+  return modifierHeld(event) || engagedModifier() || state.pressFrozen;
+}
+
+function orbOpenedThisPress() {
+  const age = pointerAge();
+  return orbGesture.opened && age != null && age < 800;
+}
+
+function rememberOrbOpen(id) {
+  orbGesture.opened = true;
+  orbGesture.orbId = id;
+}
+
+function openPressedOrb(id, fallback = "") {
+  if (orbOpenedThisPress()) return;
+  const primary = id && shellFor(id) ? id : "";
+  const next = primary || (fallback && fallback !== id && shellFor(fallback) ? fallback : "");
+  if (!next) return;
+  const shell = shellFor(next);
+  rememberOrbOpen(next);
+  abortPlanRehearsal(shell);
+  activateHitShell(shell);
+}
+
+function abortLiveRehearsals() {
+  document.querySelectorAll(".morph[data-rehearsal='1']").forEach((shell) => {
+    abortPlanRehearsal(shell);
+  });
+}
+
+function hitBlockReason() {
+  if (document.querySelector(".morph.is-plan-seam, .morph.is-plan-arming")) return "plan-open";
+  if (hitSilence.size > 0) return "silence";
+  if (collapseBusy() || collapseQuiet()) return "collapse";
+  if (motionFrozen()) return "motion";
+  return "";
+}
+
 function orbShellAtPoint(x, y) {
   let best = null;
   let bestZ = -Infinity;
@@ -5914,7 +6045,7 @@ function ctrlOrbRect() {
 }
 
 function hitsBlocked() {
-  return hitSilence.size > 0 || collapseBusy() || collapseQuiet() || motionFrozen();
+  return hitBlockReason() !== "";
 }
 
 function sendHitRects(rects, tag, force = false) {
@@ -5959,10 +6090,11 @@ function sendHitRects(rects, tag, force = false) {
 }
 
 function publishHits(tag = "publish", force = false) {
-  if (hitsBlocked()) {
+  const blocked = hitBlockReason();
+  if (blocked) {
     if (!hitDeferLogged) {
       hitDeferLogged = true;
-      debugLog("hit-flush-defer", `tag=${tag}`);
+      debugLog("hit-flush-defer", `tag=${tag} reason=${blocked}`);
     }
     return Promise.resolve();
   }
@@ -6166,10 +6298,11 @@ function releaseCollapseGate(shell) {
 let hitDeferLogged = false;
 
 function scheduleHitSync(tag = "schedule") {
-  if (collapseBusy() || motionFrozen() || collapseQuiet() || hitSilence.size > 0) {
+  const blocked = hitBlockReason();
+  if (blocked) {
     if (!hitDeferLogged) {
       hitDeferLogged = true;
-      debugLog("hit-flush-defer", `tag=${tag}`);
+      debugLog("hit-flush-defer", `tag=${tag} reason=${blocked}`);
     }
     return;
   }
@@ -6184,8 +6317,9 @@ function pauseHitSync() {
 }
 
 function flushHits(tag = "flush") {
-  if (hitsBlocked()) {
-    debugLog("hit-flush-defer", `tag=${tag}`);
+  const blocked = hitBlockReason();
+  if (blocked) {
+    debugLog("hit-flush-defer", `tag=${tag} reason=${blocked}`);
     return;
   }
   cancelAnimationFrame(hitFrame);
@@ -6399,14 +6533,49 @@ function setupProximity() {
     if (!document.querySelector(".morph[data-state='panel']")) return;
     debugLog("hit-ctrl", `phase=${phase} ctrl=${ctrl ? 1 : 0} published=${lastHits || "-"}`);
   };
-  window.addEventListener("pointerdown", () => {
+  window.addEventListener("pointerdown", (event) => {
     pointerButtons += 1;
+    orbGesture.at = performance.now();
+    orbGesture.opened = false;
+    const domId = orbIdFromEventTarget(event.target);
+    logPointer("down", event, domId);
+    const capture = event.button === 0 && !!domId && orbClickAllowed(event);
+    if (capture) {
+      orbGesture.pointerId = event.pointerId;
+      orbGesture.orbId = domId;
+      try { document.documentElement.setPointerCapture(event.pointerId); } catch { /* already released */ }
+    } else {
+      orbGesture.pointerId = -1;
+      orbGesture.orbId = "";
+    }
+    abortLiveRehearsals();
+    postponeOrbWork();
   }, true);
-  window.addEventListener("pointerup", () => {
+  window.addEventListener("pointerup", (event) => {
     pointerButtons = Math.max(0, pointerButtons - 1);
+    const captured = orbGesture.pointerId === event.pointerId;
+    const domId = orbIdFromEventTarget(event.target) || (captured ? orbGesture.orbId : "");
+    const orbId = pressOrbId({
+      domId,
+      pressFrozen: state.pressFrozen,
+      latchedHitId: state.latchedOrbId,
+    });
+    const open = event.button === 0 && captured && !!orbId && orbClickAllowed(event);
+    logPointer("up", event, orbId, ` open=${open ? 1 : 0}`);
+    try { document.documentElement.releasePointerCapture(event.pointerId); } catch { /* not captured */ }
+    if (open) openPressedOrb(orbId, domId);
+    orbGesture.pointerId = -1;
+    postponeOrbWork();
   }, true);
-  window.addEventListener("pointercancel", () => {
+  window.addEventListener("pointercancel", (event) => {
     pointerButtons = Math.max(0, pointerButtons - 1);
+    logPointer("cancel", event, orbGesture.orbId);
+    try { document.documentElement.releasePointerCapture(event.pointerId); } catch { /* not captured */ }
+    orbGesture.pointerId = -1;
+    postponeOrbWork();
+  }, true);
+  window.addEventListener("click", (event) => {
+    logPointer("click", event, orbIdFromEventTarget(event.target));
   }, true);
   window.addEventListener("keydown", (event) => {
     if (event.repeat) return;
@@ -6440,6 +6609,8 @@ function setupProximity() {
         if (payload.focus_owner) applyOsFocus(payload.focus_owner);
         if (payload.modifier_down === true || payload.held === true) state.osModifierDown = true;
         else if (payload.modifier_down === false && payload.held === false) state.osModifierDown = false;
+        if (typeof payload.latched_orb === "string") state.latchedOrbId = payload.latched_orb;
+        state.pressFrozen = payload.press_frozen === true;
         applyFrames(payload.opacities || []);
       });
     });
@@ -7229,6 +7400,7 @@ function placeRehearsalStand(shell) {
   const stand = orb.cloneNode(true);
   const id = shell.dataset.botId || "";
   stand.classList.add("plan-rehearsal-stand");
+  stand.dataset.botId = id;
   stand.setAttribute("aria-hidden", "true");
   stand.tabIndex = -1;
   const opacity = getComputedStyle(shell).opacity || "1";
@@ -7244,7 +7416,8 @@ function placeRehearsalStand(shell) {
   stand.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (state.interaction.supported !== false && !modifierHeld(event)) return;
+    if (orbOpenedThisPress()) return;
+    if (!orbClickAllowed(event)) return;
     selectBot(id);
   });
   stand.addEventListener("contextmenu", (event) => {
@@ -7322,6 +7495,8 @@ function restorePlanRehearsal(shell, saved, stand) {
 
 function abortPlanRehearsal(shell) {
   if (!shell || shell.dataset.rehearsal !== "1" || shell._rehearsalRestored) return;
+  const id = shell.dataset.botId || "";
+  if (id) rehearsedProfiles.delete(id);
   restorePlanRehearsal(shell, shell._rehearsalSaved, shell._rehearsalStand);
 }
 
@@ -7331,6 +7506,11 @@ function abortPlanRehearsal(shell) {
 async function rehearseOnePlan(shell) {
   const id = shell.dataset.botId || "";
   if (!id || rehearsalBlocked(shell) || rehearsedProfiles.has(id)) return false;
+  const wait = rehearsalWaitReason();
+  if (wait) {
+    noteRehearsalDefer(wait, id);
+    return false;
+  }
   const orbBox = visibleBox(shell);
   const stand = placeRehearsalStand(shell);
   if (!stand || orbBox.w < 1 || orbBox.h < 1) {
@@ -7425,6 +7605,12 @@ async function rehearsePlanShells() {
   try {
     const queue = state.bots.filter((bot) => bot?.id && !rehearsedProfiles.has(bot.id));
     for (const bot of queue) {
+      const wait = rehearsalWaitReason();
+      if (wait) {
+        noteRehearsalDefer(wait);
+        postponeOrbWork();
+        return;
+      }
       const shell = shellFor(bot.id);
       if (!shell || shell.dataset.kind !== "bot") {
         rehearsedProfiles.add(bot.id);
@@ -7434,7 +7620,11 @@ async function rehearsePlanShells() {
         rehearsedProfiles.add(bot.id);
         continue;
       }
-      await rehearseOnePlan(shell);
+      const ran = await rehearseOnePlan(shell);
+      if (!ran && rehearsalWaitReason()) {
+        postponeOrbWork();
+        return;
+      }
     }
   } finally {
     rehearsePlanShells.running = false;
@@ -7448,6 +7638,12 @@ async function rehearsePlanShells() {
 
 function schedulePlanRehearsal() {
   if (inTauri() && !revealOverlay.shown) return;
+  const wait = rehearsalWaitReason();
+  if (wait) {
+    noteRehearsalDefer(wait);
+    postponeOrbWork();
+    return;
+  }
   if (!hitsBlocked()) publishHits("first-paint");
   if (schedulePlanRehearsal.armed || rehearsePlanShells.running) return;
   const waiting = state.bots.some((bot) => bot?.id && !rehearsedProfiles.has(bot.id) && shellFor(bot.id));
@@ -7455,6 +7651,12 @@ function schedulePlanRehearsal() {
   schedulePlanRehearsal.armed = true;
   const run = () => {
     schedulePlanRehearsal.armed = false;
+    const again = rehearsalWaitReason();
+    if (again) {
+      noteRehearsalDefer(again);
+      postponeOrbWork();
+      return;
+    }
     rehearsePlanShells();
   };
   if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 80 });

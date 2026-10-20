@@ -21,6 +21,10 @@ import {
   modifierMatches,
   modifierEngages,
   guardPublishedHits,
+  rehearsalDeferReason,
+  botIdFromHit,
+  pressOrbId,
+  POINTER_QUIET_MS,
   MODIFIER_ARM_MS,
   nextOrbPulse,
   nextDropdownOpen,
@@ -211,6 +215,34 @@ test("a message preview pill stays solid and click-through until the modifier is
   assert.equal(byId(held, "bot:b").capture, false);
   assert.equal(byId(held, "panel:a").opacity, 0.18);
   assert.equal(byId(held, "panel:a").capture, false);
+});
+
+test("a frozen ctrl press opens the latched orb and rehearsal waits out the pointer", () => {
+  assert.equal(POINTER_QUIET_MS, 300);
+  assert.equal(botIdFromHit("bot:planner"), "planner");
+  assert.equal(botIdFromHit("pill:kanban"), "kanban");
+  assert.equal(botIdFromHit("close:planner"), "");
+  assert.equal(pressOrbId({
+    domId: "stand-in",
+    pressFrozen: true,
+    latchedHitId: "bot:planner",
+  }), "planner");
+  assert.equal(pressOrbId({
+    domId: "planner",
+    pressFrozen: false,
+    latchedHitId: "bot:other",
+  }), "planner");
+  assert.equal(pressOrbId({
+    domId: "planner",
+    pressFrozen: true,
+    latchedHitId: "",
+  }), "planner");
+  assert.equal(rehearsalDeferReason({ pointerDown: true }), "pointer");
+  assert.equal(rehearsalDeferReason({ sincePointerDown: 80 }), "pointer-quiet");
+  assert.equal(rehearsalDeferReason({ sincePointerDown: 300 }), "");
+  assert.equal(rehearsalDeferReason({ pointerDown: true, planLive: true }), "plan-open");
+  assert.equal(rehearsalDeferReason({ morphLive: true }), "morph");
+  assert.equal(rehearsalDeferReason({}), "");
 });
 
 test("a flush keeps the orb under the cursor while the modifier is held", () => {

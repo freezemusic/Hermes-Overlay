@@ -296,6 +296,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(rehearsal, /opacity = "1"/);
   assert.match(rehearsal, /translate3d\(-300vw, -300vh, 0\)/);
   assert.match(rehearsal, /selectBot\(id\)/);
+  assert.match(rehearsal, /rehearsalWaitReason/);
+  assert.match(rehearsal, /noteRehearsalDefer/);
+  assert.match(rehearsal, /rehearsedProfiles\.delete/);
   assert.match(rehearsal, /publishHits\("first-paint"\)/);
   assert.match(rehearsal, /revealOverlay\.shown/);
   assert.match(rehearsal, /abortPlanRehearsal/);
@@ -411,7 +414,12 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(lock, /style\.width = `\$\{full\}px`/);
   assert.match(lock, /getComputedStyle\(plan\)\.width/);
   assert.doesNotMatch(lock, /cancelPlanAnims|transform = "none"|removeProperty\("clip-path"\)/);
-  assert.match(mainSrc, /collapseBusy\(\) \|\| motionFrozen\(\) \|\| collapseQuiet\(\) \|\| hitSilence\.size > 0/);
+  const hitBlock = mainSrc.slice(mainSrc.indexOf("function hitBlockReason"), mainSrc.indexOf("function orbShellAtPoint"));
+  assert.match(hitBlock, /is-plan-seam/);
+  assert.match(hitBlock, /hitSilence\.size > 0/);
+  assert.match(hitBlock, /collapseBusy\(\)/);
+  assert.match(hitBlock, /collapseQuiet\(\)/);
+  assert.match(hitBlock, /motionFrozen\(\)/);
   const libRs = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   const interactionRs = readFileSync(new URL("../src-tauri/src/interaction.rs", import.meta.url), "utf8");
   assert.match(libRs, /fn reveal_overlay/);
@@ -460,6 +468,14 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(interactionRs, /modifier_down/);
   assert.match(mainSrc, /osModifierDown/);
   assert.match(mainSrc, /modifier_down/);
+  assert.match(mainSrc, /setPointerCapture/);
+  assert.match(mainSrc, /logPointer\("down"/);
+  assert.match(mainSrc, /pressOrbId/);
+  assert.match(mainSrc, /latched_orb/);
+  assert.match(mainSrc, /press_frozen/);
+  assert.match(mainSrc, /POINTER_QUIET_MS/);
+  assert.match(interactionRs, /latched_orb/);
+  assert.match(interactionRs, /press_frozen/);
   assert.match(libRs, /n=0 kept=1/);
   assert.match(libRs, /retain_modifier_orb/);
   assert.match(interactionRs, /cmd=input-shape n=\{\} platform=linux/);

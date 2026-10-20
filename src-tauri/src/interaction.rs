@@ -1607,8 +1607,17 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 closed_popup_for_other = false;
             }
             let focus_owner = focus_owner_name(owner);
+            let (latched_orb, frozen_press) = {
+                let guard = shape_guard_lock();
+                let id = guard
+                    .latched
+                    .as_ref()
+                    .map(|rect| rect.id.clone())
+                    .unwrap_or_default();
+                (id, press_frozen(&guard))
+            };
             let signature = format!(
-                "{}|focus={focus_owner}|held={}|key={}",
+                "{}|focus={focus_owner}|held={}|key={}|latch={latched_orb}|frozen={}",
                 items
                     .iter()
                     .map(|item| format!("{}={:.2}:{}", item.id, item.opacity, item.capture))
@@ -1616,6 +1625,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                     .join("|"),
                 u8::from(held),
                 u8::from(key_down),
+                u8::from(frozen_press),
             );
             if signature == last_signature {
                 continue;
@@ -1629,6 +1639,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                     "focus_owner": focus_owner,
                     "held": held,
                     "modifier_down": key_down,
+                    "latched_orb": latched_orb,
+                    "press_frozen": frozen_press,
                     "opacities": items,
                 }),
             );
