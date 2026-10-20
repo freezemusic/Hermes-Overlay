@@ -1915,6 +1915,17 @@ function alignSeamClock(anim) {
       resume();
       return;
     }
+    // One late presented frame (Cold A was 48ms, painted at 64%). Re-anchor
+    // startTime to this frame so the visible sample is t≈0. The curve and
+    // the 280ms duration stay. A same-turn play does not leave the clock paused.
+    if (current > 33) {
+      try { anim.pause(); } catch { /* the pin still moves the start */ }
+      try { anim.currentTime = 0; } catch { /* the closed keyframe stays */ }
+      pin(0);
+      resume();
+      debugLog("seam-clock", `reanchor gap=${current.toFixed(1)}`);
+      return;
+    }
     // First presented frame stays closed. The next vsync is the t≈0 sample,
     // so a 25–29ms hole in front of i=1 does not land on the curve.
     try { anim.currentTime = 0; } catch { /* the closed keyframe stays */ }
@@ -7226,14 +7237,34 @@ function primePlanCompositor() {
   whenAnimEnds(anim, PLAN_GROW_MS + 64, false).then(() => node.remove());
 }
 
+/** Map the native window after the transparent page has composited.
+ *  A hidden document does not run rAF; the timeout is that same paint. */
+function revealOverlay() {
+  if (!inTauri() || revealOverlay.shown) return;
+  revealOverlay.shown = true;
+  import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("reveal_overlay"))
+    .catch(() => {
+      revealOverlay.shown = false;
+    });
+}
+
+function scheduleOverlayReveal() {
+  if (!inTauri()) return;
+  // Hidden documents skip rAF. This still maps an already-transparent page.
+  setTimeout(revealOverlay, 250);
+}
+
 async function boot() {
   await armDebugLog();
   setupComposer();
   requestAnimationFrame(() => requestAnimationFrame(() => {
     if (!hitsBlocked()) publishHits("first-paint");
+    revealOverlay();
     primePlanCompositor();
     schedulePlanRehearsal();
   }));
+  scheduleOverlayReveal();
   setupWindowChrome();
   setupProximity();
   const kanbanClose = $("#btn-kanban-close");

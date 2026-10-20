@@ -675,17 +675,18 @@ struct OpacityItem {
 
 static RECOVER_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
 
-/// Cover the monitor. `center` plus `maximized` can leave a borderless window at
-/// the configured 1280×800, and a later position change restores that size.
+/// Cover the monitor without mapping the window. The first `show` is
+/// `reveal_overlay`, after the page has painted transparency. Focusing
+/// here would map the decorated creation frame.
+/// `center` plus `maximized` can leave a borderless window at the configured
+/// 1280×800, and a later position change restores that size.
 pub fn place_overlay(window: &tauri::WebviewWindow) {
     let _ = window.set_always_on_top(true);
     #[cfg(windows)]
     if cover_windows_monitor(window) {
-        let _ = window.set_focus();
         return;
     }
     let _ = window.maximize();
-    let _ = window.set_focus();
 }
 
 /// A cold start that stayed at the config size is not covering the monitor.
@@ -800,7 +801,8 @@ fn cover_windows_monitor(window: &tauri::WebviewWindow) -> bool {
         if width <= 0 || height <= 0 {
             return false;
         }
-        const SWP_SHOWWINDOW: u32 = 0x0040;
+        // Do not pass the show flag. A hidden window keeps this rect, and reveal maps it.
+        const SWP_NOACTIVATE: u32 = 0x0010;
         const SWP_FRAMECHANGED: u32 = 0x0020;
         SetWindowPos(
             hwnd,
@@ -809,7 +811,7 @@ fn cover_windows_monitor(window: &tauri::WebviewWindow) -> bool {
             info.rc_monitor.top,
             width,
             height,
-            SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED,
         ) != 0
     }
 }

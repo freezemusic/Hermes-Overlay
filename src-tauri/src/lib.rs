@@ -1938,6 +1938,23 @@ async fn replace_missing_session(
     Ok(id)
 }
 
+/// First map. The window is created hidden and undecorated; showing any
+/// earlier paints the toolkit's titled 1280×800 frame. Linux tao maps the
+/// window inside `set_visible` before `set_decorated`, so `visible: false`
+/// is what lets decorations land first. Windows applies the undecorated
+/// style at `CreateWindowEx` and would still show during `WM_CREATE` if
+/// `visible` were true.
+#[tauri::command]
+fn reveal_overlay(app: AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = window.set_decorations(false);
+    interaction::place_overlay(&window);
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
 #[tauri::command]
 fn stop_chat(state: State<'_, AppState>, profile: String) -> Result<(), String> {
     if let Some(flag) = state
@@ -2024,6 +2041,7 @@ pub fn run() {
             list_cron_jobs,
             debug_log_enabled,
             debug_log,
+            reveal_overlay,
             set_hit_rects,
             set_interaction_latch,
             focus_owner,
@@ -2123,6 +2141,10 @@ mod tests {
         assert_eq!(dev["identifier"], "com.freezemusic.hermes-overlay.dev");
         assert_eq!(prod["identifier"], "com.freezemusic.hermes-overlay");
         assert_eq!(prod["bundle"]["category"], "Utility");
+        let window = &prod["app"]["windows"][0];
+        assert_eq!(window["visible"], false);
+        assert_eq!(window["decorations"], false);
+        assert_eq!(window["transparent"], true);
         let src = include_str!("lib.rs");
         assert!(src.contains("icons/tray.png"));
         assert!(src.contains("icon_as_template"));

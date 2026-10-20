@@ -271,6 +271,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.ok(seamClock.split("currentTime = 0").length - 1 >= 2);
   assert.match(seamClock, /requestAnimationFrame/);
   assert.match(seamClock, /current > 24/);
+  assert.match(seamClock, /current > 33/);
+  assert.match(seamClock, /reanchor gap=/);
   assert.doesNotMatch(seamClock, /pin\(16\)/);
   assert.doesNotMatch(seamClock, /now - /);
   const rehearsal = mainSrc.slice(mainSrc.indexOf("function placeRehearsalStand"), mainSrc.indexOf("function primePlanCompositor"));
@@ -398,6 +400,14 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /collapseBusy\(\) \|\| motionFrozen\(\) \|\| collapseQuiet\(\) \|\| hitSilence\.size > 0/);
   const libRs = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   const interactionRs = readFileSync(new URL("../src-tauri/src/interaction.rs", import.meta.url), "utf8");
+  assert.match(libRs, /fn reveal_overlay/);
+  assert.match(libRs, /set_decorations\(false\)/);
+  assert.match(libRs, /window\.show\(\)/);
+  assert.doesNotMatch(interactionRs, /SWP_SHOWWINDOW/);
+  assert.match(interactionRs, /SWP_NOACTIVATE/);
+  assert.match(mainSrc, /function revealOverlay/);
+  assert.match(mainSrc, /invoke\("reveal_overlay"\)/);
+  assert.match(mainSrc, /scheduleOverlayReveal\(\)/);
   assert.match(libRs, /cmd=set_hit_rects/);
   assert.match(libRs, /let mapped: Vec<interaction::HitRect>/);
   assert.match(interactionRs, /hit-ctrl/);

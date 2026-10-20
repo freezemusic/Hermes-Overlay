@@ -38,6 +38,7 @@
     "allow-sync-profiles",
     "allow-set-profile-enabled",
     "allow-debug-log-enabled",
-    "allow-debug-log"
+    "allow-debug-log",
+    "allow-reveal-overlay"
   ]
 }
