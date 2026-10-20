@@ -129,6 +129,11 @@ description = "Size the hidden overlay to the monitor before the first paint."
 commands.allow = ["fit_overlay"]
 
 [[permission]]
+identifier = "allow-map-overlay-for-layout"
+description = "Map the overlay at opacity 0 so the page can lay out at the monitor size."
+commands.allow = ["map_overlay_for_layout"]
+
+[[permission]]
 identifier = "allow-reveal-overlay"
 description = "Show the overlay after the first transparent paint."
 commands.allow = ["reveal_overlay"]

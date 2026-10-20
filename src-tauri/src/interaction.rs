@@ -701,6 +701,22 @@ pub fn place_overlay(window: &tauri::WebviewWindow) {
     let _ = window.maximize();
 }
 
+/// Opacity 0 lets Linux map the window so WebKit receives the monitor
+/// size without a visible frame. Other platforms ignore it.
+pub fn set_window_opacity(window: &tauri::WebviewWindow, opacity: f64) {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::*;
+        if let Ok(gtk_window) = window.gtk_window() {
+            gtk_window.set_opacity(opacity);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (window, opacity);
+    }
+}
+
 /// CSS pixels of the monitor the overlay should cover. Zero means unknown.
 pub fn monitor_css_size(window: &tauri::WebviewWindow) -> Option<(u32, u32)> {
     let (_, _, w, h) = monitor_logical_rect(window)?;

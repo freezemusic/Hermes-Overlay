@@ -40,6 +40,7 @@
     "allow-debug-log-enabled",
     "allow-debug-log",
     "allow-fit-overlay",
+    "allow-map-overlay-for-layout",
     "allow-reveal-overlay"
   ]
 }

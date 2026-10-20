@@ -406,12 +406,16 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   const interactionRs = readFileSync(new URL("../src-tauri/src/interaction.rs", import.meta.url), "utf8");
   assert.match(libRs, /fn reveal_overlay/);
   assert.match(libRs, /fn fit_overlay/);
+  assert.match(libRs, /fn map_overlay_for_layout/);
+  assert.match(libRs, /set_window_opacity\(\&window, 0\.0\)/);
+  assert.match(mainSrc, /invoke\("map_overlay_for_layout"\)/);
   assert.match(libRs, /set_decorations\(false\)/);
   assert.match(libRs, /window\.show\(\)/);
   const revealFn = libRs.slice(libRs.indexOf("fn reveal_overlay"), libRs.indexOf("fn stop_chat"));
   assert.doesNotMatch(revealFn, /place_overlay/);
   assert.match(revealFn, /hold_empty_input_shape/);
   assert.match(revealFn, /reapply_live_input_shape/);
+  assert.match(revealFn, /set_window_opacity\(\&window, 1\.0\)/);
   assert.doesNotMatch(interactionRs, /SWP_SHOWWINDOW/);
   assert.match(interactionRs, /SWP_NOACTIVATE/);
   assert.match(interactionRs, /fn cover_linux_monitor/);

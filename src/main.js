@@ -7301,13 +7301,20 @@ function scheduleOverlayReveal() {
 
 async function revealWhenCovered() {
   let target = await fitOverlay();
-  const deadline = performance.now() + 1200;
+  const started = performance.now();
+  const deadline = started + 1200;
   let refit = false;
   while (!viewportMatches(target) && performance.now() < deadline) {
-    if (!refit && performance.now() > deadline - 800) {
+    if (!refit && performance.now() > started + 180) {
       refit = true;
       const again = await fitOverlay();
       if (again?.width) target = again;
+      if (inTauri()) {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("map_overlay_for_layout");
+        } catch { /* the visible reveal still runs */ }
+      }
     }
     await new Promise((resolve) => {
       const timer = setTimeout(() => {

@@ -1957,6 +1957,24 @@ struct OverlayCssSize {
     height: u32,
 }
 
+/// Map without a visible frame when the hidden resize never reaches the
+/// page. Linux WebKit often keeps the 1280×800 viewport until the first
+/// map; opacity 0 is that map. Windows already resized with the hidden
+/// position call, so this does not show.
+#[tauri::command]
+fn map_overlay_for_layout(app: AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = window.set_decorations(false);
+    interaction::place_overlay(&window);
+    #[cfg(target_os = "linux")]
+    {
+        interaction::set_window_opacity(&window, 0.0);
+        let _ = window.show();
+    }
+}
+
 /// First map. The window is created hidden and undecorated, and already
 /// sized to the monitor. Showing any earlier paints the toolkit's titled
 /// 1280×800 frame. Linux tao maps inside `set_visible` before
@@ -1970,6 +1988,7 @@ fn reveal_overlay(app: AppHandle, state: State<'_, AppState>) {
         return;
     };
     let _ = window.set_decorations(false);
+    interaction::set_window_opacity(&window, 1.0);
     let _ = window.show();
     let _ = window.set_focus();
     interaction::hold_empty_input_shape();
@@ -2063,6 +2082,7 @@ pub fn run() {
             debug_log_enabled,
             debug_log,
             fit_overlay,
+            map_overlay_for_layout,
             reveal_overlay,
             set_hit_rects,
             set_interaction_latch,
