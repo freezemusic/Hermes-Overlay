@@ -404,6 +404,7 @@ function placeShellElement(shell) {
 
 function layoutShell(shell) {
   if (!shell || shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+  if (shell.dataset.rehearsal === "1") return;
   if (document.querySelector(".morph.is-collapsing")) return;
   if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return;
   const placed = placeShellElement(shell);
@@ -1898,10 +1899,10 @@ function alignSeamClock(anim) {
     resume();
     return;
   }
-  // One frame ahead, and running before paint. The closed keyframe is the
-  // pre-growth hold (fill both), not a 1% stub. The first changing sample
-  // is then t≈0, so the ~100ms capture stays on the 280ms curve.
-  pin(16);
+  // Play this turn so a cold compositor is not left paused. The closed
+  // keyframe (fill both) is presented once as a no-op. The startup gap
+  // (about 25ms at the first sample) is discarded on that frame.
+  pin(0);
   resume();
   requestAnimationFrame(() => {
     if (!anim || anim.playState === "finished" || anim.playState === "idle") return;
@@ -1914,9 +1915,12 @@ function alignSeamClock(anim) {
       resume();
       return;
     }
-    // A real extra vsync before the first paint. Rewind once, before this
-    // frame is presented. A healthy ~16ms sample (current > 24 is false) stays.
-    if (current > 24 && current < 48) pin(0);
+    // First presented frame stays closed. The next vsync is the t≈0 sample,
+    // so a 25–29ms hole in front of i=1 does not land on the curve.
+    try { anim.currentTime = 0; } catch { /* the closed keyframe stays */ }
+    pin(0);
+    if (current > 24) pin(0);
+    resume();
   });
 }
 
@@ -3075,6 +3079,7 @@ function renderBots(tag = "renderBots") {
   renderSettingsOrb();
   separateOpenShells([...document.querySelectorAll(".morph")]);
   scheduleHitSync();
+  schedulePlanRehearsal();
 }
 
 function renderSettingsOrb() {
@@ -6923,6 +6928,230 @@ function startWatchers() {
   refreshCron();
 }
 
+/** The real shell has to run a clip in the visible window before the first
+ *  user open. An off-screen prime does not build that element's tiles. */
+function rehearsalBlocked(shell) {
+  if (!shell?.isConnected) return true;
+  if (shell.dataset.rehearsal === "1") return true;
+  if (shell.dataset.state === "panel" || shell.dataset.visual === "panel") return true;
+  if (shell.dataset.intent === "open" || shell.dataset.intent === "close") return true;
+  if (state.openIds.includes(shell.dataset.botId)) return true;
+  return shell.classList.contains("is-morphing")
+    || shell.classList.contains("is-collapsing")
+    || shell.classList.contains("is-plan-seam")
+    || shell.classList.contains("is-plan-arming");
+}
+
+function rehearsalHandedOff(shell) {
+  if (!shell?.isConnected) return true;
+  if (shell.dataset.intent === "open" || shell.dataset.intent === "close") return true;
+  if (shell.dataset.state === "panel" || shell.dataset.visual === "panel") return true;
+  if (state.openIds.includes(shell.dataset.botId)) return true;
+  return shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
+}
+
+/** Same-opacity stand-in so the real shell can sit at 0.01 without blinking the orb. */
+function placeRehearsalStand(shell) {
+  const orb = shell.querySelector(".morph-orb");
+  const box = orb?.getBoundingClientRect?.();
+  if (!orb || !box || box.width < 1 || box.height < 1) return null;
+  const stand = orb.cloneNode(true);
+  stand.classList.add("plan-rehearsal-stand");
+  stand.setAttribute("aria-hidden", "true");
+  stand.tabIndex = -1;
+  stand.disabled = true;
+  stand.inert = true;
+  const opacity = getComputedStyle(shell).opacity || "1";
+  stand.style.position = "fixed";
+  stand.style.left = `${box.left}px`;
+  stand.style.top = `${box.top}px`;
+  stand.style.width = `${box.width}px`;
+  stand.style.height = `${box.height}px`;
+  stand.style.margin = "0";
+  stand.style.pointerEvents = "none";
+  stand.style.opacity = opacity;
+  stand.style.zIndex = "30";
+  document.documentElement.append(stand);
+  return stand;
+}
+
+function restorePlanRehearsal(shell, saved, stand) {
+  stand?.remove();
+  if (!shell?.isConnected) {
+    hitSilence.delete(shell);
+    if (!hitsBlocked()) scheduleHitSync("plan-rehearsal");
+    return;
+  }
+  const handed = rehearsalHandedOff(shell);
+  delete shell.dataset.rehearsal;
+  if (saved.opacity) shell.style.opacity = saved.opacity;
+  else shell.style.removeProperty("opacity");
+  if (saved.pointer) shell.style.pointerEvents = saved.pointer;
+  else shell.style.removeProperty("pointer-events");
+  if (!saved.background) shell.style.removeProperty("background");
+  else shell.style.background = saved.background;
+  const plan = shell.querySelector(".plan-window");
+  if (handed) {
+    if (plan) plan.classList.remove("is-seam-grow");
+    if (plan && shell.dataset.planOpen !== "1") {
+      plan.hidden = saved.planHidden;
+      if (!saved.planWidth) plan.style.removeProperty("width");
+      if (!saved.planVisibility) plan.style.removeProperty("visibility");
+      if (!saved.planPointer) plan.style.removeProperty("pointer-events");
+    }
+    return;
+  }
+  shell.getAnimations?.().forEach((anim) => {
+    const name = anim.id || "";
+    if (name === "plan-rehearsal" || name === "plan-rehearsal-close") anim.cancel();
+  });
+  shell.style.removeProperty("overflow");
+  if (saved.will) shell.style.willChange = saved.will;
+  else shell.style.removeProperty("will-change");
+  releaseMotion(shell);
+  if (plan) {
+    plan.classList.remove("is-seam-grow");
+    plan.hidden = saved.planHidden;
+    if (saved.planWidth) plan.style.width = saved.planWidth;
+    else plan.style.removeProperty("width");
+    if (saved.planVisibility) plan.style.visibility = saved.planVisibility;
+    else plan.style.removeProperty("visibility");
+    if (saved.planPointer) plan.style.pointerEvents = saved.planPointer;
+    else plan.style.removeProperty("pointer-events");
+  }
+  if (saved.planWidthData) shell.dataset.planWidth = saved.planWidthData;
+  else delete shell.dataset.planWidth;
+  if (saved.clip) shell.style.clipPath = saved.clip;
+  else shell.style.removeProperty("clip-path");
+  layoutShell(shell);
+  hitSilence.delete(shell);
+  if (!hitsBlocked()) scheduleHitSync("plan-rehearsal");
+}
+
+/** Hidden open → 280ms grow → close on the real shell. Opacity stays ~0.01.
+ *  Hit IPC stays silent until the orb geometry is restored. */
+async function rehearseOnePlan(shell) {
+  const id = shell.dataset.botId || "";
+  if (!id || rehearsalBlocked(shell) || rehearsedProfiles.has(id)) return false;
+  const stand = placeRehearsalStand(shell);
+  if (!stand) return false;
+  const plan = shell.querySelector(".plan-window");
+  const saved = {
+    opacity: shell.style.opacity,
+    pointer: shell.style.pointerEvents,
+    background: shell.style.background,
+    will: shell.style.willChange,
+    clip: shell.style.clipPath,
+    planHidden: plan ? plan.hidden : true,
+    planVisibility: plan ? plan.style.visibility : "",
+    planWidth: plan ? plan.style.width : "",
+    planPointer: plan ? plan.style.pointerEvents : "",
+    planWidthData: shell.dataset.planWidth || "",
+  };
+  rehearsedProfiles.add(id);
+  shell.dataset.rehearsal = "1";
+  hitSilence.add(shell);
+  pauseHitSync();
+  debugLog("plan-rehearsal", `start profile=${id}`);
+  let anim = null;
+  try {
+    holdMotion(shell);
+    shell.style.pointerEvents = "none";
+    shell.style.setProperty("opacity", "0.01");
+    shell.style.background = "transparent";
+    shell.style.setProperty("overflow", "visible", "important");
+    shell.style.willChange = "clip-path";
+    if (!shell.dataset.planSide) shell.dataset.planSide = sideFromStyle(shell);
+    shell.dataset.planWidth = String(Math.round(planWidthPx()));
+    if (plan) {
+      plan.hidden = false;
+      plan.classList.add("is-seam-grow");
+      plan.style.visibility = "visible";
+      plan.style.pointerEvents = "none";
+      plan.style.width = `${Math.round(planWidthPx())}px`;
+    }
+    const from = planRevealClip(shell, 0).value;
+    const to = planRevealClip(shell, 1).value;
+    try {
+      anim = shell.animate([
+        { clipPath: from },
+        { clipPath: to },
+      ], { duration: PLAN_GROW_MS, easing: PLAN_EASE, fill: "both", id: "plan-rehearsal" });
+    } catch {
+      anim = null;
+    }
+    if (anim) {
+      alignSeamClock(anim);
+      shell.style.clipPath = to;
+      pumpSeamPresent(shell, PLAN_GROW_MS);
+      await whenAnimEnds(anim, PLAN_GROW_MS + 64, false);
+    }
+    if (anim && !rehearsalHandedOff(shell) && shell.dataset.rehearsal === "1") {
+      try { anim.cancel(); } catch { /* the close clip replaces it */ }
+      const rest = saved.clip || from;
+      let closing = null;
+      try {
+        closing = shell.animate([
+          { clipPath: to },
+          { clipPath: rest },
+        ], { duration: 48, easing: "linear", fill: "both", id: "plan-rehearsal-close" });
+      } catch {
+        closing = null;
+      }
+      if (closing) {
+        try { closing.currentTime = 0; closing.play(); } catch { /* restore paints the orb */ }
+        await whenAnimEnds(closing, 80, false);
+      }
+    }
+  } finally {
+    restorePlanRehearsal(shell, saved, stand);
+    debugLog("plan-rehearsal", `finish profile=${id}`);
+  }
+  return true;
+}
+
+const rehearsedProfiles = new Set();
+
+async function rehearsePlanShells() {
+  if (rehearsePlanShells.running) return;
+  rehearsePlanShells.running = true;
+  try {
+    const queue = state.bots.filter((bot) => bot?.id && !rehearsedProfiles.has(bot.id));
+    for (const bot of queue) {
+      const shell = shellFor(bot.id);
+      if (!shell || shell.dataset.kind !== "bot") {
+        rehearsedProfiles.add(bot.id);
+        continue;
+      }
+      if (rehearsalBlocked(shell)) {
+        rehearsedProfiles.add(bot.id);
+        continue;
+      }
+      await rehearseOnePlan(shell);
+    }
+  } finally {
+    rehearsePlanShells.running = false;
+  }
+  const left = state.bots.some((bot) => bot?.id && !rehearsedProfiles.has(bot.id) && shellFor(bot.id));
+  if (left && (rehearsePlanShells.tries || 0) < 12) {
+    rehearsePlanShells.tries = (rehearsePlanShells.tries || 0) + 1;
+    schedulePlanRehearsal();
+  }
+}
+
+function schedulePlanRehearsal() {
+  if (schedulePlanRehearsal.armed || rehearsePlanShells.running) return;
+  const waiting = state.bots.some((bot) => bot?.id && !rehearsedProfiles.has(bot.id) && shellFor(bot.id));
+  if (!waiting) return;
+  schedulePlanRehearsal.armed = true;
+  const run = () => {
+    schedulePlanRehearsal.armed = false;
+    rehearsePlanShells();
+  };
+  if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 80 });
+  else window.setTimeout(run, 1);
+}
+
 /** One composited clip before the first real open. A cold shell clip that
  *  is paused across frames never presents; this run uses the same clock. */
 function primePlanCompositor() {
@@ -6949,7 +7178,10 @@ function primePlanCompositor() {
 async function boot() {
   await armDebugLog();
   setupComposer();
-  requestAnimationFrame(() => requestAnimationFrame(() => primePlanCompositor()));
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    primePlanCompositor();
+    schedulePlanRehearsal();
+  }));
   setupWindowChrome();
   setupProximity();
   const kanbanClose = $("#btn-kanban-close");
