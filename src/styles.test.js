@@ -151,6 +151,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph\[data-anchor="start"\] \.center-panel > \.panel-header/);
   assert.match(css, /\.morph \.plan-window \.plan-head \{[^}]*padding-left:\s*0/s);
   assert.match(css, /\.morph \.plan-window \.plan-head \{[^}]*padding-right:\s*0/s);
+  assert.match(css, /\.morph \.plan-window \.plan-head \{[^}]*width:\s*100%/s);
+  assert.match(css, /\.morph \.plan-window \.plan-head \{[^}]*overflow:\s*hidden/s);
+  assert.match(css, /\.plan-title \{[^}]*min-width:\s*0/s);
   assert.doesNotMatch(css, /\.morph\[data-anchor="end"\] \.panel-header,/);
   assert.doesNotMatch(css, /--icon-dx|--icon-dy/);
   assert.match(css, /\.morph\.is-orb-moving \.morph-glow \{[^}]*opacity:\s*0\.4/s);
@@ -267,6 +270,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(queued, /seamRevealLive\(shell\)/);
   assert.match(queued, /snapshotPlanGeometry/);
   assert.match(queued, /restorePlanGeometry/);
+  assert.match(mainSrc, /plan-geometry/);
+  assert.match(mainSrc, /close-replaced/);
+  assert.match(mainSrc, /\[data-role='plan-close'\]/);
   assert.match(queued, /classList\.remove\("is-morphing", "is-plan-seam", "is-plan-arming", "is-growing-panel"\)/);
   assert.match(queued, /pinRestingNodes\(shell\)/);
   assert.match(queued, /resting: true/);
@@ -327,7 +333,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClock, /seamFrameStep/);
   assert.match(seamClock, /seamVisibleMs/);
   assert.match(seamClock, /seamAdvanceMs/);
+  assert.match(seamClock, /currentTime = 20/);
   assert.match(seamClock, /currentTime = 45/);
+  assert.match(seamClock, /shownMs <= 20\.5/);
   assert.match(seamClock, /warm && !heldOpen/);
   assert.doesNotMatch(seamClock, /presented <= 2/);
   assert.doesNotMatch(seamClock, /revealOf\(prior\) <= 0\.30/);

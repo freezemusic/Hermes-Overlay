@@ -852,6 +852,66 @@ function planWidthPx() {
   return Math.min(420, (window.innerWidth || 1280) * 0.42);
 }
 
+/** Final plan border box, including the close control and the 1px border.
+ *  Measured only while the panel clip still covers the plan. The seam
+ *  clock reads `dataset.planWidth` and must not measure again. */
+function commitPlanWidth(shell, plan, { measure = false } = {}) {
+  let width = Math.max(
+    Math.round(planWidthPx()),
+    Math.round(Number(shell?.dataset?.planWidth) || 0),
+  );
+  if (measure && plan) {
+    const laid = Math.round(plan.offsetWidth || 0);
+    if (laid > width) width = laid;
+    const close = plan.querySelector("[data-role='plan-close']");
+    if (close && laid > 0) {
+      let edge = 0;
+      if (close.offsetParent === plan) edge = Math.ceil(close.offsetLeft + close.offsetWidth + 1);
+      else {
+        const box = plan.getBoundingClientRect();
+        const button = close.getBoundingClientRect();
+        edge = Math.ceil(button.right - box.left + 1);
+      }
+      if (edge > width && edge - width < 64) width = edge;
+    }
+  }
+  const prev = shell?.dataset?.planWidth || "";
+  if (shell) shell.dataset.planWidth = String(width);
+  if (plan && width > 0) {
+    const px = `${width}px`;
+    plan.style.width = px;
+    plan.style.minWidth = px;
+    plan.style.maxWidth = px;
+    plan._planClose = plan.querySelector("[data-role='plan-close']") || plan._planClose || null;
+    watchPlanGeometry(plan);
+  }
+  if (prev && prev !== String(width)) {
+    debugLog("plan-geometry", `commit ${prev}->${width} call=${callerTag("commitPlanWidth")}`);
+  }
+  return width;
+}
+
+function watchPlanGeometry(plan) {
+  if (!debugFile.enabled || !plan || plan._geomWatch || typeof MutationObserver !== "function") return;
+  plan._geomWatch = true;
+  let width = plan.style.width;
+  let node = plan.querySelector("[data-role='plan-close']");
+  const observer = new MutationObserver(() => {
+    const next = plan.style.width;
+    const live = plan.querySelector("[data-role='plan-close']");
+    if (next === width && live === node) return;
+    debugLog("plan-geometry", `mut w=${width || "-"}->${next || "-"} close=${live === node ? "same" : "replaced"}`);
+    width = next;
+    node = live;
+  });
+  observer.observe(plan, {
+    attributes: true,
+    attributeFilter: ["style"],
+    subtree: true,
+    childList: true,
+  });
+}
+
 /** Side from the parked box. Reading layout here is what stalls the seam. */
 function sideFromStyle(shell) {
   const left = Number.parseFloat(shell.style.left) || 0;
@@ -935,6 +995,8 @@ function hideUnwarmedPlan(shell) {
     clearPlanMotion(plan);
     plan.style.width = "";
     plan.style.height = "";
+    plan.style.minWidth = "";
+    plan.style.maxWidth = "";
     forgetPlanWarm(plan);
   }
   if (shell) {
@@ -1335,6 +1397,8 @@ function releasePlanBox(plan) {
   delete plan.dataset.sizeLock;
   plan.style.width = "";
   plan.style.height = "";
+  plan.style.minWidth = "";
+  plan.style.maxWidth = "";
   plan.style.removeProperty("overflow");
   plan.style.removeProperty("will-change");
   const fit = planFitEl(plan);
@@ -1583,13 +1647,13 @@ function warmPlanLayer(shell) {
   armSeamWatch(2000);
   seamMark("plan-seam:warm");
   void plan.offsetWidth;
-  const width = Math.round(plan.offsetWidth || 0);
-  if (width < 1) {
+  const laid = Math.round(plan.offsetWidth || 0);
+  if (laid < 1) {
     plan.hidden = true;
     clearPlanMotion(plan);
     return;
   }
-  shell.dataset.planWidth = String(width);
+  commitPlanWidth(shell, plan, { measure: true });
   shell.dataset.planHeight = String(Math.round(plan.offsetHeight || 0));
   const fit = ensurePlanFit(plan);
   fit.style.flex = "none";
@@ -1598,7 +1662,6 @@ function warmPlanLayer(shell) {
   fit.style.boxSizing = "border-box";
   fit.style.height = "100%";
   fit.style.alignSelf = shell.dataset.planSide === "left" ? "flex-end" : "flex-start";
-  plan.style.width = `${width}px`;
   plan.style.willChange = "transform";
   fit.style.willChange = "transform";
   plan.dataset.warm = "1";
@@ -1995,28 +2058,29 @@ function alignSeamClock(anim, onPresented, warm = false) {
         requestAnimationFrame(sampleLate);
         return;
       }
-      // Restarts are spent and this presented sample is still past the gate.
-      // Show it at 45ms (about 38%) instead of the late clock.
+      // Restarts are spent. The first committed sample is the 20ms value
+      // (~16%). The next presented frame, often the one a 30fps capture
+      // records, is capped at 45ms below.
       const step = seamFrameStep(current, { first: true, duration: PLAN_GROW_MS });
-      if (step.restart) {
-        try { anim.currentTime = 45; } catch { /* the closed keyframe stays */ }
-        debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=45`);
-        shownMs = 45;
+      const shown = seamVisibleMs(current);
+      if (current > 20) {
+        try { anim.currentTime = 20; } catch { /* the closed keyframe stays */ }
+        debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=20 restart=${step.restart ? 1 : 0}`);
       }
       if (!heldOpen) {
         heldOpen = true;
         confirm(presented);
       }
-      if (!(shownMs > 0)) shownMs = seamVisibleMs(current);
+      shownMs = shown > 0 ? shown : seamVisibleMs(current);
       pace = true;
       requestAnimationFrame(sampleLate);
       return;
     }
     if (!pace && warm && !heldOpen) {
       const shown = seamVisibleMs(current);
-      if (shown < current) {
-        try { anim.currentTime = shown; } catch { /* the closed keyframe stays */ }
-        debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=45`);
+      if (current > 20) {
+        try { anim.currentTime = 20; } catch { /* the closed keyframe stays */ }
+        debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=20`);
       }
       shownMs = shown;
       heldOpen = true;
@@ -2027,24 +2091,31 @@ function alignSeamClock(anim, onPresented, warm = false) {
     }
     if (!pace && !heldOpen && (current <= 16 || (presented >= 2 && gap > 0 && gap <= 40))) {
       // A reanchor that is not a 75ms hole still presents this sample.
-      // Cap that first visible frame at 45ms even when the gap stayed small.
+      // Cap that first visible frame at 20ms even when the gap stayed small.
       const shown = seamVisibleMs(current);
-      if (shown < current) {
-        try { anim.currentTime = 45; } catch { /* the closed keyframe stays */ }
-        debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=45`);
+      if (current > 20) {
+        try { anim.currentTime = 20; } catch { /* the closed keyframe stays */ }
+        debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=20`);
       }
       shownMs = shown;
       heldOpen = true;
       confirm(presented);
       pace = true;
     } else if (pace) {
-      const next = seamAdvanceMs(current, {
+      let next = seamAdvanceMs(current, {
         shownMs,
         gapMs: gap,
         frameMs: frameMs || 16,
         duration: PLAN_GROW_MS,
       });
-      if (Math.abs(next - current) > 0.5) {
+      // Sample 2 is the frame a 30fps capture often records. Top and bottom
+      // both land here. Keep it on the 45ms value so that frame stays under 45%.
+      if (shownMs > 0 && shownMs <= 20.5 && current > 45) {
+        next = Math.min(next, 45);
+        try { anim.currentTime = 45; } catch { /* the closed keyframe stays */ }
+        resume();
+        debugLog("seam-clock", `pace gap=${gap.toFixed(1)} at=${current.toFixed(1)} show=45`);
+      } else if (Math.abs(next - current) > 0.5) {
         try { anim.currentTime = next; } catch { /* keep the running clock */ }
         resume();
         debugLog("seam-clock", `pace gap=${gap.toFixed(1)} at=${current.toFixed(1)} show=${next.toFixed(1)}`);
@@ -2162,6 +2233,7 @@ function beginSeamClip(shell) {
   shell._clipHold = anim;
   shell.style.clipPath = from;
   const warm = shell.querySelector(".plan-window")?.dataset.warmPresented === "1";
+  // Top and bottom share this clock, including the 20ms then 45ms caps.
   alignSeamClock(anim, () => {
     shell.style.clipPath = to;
   }, warm);
@@ -2273,7 +2345,7 @@ function growPlan(shell, token) {
   // only thing that moves, so the markdown layer is not rebuilt per frame.
   const side = shell.dataset.planSide === "left" ? "left" : "right";
   const origin = seamOrigin(shell);
-  const full = Number(shell.dataset.planWidth) || planWidthPx();
+  const full = commitPlanWidth(shell, plan);
   fit.style.flex = "none";
   fit.style.width = "100%";
   fit.style.maxWidth = "100%";
@@ -2308,6 +2380,9 @@ function growPlan(shell, token) {
   const run = (async () => {
     await promoteClosedSeam(shell);
     if (!alive()) return false;
+    // Geometry is final before the first reveal sample. No layout read here.
+    const locked = commitPlanWidth(shell, plan);
+    plan.style.width = `${Math.round(locked)}px`;
     const anim = beginSeamClip(shell);
     seamLog("anim-start", `flight=${flight} mode=clip same=shell raster=${plan.dataset.raster || "live"} reveal=0 motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
     seamMark("plan-seam:clock");
@@ -2462,19 +2537,44 @@ function snapshotPlanGeometry(plan) {
     top: plan.style.top,
     left: plan.style.left,
     right: plan.style.right,
+    minWidth: plan.style.minWidth,
+    maxWidth: plan.style.maxWidth,
     fitWidth: fit?.style.width || "",
     fitHeight: fit?.style.height || "",
     fitMax: fit?.style.maxWidth || "",
+    close: plan.querySelector("[data-role='plan-close']") || plan._planClose || null,
+    plan,
   };
 }
 
 function restorePlanGeometry(plan, snap) {
   if (!plan || !snap) return;
+  if (snap.plan && plan !== snap.plan) {
+    debugLog("plan-geometry", `plan-node-replaced call=${callerTag("restorePlanGeometry")}`);
+  }
+  const moved = plan.style.width !== snap.width
+    || plan.style.height !== snap.height
+    || plan.style.top !== snap.top
+    || plan.style.left !== snap.left
+    || plan.style.right !== snap.right
+    || plan.style.minWidth !== snap.minWidth
+    || plan.style.maxWidth !== snap.maxWidth;
+  if (moved) {
+    debugLog("plan-geometry", `restore w=${snap.width || "-"} was=${plan.style.width || "-"} call=${callerTag("restorePlanGeometry")}`);
+  }
   plan.style.width = snap.width;
   plan.style.height = snap.height;
   plan.style.top = snap.top;
   plan.style.left = snap.left;
   plan.style.right = snap.right;
+  plan.style.minWidth = snap.minWidth;
+  plan.style.maxWidth = snap.maxWidth;
+  const close = plan.querySelector("[data-role='plan-close']");
+  if (snap.close && close !== snap.close) {
+    debugLog("plan-geometry", `close-replaced call=${callerTag("restorePlanGeometry")}`);
+    if (close) close.replaceWith(snap.close);
+    else (plan.querySelector(".plan-head .panel-actions") || plan.querySelector(".plan-head"))?.append(snap.close);
+  }
   const fit = plan.querySelector(".plan-fit");
   if (!fit) return;
   fit.style.width = snap.fitWidth;
@@ -2505,15 +2605,16 @@ function applyQueuedShell(shell, tag) {
   delete shell.dataset.chatDirty;
   delete shell.dataset.planDirty;
   renderChat(shell.dataset.botId, { inplace: true, tag, resting: true });
-  restorePlanGeometry(plan, snap);
+  restorePlanGeometry(shell.querySelector(".plan-window") || plan, snap);
   pinRestingNodes(shell);
   requestAnimationFrame(() => {
     if (!shell.isConnected || seamRevealLive(shell) || freezeCooling(shell) || collapseBusy() || collapseQuiet()) {
       armQuietFlush(shell);
       return;
     }
-    releasePlanBox(shell.querySelector(".plan-window"));
-    restorePlanGeometry(plan, snap);
+    const live = shell.querySelector(".plan-window");
+    releasePlanBox(live);
+    restorePlanGeometry(live, snap);
     releaseHitSilence(tag);
     if (renderBots.pending) renderBots(tag);
   });
@@ -3839,6 +3940,8 @@ function paintPlan(id) {
     clearPlanMotion(section);
     section.style.width = "";
     section.style.height = "";
+    section.style.minWidth = "";
+    section.style.maxWidth = "";
     section.style.removeProperty("display");
     section.classList.remove("is-seam-grow");
     forgetPlanWarm(section);
@@ -3848,6 +3951,10 @@ function paintPlan(id) {
     scheduleHitSync();
     return;
   }
+  const heldFrame = section.dataset.sizeLock === "1"
+    || seamPhase(section) === "growing"
+    || seamPhase(section) === "grown";
+  const frameSnap = heldFrame ? snapshotPlanGeometry(section) : null;
   section.dataset.key = focus.key;
   const title = role(section, "plan-title");
   if (title) title.textContent = focus.title;
@@ -3886,6 +3993,7 @@ function paintPlan(id) {
     }
   }
   if (seamLocked(section)) {
+    if (frameSnap) restorePlanGeometry(section, frameSnap);
     if (!shell.classList.contains("is-plan-seam") && !collapseBusy()) scheduleHitSync();
     return;
   }
