@@ -216,9 +216,30 @@ $w = $bounds.Width
 $h = $bounds.Height
 $pad = 42
 $orb = 44
-$empty = @{ x = 200; y = [Math]::Max(220, [int]($h / 2)) }
 $settings = @{ x = [int]($w - $pad - 152 - $orb / 2); y = [int]($h - $pad - $orb / 2) }
 $cron = @{ x = [int]($w - $pad - $orb / 2); y = [int][Math]::Round($h * 0.38) }
+# reveal+2s Ctrl+clicks the settings orb, which opens a panel of
+# min(680, 92vw) by min(86vh, 760) anchored on that orb. On a 1024x768
+# runner that panel covers (200, h/2), so the +32s blank sample was hitting
+# the WebView. The blank point stays beside the panel (R-CT-01).
+$settingsW = [Math]::Min(680.0, $w * 0.92)
+$settingsH = [Math]::Min($h * 0.86, 760.0)
+$orbR = $orb / 2.0
+$panelLeft = $settings.x - ($settingsW - $orbR)
+$panelTop = $settings.y - ($settingsH - $orbR)
+$emptyCands = @(
+  @{ x = 16; y = [int]($h / 2) },
+  @{ x = 16; y = 16 },
+  @{ x = [int]($w - 16); y = 16 }
+)
+$empty = $null
+foreach ($cand in $emptyCands) {
+  $onPanel = $cand.x -ge ($panelLeft - 16) -and $cand.x -lt ($panelLeft + $settingsW + 16) -and $cand.y -ge ($panelTop - 16) -and $cand.y -lt ($panelTop + $settingsH + 16)
+  $onScreen = $cand.x -gt 0 -and $cand.y -gt 0 -and $cand.x -lt $w -and $cand.y -lt ($h - 48)
+  if (-not $onPanel -and $onScreen) { $empty = $cand; break }
+}
+if (-not $empty) { throw "no blank point beside the settings panel" }
+Write-Host "blank point $($empty.x),$($empty.y) beside settings $([int]$panelLeft),$([int]$panelTop) $([int]$settingsW)x$([int]$settingsH)"
 
 function Dump-Tree {
   try { [ClickProbe]::Dump($tree) } catch { "dump failed: $_" | Set-Content $tree }
