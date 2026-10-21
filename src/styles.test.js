@@ -257,6 +257,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /PLAN_GROW_MS \* 2/);
   assert.match(mainSrc, /return current < 8/);
   assert.match(finish, /holdMotion\(shell\)/);
+  assert.match(finish, /presentSeamFinal\(shell, anim\)/);
   assert.doesNotMatch(finish, /seamLog\("lock"\)|dataset\.seam\s*=|lockPlanRevealed|\.animate\(|\.cancel\(|fill=forwards|retireGrownSeam|removeProperty\("clip-path"\)|writeSeamWidth/);
   const retire = mainSrc.slice(mainSrc.indexOf("function retireGrownSeam"), mainSrc.indexOf("function setSeamPhase"));
   const retireFlush = retire.indexOf("getComputedStyle(plan).transform");
@@ -272,6 +273,10 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(queued, /restorePlanGeometry/);
   assert.match(mainSrc, /plan-geometry/);
   assert.match(mainSrc, /close-replaced/);
+  assert.match(mainSrc, /seam-final/);
+  assert.match(mainSrc, /function presentSeamFinal/);
+  assert.ok(mainSrc.indexOf("function presentSeamFinal") > mainSrc.indexOf("function pumpSeamPresent"));
+  assert.ok(mainSrc.indexOf("function presentSeamFinal") < mainSrc.indexOf("function alignSeamClock"));
   assert.match(mainSrc, /\[data-role='plan-close'\]/);
   assert.match(queued, /classList\.remove\("is-morphing", "is-plan-seam", "is-plan-arming", "is-growing-panel"\)/);
   assert.match(queued, /pinRestingNodes\(shell\)/);

@@ -510,9 +510,11 @@ export function seamVisibleMs(elapsedMs, index = 0) {
  * Timeline position for one presented seam frame.
  * The first sample (`shownMs` 0) is capped at 20ms.
  * The second sample (the first pin, still ≤20ms) is capped at 45ms.
- * After that, the same position is never returned twice.
- * A callback gap longer than one frame advances at most one frame,
- * unless elapsed is already past twice the duration.
+ * Every later sample is strictly ahead of the previous one by at least
+ * half a frame, otherwise a full frame of the curve (the 20ms pin and a
+ * 22ms follow-up are the same reveal). A callback gap longer than one
+ * frame advances at most one frame, unless elapsed is already past twice
+ * the duration.
  */
 export function seamAdvanceMs(elapsedMs, {
   shownMs = 0,
@@ -526,17 +528,20 @@ export function seamAdvanceMs(elapsedMs, {
   const span = duration > 0 ? duration : PLAN_GROW_MS;
   const frame = frameMs > 0 ? frameMs : 16;
   if (!(shown > 0)) return seamVisibleMs(elapsed, 0);
+  // Past twice the duration the clock may jump, but only after the 45ms cap.
+  if (elapsed > span * 2 && shown > 20.5) return Math.min(span, elapsed);
   // The first committed pin is ≤20ms. The next presented frame is what
   // a 30fps capture records when it misses frame 1, so it stays at 45ms.
-  if (shown <= 20.5) {
-    const capped = seamVisibleMs(Math.max(shown, elapsed), 1);
-    if (capped <= shown + 0.5 && capped < span) return Math.min(45, Math.min(span, shown + frame));
-    return Math.min(span, capped);
+  let next;
+  if (shown <= 20.5) next = Math.min(span, seamVisibleMs(Math.max(shown, elapsed), 1));
+  else {
+    const stalled = gap > frame * 1.5;
+    next = stalled ? Math.min(span, shown + frame) : Math.min(span, Math.max(shown, elapsed));
   }
-  if (elapsed > span * 2) return Math.min(span, elapsed);
-  const stalled = gap > frame * 1.5;
-  let next = stalled ? Math.min(span, shown + frame) : Math.min(span, Math.max(shown, elapsed));
-  if (next <= shown + 0.5 && next < span) next = Math.min(span, shown + frame);
+  if (next < span && next < shown + frame * 0.5) {
+    next = Math.min(span, shown + frame);
+    if (shown <= 20.5) next = Math.min(45, next);
+  }
   return next;
 }
 

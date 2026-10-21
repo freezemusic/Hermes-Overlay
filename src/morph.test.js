@@ -142,6 +142,11 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(seamAdvanceMs(80, { shownMs: 30, gapMs: 48, frameMs: 16 }), 46);
   assert.equal(seamAdvanceMs(600, { shownMs: 30, gapMs: 147, frameMs: 16, duration: 280 }), 280);
   assert.equal(seamAdvanceMs(40, { shownMs: 16, gapMs: 33, frameMs: 33 }), 40);
+  const sameCap = seamAdvanceMs(20, { shownMs: 20, gapMs: 35, frameMs: 16 });
+  assert.ok(sameCap > 20 && sameCap <= 45);
+  assert.equal(seamAdvanceMs(22, { shownMs: 20, gapMs: 16, frameMs: 16 }), 36);
+  assert.equal(seamAdvanceMs(110, { shownMs: 110, gapMs: 16, frameMs: 16 }), 126);
+  assert.equal(seamAdvanceMs(112, { shownMs: 112, gapMs: 16, frameMs: 16 }), 128);
   const openClip = "inset(-4px -428px -4px -4px round 3px)";
   const closedClip = "inset(-4px -4px -4px -4px round 3px)";
   assert.ok(seamClipOutset(openClip) > 400);

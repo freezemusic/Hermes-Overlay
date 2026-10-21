@@ -933,6 +933,19 @@ function planRevealClip(shell, t) {
   return { value: clipPath(base), insets: base, reveal };
 }
 
+/** Fully open shell clip in whole pixels. Ceil an outward inset so the last
+ *  sample cannot land a fraction short of the locked width. The settled clip
+ *  stays this inset; clearing it to none paints a blank frame. */
+function exactOpenClip(shell) {
+  const base = planRevealClip(shell, 1).insets;
+  for (const key of ["top", "right", "bottom", "left"]) {
+    const value = Number(base[key]) || 0;
+    base[key] = value < 0 ? -Math.ceil(-value) : Math.floor(value);
+  }
+  base.radius = Math.round(Number(base.radius) || 0);
+  return clipPath(base);
+}
+
 /** Widen the held clip over the plan. Left and right share this path: only
  *  the outward edge changes, and the clip animation stays. */
 function holdPlanClip(shell, reveal = 1) {
@@ -1980,6 +1993,49 @@ function pumpSeamPresent(shell, duration) {
   }
 }
 
+/** Last presented sample. fill:both keeps a short end keyframe over the
+ *  inline clip, and a clip-only damage rect misses the new right strip.
+ *  Write the fully open exact-px clip on the effect and the inline style
+ *  in this frame, then nudge the plan layer so its full rect is presented.
+ *  GTK after-paint confirms that frame. The nudge is removed after the log. */
+function presentSeamFinal(shell, anim) {
+  if (!shell || shell._seamFinal) return;
+  if (shell.dataset?.planOpen !== "1") return;
+  shell._seamFinal = 1;
+  const value = exactOpenClip(shell);
+  if (anim?.effect?.setKeyframes) {
+    try {
+      anim.effect.setKeyframes([{ clipPath: value }, { clipPath: value }]);
+    } catch { /* the inline clip still opens the shell */ }
+  }
+  try {
+    if (anim && anim.playState !== "finished" && anim.playState !== "idle") {
+      anim.currentTime = PLAN_GROW_MS;
+    }
+  } catch { /* keyframes already hold the open clip */ }
+  shell.style.clipPath = value;
+  const plan = shell.querySelector(".plan-window");
+  if (plan) plan.style.transform = "translate3d(0, 0, 1px)";
+  const logPresented = () => {
+    if (debugFile.enabled) {
+      let used = "";
+      let rect = "-";
+      try { used = getComputedStyle(shell).clipPath || ""; } catch { used = ""; }
+      try {
+        const box = plan?.getBoundingClientRect();
+        if (box) {
+          rect = `${Math.round(box.x)},${Math.round(box.y)} ${Math.round(box.width)}x${Math.round(box.height)}`;
+        }
+      } catch { rect = "-"; }
+      debugLog("seam-final", `clip=${used || "-"} rect=${rect}`);
+    }
+    if (plan?.isConnected) plan.style.transform = "none";
+  };
+  waitPresentedFrames(1).then(() => {
+    requestAnimationFrame(logPresented);
+  });
+}
+
 /** Anchor t=0 to the first frame that can be presented. A pause that is
  *  still in effect on a later frame never resumes on a cold compositor:
  *  the shell stays on the closed keyframe until the finish write jumps
@@ -1987,7 +2043,7 @@ function pumpSeamPresent(shell, duration) {
  *  into the page, not the animation) must not be treated as progress.
  *  The first two callbacks can run without reaching the glass. The third
  *  one is often the first scan, already ~46ms down the curve. */
-function alignSeamClock(anim, onPresented, warm = false) {
+function alignSeamClock(anim, onPresented, warm = false, shell = null) {
   if (!anim) return;
   const pin = (ahead = 0) => {
     const now = document.timeline?.currentTime;
@@ -2019,6 +2075,7 @@ function alignSeamClock(anim, onPresented, warm = false) {
   // (about 25ms at the first sample) is discarded on that frame.
   pin(0);
   resume();
+  const layer = shell || anim.effect?.target || null;
   let presented = 0;
   let lastStamp = 0;
   let heldOpen = false;
@@ -2026,7 +2083,11 @@ function alignSeamClock(anim, onPresented, warm = false) {
   let frameMs = 0;
   let pace = false;
   const sampleLate = (stamp) => {
-    if (!anim || anim.playState === "finished" || anim.playState === "idle") return;
+    if (!anim || anim.playState === "idle") return;
+    if (anim.playState === "finished") {
+      presentSeamFinal(layer, anim);
+      return;
+    }
     let current = 0;
     try { current = Number(anim.currentTime) || 0; } catch { current = 0; }
     presented += 1;
@@ -2102,20 +2163,31 @@ function alignSeamClock(anim, onPresented, warm = false) {
       confirm(presented);
       pace = true;
     } else if (pace) {
+      const frame = frameMs || 16;
       let next = seamAdvanceMs(current, {
         shownMs,
         gapMs: gap,
-        frameMs: frameMs || 16,
+        frameMs: frame,
         duration: PLAN_GROW_MS,
       });
+      if (shownMs > 0 && next <= shownMs + 0.5 && next < PLAN_GROW_MS) {
+        next = Math.min(PLAN_GROW_MS, shownMs + frame);
+        if (shownMs <= 20.5) next = Math.min(45, next);
+      }
       // Sample 2 is the frame a 30fps capture often records. Top and bottom
       // both land here. Keep it on the 45ms value so that frame stays under 45%.
       if (shownMs > 0 && shownMs <= 20.5 && current > 45) {
         next = Math.min(next, 45);
+        if (next <= shownMs + 0.5) next = Math.min(45, shownMs + frame);
         try { anim.currentTime = 45; } catch { /* the closed keyframe stays */ }
         resume();
         debugLog("seam-clock", `pace gap=${gap.toFixed(1)} at=${current.toFixed(1)} show=45`);
-      } else if (Math.abs(next - current) > 0.5) {
+      } else if (next >= PLAN_GROW_MS - 0.5) {
+        next = PLAN_GROW_MS;
+        try { anim.currentTime = next; } catch { /* the open keyframe stays */ }
+        presentSeamFinal(layer, anim);
+        debugLog("seam-clock", `pace gap=${gap.toFixed(1)} at=${current.toFixed(1)} show=${next.toFixed(1)}`);
+      } else if (next > shownMs + 0.5 || Math.abs(next - current) > 0.5) {
         try { anim.currentTime = next; } catch { /* keep the running clock */ }
         resume();
         debugLog("seam-clock", `pace gap=${gap.toFixed(1)} at=${current.toFixed(1)} show=${next.toFixed(1)}`);
@@ -2236,7 +2308,7 @@ function beginSeamClip(shell) {
   // Top and bottom share this clock, including the 20ms then 45ms caps.
   alignSeamClock(anim, () => {
     shell.style.clipPath = to;
-  }, warm);
+  }, warm, shell);
   pumpSeamPresent(shell, duration);
   watchPresent(shell, anim, "plan");
   seamLog("clip-open", `prev=${previous?.playState || "none"} dur=${duration}`);
@@ -2378,6 +2450,7 @@ function growPlan(shell, token) {
     return true;
   };
   const run = (async () => {
+    shell._seamFinal = 0;
     await promoteClosedSeam(shell);
     if (!alive()) return false;
     // Geometry is final before the first reveal sample. No layout read here.
@@ -2395,6 +2468,7 @@ function growPlan(shell, token) {
       seamLog("seam-sample", `i=0 wall=${wall.toFixed(1)} reveal=${planEase(t).toFixed(3)} motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
     }
     if (!alive()) return false;
+    presentSeamFinal(shell, anim);
     const openClip = planRevealClip(shell, 1).value;
     let usedClip = "";
     try { usedClip = getComputedStyle(shell).clipPath || ""; } catch { usedClip = ""; }
