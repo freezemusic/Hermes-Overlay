@@ -327,7 +327,7 @@ test("a flush keeps the orb under the cursor while the modifier is held", () => 
 });
 
 test("light swatches use dark ink", () => {
-  assert.equal(inkFor("#f2f200"), "#1a1a1a");
+  assert.equal(inkFor("#f2f200"), "#14142b");
   assert.equal(inkFor("#0000f2"), "#f5f5f5");
 });
 

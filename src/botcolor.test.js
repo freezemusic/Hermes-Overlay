@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { INK, PALETTE, contrastRatio, textOnBotFill, textPairsForBot } from "./botcolor.js";
+import { INK, PALETTE, TEXT_BLUE, contrastRatio, textOnBotFill, textPairsForBot } from "./botcolor.js";
 
 test("every bot colour keeps text contrast at 4.5", () => {
   for (const hex of ["#f2f200", "#00f2f2", "#79f200"]) {
     assert.equal(textOnBotFill(hex), INK);
   }
+  assert.ok(contrastRatio(TEXT_BLUE, "#f7f8f8") >= 4.5);
+  assert.ok(contrastRatio(INK, "#f2f200") >= 4.5);
+  assert.ok(contrastRatio(INK, "#edff45") >= 4.5);
+  assert.ok(contrastRatio(INK, "#00f2f2") >= 4.5);
+  assert.ok(contrastRatio("#ffffff", TEXT_BLUE) >= 4.5);
   assert.equal(textOnBotFill("#0000f2"), "#ffffff");
   for (const light of ["#f2f200", "#00f2f2", "#79f200"]) {
     for (const pair of textPairsForBot(light)) {

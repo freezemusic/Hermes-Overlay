@@ -28,7 +28,7 @@ test("modifier select is a light hairline control", () => {
   assert.match(block, /color-scheme:\s*light/);
   assert.match(block, /background-color:\s*rgb\(255 255 255 \/ \.96\)/);
   assert.match(css, /\.field select option \{[^}]*background-color:\s*#f7f8f8/s);
-  assert.match(css, /\.field select option \{[^}]*color:\s*var\(--nous-navy\)/s);
+  assert.match(css, /\.field select option \{[^}]*color:\s*#14142b/s);
 });
 
 test("hud glass stays readable and follows the v20 rulings", () => {
@@ -40,8 +40,12 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /--glass-fog:\s*rgb\(247 248 248 \/ \.88\)/);
   assert.match(css, /--glass-fog-soft:\s*rgb\(247 248 248 \/ \.88\)/);
   assert.match(css, /--bot-20:\s*rgb\(var\(--bot-rgb\) \/ \.20\)/);
-  assert.match(css, /--text:\s*#000091/);
-  assert.match(css, /--text-body:\s*#1a1a1a/);
+  assert.match(css, /--text:\s*#0000f2/);
+  assert.match(css, /--text-body:\s*#14142b/);
+  assert.doesNotMatch(css, /color:\s*#000091/);
+  assert.doesNotMatch(css, /color:\s*#1a1a1a/);
+  assert.doesNotMatch(css, /color:\s*var\(--nous-navy\)/);
+  assert.doesNotMatch(css, /color:\s*var\(--nous-ink-dark\)/);
   assert.match(css, /--nous-navy:\s*#000091/);
   assert.match(css, /--noise:\s*url\("\.\/assets\/noise\.png"\)/);
   assert.match(css, /--r-panel:\s*3px/);
@@ -744,7 +748,7 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.bot-btn,[\s\S]*?contain:\s*layout style/);
   assert.match(css, /\.center-panel\[hidden\][^}]*display:\s*none/s);
   assert.match(css, /\.bubble\.bot \{[^}]*border-left:\s*2px solid var\(--bot\)/s);
-  assert.match(css, /\.bubble\.bot \{[^}]*color:\s*#1a1a1a/s);
+  assert.match(css, /\.bubble\.bot \{[^}]*color:\s*#14142b/s);
   assert.match(css, /\.bubble\.user \{[^}]*background:\s*var\(--bot-10\)/s);
   assert.match(css, /\.bubble\.user \{[^}]*border:\s*1px solid #0000f2/s);
   assert.match(css, /\.bubble\.user \{[^}]*color:\s*#14142b/s);
@@ -761,7 +765,7 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.cmd-chip[^}]*font:\s*400 var\(--fs-meta\)/s);
   assert.match(css, /\.send-btn \{[^}]*background:\s*#0000f2/s);
   assert.match(css, /\.send-btn \{[^}]*color:\s*#fff/s);
-  assert.match(css, /\.icon-btn,[\s\S]*?color:\s*#000091/);
+  assert.match(css, /\.icon-btn,[\s\S]*?color:\s*#0000f2/);
   assert.match(css, /\.toast \{[^}]*max-width:\s*280px/s);
   assert.match(css, /\.toast \{[^}]*border-radius:\s*var\(--r-sm\)/s);
   assert.match(css, /\.kanban-panel \{[^}]*width:\s*min\(960px, 80vw\)/s);
@@ -852,13 +856,13 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(hermes, /\/api\/crons/);
   assert.match(css, /\.plan-title \{[^}]*color:\s*#0000f2/s);
   assert.match(css, /\.plan-title \{[^}]*text-transform:\s*none/s);
-  assert.match(css, /\.plan-body \{[^}]*color:\s*#1a1a1a/s);
+  assert.match(css, /\.plan-body \{[^}]*color:\s*#14142b/s);
   assert.match(css, /\.plan-body pre \{[^}]*background:\s*#000/s);
   assert.match(css, /\.plan-body pre \{[^}]*color:\s*#fff/s);
   assert.match(css, /\.plan-body pre \{[^}]*font:\s*400 11px\/1\.45 var\(--font-mono\)/s);
   assert.match(css, /\.plan-body pre \{[^}]*border-radius:\s*2px/s);
   assert.match(main, /STACK_GAP \+ 2 \* FRAME_BLEED/);
-  assert.match(css, /\.bot-btn \.bot-label \{[^}]*color:\s*#000091/s);
+  assert.match(css, /\.bot-btn \.bot-label \{[^}]*color:\s*#0000f2/s);
   assert.match(css, /\.bot-btn \.bot-label \{[^}]*text-shadow:[^;]*#fff/s);
   assert.match(css, /\.bot-btn \.bot-label \{[^}]*rgb\(247 248 248 \/ \.92\)/s);
   assert.match(css, /\.orb--kanban \.orb-core \{[^}]*rotate\(45deg\)/s);

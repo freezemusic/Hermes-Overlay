@@ -14,7 +14,7 @@ export function inkFor(hex) {
   const g = (n >> 8) & 255;
   const b = n & 255;
   const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-  return luminance > 0.58 ? "#1a1a1a" : "#f5f5f5";
+  return luminance > 0.58 ? "#14142b" : "#f5f5f5";
 }
 
 export function colorForIndex(index) {

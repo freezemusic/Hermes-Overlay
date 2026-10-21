@@ -99,7 +99,7 @@ export function textPairsForBot(hex) {
     { name: "user-bubble", fg: INK, bg: wash(0.1) },
     { name: "user-bubble-paper", fg: INK, bg: wash(0.1, PAPER) },
     { name: "code-chip", fg: INK, bg: wash(0.05) },
-    { name: "slash-active", fg: "#000091", bg: wash(0.1, PAPER) },
+    { name: "slash-active", fg: INK, bg: wash(0.1, PAPER) },
     { name: "send-btn", fg: BUTTON_TEXT, bg: TEXT_BLUE },
     { name: "tab", fg: BUTTON_TEXT, bg: TEXT_BLUE },
     { name: "orb-glyph", fg: INK, bg: "#ffffff" },
