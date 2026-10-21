@@ -199,10 +199,10 @@
 > 2026-10-21 Devon 裁決（C-01）：本節取代 repo `SPEC.md` §5.2、§5.5、§5.7，同埋同本節撞嘅 §5.4、§5.6。
 > 舊版草稿嘅「啟動唔准改已儲存 session id」已經由 R-SS-01／02 取代：主光球唔再跟儲存嘅 id，一律開 Bot Chat。
 
-**R-SS-01** 每個 bot 嘅**主光球面板**一律預設開佢嘅「Bot Chat」session（`source` 係 `api_server` 或 `desktop`；`tui` 嘅唔算），**啟動時同每次打開面板時都係**。
-- 來源：Devon（2026-10-21，C-01 裁決）；SPEC §5.1（揀邊條 Bot Chat 嘅規則照用）。
-- 驗收（兩邊）：config 入面儲存嘅 session id 指向其他 session，而且有比 Bot Chat 更新嘅 session；啟動之後打開每個主光球面板 → picker 同訊息列表都係 Bot Chat。閂咗再開一次，結果一樣。
-- 狀態：❓ / ❌(Win，4 個 bot 被轉走)。
+**R-SS-01** 每個 bot 嘅**主光球面板**預設開 Hermes Desktop／gateway 實際用來收 Bot Chat 的 session。API 有露出 delivery lease 或 home-channel session 就用嗰條（標題要係 `Bot Chat`；空的唔可以壓過有歷史嗰條）。冇露出就用標題剛好係 `Bot Chat` 嘅**最舊** canonical session，**任何 source 都計，包括 `tui`**，只要 API 讀到。`POST /api/sessions/{id}/chat` 寫入 `tui` 會 `permission_denied`（未綁定的標題亦唔會被 Bot Chat door 續寫，displace 會另開一條），所以 `tui` 照打開、顯示只讀，並講明 API 唔接受寫入。有歷史嘅 session 永遠優先於較新的空重複。啟動同打開都**唔新建** session。
+- 來源：Devon（2026-10-21，C-01 裁決）；同日只讀手提同伺服器：forex-forest 唯一 Bot Chat 係 `tui` `20261001_013827_25b1eb`；mt-coder、mt-tester 的真正 Bot Chat 有歷史，e3db750 喺 10:06 開出的空 `api_1792573589_*` 唔用。現行 Hermes REST `_session_response` 冇 lease／home-channel 欄，所以用精確標題查詢（`title=Bot Chat&include_hidden=true`，隱藏列先會出）再按上面的規則揀。
+- 驗收（兩邊）：config 入面儲存嘅 session id 指向其他 session，而且有比 Bot Chat 更新嘅 session；啟動之後打開每個主光球面板 → picker 同訊息列表都係有歷史的 canonical Bot Chat。只有 `tui` Bot Chat 時開嗰條，輸入同傳送停用，並顯示只讀原因。閂咗再開一次，結果一樣。單元測試用上面兩組資料。
+- 狀態：❓ / ❌(Win，4 個 bot 被轉走)。單元測試已鎖規則；手提未再驗。
 
 **R-SS-02** app **永遠唔會自動將主光球轉去最新或者任何其他 session**：無論啟動、打開面板、cron 更新 `last_active`、有新 session 出現，都唔會。
 - 來源：Devon（2026-10-21）。

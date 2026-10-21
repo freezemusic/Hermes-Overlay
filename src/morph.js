@@ -796,6 +796,7 @@ export function sameChatSnapshot(current, opened) {
   const messages = opened?.messages || [];
   if ((current?.sessionId || "") !== (opened?.sessionId || "")) return false;
   if (!!current?.sessionExplicit !== !!opened?.sessionExplicit) return false;
+  if (!!current?.sessionReadOnly !== !!opened?.sessionReadOnly) return false;
   if (prev.length !== messages.length) return false;
   for (let i = 0; i < prev.length; i += 1) {
     if ((prev[i]?.role || "") !== (messages[i]?.role || "")) return false;

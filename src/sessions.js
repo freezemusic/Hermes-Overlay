@@ -6,7 +6,7 @@ export function isBotChat(session) {
   return String(session?.title || "").trim() === BOT_CHAT_TITLE;
 }
 
-/** Overlay and Desktop chats. A TUI Bot Chat stays in the picker only. */
+/** Overlay and Desktop chats. The main orb does not use this filter. */
 export function isOverlayChatSource(source) {
   const value = String(source || "").trim();
   return value === "api_server" || value === "desktop";
@@ -14,6 +14,50 @@ export function isOverlayChatSource(source) {
 
 export function isOverlayBotChat(session) {
   return isBotChat(session) && isOverlayChatSource(session?.source);
+}
+
+/** POST /api/sessions/{id}/chat refuses a tui row with permission_denied. */
+export function isTuiSource(source) {
+  return String(source || "").trim().toLowerCase() === "tui";
+}
+
+export const TUI_READ_ONLY_REASON = "呢個 Bot Chat 來源係 tui。API 唔接受寫入 tui session（permission_denied），只可以睇。";
+
+export function hasChatHistory(session) {
+  const count = Number(session?.message_count);
+  if (Number.isFinite(count) && count > 0) return true;
+  return String(session?.preview || "").trim().length > 0;
+}
+
+function startedAt(session) {
+  const value = Number(session?.started_at);
+  return Number.isFinite(value) && value > 0 ? value : Number.POSITIVE_INFINITY;
+}
+
+/** Smaller started_at, then smaller last_active, then smaller id. */
+function olderThan(a, b) {
+  const start = startedAt(a) - startedAt(b);
+  if (start) return start;
+  const active = (Number(a.last_active) || 0) - (Number(b.last_active) || 0);
+  if (active) return active;
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
+}
+
+/**
+ * Delivery lease or home channel when the row is marked and titled Bot Chat,
+ * unless that row is an empty duplicate of a chat with history.
+ * Otherwise the oldest titled Bot Chat, any source including tui.
+ */
+export function canonicalBotChat(sessions) {
+  const titled = (sessions || []).filter((session) => session && session.id && isBotChat(session));
+  if (!titled.length) return null;
+  const history = titled.some(hasChatHistory);
+  const delivery = titled.find((session) => session.delivery === true);
+  if (delivery && (!history || hasChatHistory(delivery))) return delivery;
+  const pool = history ? titled.filter(hasChatHistory) : titled;
+  return pool.reduce((best, item) => (olderThan(item, best) < 0 ? item : best));
 }
 
 export function mostRecentSession(sessions) {
@@ -29,7 +73,7 @@ export function mostRecentSession(sessions) {
 }
 
 export function mostRecentBotChat(sessions) {
-  return mostRecentSession((sessions || []).filter(isOverlayBotChat));
+  return canonicalBotChat(sessions);
 }
 
 function byRecent(a, b) {
@@ -49,8 +93,7 @@ export function orderSessions(sessions) {
 }
 
 export function resolveSession(sessions, pin = {}) {
-  const preferred = mostRecentBotChat(sessions) || mostRecentSession(sessions);
-  if (!preferred) return null;
+  const preferred = canonicalBotChat(sessions);
   const remembered = String(pin.id || "").trim();
   const explicit = pin.explicit === true;
   const anchor = Number(pin.anchor) || 0;
@@ -59,9 +102,16 @@ export function resolveSession(sessions, pin = {}) {
     : null;
   if (picked) {
     const newest = Number(mostRecentSession(sessions)?.last_active) || 0;
-    return { id: picked.id, explicit: true, anchor: Math.max(anchor, newest) };
+    return { id: picked.id, explicit: true, anchor: Math.max(anchor, newest), source: picked.source || "", readOnly: isTuiSource(picked.source) };
   }
-  return { id: preferred.id, explicit: false, anchor: Number(preferred.last_active) || 0 };
+  if (!preferred) return null;
+  return {
+    id: preferred.id,
+    explicit: false,
+    anchor: Number(preferred.last_active) || 0,
+    source: preferred.source || "",
+    readOnly: isTuiSource(preferred.source),
+  };
 }
 
 export function sessionLabel(session) {

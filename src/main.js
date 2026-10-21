@@ -53,7 +53,7 @@ import {
   chatTailAction,
 } from "./morph.js";
 import { isProfileEnabled, profilesNeedingKeys } from "./roster.js";
-import { orderSessions, previewLine, resolveSession, sessionLabel, unseenMessages } from "./sessions.js";
+import { TUI_READ_ONLY_REASON, isTuiSource, orderSessions, previewLine, resolveSession, sessionLabel, unseenMessages } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_BOARD,
@@ -3572,6 +3572,8 @@ function threadFor(id) {
       sessionId: "",
       sessionExplicit: false,
       sessionAnchor: 0,
+      sessionReadOnly: false,
+      sessionReadOnlyReason: "",
       bySession: new Map(),
     });
   }
@@ -4320,8 +4322,19 @@ function renderChat(id = state.activeId, options = {}) {
   paintPlan(id, { force });
   const stop = role(panel, "stop");
   const send = role(panel, "send");
+  const input = role(panel, "input");
+  const note = role(panel, "readonly");
+  const locked = !!thread.sessionReadOnly && !!thread.sessionId;
+  if (note) {
+    note.hidden = !locked;
+    note.textContent = locked ? (thread.sessionReadOnlyReason || TUI_READ_ONLY_REASON) : "";
+  }
+  if (input) {
+    input.disabled = locked;
+    input.placeholder = locked ? "只可以睇" : "輸入訊息給呢個 Bot…";
+  }
   if (stop) stop.hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
-  if (send) send.disabled = state.mode === "hermes" && state.busy.has(bot.id);
+  if (send) send.disabled = locked || (state.mode === "hermes" && state.busy.has(bot.id));
   if (!quietChrome) syncActivityChrome(id);
   if (!shell || !visualQuiet(shell)) scheduleHitSync();
 }
@@ -4739,11 +4752,13 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   if (quiet && sameChatSnapshot({
     sessionId: thread.sessionId,
     sessionExplicit: thread.sessionExplicit,
+    sessionReadOnly: thread.sessionReadOnly,
     messages: thread.messages,
     sessions: thread.sessions,
   }, {
     sessionId: opened.session_id || "",
     sessionExplicit: !!opened.session_explicit,
+    sessionReadOnly: !!opened.read_only,
     messages,
     sessions,
   }) && thread.statusState !== "busy") {
@@ -4754,6 +4769,8 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   thread.sessionId = opened.session_id || "";
   thread.sessionExplicit = !!opened.session_explicit;
   thread.sessionAnchor = Number(opened.session_anchor) || 0;
+  thread.sessionReadOnly = !!opened.read_only;
+  thread.sessionReadOnlyReason = opened.read_only_reason || "";
   thread.sessions = sessions;
   thread.loading = false;
   rememberPlan(thread, thread.messages);
@@ -4946,6 +4963,9 @@ async function pickSession(id, sessionId) {
     thread.sessionId = sessionId;
     thread.sessionExplicit = true;
     thread.sessionAnchor = anchor;
+    const picked = (thread.sessions || []).find((session) => session.id === sessionId);
+    thread.sessionReadOnly = isTuiSource(picked?.source);
+    thread.sessionReadOnlyReason = thread.sessionReadOnly ? TUI_READ_ONLY_REASON : "";
     const stored = thread.bySession.get(sessionId);
     thread.messages = (stored || [{ role: "bot", text: "（舊對話）" }]).map((message) => ({ ...message }));
     thread.loaded = true;
@@ -5500,6 +5520,11 @@ async function sendActive(id = state.activeId) {
   const input = role(panel, "input");
   const text = input?.value.trim() || "";
   if (!text || !id) return;
+  const thread = threadFor(id);
+  if (thread.sessionReadOnly) {
+    showActionError(thread.sessionReadOnlyReason || TUI_READ_ONLY_REASON);
+    return;
+  }
   state.activeId = id;
   state.slashPanelId = id;
   threadFor(id).followTail = true;

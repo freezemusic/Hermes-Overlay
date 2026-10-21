@@ -46,6 +46,12 @@ pub struct SessionSummary {
     pub preview: String,
     /// Hermes session source (`api_server`, `desktop`, `tui`, …).
     pub source: String,
+    /// Session row `started_at`. `0.0` means the list did not include one.
+    pub started_at: f64,
+    /// `message_count` when the list included it.
+    pub message_count: Option<u64>,
+    /// The list named this row as the delivery lease, home channel, or canonical Bot Chat.
+    pub delivery: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -124,6 +130,9 @@ pub struct ResolvedSession {
     pub id: String,
     pub explicit: bool,
     pub anchor: f64,
+    pub source: String,
+    pub read_only: bool,
+    pub read_only_reason: String,
 }
 
 pub fn is_bot_chat_title(title: &str) -> bool {
@@ -144,7 +153,7 @@ pub fn most_recent_session(sessions: &[SessionSummary]) -> Option<&SessionSummar
     sessions.iter().max_by(|a, b| session_rank(a, b))
 }
 
-/// Overlay and Hermes Desktop chats. A TUI `Bot Chat` has no desktop tools.
+/// Overlay and Hermes Desktop chats. Kept for the picker ranking tests.
 pub fn is_overlay_chat_source(source: &str) -> bool {
     matches!(source.trim(), "api_server" | "desktop")
 }
@@ -153,13 +162,103 @@ pub fn is_overlay_bot_chat(session: &SessionSummary) -> bool {
     is_bot_chat_title(&session.title) && is_overlay_chat_source(&session.source)
 }
 
+/// `POST /api/sessions/{id}/chat` into a `tui` row is refused.
+/// `session_api_turn` raises `permission_denied` unless the source is
+/// `api_server` or `bot_room`. The Bot Chat door then refuses an unbound
+/// `tui` title (`bot_chat_unbound`) or moves it aside and mints another chat.
+/// Reading the transcript still works. Do not POST.
+pub fn is_tui_source(source: &str) -> bool {
+    source.trim().eq_ignore_ascii_case("tui")
+}
+
+pub fn tui_read_only_reason() -> &'static str {
+    "呢個 Bot Chat 來源係 tui。API 唔接受寫入 tui session（permission_denied），只可以睇。"
+}
+
+pub fn has_chat_history(session: &SessionSummary) -> bool {
+    session.message_count.unwrap_or(0) > 0 || !session.preview.trim().is_empty()
+}
+
+/// Smaller `started_at`, then smaller `last_active`, then smaller id.
+fn older_session(a: &SessionSummary, b: &SessionSummary) -> std::cmp::Ordering {
+    let start = |session: &SessionSummary| {
+        if session.started_at.is_finite() && session.started_at > 0.0 {
+            session.started_at
+        } else {
+            f64::MAX
+        }
+    };
+    match start(a)
+        .partial_cmp(&start(b))
+        .unwrap_or(std::cmp::Ordering::Equal)
+    {
+        std::cmp::Ordering::Equal => {}
+        other => return other,
+    }
+    match a
+        .last_active
+        .partial_cmp(&b.last_active)
+        .unwrap_or(std::cmp::Ordering::Equal)
+    {
+        std::cmp::Ordering::Equal => a.id.cmp(&b.id),
+        other => other,
+    }
+}
+
+fn finish_resolved(session: &SessionSummary, explicit: bool, anchor: f64) -> ResolvedSession {
+    let read_only = is_tui_source(&session.source);
+    ResolvedSession {
+        id: session.id.clone(),
+        explicit,
+        anchor,
+        source: session.source.clone(),
+        read_only,
+        read_only_reason: if read_only {
+            tui_read_only_reason().to_string()
+        } else {
+            String::new()
+        },
+    }
+}
+
 /// Most recently active `Bot Chat` whose source is `api_server` or `desktop`.
-/// A same-titled `tui` (or other) session is left for the picker.
+/// Not the main-orb choice: that is `canonical_bot_chat`.
 pub fn most_recent_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
     sessions
         .iter()
         .filter(|session| is_overlay_bot_chat(session))
         .max_by(|a, b| session_rank(a, b))
+}
+
+/// The Bot Chat Hermes Desktop and the gateway deliver into.
+///
+/// An exposed delivery lease or home-channel row wins when its title is
+/// `Bot Chat` and it is not an empty duplicate of a chat that has history.
+/// Otherwise the oldest titled `Bot Chat` wins, from any source including
+/// `tui`. An empty row never beats one with history.
+pub fn canonical_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+    let titled: Vec<&SessionSummary> = sessions
+        .iter()
+        .filter(|session| is_bot_chat_title(&session.title))
+        .collect();
+    if titled.is_empty() {
+        return None;
+    }
+    let history = titled.iter().any(|session| has_chat_history(session));
+    if let Some(delivery) = titled.iter().copied().find(|session| session.delivery) {
+        if !history || has_chat_history(delivery) {
+            return Some(delivery);
+        }
+    }
+    let pool: Vec<&SessionSummary> = if history {
+        titled
+            .into_iter()
+            .filter(|session| has_chat_history(session))
+            .collect()
+    } else {
+        titled
+    };
+    pool.into_iter().min_by(|a, b| older_session(a, b))
 }
 
 /// Latest session that is not a Bot Chat from another surface.
@@ -183,13 +282,13 @@ pub fn session_menu_order(sessions: &[SessionSummary]) -> Vec<&SessionSummary> {
 
 /// Bot Chat by default. An explicit pick sticks until that session disappears.
 /// Cron raising Bot Chat `last_active` must not steal the pick.
+/// No Bot Chat does not fall through to some other session.
 pub fn resolve_session(
     sessions: &[SessionSummary],
     remembered: &str,
     explicit: bool,
     anchor: f64,
 ) -> Option<ResolvedSession> {
-    let preferred = most_recent_bot_chat(sessions).or_else(|| most_recent_session(sessions))?;
     let remembered = remembered.trim();
     let picked = if explicit && !remembered.is_empty() {
         sessions.iter().find(|session| session.id == remembered)
@@ -200,17 +299,9 @@ pub fn resolve_session(
         let newest = most_recent_session(sessions)
             .map(|session| session.last_active)
             .unwrap_or(picked.last_active);
-        return Some(ResolvedSession {
-            id: picked.id.clone(),
-            explicit: true,
-            anchor: anchor.max(newest),
-        });
+        return Some(finish_resolved(picked, true, anchor.max(newest)));
     }
-    Some(ResolvedSession {
-        id: preferred.id.clone(),
-        explicit: false,
-        anchor: preferred.last_active,
-    })
+    canonical_bot_chat(sessions).map(|chat| finish_resolved(chat, false, chat.last_active))
 }
 
 /// `0.0` is not a timestamp. The same session keeps a saved watermark.
@@ -237,10 +328,11 @@ pub fn merge_session_anchor(
     0.0
 }
 
-/// Startup and main-orb panel open. Always the existing overlay Bot Chat.
-/// A saved id, an explicit pick, a zero anchor, and a newer session do not
-/// retarget the main orb. No Bot Chat means nothing to open: do not take the
-/// latest other session, and do not create one. This function performs no I/O.
+/// Startup and main-orb panel open. Always the canonical existing Bot Chat.
+/// A saved id, an explicit pick, a zero anchor, and a newer empty duplicate
+/// do not retarget the main orb. No Bot Chat means nothing to open: do not
+/// take the latest other session, and do not create one. This function
+/// performs no I/O.
 pub fn session_for_startup(
     sessions: &[SessionSummary],
     remembered: &str,
@@ -248,11 +340,7 @@ pub fn session_for_startup(
     anchor: f64,
 ) -> Option<ResolvedSession> {
     let _ = (remembered, explicit, anchor);
-    most_recent_bot_chat(sessions).map(|chat| ResolvedSession {
-        id: chat.id.clone(),
-        explicit: false,
-        anchor: chat.last_active,
-    })
+    canonical_bot_chat(sessions).map(|chat| finish_resolved(chat, false, chat.last_active))
 }
 
 /// Suffix of `next` that was not in `seen`. `None` means the transcript diverged.
@@ -263,6 +351,74 @@ pub fn fresh_messages<'a>(seen: &[UiMessage], next: &'a [UiMessage]) -> Option<&
     Some(&next[seen.len()..])
 }
 
+fn json_f64(item: &Value, key: &str) -> f64 {
+    item.get(key).and_then(Value::as_f64).unwrap_or(0.0)
+}
+
+fn json_count(item: &Value, key: &str) -> Option<u64> {
+    let value = item.get(key)?;
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+        .or_else(|| {
+            value.as_f64().and_then(|n| {
+                if n.is_finite() && n >= 0.0 && n.fract() == 0.0 {
+                    Some(n as u64)
+                } else {
+                    None
+                }
+            })
+        })
+}
+
+fn id_value(value: &Value) -> Option<String> {
+    let raw = value
+        .as_str()
+        .or_else(|| {
+            value
+                .get("id")
+                .or_else(|| value.get("session_id"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("")
+        .trim();
+    if raw.is_empty() {
+        None
+    } else {
+        Some(raw.to_string())
+    }
+}
+
+/// Delivery lease or home-channel id when the session list exposes one.
+/// Current Hermes `_session_response` does not. These names are the ones a
+/// gateway would add; absent means use the titled-row fallback.
+fn envelope_delivery_id(value: &Value) -> Option<String> {
+    const KEYS: &[&str] = &[
+        "canonical_session",
+        "canonical_session_id",
+        "delivery_session",
+        "delivery_session_id",
+        "home_channel_session",
+        "home_channel",
+        "lease_session",
+        "delivery_lease",
+    ];
+    KEYS.iter()
+        .find_map(|key| value.get(*key).and_then(id_value))
+}
+
+fn row_marks_delivery(item: &Value) -> bool {
+    const KEYS: &[&str] = &[
+        "canonical",
+        "is_canonical",
+        "delivery",
+        "home_channel",
+        "is_home_channel",
+    ];
+    KEYS.iter()
+        .any(|key| item.get(*key).and_then(Value::as_bool) == Some(true))
+}
+
 pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
     let items = value
         .get("data")
@@ -271,7 +427,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
         .cloned()
         .or_else(|| value.as_array().cloned())
         .unwrap_or_default();
-    items
+    let mut sessions: Vec<SessionSummary> = items
         .iter()
         .filter_map(|item| {
             let id = item
@@ -289,11 +445,11 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 .unwrap_or("")
                 .to_string();
             let hidden = item.get("hidden").and_then(Value::as_bool);
+            let started_at = json_f64(item, "started_at");
             let last_active = item
                 .get("last_active")
-                .or_else(|| item.get("started_at"))
                 .and_then(Value::as_f64)
-                .unwrap_or(0.0);
+                .unwrap_or(started_at);
             let preview = item
                 .get("preview")
                 .and_then(Value::as_str)
@@ -312,9 +468,52 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 last_active,
                 preview,
                 source,
+                started_at,
+                message_count: json_count(item, "message_count"),
+                delivery: row_marks_delivery(item),
             })
         })
-        .collect()
+        .collect();
+    if let Some(id) = envelope_delivery_id(value) {
+        for session in &mut sessions {
+            if session.id == id {
+                session.delivery = true;
+            }
+        }
+    }
+    sessions
+}
+
+/// Title-query rows fill in hidden Bot Chats the blanket list omits.
+pub fn merge_sessions(
+    mut base: Vec<SessionSummary>,
+    extra: Vec<SessionSummary>,
+) -> Vec<SessionSummary> {
+    for session in extra {
+        if let Some(found) = base.iter_mut().find(|row| row.id == session.id) {
+            if session.delivery {
+                found.delivery = true;
+            }
+            if found.message_count.is_none() {
+                found.message_count = session.message_count;
+            }
+            if found.preview.is_empty() {
+                found.preview = session.preview;
+            }
+            if found.started_at <= 0.0 {
+                found.started_at = session.started_at;
+            }
+            if found.source.is_empty() {
+                found.source = session.source;
+            }
+            if found.last_active <= 0.0 {
+                found.last_active = session.last_active;
+            }
+        } else {
+            base.push(session);
+        }
+    }
+    base
 }
 
 pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
@@ -479,18 +678,51 @@ async fn send(
     })
 }
 
-pub async fn list_sessions(
+async fn list_sessions_url(
     http: &Client,
-    root: &str,
     key: &str,
+    url: String,
 ) -> Result<Vec<SessionSummary>, HermesError> {
-    let url = format!("{root}/api/sessions?limit=200&include_hidden=true");
     let resp = send(http.get(url).timeout(Duration::from_secs(20)), key).await?;
     let value: Value = resp
         .json()
         .await
         .map_err(|e| HermesError::Protocol(format!("session list 唔係 JSON：{e}")))?;
     Ok(parse_session_list(&value))
+}
+
+pub async fn list_sessions(
+    http: &Client,
+    root: &str,
+    key: &str,
+) -> Result<Vec<SessionSummary>, HermesError> {
+    let url = format!("{root}/api/sessions?limit=200&include_hidden=true");
+    list_sessions_url(http, key, url).await
+}
+
+/// Exact-title lookup the API uses for the canonical Bot Chat, including hidden rows.
+/// `include_hidden` is honored only together with `title` on current Hermes.
+pub async fn list_titled_bot_chats(
+    http: &Client,
+    root: &str,
+    key: &str,
+) -> Result<Vec<SessionSummary>, HermesError> {
+    let title = query_escape(BOT_CHAT_TITLE);
+    let url = format!("{root}/api/sessions?limit=200&title={title}&include_hidden=true");
+    list_sessions_url(http, key, url).await
+}
+
+/// Blanket list plus the exact-title lookup. A failed title query keeps the blanket list.
+pub async fn list_sessions_for_bot_chat(
+    http: &Client,
+    root: &str,
+    key: &str,
+) -> Result<Vec<SessionSummary>, HermesError> {
+    let sessions = list_sessions(http, root, key).await?;
+    match list_titled_bot_chats(http, root, key).await {
+        Ok(titled) => Ok(merge_sessions(sessions, titled)),
+        Err(_) => Ok(sessions),
+    }
 }
 
 /// A 400 that names an `api_server` or `desktop` Bot Chat returns that id.
@@ -505,30 +737,58 @@ fn adopt_title_conflict(sessions: &[SessionSummary], body: &str) -> Option<Strin
     }
 }
 
-/// `POST /api/sessions` with `{title: "Bot Chat", source: "api_server"}`, the same
-/// create Hermes Desktop uses. A 400 adopts the occupant only when that session
-/// is an overlay or desktop Bot Chat.
+/// `POST /api/sessions` with `{title: "Bot Chat", source: "api_server"}`.
+/// Startup, open, and send must not call this. A 400 adopts the occupant only
+/// when that session is an overlay or desktop Bot Chat.
+#[allow(dead_code)]
 pub async fn create_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
     match create_session(http, root, key, Some(BOT_CHAT_TITLE)).await {
         Ok(id) => Ok(id),
-        Err(HermesError::Http { status: 400, body }) => match list_sessions(http, root, key).await {
-            Ok(sessions) => {
-                adopt_title_conflict(&sessions, &body).ok_or(HermesError::Http { status: 400, body })
+        Err(HermesError::Http { status: 400, body }) => {
+            match list_sessions(http, root, key).await {
+                Ok(sessions) => adopt_title_conflict(&sessions, &body)
+                    .ok_or(HermesError::Http { status: 400, body }),
+                Err(_) => conflict_session_id(&body).ok_or(HermesError::Http { status: 400, body }),
             }
-            Err(_) => conflict_session_id(&body).ok_or(HermesError::Http { status: 400, body }),
-        },
+        }
         Err(err) => Err(err),
     }
 }
 
-/// Most recently active overlay Bot Chat. If none exists, create one.
-/// Create failure stays an error. Do not open another session instead.
-pub async fn ensure_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
-    let sessions = list_sessions(http, root, key).await?;
-    if let Some(session) = most_recent_bot_chat(&sessions) {
-        return Ok(session.id.clone());
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BotChatPick {
+    pub id: String,
+    pub source: String,
+    pub read_only: bool,
+    pub read_only_reason: String,
+}
+
+impl BotChatPick {
+    pub fn from_session(session: &SessionSummary) -> Self {
+        let read_only = is_tui_source(&session.source);
+        Self {
+            id: session.id.clone(),
+            source: session.source.clone(),
+            read_only,
+            read_only_reason: if read_only {
+                tui_read_only_reason().to_string()
+            } else {
+                String::new()
+            },
+        }
     }
-    create_bot_chat(http, root, key).await
+}
+
+/// Canonical Bot Chat already on the gateway. Never creates a session.
+pub async fn ensure_bot_chat(
+    http: &Client,
+    root: &str,
+    key: &str,
+) -> Result<BotChatPick, HermesError> {
+    let sessions = list_sessions_for_bot_chat(http, root, key).await?;
+    canonical_bot_chat(&sessions)
+        .map(BotChatPick::from_session)
+        .ok_or_else(|| HermesError::Protocol("未有 Bot Chat".into()))
 }
 
 pub async fn fetch_messages(
@@ -902,7 +1162,10 @@ fn nested_text(value: &Value, keys: &[&str]) -> String {
             return text;
         }
     }
-    let Some(exec) = value.get("latest_execution").filter(|item| item.is_object()) else {
+    let Some(exec) = value
+        .get("latest_execution")
+        .filter(|item| item.is_object())
+    else {
         return String::new();
     };
     for key in keys {
@@ -957,17 +1220,15 @@ fn fire_claim_live(value: &Value) -> bool {
 }
 
 fn job_is_running(value: &Value, state: &str) -> bool {
-    if state.eq_ignore_ascii_case("running") || value.get("running").and_then(Value::as_bool) == Some(true)
+    if state.eq_ignore_ascii_case("running")
+        || value.get("running").and_then(Value::as_bool) == Some(true)
     {
         return true;
     }
     if fire_claim_live(value) {
         return true;
     }
-    if value
-        .get("latest_execution")
-        .is_some_and(fire_claim_live)
-    {
+    if value.get("latest_execution").is_some_and(fire_claim_live) {
         return true;
     }
     let status = execution_status(value);
@@ -993,7 +1254,10 @@ fn last_run_text(value: &Value) -> String {
 
 /// `started_at` once the attempt is running, otherwise `claimed_at`, otherwise the fire claim.
 fn run_start_text(value: &Value) -> String {
-    if let Some(exec) = value.get("latest_execution").filter(|item| item.is_object()) {
+    if let Some(exec) = value
+        .get("latest_execution")
+        .filter(|item| item.is_object())
+    {
         let status = exec
             .get("status")
             .and_then(Value::as_str)
@@ -1160,9 +1424,10 @@ async fn fetch_cron_url(
     let status = resp.status().as_u16();
     match cron_fetch_step(status, primary) {
         CronFetchStep::Parse => {
-            let value: Value = resp.json().await.map_err(|err| {
-                HermesError::Protocol(format!("cron 回應唔係 JSON：{err}"))
-            })?;
+            let value: Value = resp
+                .json()
+                .await
+                .map_err(|err| HermesError::Protocol(format!("cron 回應唔係 JSON：{err}")))?;
             Ok(CronFetchBody::Parsed(parse_cron_list(&value)))
         }
         CronFetchStep::TryFallback => Ok(CronFetchBody::Fallback),
@@ -1959,6 +2224,30 @@ mod tests {
             last_active,
             preview: String::new(),
             source: source.into(),
+            started_at: 0.0,
+            message_count: None,
+            delivery: false,
+        }
+    }
+
+    fn devon_chat(
+        id: &str,
+        source: &str,
+        started_at: f64,
+        last_active: f64,
+        message_count: u64,
+        preview: &str,
+    ) -> SessionSummary {
+        SessionSummary {
+            id: id.into(),
+            title: "Bot Chat".into(),
+            hidden: Some(false),
+            last_active,
+            preview: preview.into(),
+            source: source.into(),
+            started_at,
+            message_count: Some(message_count),
+            delivery: false,
         }
     }
 
@@ -2153,40 +2442,58 @@ mod tests {
         ];
         assert_eq!(most_recent_session(&sessions).unwrap().id, "desktop");
         assert_eq!(most_recent_bot_chat(&sessions).unwrap().id, "newer");
+        assert_eq!(canonical_bot_chat(&sessions).unwrap().id, "older");
         let opened = resolve_session(&sessions, "split", false, 10.0).unwrap();
-        assert_eq!(opened.id, "newer");
+        assert_eq!(opened.id, "older");
         assert!(!opened.explicit);
         let pinned = resolve_session(&sessions, "split", true, 10.0).unwrap();
         assert_eq!(pinned.id, "split");
         assert!(pinned.explicit);
         assert_eq!(pinned.anchor, 200.0);
         let missing = resolve_session(&sessions, "gone", true, 1.0).unwrap();
-        assert_eq!(missing.id, "newer");
+        assert_eq!(missing.id, "older");
         assert!(!missing.explicit);
         assert!(resolve_session(&[], "split", true, 1.0).is_none());
         let kept = session_for_startup(&sessions, "split", false, 10.0).unwrap();
-        assert_eq!(kept.id, "newer");
+        assert_eq!(kept.id, "older");
         assert!(!kept.explicit);
-        assert_eq!(kept.anchor, 80.0);
+        assert_eq!(kept.anchor, 50.0);
         assert_eq!(
             merge_session_anchor("split", 1792566430.7, "split", 0.0, 99.0),
             1792566430.7
         );
-        assert_eq!(merge_session_anchor("split", 10.0, "split", 20.0, 99.0), 20.0);
+        assert_eq!(
+            merge_session_anchor("split", 10.0, "split", 20.0, 99.0),
+            20.0
+        );
         assert_eq!(merge_session_anchor("split", 10.0, "", 0.0, 99.0), 0.0);
-        assert_eq!(merge_session_anchor("split", 10.0, "other", 0.0, 99.0), 99.0);
+        assert_eq!(
+            merge_session_anchor("split", 10.0, "other", 0.0, 99.0),
+            99.0
+        );
         assert_eq!(merge_session_anchor("split", 0.0, "split", 0.0, 99.0), 99.0);
         let explicit = session_for_startup(&sessions, "desktop", true, 3.0).unwrap();
-        assert_eq!(explicit.id, "newer");
+        assert_eq!(explicit.id, "older");
         assert!(!explicit.explicit);
-        assert_eq!(explicit.anchor, 80.0);
-        assert_eq!(session_for_startup(&sessions, "", false, 0.0).unwrap().id, "newer");
-        assert_eq!(session_for_startup(&sessions, "missing", false, 1.0).unwrap().id, "newer");
+        assert_eq!(explicit.anchor, 50.0);
+        assert_eq!(
+            session_for_startup(&sessions, "", false, 0.0).unwrap().id,
+            "older"
+        );
+        assert_eq!(
+            session_for_startup(&sessions, "missing", false, 1.0)
+                .unwrap()
+                .id,
+            "older"
+        );
         assert!(session_for_startup(&[], "split", true, 1.0).is_none());
         let tied = vec![summary("b", "Bot Chat", 5.0), summary("a", "Bot Chat", 5.0)];
         assert_eq!(resolve_session(&tied, "", false, 0.0).unwrap().id, "a");
-        let plain = vec![summary("desktop", "System Architect", 99.0), summary("split", "_splitLot", 10.0)];
-        assert_eq!(resolve_session(&plain, "", false, 0.0).unwrap().id, "desktop");
+        let plain = vec![
+            summary("desktop", "System Architect", 99.0),
+            summary("split", "_splitLot", 10.0),
+        ];
+        assert!(resolve_session(&plain, "", false, 0.0).is_none());
         assert!(session_for_startup(&plain, "", false, 0.0).is_none());
         assert_eq!(
             session_menu_order(&sessions)
@@ -2203,12 +2510,22 @@ mod tests {
             summary_source("notes", "Notes", 900.0, "cli"),
         ];
         assert_eq!(most_recent_bot_chat(&mixed).unwrap().id, "desk-chat");
-        assert_eq!(resolve_session(&mixed, "", false, 0.0).unwrap().id, "desk-chat");
+        assert_eq!(
+            resolve_session(&mixed, "", false, 0.0).unwrap().id,
+            "desk-chat"
+        );
         let picked_tui = resolve_session(&mixed, "tui-chat", true, 1.0).unwrap();
         assert_eq!(picked_tui.id, "tui-chat");
         assert!(picked_tui.explicit);
         assert!(most_recent_bot_chat(&[tui.clone()]).is_none());
-        assert_eq!(fallback_session(&[tui.clone()]).map(|session| session.id.as_str()), None);
+        assert_eq!(canonical_bot_chat(&[tui.clone()]).unwrap().id, "tui-chat");
+        let tui_open = session_for_startup(&[tui.clone()], "", false, 0.0).unwrap();
+        assert_eq!(tui_open.id, "tui-chat");
+        assert!(tui_open.read_only);
+        assert_eq!(
+            fallback_session(&[tui.clone()]).map(|session| session.id.as_str()),
+            None
+        );
         assert_eq!(fallback_session(&mixed).unwrap().id, "notes");
         assert_eq!(
             fallback_session(&[
@@ -2229,7 +2546,10 @@ mod tests {
         let conflict = "Title 'Bot Chat' is already in use by session tui-chat";
         assert_eq!(adopt_title_conflict(&mixed, conflict), None);
         let ours = "Title 'Bot Chat' is already in use by session desk-chat";
-        assert_eq!(adopt_title_conflict(&mixed, ours).as_deref(), Some("desk-chat"));
+        assert_eq!(
+            adopt_title_conflict(&mixed, ours).as_deref(),
+            Some("desk-chat")
+        );
         let hidden = "Title 'Bot Chat' is already in use by session api_hidden";
         assert_eq!(
             adopt_title_conflict(&mixed, hidden).as_deref(),
@@ -2284,13 +2604,19 @@ mod tests {
             summary("desktop", "System Architect", 99.0),
             summary_source("tui-chat", "Bot Chat", 800.0, "tui"),
         ];
-        assert!(session_for_startup(&plain, "desktop", true, 0.0).is_none());
-        assert!(session_for_startup(&plain, "", false, 0.0).is_none());
+        let tui_only = session_for_startup(&plain, "desktop", true, 0.0).unwrap();
+        assert_eq!(tui_only.id, "tui-chat");
+        assert!(tui_only.read_only);
+        assert!(session_for_startup(
+            &[summary("desktop", "System Architect", 99.0)],
+            "",
+            false,
+            0.0
+        )
+        .is_none());
         assert!(session_for_startup(&[], "saved-forex", true, 1.0).is_none());
         let open_src = include_str!("lib.rs");
-        let start = open_src
-            .find("async fn open_bot")
-            .expect("open_bot");
+        let start = open_src.find("async fn open_bot").expect("open_bot");
         let end = open_src
             .find("async fn select_session")
             .expect("select_session");
@@ -2299,6 +2625,152 @@ mod tests {
         assert!(!open.contains("ensure_bot_chat"));
         assert!(!open.contains("create_bot_chat"));
         assert!(!open.contains("create_session"));
+    }
+
+    /// Devon 2026-10-21, read from the laptop and the server.
+    /// forex-forest's only Bot Chat is the tui row `20261001_013827_25b1eb`.
+    /// mt-coder and mt-tester: e3db750 minted an empty `api_1792573589_*` at
+    /// 10:06; cron is delivered into the older chat that has history.
+    #[test]
+    fn canonical_bot_chat_uses_devon_sessions() {
+        let forex = vec![devon_chat(
+            "20261001_013827_25b1eb",
+            "tui",
+            1759279107.0,
+            1792500000.0,
+            18,
+            "forex note",
+        )];
+        let opened = session_for_startup(&forex, "saved-other", true, 0.0).unwrap();
+        assert_eq!(opened.id, "20261001_013827_25b1eb");
+        assert!(opened.read_only);
+        assert_eq!(opened.read_only_reason, tui_read_only_reason());
+        assert!(is_tui_source("tui"));
+        assert!(!is_tui_source("api_server"));
+        assert!(!is_tui_source("desktop"));
+
+        for (profile, empty_id) in [
+            ("mt-coder", "api_1792573589_mtcoder"),
+            ("mt-tester", "api_1792573589_mttester"),
+        ] {
+            let real_id = format!("{profile}-bot-chat");
+            let sessions = vec![
+                devon_chat(
+                    &real_id,
+                    "desktop",
+                    1758000000.0,
+                    1792400000.0,
+                    42,
+                    "cron output",
+                ),
+                devon_chat(empty_id, "api_server", 1792573589.0, 1792573600.0, 0, ""),
+                summary("notes", "Notes", 1792579999.0),
+            ];
+            let opened = session_for_startup(&sessions, empty_id, true, 1792573600.0).unwrap();
+            assert_eq!(opened.id, real_id, "{profile}");
+            assert!(!opened.read_only, "{profile}");
+            assert_eq!(canonical_bot_chat(&sessions).unwrap().id, real_id);
+        }
+
+        let mut leased = devon_chat(
+            "desk-real",
+            "desktop",
+            1758000000.0,
+            1792000000.0,
+            9,
+            "leased",
+        );
+        leased.delivery = true;
+        let with_lease = vec![
+            devon_chat(
+                "api_1792573589_empty",
+                "api_server",
+                1792573589.0,
+                1792573700.0,
+                0,
+                "",
+            ),
+            leased,
+        ];
+        assert_eq!(canonical_bot_chat(&with_lease).unwrap().id, "desk-real");
+
+        let mut empty_lease = devon_chat(
+            "api_1792573589_lease",
+            "api_server",
+            1792573589.0,
+            1792573700.0,
+            0,
+            "",
+        );
+        empty_lease.delivery = true;
+        let ignore_empty_lease = vec![
+            empty_lease,
+            devon_chat(
+                "desk-real",
+                "desktop",
+                1758000000.0,
+                1792000000.0,
+                9,
+                "history",
+            ),
+        ];
+        assert_eq!(
+            canonical_bot_chat(&ignore_empty_lease).unwrap().id,
+            "desk-real"
+        );
+
+        let parsed = parse_session_list(&json!({
+            "canonical_session": {"id": "20261001_013827_25b1eb"},
+            "data": [
+                {
+                    "id": "api_1792573589_empty",
+                    "title": "Bot Chat",
+                    "source": "api_server",
+                    "started_at": 1792573589.0,
+                    "last_active": 1792573600.0,
+                    "message_count": 0,
+                    "preview": ""
+                },
+                {
+                    "id": "20261001_013827_25b1eb",
+                    "title": "Bot Chat",
+                    "source": "tui",
+                    "started_at": 1759279107.0,
+                    "last_active": 1792400000.0,
+                    "message_count": 18,
+                    "preview": "forex"
+                }
+            ]
+        }));
+        assert!(parsed
+            .iter()
+            .any(|session| session.id == "20261001_013827_25b1eb" && session.delivery));
+        assert_eq!(
+            canonical_bot_chat(&parsed).unwrap().id,
+            "20261001_013827_25b1eb"
+        );
+        assert_eq!(
+            parsed
+                .iter()
+                .find(|session| session.id == "api_1792573589_empty")
+                .unwrap()
+                .message_count,
+            Some(0)
+        );
+
+        let lib = include_str!("lib.rs");
+        let send_start = lib.find("async fn send_chat").expect("send_chat");
+        let send_end = lib.find("fn dispatch_turn").expect("dispatch_turn");
+        let send = &lib[send_start..send_end];
+        assert!(!send.contains("create_bot_chat"));
+        assert!(!send.contains("create_session"));
+        let client_start = lib
+            .find("async fn session_for_client")
+            .expect("session_for_client");
+        let client_end = lib.find("async fn pin_explicit").expect("pin_explicit");
+        let client = &lib[client_start..client_end];
+        assert!(!client.contains("create_bot_chat"));
+        assert!(!client.contains("create_session"));
     }
 
     #[test]
