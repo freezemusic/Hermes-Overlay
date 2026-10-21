@@ -9,7 +9,7 @@ use crate::config::BOT_CHAT_TITLE;
 use crate::sse::{self, SseEvent};
 use futures_util::StreamExt;
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -837,7 +837,7 @@ pub fn parse_kanban_board(value: &Value, board: &str) -> KanbanBoard {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CronJob {
     pub id: String,
     pub name: String,
@@ -848,6 +848,15 @@ pub struct CronJob {
     pub running: bool,
     /// Live execution start, else claim time. Empty when this job is not in a run.
     pub started_at: String,
+    /// Hermes keeps `completed` or `scheduled` on a failed job. The red ring reads these.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub last_status: String,
+    #[serde(default)]
+    pub last_error: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -887,6 +896,65 @@ fn schedule_text(value: &Value) -> String {
         }
         _ => String::new(),
     }
+}
+
+fn json_any(value: &Value, key: &str) -> String {
+    match value.get(key) {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Number(number)) => number.to_string(),
+        Some(Value::Bool(true)) => "true".into(),
+        Some(Value::Bool(false)) | Some(Value::Null) | None => String::new(),
+        Some(other) => {
+            let text = other.to_string();
+            if text == "{}" || text == "[]" {
+                String::new()
+            } else {
+                text
+            }
+        }
+    }
+}
+
+fn nested_text(value: &Value, keys: &[&str]) -> String {
+    for key in keys {
+        let text = json_any(value, key);
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    let Some(exec) = value.get("latest_execution").filter(|item| item.is_object()) else {
+        return String::new();
+    };
+    for key in keys {
+        let text = json_any(exec, key);
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    String::new()
+}
+
+fn last_status_text(value: &Value) -> String {
+    nested_text(value, &["last_status", "lastStatus"])
+}
+
+fn last_error_text(value: &Value) -> String {
+    let direct = nested_text(value, &["last_error", "lastError"]);
+    if !direct.is_empty() {
+        return direct;
+    }
+    value
+        .get("latest_execution")
+        .map(|exec| json_any(exec, "error"))
+        .unwrap_or_default()
+}
+
+fn job_status_text(value: &Value) -> String {
+    let exec = execution_status(value);
+    if !exec.is_empty() {
+        return exec;
+    }
+    json_string(value, "status")
 }
 
 fn execution_status(value: &Value) -> String {
@@ -1022,6 +1090,10 @@ fn cron_job_from(value: &Value) -> Option<CronJob> {
         } else {
             String::new()
         },
+        state,
+        status: job_status_text(value),
+        last_status: last_status_text(value),
+        last_error: last_error_text(value),
     })
 }
 
@@ -2028,6 +2100,67 @@ mod tests {
         assert_eq!(cron_fetch_step(404, false), CronFetchStep::Unavailable);
         assert_eq!(cron_fetch_step(501, true), CronFetchStep::Unavailable);
         assert_eq!(cron_fetch_step(500, false), CronFetchStep::Error);
+    }
+
+    #[test]
+    fn cron_job_keeps_last_status_error_for_the_frontend() {
+        let parsed = parse_cron_list(&json!({
+            "jobs": [{
+                "id": "once",
+                "name": "one-shot",
+                "state": "completed",
+                "last_status": "error",
+                "last_error": "boom",
+                "schedule": "once"
+            }, {
+                "id": "again",
+                "name": "daily",
+                "state": "scheduled",
+                "last_status": "error",
+                "last_error": "nope"
+            }, {
+                "id": "nested",
+                "name": "from-exec",
+                "state": "completed",
+                "latest_execution": {
+                    "status": "completed",
+                    "last_status": "error",
+                    "error": "nested"
+                }
+            }, {
+                "id": "ok",
+                "name": "recovered",
+                "state": "scheduled",
+                "last_status": "success",
+                "last_error": "stale"
+            }, {
+                "id": "run",
+                "name": "again-running",
+                "state": "scheduled",
+                "running": true,
+                "last_status": "error",
+                "last_error": "old",
+                "latest_execution": { "status": "running" }
+            }]
+        }));
+        let wire = serde_json::to_value(&parsed.jobs).unwrap();
+        let jobs = wire.as_array().unwrap();
+        assert_eq!(jobs[0]["state"], "completed");
+        assert_eq!(jobs[0]["last_status"], "error");
+        assert_eq!(jobs[0]["last_error"], "boom");
+        assert_eq!(jobs[0]["running"], false);
+        assert_eq!(jobs[1]["state"], "scheduled");
+        assert_eq!(jobs[1]["last_status"], "error");
+        assert_eq!(jobs[1]["last_error"], "nope");
+        assert_eq!(jobs[2]["state"], "completed");
+        assert_eq!(jobs[2]["status"], "completed");
+        assert_eq!(jobs[2]["last_status"], "error");
+        assert_eq!(jobs[2]["last_error"], "nested");
+        assert_eq!(jobs[3]["last_status"], "success");
+        assert_eq!(jobs[3]["last_error"], "stale");
+        assert_eq!(jobs[4]["running"], true);
+        assert_eq!(jobs[4]["last_status"], "error");
+        assert_eq!(jobs[4]["last_error"], "old");
     }
 
     #[test]

@@ -32,6 +32,7 @@ import {
   iconShift,
   insetsFor,
   phaseList,
+  collapseMs,
   dropParkedAnchor,
   placeShell,
   previewBlocked,
@@ -556,14 +557,18 @@ function writeClip(shell, insets) {
   shell.dataset.clipRadius = String(insets.radius);
 }
 
-function cancelClipAnims(shell, keepPlan = false) {
+function cancelClipAnims(shell, keepPlan = false, keepId = "") {
   const fill = shell.querySelector(".morph-fill");
   const stroke = shell.querySelector(".morph-stroke");
-  shell.getAnimations?.().forEach((anim) => anim.cancel());
-  fill?.getAnimations?.().forEach((anim) => anim.cancel());
-  stroke?.getAnimations?.().forEach((anim) => anim.cancel());
-  shell.querySelector(".morph-orb")?.getAnimations?.().forEach((anim) => anim.cancel());
-  shell.querySelector(".morph-glow")?.getAnimations?.().forEach((anim) => anim.cancel());
+  const drop = (anim) => {
+    if (keepId && anim?.id === keepId) return;
+    anim.cancel();
+  };
+  shell.getAnimations?.().forEach(drop);
+  fill?.getAnimations?.().forEach(drop);
+  stroke?.getAnimations?.().forEach(drop);
+  shell.querySelector(".morph-orb")?.getAnimations?.().forEach(drop);
+  shell.querySelector(".morph-glow")?.getAnimations?.().forEach(drop);
   if (keepPlan) debugLog("plan-anim-cancel-blocked", "reason=clip");
   else dropPlanAnims(shell.querySelector(".plan-window"), "clip");
 }
@@ -588,16 +593,16 @@ function whenAnimEnds(anim, duration, seek = true) {
       resolve(ok);
     };
     const started = performance.now();
+    const clock = Number(anim.effect?.getTiming?.().duration);
+    const limit = Number.isFinite(clock) && clock > 0 ? clock : duration;
     const timer = window.setTimeout(() => {
       if (seek) {
         try {
-          if (anim.playState !== "finished") anim.currentTime = duration;
+          if (anim.playState !== "finished") anim.currentTime = limit;
         } catch { /* already finished */ }
       }
       finish(true);
     }, duration);
-    const clock = Number(anim.effect?.getTiming?.().duration);
-    const limit = Number.isFinite(clock) && clock > 0 ? clock : duration;
     anim.finished.then(() => {
       // A document-timeline currentTime resolves this before a painted
       // frame. Compare against the animation's own duration, not the
@@ -634,21 +639,30 @@ function sealPlanSide(shell, insets) {
   return insets;
 }
 
-/** Plan collapse is still running. Sample both curves into one shell clip
- *  so the panel can start at the handoff without popping the plan shut. */
-function shellOverlapClip(shell, panelMs) {
+/** Sample both curves into one shell clip. `elapsedMs` is time since the
+ *  plan collapse began. The panel curve still starts at the 160ms handoff
+ *  and still lasts `panelMs`; a late call only plays the part that remains. */
+function shellOverlapClip(shell, panelMs, elapsedMs = PLAN_COLLAPSE_HANDOFF_MS) {
   if (!(panelMs > 0) || shell.dataset.planOpen !== "1") return null;
-  const anim = shell.getAnimations?.().find((item) => item.id === "plan-collapse");
-  if (!anim || anim.playState === "finished" || anim.playState === "idle") return null;
+  if (!(shell._collapsePlanAt > 0)) {
+    const anim = shell.getAnimations?.().find((item) => item.id === "plan-collapse");
+    if (!anim || anim.playState === "finished" || anim.playState === "idle") return null;
+  }
+  const handoff = PLAN_COLLAPSE_HANDOFF_MS;
+  const endElapsed = handoff + panelMs;
+  const startElapsed = Math.min(Math.max(Number(elapsedMs) || 0, handoff), endElapsed);
+  const span = endElapsed - startElapsed;
+  if (!(span > 0)) return null;
   const planOpen = planRevealClip(shell, 1).insets;
   const planClosed = planRevealClip(shell, 0).insets;
   const geom = shellGeom(shell);
   const panelFrom = insetsFor("panel", geom);
   const panelTo = insetsFor("orb", geom);
   const planSide = shell.dataset.planSide === "left" ? "left" : "right";
-  const count = Math.max(2, Math.round(panelMs / 16));
+  const count = Math.max(2, Math.round(span / 16));
   const frames = [];
   let start = null;
+  let end = null;
   for (let i = 0; i <= count; i += 1) {
     const insets = overlappedCollapseInsets({
       planOpen,
@@ -656,13 +670,14 @@ function shellOverlapClip(shell, panelMs) {
       panelFrom,
       panelTo,
       planSide,
-      elapsedMs: PLAN_COLLAPSE_HANDOFF_MS + (panelMs * i) / count,
+      elapsedMs: startElapsed + (span * i) / count,
       panelMs,
     });
     if (!start) start = insets;
+    end = insets;
     frames.push({ clipPath: clipPath(insets), offset: i / count });
   }
-  return { start, frames };
+  return { start, end, frames, duration: span };
 }
 
 function playClip(shell, fromState, toState, duration, token, easing = EASE) {
@@ -682,7 +697,14 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const fillFrom = tighten(from);
   const fillTo = tighten(to);
   if (shell.dataset.morphToken !== token) return Promise.resolve(false);
-  const overlap = toState === "orb" ? shellOverlapClip(shell, duration) : null;
+  const armed = toState === "orb" ? shell._panelCollapse : null;
+  const armedAnim = armed?.anim || null;
+  let armedState = "";
+  try { armedState = armedAnim?.playState || ""; } catch { armedState = ""; }
+  const armedLive = armedState === "running" || armedState === "pending";
+  const armedDone = !!(armed && !armedLive && (armed.done || armedAnim));
+  const sincePlan = shell._collapsePlanAt > 0 ? performance.now() - shell._collapsePlanAt : PLAN_COLLAPSE_HANDOFF_MS;
+  const overlap = toState === "orb" && !armed ? shellOverlapClip(shell, duration, sincePlan) : null;
   shell.classList.remove("is-growing-pill", "is-growing-panel");
   holdMotion(shell);
   holdMotion(fill);
@@ -693,7 +715,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     debugLog("collapse-plan-keep", `seam=${seamPhase(shell.querySelector(".plan-window")) || "-"}`);
     pauseHitSync();
   }
-  cancelClipAnims(shell, toState === "orb");
+  cancelClipAnims(shell, toState === "orb", armedLive ? "panel-collapse" : "");
   if (reducedMotion() || !(duration > 0)) {
     writeClip(shell, to);
     if (toState === "panel") {
@@ -702,12 +724,24 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     }
     return Promise.resolve(true);
   }
+  if (armedDone) {
+    writeClip(shell, to);
+    commitClosedShell(shell);
+    shell.classList.remove("is-growing-pill", "is-growing-panel");
+    debugLog("clip-hold", `bot=${shell.dataset.botId || ""} mode=orb`);
+    return Promise.resolve(shell.dataset.morphToken === token);
+  }
+  let waitMs = duration;
+  if (armedLive) {
+    const elapsed = Math.max(0, performance.now() - (armed.startedAt || 0));
+    waitMs = Math.max(0, (armed.duration || duration) - elapsed);
+  }
   // Drop the pill's 200ms transition before the panel clip. The panel clock
   // is the WAAPI duration (480ms), and transition-delay stays 0. Collapse
   // skips the layout flush: it was pushing the 300ms clock out by a frame.
-  writeClip(shell, overlap ? overlap.start : from);
+  if (!armedLive) writeClip(shell, overlap ? overlap.start : from);
   if (toState !== "orb") void shell.offsetWidth;
-  shell.style.clipPath = clipPath(overlap ? overlap.start : shellFrom);
+  if (!armedLive) shell.style.clipPath = clipPath(overlap ? overlap.start : shellFrom);
   if (fill) fill.style.clipPath = clipPath(fillFrom);
   if (stroke && toState === "panel") stroke.style.clipPath = clipPath(to);
   if (toState === "panel") {
@@ -721,18 +755,24 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   if (toState === "panel") shell.classList.add("is-growing-panel");
   else if (toState === "pill") shell.classList.add("is-growing-pill");
   const timing = { duration, easing, fill: "forwards" };
+  const orbMs = armedLive ? waitMs : (overlap ? overlap.duration : duration);
+  const orbTiming = toState === "orb" ? { duration: orbMs, easing, fill: "forwards" } : timing;
   let shellAnim;
   let fillAnim;
   let strokeAnim;
   try {
-    shellAnim = shell.animate(
-      overlap ? overlap.frames : [
-        { clipPath: clipPath(shellFrom) },
-        { clipPath: clipPath(shellTo) },
-      ],
-      overlap ? { duration, easing: "linear", fill: "forwards" } : timing,
-    );
-    if (overlap) debugLog("collapse-overlap", `edge=${shell.dataset.edge || ""} handoff=${PLAN_COLLAPSE_HANDOFF_MS} panel=${duration}`);
+    if (armedLive) shellAnim = armedAnim;
+    else {
+      shellAnim = shell.animate(
+        overlap ? overlap.frames : [
+          { clipPath: clipPath(shellFrom) },
+          { clipPath: clipPath(shellTo) },
+        ],
+        overlap ? { duration: overlap.duration, easing: "linear", fill: "forwards", id: "panel-collapse" } : timing,
+      );
+      if (toState === "orb") noteCollapse(shell, "panel");
+    }
+    if (overlap) debugLog("collapse-overlap", `edge=${shell.dataset.edge || ""} handoff=${PLAN_COLLAPSE_HANDOFF_MS} panel=${duration} span=${overlap.duration.toFixed(1)}`);
     if (toState === "panel") {
       // Underlying opacity is 1 before the fade exists, so a later fill drop
       // cannot present the stylesheet's opacity 0. Setting it after animate()
@@ -748,19 +788,19 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
         { opacity: 1, offset: 0 },
         { opacity: 1, offset: 0.82 },
         { opacity: floor, offset: 1 },
-      ], { duration, easing: "linear", fill: "forwards", id: "orb-idle" });
+      ], { duration: orbMs, easing: "linear", fill: "forwards", id: "orb-idle" });
       if (stroke) {
         strokeAnim = stroke.animate([
           { clipPath: clipPath(from) },
           { clipPath: clipPath(to) },
-        ], timing);
+        ], orbTiming);
       }
     }
     if (fill) {
       fillAnim = fill.animate([
         { clipPath: clipPath(fillFrom) },
         { clipPath: clipPath(fillTo) },
-      ], timing);
+      ], toState === "orb" ? orbTiming : timing);
     }
     if (toState === "panel") {
       // Resting clip is the final keyframe. The animation paints the from
@@ -781,11 +821,13 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
     if (toState === "orb") {
       const now = document.timeline?.currentTime;
       if (typeof now === "number") {
-        // The plan clip just finished on this element. Pinning startTime
-        // alone can leave local time already part-way through, and the top
-        // edge then paints short of its 333ms clock. Force the first frame.
-        shellAnim.startTime = now;
-        try { shellAnim.currentTime = 0; } catch { /* already at the first frame */ }
+        // A clip that starts here must open on its first frame. The panel
+        // clip armed at the plan handoff is already on that clock; rewinding
+        // it adds the full panel duration after the plan has been running.
+        if (!armedLive && shellAnim) {
+          shellAnim.startTime = now;
+          try { shellAnim.currentTime = 0; } catch { /* already at the first frame */ }
+        }
         if (fillAnim) {
           fillAnim.startTime = now;
           try { fillAnim.currentTime = 0; } catch { /* same clock */ }
@@ -812,7 +854,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   // Hits were announced before this clip. A per-frame hit rAF would stop
   // on the finish frame, which is the settle wash. Leave that loop idle.
   pauseHitSync();
-  return whenAnimEnds(shellAnim, duration).then((finished) => {
+  return whenAnimEnds(shellAnim, armedLive ? waitMs : orbMs).then((finished) => {
     if (shell.dataset.morphToken !== token) return false;
     if (!finished) return false;
     // The content fade is the WAAPI started with this clip. Writing opacity
@@ -878,6 +920,7 @@ function commitClosedShell(shell) {
     orb.classList.remove("active");
   }
   debugLog("orb-restyle", `when=collapse-end class=active-off opacity=${floor}`);
+  logCollapseSpan(shell);
 }
 
 function idleOrbOpacity(shell) {
@@ -2978,6 +3021,8 @@ async function collapsePlanSeam(shell, token) {
   const duration = PLAN_COLLAPSE_MS;
   holdMotion(shell);
   debugLog("collapse-start", `plan=first edge=${shell.dataset.edge || ""} ms=${duration}`);
+  shell._collapsePlanAt = performance.now();
+  noteCollapse(shell, "plan");
   let anim = null;
   try {
     anim = shell.animate([
@@ -2996,14 +3041,106 @@ async function collapsePlanSeam(shell, token) {
   watchPresent(shell, anim, "plan-collapse");
   await whenAnimReaches(anim, PLAN_COLLAPSE_HANDOFF_MS);
   if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
+  armPanelCollapse(shell);
   setSeamPhase(plan, "", { dom: false });
   debugLog("collapse-handoff", `at=${PLAN_COLLAPSE_HANDOFF_MS} edge=${shell.dataset.edge || ""}`);
 }
 
 function whenAnimReaches(anim, ms) {
+  if (!anim || !(ms > 0)) return Promise.resolve();
+  const started = performance.now();
   return new Promise((resolve) => {
-    window.setTimeout(resolve, anim ? ms : 0);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    const step = () => {
+      if (done) return;
+      let current = 0;
+      try { current = Number(anim.currentTime) || 0; } catch { current = 0; }
+      if (current >= ms || performance.now() - started >= ms) {
+        finish();
+        return;
+      }
+      requestAnimationFrame(step);
+    };
+    window.setTimeout(finish, ms);
+    step();
   });
+}
+
+function noteCollapse(shell, key) {
+  if (!shell) return;
+  if (!shell._collapseMark) shell._collapseMark = { plan: 0, panel: 0, end: 0 };
+  if (!(shell._collapseMark[key] > 0)) shell._collapseMark[key] = performance.now();
+}
+
+function logCollapseSpan(shell) {
+  const mark = shell?._collapseMark;
+  if (!mark || !(mark.panel > 0)) return;
+  if (!(mark.plan > 0)) mark.plan = mark.panel;
+  mark.end = performance.now();
+  debugLog(
+    "collapse-start",
+    `plan=${mark.plan.toFixed(1)} panel=${mark.panel.toFixed(1)} end=${mark.end.toFixed(1)}`,
+  );
+  shell._collapseMark = null;
+  shell._panelCollapse = null;
+  shell._collapsePlanAt = 0;
+}
+
+/** Start the panel clip at the plan handoff, before class changes. Waiting
+ *  until the plan animation's finished state made the top edge add the full
+ *  382ms after the 200ms plan clip. */
+function armPanelCollapse(shell) {
+  if (!shell || shell.dataset.planOpen !== "1" || !(shell._collapsePlanAt > 0)) return null;
+  const panelMs = collapseMs(shell.dataset.edge || "bottom");
+  const elapsed = Math.max(0, performance.now() - shell._collapsePlanAt);
+  const overlap = shellOverlapClip(shell, panelMs, elapsed);
+  if (!overlap) {
+    const endAt = PLAN_COLLAPSE_HANDOFF_MS + panelMs;
+    if (elapsed >= endAt) {
+      writeClip(shell, insetsFor("orb", shellGeom(shell)));
+      noteCollapse(shell, "panel");
+      shell._panelCollapse = {
+        anim: null,
+        duration: panelMs,
+        startedAt: shell._collapsePlanAt + PLAN_COLLAPSE_HANDOFF_MS,
+        panelMs,
+        done: true,
+      };
+    }
+    shell.getAnimations?.().forEach((anim) => {
+      if (anim.id === "plan-collapse") anim.cancel();
+    });
+    return null;
+  }
+  shell.style.clipPath = clipPath(overlap.start);
+  shell.getAnimations?.().forEach((anim) => {
+    if (anim.id === "plan-collapse") anim.cancel();
+  });
+  let anim = null;
+  try {
+    anim = shell.animate(overlap.frames, {
+      duration: overlap.duration,
+      easing: "linear",
+      fill: "forwards",
+      id: "panel-collapse",
+    });
+  } catch {
+    return null;
+  }
+  shell.style.clipPath = clipPath(overlap.end);
+  const armed = { anim, duration: overlap.duration, startedAt: performance.now(), panelMs };
+  shell._panelCollapse = armed;
+  noteCollapse(shell, "panel");
+  debugLog(
+    "collapse-overlap",
+    `edge=${shell.dataset.edge || ""} handoff=${PLAN_COLLAPSE_HANDOFF_MS} panel=${panelMs} elapsed=${elapsed.toFixed(1)} span=${overlap.duration.toFixed(1)}`,
+  );
+  return armed;
 }
 
 async function runShellMorph(shell, target) {
@@ -3059,6 +3196,9 @@ async function runShellMorph(shell, target) {
     promoteCollapseLayer(shell);
     debugLog("collapse-start", `edge=${shell.dataset.edge || ""} scale=${closingScale}`);
     shell._closingScale = closingScale;
+    shell._collapseMark = { plan: 0, panel: 0, end: 0 };
+    shell._panelCollapse = null;
+    shell._collapsePlanAt = 0;
     shell.classList.remove("is-orb-moving");
     shell.dataset.opening = "";
   } else {

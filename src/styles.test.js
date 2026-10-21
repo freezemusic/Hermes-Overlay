@@ -226,6 +226,14 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(planCloseFn, /classList\.add\("is-plan-collapse"\)/);
   assert.match(planCloseFn, /promoteCollapseLayer\(shell\)/);
   assert.match(planCloseFn, /await whenAnimReaches\(anim, PLAN_COLLAPSE_HANDOFF_MS\)/);
+  const seamBody = planCloseFn.slice(0, planCloseFn.indexOf("function whenAnimReaches"));
+  assert.match(seamBody, /_collapsePlanAt = performance\.now\(\)/);
+  const afterHandoff = seamBody.slice(seamBody.lastIndexOf("await whenAnimReaches"));
+  assert.match(afterHandoff, /armPanelCollapse\(shell\)/);
+  assert.doesNotMatch(afterHandoff, /applyParkedPlan/);
+  assert.match(planCloseFn, /id: "panel-collapse"/);
+  assert.match(planCloseFn, /plan=\$\{mark\.plan\.toFixed\(1\)\} panel=\$\{mark\.panel\.toFixed\(1\)\} end=\$\{mark\.end\.toFixed\(1\)\}/);
+  assert.match(mainSrc, /logCollapseSpan\(shell\)/);
   assert.match(mainSrc, /state\.osModifierDown === true && state\.cronHover === true/);
   assert.match(mainSrc, /planBodyLead\(focus\.markdown, focus\.title\)/);
   assert.match(mainSrc, /textContent !== "計劃"/);

@@ -207,6 +207,23 @@ test("a running job reports elapsed time and a progress fraction", () => {
     jobs: [{ id: "ok", state: "completed", last_status: "success" }],
   });
   assert.equal(cronOrbFace([succeeded], now).mode, "idle");
+  const fromRust = normalizeCronGroup({
+    jobs: [{
+      id: "flat",
+      name: "from-rust",
+      state: "completed",
+      status: "completed",
+      last_status: "error",
+      last_error: "boom",
+      running: false,
+    }],
+  });
+  assert.equal(fromRust.jobs[0].state, "completed");
+  assert.equal(fromRust.jobs[0].status, "completed");
+  assert.equal(fromRust.jobs[0].last_status, "error");
+  assert.equal(fromRust.jobs[0].last_error, "boom");
+  assert.equal(jobFailed(fromRust.jobs[0]), true);
+  assert.equal(cronOrbFace([fromRust], now).mode, "failed");
   const restarted = normalizeCronGroup({
     jobs: [{
       id: "run",
