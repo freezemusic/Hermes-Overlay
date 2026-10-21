@@ -88,6 +88,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.doesNotMatch(grow, /width = "0px"|writeSeamWidth|seamWidthPx|FIRST_PAINT_MS|seamScaleAt/);
   assert.match(grow, /mode=clip/);
   assert.match(grow, /seam-sample/);
+  assert.doesNotMatch(grow, /setTimeout\(\(\) => sample/);
   assert.doesNotMatch(grow, /requestAnimationFrame\(step\)|requestAnimationFrame\(awaitCalm\)/);
   assert.match(grow, /willChange = "transform"/);
   assert.match(grow, /flex = "none"/);
@@ -111,6 +112,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClip, /easing: PLAN_EASE/);
   assert.match(seamClip, /const duration = PLAN_GROW_MS/);
   assert.match(seamClip, /alignSeamClock\(anim/);
+  assert.match(seamClip, /warmPresented/);
   assert.match(seamClip, /pumpSeamPresent\(shell, duration\)/);
   assert.match(seamClip, /shell\.style\.clipPath = from/);
   assert.doesNotMatch(seamClip, /drivePresentedSeam|__hermesSeamFrame|transition = "none"/);
@@ -249,6 +251,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(finish, /seam-clip-stuck/);
   assert.match(finish, /getComputedStyle\(shell\)\.clipPath/);
   assert.match(finish, /seamClipStillClosed/);
+  assert.match(mainSrc, /PLAN_GROW_MS \* 2/);
+  assert.match(mainSrc, /return current < 8/);
   assert.match(finish, /holdMotion\(shell\)/);
   assert.doesNotMatch(finish, /seamLog\("lock"\)|dataset\.seam\s*=|lockPlanRevealed|\.animate\(|\.cancel\(|fill=forwards|retireGrownSeam|removeProperty\("clip-path"\)|writeSeamWidth/);
   const retire = mainSrc.slice(mainSrc.indexOf("function retireGrownSeam"), mainSrc.indexOf("function setSeamPhase"));
@@ -322,7 +326,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClock, /reanchor gap=/);
   assert.match(seamClock, /seamFrameStep/);
   assert.match(seamClock, /seamVisibleMs/);
+  assert.match(seamClock, /seamAdvanceMs/);
   assert.match(seamClock, /currentTime = 45/);
+  assert.match(seamClock, /warm && !heldOpen/);
   assert.doesNotMatch(seamClock, /presented <= 2/);
   assert.doesNotMatch(seamClock, /revealOf\(prior\) <= 0\.30/);
   assert.doesNotMatch(seamClock, /pin\(16\)/);

@@ -496,10 +496,37 @@ export function seamFrameStep(elapsedMs, { first = false, duration = PLAN_GROW_M
 }
 
 /** First painted reveal after a reanchor. Anything later than 45ms is
- *  planEase past the 45% gate, so that sample is shown at 45ms. */
+ *  planEase past the 45% gate, so that sample is shown at 45ms.
+ *  Warm and cold share this cap. */
 export function seamVisibleMs(elapsedMs) {
   const elapsed = Math.max(0, Number(elapsedMs) || 0);
   return elapsed > 45 ? 45 : elapsed;
+}
+
+/**
+ * Timeline position for one presented seam frame.
+ * The first sample (`shownMs` 0) is capped at 45ms.
+ * After that, the same position is never returned twice.
+ * A callback gap longer than one frame advances at most one frame,
+ * unless elapsed is already past twice the duration.
+ */
+export function seamAdvanceMs(elapsedMs, {
+  shownMs = 0,
+  gapMs = 0,
+  frameMs = 16,
+  duration = PLAN_GROW_MS,
+} = {}) {
+  const elapsed = Math.max(0, Number(elapsedMs) || 0);
+  const shown = Math.max(0, Number(shownMs) || 0);
+  const gap = Math.max(0, Number(gapMs) || 0);
+  const span = duration > 0 ? duration : PLAN_GROW_MS;
+  const frame = frameMs > 0 ? frameMs : 16;
+  if (!(shown > 0)) return seamVisibleMs(elapsed);
+  if (elapsed > span * 2) return Math.min(span, elapsed);
+  const stalled = gap > frame * 1.5;
+  let next = stalled ? Math.min(span, shown + frame) : Math.min(span, Math.max(shown, elapsed));
+  if (next <= shown + 0.5 && next < span) next = Math.min(span, shown + frame);
+  return next;
 }
 
 /** Outward inset of an `inset()` clip, in px. The plan edge is the most

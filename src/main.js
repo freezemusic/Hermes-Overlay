@@ -20,6 +20,7 @@ import {
   PLAN_GROW_MS,
   COLLAPSE_EASE,
   planEase,
+  seamAdvanceMs,
   seamFrameStep,
   seamVisibleMs,
   seamClipStillClosed,
@@ -1923,7 +1924,7 @@ function pumpSeamPresent(shell, duration) {
  *  into the page, not the animation) must not be treated as progress.
  *  The first two callbacks can run without reaching the glass. The third
  *  one is often the first scan, already ~46ms down the curve. */
-function alignSeamClock(anim, onPresented) {
+function alignSeamClock(anim, onPresented, warm = false) {
   if (!anim) return;
   const pin = (ahead = 0) => {
     const now = document.timeline?.currentTime;
@@ -1958,6 +1959,9 @@ function alignSeamClock(anim, onPresented) {
   let presented = 0;
   let lastStamp = 0;
   let heldOpen = false;
+  let shownMs = 0;
+  let frameMs = 0;
+  let pace = false;
   const sampleLate = (stamp) => {
     if (!anim || anim.playState === "finished" || anim.playState === "idle") return;
     let current = 0;
@@ -1965,19 +1969,22 @@ function alignSeamClock(anim, onPresented) {
     presented += 1;
     const gap = lastStamp ? Math.abs(lastStamp - stamp) : 0;
     lastStamp = stamp;
+    if (!frameMs && gap >= 8 && gap <= 40) frameMs = gap;
     const lie = current > 400;
-    if (anim.playState === "paused" || lie) {
+    if ((anim.playState === "paused" || lie) && !pace) {
       try { anim.currentTime = 0; } catch { /* keep the pin */ }
       pin(0);
       resume();
       if (presented < 3) requestAnimationFrame(sampleLate);
       return;
     }
-    // Frame 1 drops the startup hole. Frames 2 and 3 are the ones a cold
-    // compositor actually scans: a ~46ms hole, or a clock already near 70%.
-    const startup = presented === 1 && current > 16;
-    const hole = presented > 1 && presented <= 3 && (gap > 40 || current > 75);
-    if (startup || hole) {
+    if (pace && lie) current = shownMs;
+    if (pace && anim.playState === "paused") resume();
+    // Frame 1 drops the startup hole on a cold compositor. A warm layer
+    // is already on the glass, so that first sample is capped, not discarded.
+    const startup = !warm && presented === 1 && current > 16;
+    const hole = !warm && presented > 1 && presented <= 3 && (gap > 40 || current > 75);
+    if ((startup || hole) && !pace) {
       try { anim.pause(); } catch { /* the pin still moves the start */ }
       try { anim.currentTime = 0; } catch { /* the closed keyframe stays */ }
       pin(0);
@@ -1994,14 +2001,31 @@ function alignSeamClock(anim, onPresented) {
       if (step.restart) {
         try { anim.currentTime = 45; } catch { /* the closed keyframe stays */ }
         debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=45`);
+        shownMs = 45;
       }
       if (!heldOpen) {
         heldOpen = true;
         confirm(presented);
       }
+      if (!(shownMs > 0)) shownMs = seamVisibleMs(current);
+      pace = true;
+      requestAnimationFrame(sampleLate);
       return;
     }
-    if (!heldOpen && (current <= 16 || (presented >= 2 && gap > 0 && gap <= 40))) {
+    if (!pace && warm && !heldOpen) {
+      const shown = seamVisibleMs(current);
+      if (shown < current) {
+        try { anim.currentTime = shown; } catch { /* the closed keyframe stays */ }
+        debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=45`);
+      }
+      shownMs = shown;
+      heldOpen = true;
+      confirm(presented);
+      pace = true;
+      requestAnimationFrame(sampleLate);
+      return;
+    }
+    if (!pace && !heldOpen && (current <= 16 || (presented >= 2 && gap > 0 && gap <= 40))) {
       // A reanchor that is not a 75ms hole still presents this sample.
       // Cap that first visible frame at 45ms even when the gap stayed small.
       const shown = seamVisibleMs(current);
@@ -2009,10 +2033,26 @@ function alignSeamClock(anim, onPresented) {
         try { anim.currentTime = 45; } catch { /* the closed keyframe stays */ }
         debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=45`);
       }
+      shownMs = shown;
       heldOpen = true;
       confirm(presented);
+      pace = true;
+    } else if (pace) {
+      const next = seamAdvanceMs(current, {
+        shownMs,
+        gapMs: gap,
+        frameMs: frameMs || 16,
+        duration: PLAN_GROW_MS,
+      });
+      if (Math.abs(next - current) > 0.5) {
+        try { anim.currentTime = next; } catch { /* keep the running clock */ }
+        resume();
+        debugLog("seam-clock", `pace gap=${gap.toFixed(1)} at=${current.toFixed(1)} show=${next.toFixed(1)}`);
+      }
+      shownMs = next;
     }
-    if (presented < 3) requestAnimationFrame(sampleLate);
+    const running = anim.playState !== "finished" && anim.playState !== "idle";
+    if (running && (presented < 3 || (pace && shownMs < PLAN_GROW_MS))) requestAnimationFrame(sampleLate);
   };
   requestAnimationFrame(sampleLate);
 }
@@ -2121,9 +2161,10 @@ function beginSeamClip(shell) {
   }
   shell._clipHold = anim;
   shell.style.clipPath = from;
+  const warm = shell.querySelector(".plan-window")?.dataset.warmPresented === "1";
   alignSeamClock(anim, () => {
     shell.style.clipPath = to;
-  });
+  }, warm);
   pumpSeamPresent(shell, duration);
   watchPresent(shell, anim, "plan");
   seamLog("clip-open", `prev=${previous?.playState || "none"} dur=${duration}`);
@@ -2138,11 +2179,11 @@ function finishSeamClip(anim) {
   if (!anim) return Promise.resolve(false);
   // Do not seek to the end on the wall timeout: that is the one-frame jump
   // to open. If the clock never left the closed keyframe, run it once more.
-  return whenAnimEnds(anim, PLAN_GROW_MS + 64, false).then((ok) => {
+  return whenAnimEnds(anim, PLAN_GROW_MS * 2, false).then((ok) => {
     if (!seamClockStuck(anim)) return ok;
     debugLog("plan-anim-restart", `state=${anim.playState || ""}`);
     kickSeamClock(anim);
-    return whenAnimEnds(anim, PLAN_GROW_MS + 64, false);
+    return whenAnimEnds(anim, PLAN_GROW_MS * 2, false);
   });
 }
 
@@ -2153,7 +2194,8 @@ function seamClockStuck(anim) {
   try { current = Number(anim.currentTime) || 0; } catch { current = 0; }
   // Thousands of milliseconds here is the document timeline, not growth.
   if (current > 400) return true;
-  return current < 40;
+  // Still on the closed keyframe. A paced frame under 40ms is moving.
+  return current < 8;
 }
 
 function kickSeamClock(anim) {
@@ -2271,15 +2313,12 @@ function growPlan(shell, token) {
     seamMark("plan-seam:clock");
     if (!alive()) return false;
     const started = performance.now();
-    const sample = (i) => {
-      if (!alive() || seamPhase(plan) === "grown") return;
+    await finishSeamClip(anim);
+    if (alive() && seamPhase(plan) !== "grown") {
       const wall = performance.now() - started;
       const t = Math.min(1, wall / PLAN_GROW_MS);
-      seamLog("seam-sample", `i=${i} wall=${wall.toFixed(1)} reveal=${planEase(t).toFixed(3)} motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
-      if (wall < PLAN_GROW_MS) setTimeout(() => sample(i + 1), 32);
-    };
-    setTimeout(() => sample(0), 32);
-    await finishSeamClip(anim);
+      seamLog("seam-sample", `i=0 wall=${wall.toFixed(1)} reveal=${planEase(t).toFixed(3)} motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
+    }
     if (!alive()) return false;
     const openClip = planRevealClip(shell, 1).value;
     let usedClip = "";

@@ -12,6 +12,7 @@ import {
   PLAN_EASE,
   PLAN_GROW_MS,
   planEase,
+  seamAdvanceMs,
   seamFrameStep,
   seamVisibleMs,
   seamClipOutset,
@@ -125,6 +126,14 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(seamVisibleMs(45), 45);
   assert.equal(seamVisibleMs(58), 45);
   assert.equal(seamVisibleMs(121), 45);
+  assert.equal(seamAdvanceMs(16, { shownMs: 0 }), 16);
+  assert.equal(seamAdvanceMs(54, { shownMs: 0 }), 45);
+  assert.equal(seamAdvanceMs(17, { shownMs: 17, gapMs: 16, frameMs: 16 }), 33);
+  assert.equal(seamAdvanceMs(50, { shownMs: 34, gapMs: 16, frameMs: 16 }), 50);
+  assert.equal(seamAdvanceMs(177, { shownMs: 30, gapMs: 147, frameMs: 16 }), 46);
+  assert.equal(seamAdvanceMs(80, { shownMs: 30, gapMs: 48, frameMs: 16 }), 46);
+  assert.equal(seamAdvanceMs(600, { shownMs: 30, gapMs: 147, frameMs: 16, duration: 280 }), 280);
+  assert.equal(seamAdvanceMs(40, { shownMs: 16, gapMs: 33, frameMs: 33 }), 40);
   const openClip = "inset(-4px -428px -4px -4px round 3px)";
   const closedClip = "inset(-4px -4px -4px -4px round 3px)";
   assert.ok(seamClipOutset(openClip) > 400);
