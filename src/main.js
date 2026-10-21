@@ -4479,7 +4479,6 @@ function paintPlan(id, options = {}) {
   // A grown seam keeps is-plan-seam while the open morph holds the collapse
   // gate, so a deferred × never runs. Forced close of a grown plan drops
   // the pane on this turn (R-CT-01). Only a still-growing seam waits.
-  const growing = seamPhase(section) === "growing";
   if (!open && (growing || (!force && (freezeCooling(shell) || shell.classList.contains("is-plan-seam"))))) {
     shell.dataset.planDirty = "1";
     debugLog("plan-hide-blocked", `seam=${seamPhase(section) || "-"} force=${force ? 1 : 0}`);
