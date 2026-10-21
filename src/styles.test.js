@@ -448,6 +448,11 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /const runaway = measured > host\.bottom \+ BOTTOM_HIT_SLACK \+ 48/);
   assert.match(mainSrc, /slot\?\.upper \|\| slot\?\.runaway/);
   assert.match(mainSrc, /if \(wasOpen\) retractPlanHit\(shell\)/);
+  assert.match(mainSrc, /function layoutBox/);
+  const collect = mainSrc.slice(mainSrc.indexOf("function collectHits"), mainSrc.indexOf("let hitFrame"));
+  assert.match(collect, /dataset\.state === "panel" && shell\.dataset\.planOpen !== "1"/);
+  assert.match(collect, /layoutBox\(shell\)/);
+  assert.match(collect, /box\.w > laid\.w \+ 1/);
   assert.match(mainSrc, /plan-chip-at/);
   assert.match(css, /\.morph \.center-panel \{[^}]*height:\s*100%/s);
   assert.match(css, /\.morph\[data-header="bottom"\] \.settings-head \{\s*position:\s*sticky;/);

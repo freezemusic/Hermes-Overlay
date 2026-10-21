@@ -582,6 +582,17 @@ function visibleBox(shell) {
   };
 }
 
+/** Layout box. A closed plan leaves a negative clip inset, and visibleBox
+ *  still covers that empty area (R-CT-01). Hits use this once the plan is shut. */
+function layoutBox(shell) {
+  const left = Number.parseFloat(shell.style.left);
+  const top = Number.parseFloat(shell.style.top);
+  const width = Number.parseFloat(shell.style.width);
+  const height = Number.parseFloat(shell.style.height);
+  if (![left, top, width, height].every(Number.isFinite) || width < 1 || height < 1) return null;
+  return { x: left, y: top, w: width, h: height };
+}
+
 function writeClip(shell, insets) {
   const fill = shell.querySelector(".morph-fill");
   shell.style.clipPath = clipPath(insets);
@@ -6844,7 +6855,20 @@ function collectHits() {
         round: true,
       });
     } else {
-      const box = visibleBox(shell);
+      let box = visibleBox(shell);
+      // An orb's layout box is the full card; the clip is the disc. Only a
+      // closed plan leaves a negative inset, and that spills visibleBox
+      // over the empty pane (R-CT-01). Pull that panel back to its card.
+      if (shell.dataset.state === "panel" && shell.dataset.planOpen !== "1") {
+        const laid = layoutBox(shell);
+        const spilled = laid && (
+          box.x < laid.x - 0.5
+          || box.y < laid.y - 0.5
+          || box.w > laid.w + 1
+          || box.h > laid.h + 1
+        );
+        if (spilled) box = laid;
+      }
       if (box.w < 1 || box.h < 1) return;
       const rect = {
         id,

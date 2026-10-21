@@ -64,9 +64,7 @@ $gwScript = {
       try { $ctx = $listener.GetContext() } catch { break }
       $path = $ctx.Request.Url.AbsolutePath
       $method = $ctx.Request.HttpMethod
-      $line = "$method $path"
-      Add-Content $gwLog $line
-      if ($debugLog) { Add-Content $debugLog "gateway $line" }
+      Add-Content $gwLog "$method $path"
       $body = '{"ok":true}'
       # Named profiles call /p/<profile>/api/sessions/..., not /api/sessions/...
       if ($path -like "*/messages*") {
@@ -510,6 +508,30 @@ function Read-PlanChip([string]$bot) {
   return @{ x = [int]$m.Groups['x'].Value; y = [int]$m.Groups['y'].Value }
 }
 
+function Read-LoggedButton {
+  if (-not (Test-Path $log)) { return $null }
+  $hits = Select-String -Path $log -Pattern "hit-close when=push .* button=(?<x>-?\d+),(?<y>-?\d+),(?<w>\d+)x(?<h>\d+)" | Select-Object -Last 1
+  if (-not $hits) { return $null }
+  $m = [regex]::Match($hits.Line, 'button=(?<x>-?\d+),(?<y>-?\d+),(?<w>\d+)x(?<h>\d+)')
+  if (-not $m.Success) { return $null }
+  return @{
+    x = [int]$m.Groups['x'].Value
+    y = [int]$m.Groups['y'].Value
+    w = [int]$m.Groups['w'].Value
+    h = [int]$m.Groups['h'].Value
+  }
+}
+
+function Wait-IdGone([string]$id, [int]$seconds = 8) {
+  $deadline = (Get-Date).AddSeconds($seconds)
+  while ((Get-Date) -lt $deadline) {
+    $ids = @((Read-HitRects) | ForEach-Object { $_.id })
+    if ($ids -notcontains $id) { return $true }
+    Start-Sleep -Milliseconds 200
+  }
+  return $false
+}
+
 function Assert-Orb([string]$label, $orbPoint) {
   [ClickProbe]::SetCursorPos($orbPoint.x, $orbPoint.y) | Out-Null
   [ClickProbe]::Ctrl($true)
@@ -563,6 +585,22 @@ try {
   }
   # Settings is open. The blank point is outside that card.
   Assert-Empty "settings-open"
+  # Close settings before the field panel. Two cards on a short runner stack
+  # the bot to the 240px floor and the 睇計劃 chip lands on the composer.
+  $button = Read-LoggedButton
+  if (-not $button -or $button.w -lt 1) {
+    Note-Fail "settings-closed" "debug log has no settings close button"
+  } else {
+    $bx = [int]($button.x + $button.w / 2)
+    $by = [int]($button.y + $button.h / 2)
+    Assert-Captured "settings-close" $bx $by
+    if (-not (Wait-IdGone "settings" 8)) {
+      Note-Fail "settings-closed" "settings rect stayed in the hit list after ($bx,$by)"
+    } else {
+      Note-Ok "settings-closed" "$bx,$by"
+      Start-Sleep -Milliseconds 400
+    }
+  }
   # Open the field bot panel. The gateway plan must come up before edge samples.
   Assert-Orb "bot-open" $field
   if (-not (Wait-Log "hit-announce bot=field mode=panel" 12)) {
