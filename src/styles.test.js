@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
+import { seamClipStillClosed } from "./morph.js";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -102,17 +103,18 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.doesNotMatch(present, /playState === "running"/);
   assert.match(mainSrc, /watchPresent\(shell, shellAnim, "panel"\)/);
   const seamClip = mainSrc.slice(mainSrc.indexOf("function beginSeamClip"), mainSrc.indexOf("function finishSeamClip"));
-  assert.match(seamClip, /drivePresentedSeam\(shell, to, duration\)/);
-  assert.match(seamClip, /__hermesSeamFrame/);
+  assert.match(seamClip, /shell\.animate\(/);
+  assert.match(seamClip, /holdMotion\(shell\)/);
   assert.match(seamClip, /fill: "both"/);
   assert.match(seamClip, /id: "seam-clip"/);
   assert.match(seamClip, /planRevealClip\(shell, 0\)/);
   assert.match(seamClip, /easing: PLAN_EASE/);
   assert.match(seamClip, /const duration = PLAN_GROW_MS/);
+  assert.match(seamClip, /alignSeamClock\(anim/);
   assert.match(seamClip, /pumpSeamPresent\(shell, duration\)/);
-  assert.match(seamClip, /transition = "none"/);
   assert.match(seamClip, /shell\.style\.clipPath = from/);
-  assert.doesNotMatch(seamClip, /\.pause\(\)|startTime|setKeyframes|updateTiming|PLAN_GROW_MS - 12|shell\.animate/);
+  assert.doesNotMatch(seamClip, /drivePresentedSeam|__hermesSeamFrame|transition = "none"/);
+  assert.doesNotMatch(seamClip, /\.pause\(\)|startTime|setKeyframes|updateTiming|PLAN_GROW_MS - 12/);
   const presentedFrame = mainSrc.slice(mainSrc.indexOf("function onPresentedSeamFrame"), mainSrc.indexOf("function runRafSeam"));
   assert.match(presentedFrame, /seamFrameStep/);
   assert.match(presentedFrame, /present-hold/);
@@ -239,6 +241,10 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   const finish = grow.slice(grow.indexOf("await finishSeamClip"));
   assert.match(finish, /setSeamPhase\(plan, "grown", \{ dom: false \}\)/);
   assert.match(finish, /planRevealClip\(shell, 1\)/);
+  assert.match(finish, /seam-clip-stuck/);
+  assert.match(finish, /getComputedStyle\(shell\)\.clipPath/);
+  assert.match(finish, /seamClipStillClosed/);
+  assert.match(finish, /holdMotion\(shell\)/);
   assert.doesNotMatch(finish, /seamLog\("lock"\)|dataset\.seam\s*=|lockPlanRevealed|\.animate\(|\.cancel\(|fill=forwards|retireGrownSeam|removeProperty\("clip-path"\)|writeSeamWidth/);
   const retire = mainSrc.slice(mainSrc.indexOf("function retireGrownSeam"), mainSrc.indexOf("function setSeamPhase"));
   const retireFlush = retire.indexOf("getComputedStyle(plan).transform");
@@ -306,6 +312,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClock, /current > 75/);
   assert.match(seamClock, /present-hold/);
   assert.match(seamClock, /reanchor gap=/);
+  assert.match(seamClock, /seamFrameStep/);
+  assert.match(seamClock, /currentTime = 45/);
   assert.doesNotMatch(seamClock, /presented <= 2/);
   assert.doesNotMatch(seamClock, /revealOf\(prior\) <= 0\.30/);
   assert.doesNotMatch(seamClock, /pin\(16\)/);
@@ -500,6 +508,14 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(interactionRs, /modifier_down/);
   assert.match(interactionRs, /fn spawn_modifier_monitor/);
   assert.match(interactionRs, /fn publish_key_edge/);
+  assert.match(interactionRs, /fn arm_opacity_shape_hold/);
+  assert.match(interactionRs, /fn note_opacity_written/);
+  assert.match(interactionRs, /opacity_shape_deferred/);
+  const keyEdge = interactionRs.slice(interactionRs.indexOf("fn publish_key_edge"), interactionRs.indexOf("fn spawn_modifier_monitor"));
+  assert.match(keyEdge, /arm_opacity_shape_hold/);
+  assert.ok(keyEdge.indexOf("arm_opacity_shape_hold") < keyEdge.indexOf("app.emit"));
+  assert.match(interactionRs, /let defer_shape = opacity_shape_deferred/);
+  assert.match(interactionRs, /if defer_shape/);
   assert.match(interactionRs, /fn page_modifier/);
   assert.match(interactionRs, /"key_edge": true/);
   assert.match(interactionRs, /spawn_modifier_monitor\(app\.clone\(\)/);
@@ -518,12 +534,16 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   const edge = mainSrc.slice(mainSrc.indexOf("payload.key_edge"), mainSrc.indexOf("applyFrames", mainSrc.indexOf("payload.key_edge")));
   assert.match(edge, /paintHeldPanels/);
   assert.match(edge, /return/);
+  assert.match(edge, /opacity-write/);
+  assert.match(edge, /note_opacity_written/);
+  assert.ok(edge.indexOf("paintHeldPanels") < edge.indexOf("opacity-write"));
+  assert.ok(edge.indexOf("opacity-write") < edge.indexOf("note_opacity_written"));
   assert.doesNotMatch(edge, /renderBots|flushHits|publishHits|refreshBotChats/);
   const heldPaint = mainSrc.slice(mainSrc.indexOf("function paintLayerOpacity"), mainSrc.indexOf("function applyFrames"));
   assert.match(heldPaint, /data-state="panel"/);
   assert.match(heldPaint, /style\.opacity/);
   assert.match(heldPaint, /plan-window/);
-  assert.match(heldPaint, /requestAnimationFrame/);
+  assert.doesNotMatch(heldPaint, /requestAnimationFrame/);
   assert.doesNotMatch(heldPaint, /setProperty\("--hit-opacity"/);
   assert.doesNotMatch(heldPaint, /renderBots|flushHits|publishHits|refreshBotChats|rehearse/);
   assert.match(mainSrc, /setPointerCapture/);
@@ -779,4 +799,42 @@ test("idle document.getAnimations has no infinite iterations", () => {
   document.querySelector(".chat-messages").classList.add("streaming");
   const live = document.getAnimations().filter((item) => item.effect.getTiming().iterations === Infinity);
   assert.ok(live.length >= 2);
+});
+
+test("plan reveal computed clip-path reaches fully open", () => {
+  assert.match(css, /\.morph\[data-state="panel"\] \{[^}]*transition-property:\s*opacity !important/s);
+  assert.match(css, /\.morph\[data-state="panel"\] \{[^}]*transition-duration:\s*0s !important/s);
+  assert.doesNotMatch(css, /\.morph\[data-state="panel"\] \{[^}]*transition-property:\s*clip-path/s);
+  const closed = "inset(-4px -4px -4px -4px round 3px)";
+  const open = "inset(-4px -428px -4px -4px round 3px)";
+  const dom = new JSDOM(`<!doctype html><style>${css}</style><div class="morph" data-state="panel"></div>`);
+  const { document, getComputedStyle } = dom.window;
+  const shell = document.querySelector(".morph");
+  shell.style.clipPath = closed;
+  shell.animate = (frames) => {
+    const last = frames[frames.length - 1];
+    if (last?.clipPath) shell.style.clipPath = last.clipPath;
+    return { id: "seam-clip", playState: "finished", finished: Promise.resolve(true) };
+  };
+  shell.style.setProperty("transition", "none", "important");
+  const anim = shell.animate([
+    { clipPath: closed },
+    { clipPath: open },
+  ], { duration: 280, easing: "cubic-bezier(.3,.6,.2,1)", fill: "both", id: "seam-clip" });
+  shell.style.clipPath = open;
+  const computed = getComputedStyle(shell).clipPath;
+  assert.equal(computed, open);
+  assert.equal(seamClipStillClosed(computed, open), false);
+  assert.equal(seamClipStillClosed(closed, open), true);
+  assert.equal(anim.id, "seam-clip");
+  assert.notEqual(getComputedStyle(shell).transitionProperty, "clip-path");
+  const bare = document.createElement("div");
+  bare.className = "morph";
+  bare.dataset.state = "panel";
+  document.body.append(bare);
+  bare.style.transition = "none";
+  bare.style.clipPath = open;
+  assert.notEqual(getComputedStyle(bare).transitionProperty, "clip-path");
+  assert.equal(getComputedStyle(bare).clipPath, open);
+  assert.equal(seamClipStillClosed(getComputedStyle(bare).clipPath, open), false);
 });

@@ -44,6 +44,7 @@
     "allow-wait-presented-frames",
     "allow-modifier-down-now",
     "allow-armed-press",
+    "allow-note-opacity-written",
     "allow-drive-presented-seam",
     "allow-reveal-overlay"
   ]

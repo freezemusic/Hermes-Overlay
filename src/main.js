@@ -21,6 +21,7 @@ import {
   COLLAPSE_EASE,
   planEase,
   seamFrameStep,
+  seamClipStillClosed,
   clipPath,
   distributeEdges,
   fixedOrbPoint,
@@ -1974,6 +1975,13 @@ function alignSeamClock(anim, onPresented) {
         requestAnimationFrame(sampleLate);
         return;
       }
+      // Restarts are spent and this presented sample is still past the gate.
+      // Show it at 45ms (about 38%) instead of the late clock.
+      const step = seamFrameStep(current, { first: true, duration: PLAN_GROW_MS });
+      if (step.restart) {
+        try { anim.currentTime = 45; } catch { /* the closed keyframe stays */ }
+        debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=45`);
+      }
       if (!heldOpen) {
         heldOpen = true;
         confirm(presented);
@@ -2071,37 +2079,43 @@ function drivePresentedSeam(shell, to, duration) {
     .catch(() => runRafSeam(shell, to, duration).then(open));
 }
 
-/** Fresh shell clip, fully closed to fully open. Progress follows frames
- *  the compositor actually presented. The curve stays PLAN_EASE / 280ms. */
+/** Fresh shell clip, fully closed to fully open. The WAAPI clip is the
+ *  reveal (v71). holdMotion keeps `transition: none !important` so a
+ *  stylesheet clip-path transition cannot freeze the used value closed.
+ *  The curve stays PLAN_EASE / 280ms. */
 function beginSeamClip(shell) {
   const from = planRevealClip(shell, 0).value;
   const to = planRevealClip(shell, 1).value;
   const duration = PLAN_GROW_MS;
-  const easing = PLAN_EASE;
-  const presented = { duration, easing: PLAN_EASE, fill: "both", id: "seam-clip" };
   holdMotion(shell);
   const previous = shell._clipHold;
-  shell.style.transition = "none";
+  let anim = null;
+  try {
+    anim = shell.animate([
+      { clipPath: from },
+      { clipPath: to },
+    ], { duration, easing: PLAN_EASE, fill: "both", id: "seam-clip" });
+  } catch {
+    shell.style.clipPath = to;
+    return null;
+  }
+  shell._clipHold = anim;
   shell.style.clipPath = from;
-  const anim = { playState: "running", currentTime: 0, id: presented.id };
-  onPresentedSeamFrame.slot = { shell, live: false, sawClosed: false, anim };
-  window.__hermesSeamFrame = (elapsed) => onPresentedSeamFrame(shell, from, elapsed);
-  anim.finished = drivePresentedSeam(shell, to, duration);
-  shell._clipHold = null;
+  alignSeamClock(anim, () => {
+    shell.style.clipPath = to;
+  });
   pumpSeamPresent(shell, duration);
   watchPresent(shell, anim, "plan");
-  seamLog("clip-open", `prev=${previous?.playState || "none"} dur=${presented.duration} easing=${easing}`);
+  seamLog("clip-open", `prev=${previous?.playState || "none"} dur=${duration}`);
   return anim;
+}
+
+function dropClipHold(anim) {
+  try { anim?.cancel?.(); } catch { /* already idle */ }
 }
 
 function finishSeamClip(anim) {
   if (!anim) return Promise.resolve(false);
-  if (anim.id === "seam-clip" && anim.finished && typeof anim.finished.then === "function") {
-    return anim.finished.then((ok) => {
-      anim.playState = "finished";
-      return ok !== false;
-    });
-  }
   // Do not seek to the end on the wall timeout: that is the one-frame jump
   // to open. If the clock never left the closed keyframe, run it once more.
   return whenAnimEnds(anim, PLAN_GROW_MS + 64, false).then((ok) => {
@@ -2245,7 +2259,16 @@ function growPlan(shell, token) {
     setTimeout(() => sample(0), 32);
     await finishSeamClip(anim);
     if (!alive()) return false;
-    shell.style.clipPath = planRevealClip(shell, 1).value;
+    const openClip = planRevealClip(shell, 1).value;
+    let usedClip = "";
+    try { usedClip = getComputedStyle(shell).clipPath || ""; } catch { usedClip = ""; }
+    if (seamClipStillClosed(usedClip, openClip)) {
+      debugLog("seam-clip-stuck", `used=${usedClip} open=${openClip}`);
+      dropClipHold(anim);
+      holdMotion(shell);
+      shell.style.clipPath = openClip;
+    }
+    shell.style.clipPath = openClip;
     plan.style.pointerEvents = "";
     fit.style.visibility = "visible";
     paintOpenedHeldLook();
@@ -6580,17 +6603,15 @@ function paintHeldPanels(down) {
   const floor = Number(state.interaction?.minOpacity);
   const next = down ? String(Number.isFinite(floor) ? floor : 0.18) : "1";
   const panels = document.querySelectorAll('.morph[data-state="panel"]');
-  let changed = false;
   panels.forEach((shell) => {
     // Inline opacity on the shell. The plan stays at 1 so the two layers
     // do not multiply. A custom property here restyles the whole tree.
     // will-change stays in CSS: writing it here rebuilds the layer and
     // costs the frame the key was supposed to paint in.
-    if (paintLayerOpacity(shell, next)) changed = true;
+    paintLayerOpacity(shell, next);
     const plan = shell.querySelector(".plan-window");
-    if (plan && paintLayerOpacity(plan, "1")) changed = true;
+    if (plan) paintLayerOpacity(plan, "1");
   });
-  if (changed) requestAnimationFrame(() => {});
   return panels.length;
 }
 
@@ -6923,7 +6944,14 @@ function setupProximity() {
         if (payload.key_edge === true) {
           if (acceptModifier(payload)) {
             const panels = paintHeldPanels(state.osModifierDown);
+            const unix = Date.now();
+            debugLog("opacity-write", `unix=${unix} down=${state.osModifierDown ? 1 : 0} panels=${panels}`);
             debugLog("key-edge", `down=${state.osModifierDown ? 1 : 0} panels=${panels}`);
+            if (inTauri()) {
+              import("@tauri-apps/api/core")
+                .then(({ invoke }) => invoke("note_opacity_written", { unix }))
+                .catch(() => {});
+            }
           }
           return;
         }

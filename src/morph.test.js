@@ -13,6 +13,8 @@ import {
   PLAN_GROW_MS,
   planEase,
   seamFrameStep,
+  seamClipOutset,
+  seamClipStillClosed,
   ICON,
   ORB,
   ORB_PILL_MS,
@@ -118,6 +120,13 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(seamFrameStep(64, { first: false }).restart, false);
   assert.ok(planEase(seamFrameStep(64, { first: false }).t) > 0.45);
   assert.equal(seamFrameStep(280, { first: false }).t, 1);
+  const openClip = "inset(-4px -428px -4px -4px round 3px)";
+  const closedClip = "inset(-4px -4px -4px -4px round 3px)";
+  assert.ok(seamClipOutset(openClip) > 400);
+  assert.ok(seamClipOutset(closedClip) < 20);
+  assert.equal(seamClipStillClosed(closedClip, openClip), true);
+  assert.equal(seamClipStillClosed(openClip, openClip), false);
+  assert.equal(seamClipStillClosed("inset(-4px -200px -4px -4px round 3px)", openClip), true);
   assert.equal(SEAM_MIN, 0.001);
   const seam = seamScaleFrames(12);
   assert.equal(seam.outer.length, 13);

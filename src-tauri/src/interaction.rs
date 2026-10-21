@@ -1275,6 +1275,55 @@ struct OpacityItem {
 
 static RECOVER_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
 static SHAPE_DIRTY: AtomicBool = AtomicBool::new(false);
+/// Key edge defers the input shape until the page has written opacity.
+static OPACITY_SHAPE_HOLD: AtomicBool = AtomicBool::new(false);
+static OPACITY_SHAPE_UNTIL: AtomicU64 = AtomicU64::new(0);
+const OPACITY_SHAPE_HOLD_MS: u64 = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpacityShapeGate {
+    Apply,
+    Defer,
+    Fallback,
+}
+
+/// `until_ms == 0` keeps the hold (no deadline yet). A reached deadline
+/// is the fallback so click-through cannot stick if the page never acks.
+pub fn opacity_shape_gate(now_ms: u64, hold: bool, until_ms: u64) -> OpacityShapeGate {
+    if !hold {
+        return OpacityShapeGate::Apply;
+    }
+    if until_ms != 0 && now_ms >= until_ms {
+        return OpacityShapeGate::Fallback;
+    }
+    OpacityShapeGate::Defer
+}
+
+fn arm_opacity_shape_hold() {
+    let until = mono_ms().saturating_add(OPACITY_SHAPE_HOLD_MS).max(1);
+    OPACITY_SHAPE_UNTIL.store(until, Ordering::Release);
+    OPACITY_SHAPE_HOLD.store(true, Ordering::Release);
+}
+
+fn clear_opacity_shape_hold() {
+    OPACITY_SHAPE_HOLD.store(false, Ordering::Release);
+    OPACITY_SHAPE_UNTIL.store(0, Ordering::Release);
+    SHAPE_DIRTY.store(true, Ordering::Release);
+}
+
+fn opacity_shape_deferred(now_ms: u64) -> bool {
+    let hold = OPACITY_SHAPE_HOLD.load(Ordering::Acquire);
+    let until = OPACITY_SHAPE_UNTIL.load(Ordering::Acquire);
+    match opacity_shape_gate(now_ms, hold, until) {
+        OpacityShapeGate::Apply => false,
+        OpacityShapeGate::Defer => true,
+        OpacityShapeGate::Fallback => {
+            clear_opacity_shape_hold();
+            crate::trace_debug("opacity-present", "source=fallback");
+            false
+        }
+    }
+}
 static SHAPE_GEN: AtomicU64 = AtomicU64::new(0);
 static EMPTY_BLOCK_UNTIL: AtomicU64 = AtomicU64::new(0);
 static LAST_HELD: AtomicBool = AtomicBool::new(false);
@@ -1548,6 +1597,58 @@ fn eval_seam_frame(view: &webkit2gtk::WebView, elapsed_ms: f64) {
     view.run_javascript(&script, None::<&gtk::gio::Cancellable>, |_| {});
 }
 
+fn log_opacity_present(write_unix: u64, source: &str) {
+    clear_opacity_shape_hold();
+    crate::trace_debug(
+        "opacity-present",
+        &format!("source={source} write_unix={write_unix}"),
+    );
+}
+
+/// The page has written panel opacity. Log the next presented frame, then
+/// let the poll apply the input shape. Do not combine the shape on this turn.
+pub fn note_opacity_written(window: Option<&tauri::WebviewWindow>, write_unix: u64) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(window) = window {
+            if schedule_opacity_present(window, write_unix) {
+                return;
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+    }
+    log_opacity_present(write_unix, "immediate");
+}
+
+#[cfg(target_os = "linux")]
+fn schedule_opacity_present(window: &tauri::WebviewWindow, write_unix: u64) -> bool {
+    let posted = window.with_webview(move |webview| {
+        use gtk::prelude::*;
+        let view = webview.inner();
+        let Some(clock) = view.frame_clock() else {
+            log_opacity_present(write_unix, "no-clock");
+            return;
+        };
+        let clock_cb = clock.clone();
+        let slot: Arc<Mutex<Option<gtk::glib::signal::SignalHandlerId>>> =
+            Arc::new(Mutex::new(None));
+        let slot_cb = Arc::clone(&slot);
+        let id = clock.connect_after_paint(move |_| {
+            let handler = slot_cb.lock().unwrap_or_else(|err| err.into_inner()).take();
+            if let Some(handler) = handler {
+                clock_cb.disconnect(handler);
+            }
+            log_opacity_present(write_unix, "after-paint");
+        });
+        *slot.lock().unwrap_or_else(|err| err.into_inner()) = Some(id);
+        clock.request_phase(gtk::gdk::FrameClockPhase::AFTER_PAINT);
+    });
+    posted.is_ok()
+}
+
 /// Opacity 0 lets Linux map the window so WebKit receives the monitor
 /// size without a visible frame. Other platforms ignore it.
 pub fn set_window_opacity(window: &tauri::WebviewWindow, opacity: f64) {
@@ -1767,6 +1868,9 @@ fn cover_windows_monitor(_window: &tauri::WebviewWindow) -> bool {
 fn publish_key_edge(app: &AppHandle, held: bool, key_down: bool) {
     KEY_DOWN.store(key_down, Ordering::Release);
     LAST_HELD.store(held, Ordering::Release);
+    // Shape waits until the page has written opacity. Applying it on this
+    // turn stalls the compositor before that write is presented.
+    arm_opacity_shape_hold();
     let seq = MODIFIER_SEQ.fetch_add(1, Ordering::Release) + 1;
     crate::trace_debug(
         "key-edge",
@@ -1906,7 +2010,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             POINTER_DOWN.store(pointer_down, Ordering::Relaxed);
             let mouse = device.get_mouse();
             remember_screen_cursor(&window, f64::from(mouse.coords.0), f64::from(mouse.coords.1));
-            if SHAPE_DIRTY.swap(false, Ordering::Relaxed) {
+            let defer_shape = opacity_shape_deferred(mono_ms());
+            if !defer_shape && SHAPE_DIRTY.swap(false, Ordering::Relaxed) {
                 region_signature.clear();
             }
             let rects = hub
@@ -1955,20 +2060,24 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 }
                 logged_held = Some(held);
             }
-            let region = sync_os_hit_region(
-                &app,
-                &window,
-                held,
-                key_down,
-                pointer_down,
-                cursor,
-                &rects,
-                &frames,
-                &remembered_rects,
-                &painted_shape,
-                &mut ignoring,
-                &mut region_signature,
-            );
+            let region = if defer_shape {
+                painted_shape.clone()
+            } else {
+                sync_os_hit_region(
+                    &app,
+                    &window,
+                    held,
+                    key_down,
+                    pointer_down,
+                    cursor,
+                    &rects,
+                    &frames,
+                    &remembered_rects,
+                    &painted_shape,
+                    &mut ignoring,
+                    &mut region_signature,
+                )
+            };
             if rects.iter().any(|rect| is_orb_hit(rect) || is_pill_hit(rect)) {
                 remembered_rects = rects.clone();
             }
@@ -2904,6 +3013,14 @@ mod tests {
             z: 0,
             round: false,
         }
+    }
+
+    #[test]
+    fn opacity_shape_waits_for_the_write_then_falls_back() {
+        assert_eq!(opacity_shape_gate(10, false, 50), OpacityShapeGate::Apply);
+        assert_eq!(opacity_shape_gate(10, true, 50), OpacityShapeGate::Defer);
+        assert_eq!(opacity_shape_gate(50, true, 50), OpacityShapeGate::Fallback);
+        assert_eq!(opacity_shape_gate(80, true, 0), OpacityShapeGate::Defer);
     }
 
     #[test]

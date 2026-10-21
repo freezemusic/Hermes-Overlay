@@ -2096,6 +2096,14 @@ fn armed_press(consume: Option<bool>) -> String {
 
 /// Presented-frame clock for the plan seam. False means the page should
 /// fall back to its own frame loop.
+/// Page finished the opacity write. The next GTK after-paint logs
+/// `opacity-present` and only then may the poll update the input shape.
+#[tauri::command]
+fn note_opacity_written(app: AppHandle, unix: Option<u64>) {
+    let window = app.get_webview_window("main");
+    interaction::note_opacity_written(window.as_ref(), unix.unwrap_or(0));
+}
+
 #[tauri::command]
 async fn drive_presented_seam(app: AppHandle) -> bool {
     let Some(window) = app.get_webview_window("main") else {
@@ -2210,6 +2218,7 @@ pub fn run() {
             wait_presented_frames,
             modifier_down_now,
             armed_press,
+            note_opacity_written,
             drive_presented_seam,
             reveal_overlay,
             set_hit_rects,

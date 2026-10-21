@@ -149,6 +149,11 @@ description = "Read the orb id latched when a press began with the modifier down
 commands.allow = ["armed_press"]
 
 [[permission]]
+identifier = "allow-note-opacity-written"
+description = "Log the presented frame after a panel opacity write, then allow the input shape."
+commands.allow = ["note_opacity_written"]
+
+[[permission]]
 identifier = "allow-drive-presented-seam"
 description = "Advance the plan seam from GTK after-paint timestamps."
 commands.allow = ["drive_presented_seam"]

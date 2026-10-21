@@ -1933,16 +1933,19 @@ html, body {
 
 .morph[data-state="panel"] {
   filter: drop-shadow(var(--shadow-pop));
-  /* The layer already exists, so an inline opacity write is one frame.
-     A transition or an inherited custom property lags the key. */
+  /* Opacity jumps on the key. clip-path is the WAAPI seam, not a CSS
+     transition: an !important clip-path transition holds the used clip
+     at the closed inset while the specified value is already open. */
   will-change: clip-path, transform, opacity;
-  transition-property: clip-path !important;
+  transition-property: opacity !important;
+  transition-duration: 0s !important;
   transition-delay: 0s !important;
 }
 
 .morph[data-state="panel"] .plan-window {
   will-change: transform, opacity;
-  transition-property: clip-path !important;
+  transition-property: opacity !important;
+  transition-duration: 0s !important;
   transition-delay: 0s !important;
 }
 
@@ -2524,7 +2527,7 @@ html.overlay-passthrough .morph[data-state="panel"] :is(input, textarea):focus {
      That duration is the press dim and the release lag on a settled panel. */
   .morph[data-state="panel"],
   .morph[data-state="panel"] .plan-window {
-    transition-property: clip-path !important;
+    transition-property: opacity !important;
     transition-duration: 0s !important;
     transition-delay: 0s !important;
   }

@@ -495,6 +495,27 @@ export function seamFrameStep(elapsedMs, { first = false, duration = PLAN_GROW_M
   return { restart: false, t };
 }
 
+/** Outward inset of an `inset()` clip, in px. The plan edge is the most
+ *  negative side. A closed seam is only the bleed; an open one is the plan. */
+export function seamClipOutset(value) {
+  const nums = String(value || "").match(/-?\d+(?:\.\d+)?/g);
+  if (!nums || nums.length < 4) return 0;
+  let outward = 0;
+  for (let i = 0; i < 4; i += 1) {
+    const edge = Number(nums[i]);
+    if (edge < 0) outward = Math.max(outward, -edge);
+  }
+  return outward;
+}
+
+/** The reveal claimed to finish, but the used clip is still the closed edge.
+ *  Open outset is about the plan width; half of that is still closed. */
+export function seamClipStillClosed(computed, open) {
+  const full = seamClipOutset(open);
+  if (!(full > 0)) return false;
+  return seamClipOutset(computed) < full * 0.5;
+}
+
 /** Inline scale for one growth sample. t is 0..1 over 240ms. The resting
  *  value is 1; 0.001 exists only on the frame the clock starts. */
 export function seamScaleAt(t) {
