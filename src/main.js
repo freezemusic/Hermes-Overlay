@@ -4788,7 +4788,11 @@ function refreshBotChats() {
       continue;
     }
     const token = state.reconnectToken;
-    const job = loadBotHistory(bot.id, token).finally(() => {
+    const panelOpen = shell?.dataset.state === "panel" && !shell.classList.contains("is-collapsing");
+    const reload = panelOpen && thread.sessionExplicit && thread.sessionId
+      ? reloadOpenSession(bot.id, token)
+      : loadBotHistory(bot.id, token);
+    const job = reload.finally(() => {
       if (thread.historyPromise === job) thread.historyPromise = null;
     });
     thread.historyPromise = job;
@@ -4801,6 +4805,21 @@ function armChatRefresh() {
 }
 
 const pendingHistory = new Map();
+
+async function reloadOpenSession(id, token) {
+  const thread = threadFor(id);
+  const sessionId = thread.sessionId;
+  if (!sessionId) return loadBotHistory(id, token);
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    const opened = await invoke("select_session", { profile: id, sessionId });
+    if (token !== state.reconnectToken || state.mode !== "hermes") return false;
+    applyOpened(id, opened);
+    return true;
+  } catch {
+    return loadBotHistory(id, token);
+  }
+}
 
 async function loadBotHistory(id, token) {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -4948,6 +4967,7 @@ async function selectBot(id) {
   }
   const thread = threadFor(id);
   const pending = thread.loaded ? null : (thread.historyPromise || null);
+  const manual = thread.sessionExplicit;
   // The morph starts on this click. Another shell's pill, and this bot's
   // history round-trip, must not delay morph-start.
   renderBots();
@@ -4956,6 +4976,14 @@ async function selectBot(id) {
   if (pending) {
     try {
       await pending;
+    } catch (err) {
+      noteHistoryError(id, err);
+    }
+    renderChat(id);
+  }
+  if (manual && state.mode === "hermes" && inTauri()) {
+    try {
+      await loadBotHistory(id, state.reconnectToken);
     } catch (err) {
       noteHistoryError(id, err);
     }

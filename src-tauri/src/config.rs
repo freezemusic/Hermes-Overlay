@@ -16,10 +16,11 @@ pub struct BotConfig {
     pub base_url: String,
     #[serde(default)]
     pub detail: String,
-    /// Session this profile opens. Empty means follow the latest Bot Chat.
+    /// Last session id written for this profile. Main-orb open ignores it.
     #[serde(default)]
     pub session_id: String,
-    /// User picked `session_id`. Cron activity on Bot Chat does not drop the pick.
+    /// User picked `session_id` for the panel that is open.
+    /// Startup and the next main-orb open still use Bot Chat.
     #[serde(default)]
     pub session_explicit: bool,
     /// Highest `last_active` seen when the current session was chosen.

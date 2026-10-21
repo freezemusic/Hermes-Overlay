@@ -525,8 +525,14 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(revealFn, /hold_empty_input_shape/);
   assert.match(revealFn, /reapply_live_input_shape/);
   assert.match(revealFn, /set_window_opacity\(\&window, 1\.0\)/);
-  assert.doesNotMatch(interactionRs, /SWP_SHOWWINDOW/);
-  assert.match(interactionRs, /SWP_NOACTIVATE/);
+  assert.match(interactionRs, /SWP_SHOWWINDOW/);
+  assert.match(interactionRs, /SWP_NOMOVE \| SWP_NOSIZE \| SWP_NOZORDER \| SWP_NOACTIVATE \| SWP_FRAMECHANGED/);
+  assert.doesNotMatch(interactionRs, /fn hit_window_proc/);
+  assert.doesNotMatch(interactionRs, /GWLP_WNDPROC/);
+  assert.doesNotMatch(interactionRs, /fn set_window_transparent/);
+  assert.doesNotMatch(libRs, /reassert_window_exstyle/);
+  assert.match(interactionRs, /set_ignore_cursor_events/);
+  assert.doesNotMatch(revealFn, /set_focus\(\)/);
   assert.match(interactionRs, /fn cover_linux_monitor/);
   assert.match(interactionRs, /set_default_size/);
   assert.match(interactionRs, /move_resize/);

@@ -237,35 +237,21 @@ pub fn merge_session_anchor(
     0.0
 }
 
-/// Startup open. Keep a saved id that still exists. Otherwise an existing
-/// Bot Chat, then the latest existing session. Never creates a session.
+/// Startup and main-orb panel open. Always the existing overlay Bot Chat.
+/// A saved id, an explicit pick, a zero anchor, and a newer session do not
+/// retarget the main orb. No Bot Chat means nothing to open: do not take the
+/// latest other session, and do not create one. This function performs no I/O.
 pub fn session_for_startup(
     sessions: &[SessionSummary],
     remembered: &str,
     explicit: bool,
     anchor: f64,
 ) -> Option<ResolvedSession> {
-    let remembered = remembered.trim();
-    if !remembered.is_empty() {
-        if let Some(picked) = sessions.iter().find(|session| session.id == remembered) {
-            return Some(ResolvedSession {
-                id: picked.id.clone(),
-                explicit,
-                anchor,
-            });
-        }
-    }
-    if let Some(chat) = most_recent_bot_chat(sessions) {
-        return Some(ResolvedSession {
-            id: chat.id.clone(),
-            explicit: false,
-            anchor: chat.last_active,
-        });
-    }
-    most_recent_session(sessions).map(|session| ResolvedSession {
-        id: session.id.clone(),
+    let _ = (remembered, explicit, anchor);
+    most_recent_bot_chat(sessions).map(|chat| ResolvedSession {
+        id: chat.id.clone(),
         explicit: false,
-        anchor: session.last_active,
+        anchor: chat.last_active,
     })
 }
 
@@ -2185,9 +2171,9 @@ mod tests {
         assert!(!missing.explicit);
         assert!(resolve_session(&[], "split", true, 1.0).is_none());
         let kept = session_for_startup(&sessions, "split", false, 10.0).unwrap();
-        assert_eq!(kept.id, "split");
+        assert_eq!(kept.id, "newer");
         assert!(!kept.explicit);
-        assert_eq!(kept.anchor, 10.0);
+        assert_eq!(kept.anchor, 80.0);
         assert_eq!(
             merge_session_anchor("split", 1792566430.7, "split", 0.0, 99.0),
             1792566430.7
@@ -2197,9 +2183,9 @@ mod tests {
         assert_eq!(merge_session_anchor("split", 10.0, "other", 0.0, 99.0), 99.0);
         assert_eq!(merge_session_anchor("split", 0.0, "split", 0.0, 99.0), 99.0);
         let explicit = session_for_startup(&sessions, "desktop", true, 3.0).unwrap();
-        assert_eq!(explicit.id, "desktop");
-        assert!(explicit.explicit);
-        assert_eq!(explicit.anchor, 3.0);
+        assert_eq!(explicit.id, "newer");
+        assert!(!explicit.explicit);
+        assert_eq!(explicit.anchor, 80.0);
         assert_eq!(session_for_startup(&sessions, "", false, 0.0).unwrap().id, "newer");
         assert_eq!(session_for_startup(&sessions, "missing", false, 1.0).unwrap().id, "newer");
         assert!(session_for_startup(&[], "split", true, 1.0).is_none());
@@ -2207,7 +2193,7 @@ mod tests {
         assert_eq!(resolve_session(&tied, "", false, 0.0).unwrap().id, "a");
         let plain = vec![summary("desktop", "System Architect", 99.0), summary("split", "_splitLot", 10.0)];
         assert_eq!(resolve_session(&plain, "", false, 0.0).unwrap().id, "desktop");
-        assert_eq!(session_for_startup(&plain, "", false, 0.0).unwrap().id, "desktop");
+        assert!(session_for_startup(&plain, "", false, 0.0).is_none());
         assert_eq!(
             session_menu_order(&sessions)
                 .into_iter()
@@ -2268,6 +2254,57 @@ mod tests {
         assert_eq!(fresh_messages(&seen, &next).unwrap(), &next[1..]);
         assert!(fresh_messages(&next, &seen).is_none());
         assert!(fresh_messages(&seen, &seen).unwrap().is_empty());
+    }
+
+    /// Saved ids may point anywhere, and a newer non-chat may exist. Startup
+    /// and panel open still resolve to this bot's Bot Chat and cannot create.
+    #[test]
+    fn startup_and_panel_open_resolve_to_bot_chat_without_creating() {
+        let sessions = vec![
+            summary("saved-forex", "Forex notes", 10.0),
+            summary("mt-coder", "Coder notes", 30.0),
+            summary("mt-reviewer", "Review notes", 20.0),
+            summary("mt-tester", "Tester notes", 15.0),
+            summary("newest", "System Architect", 900.0),
+            summary_source("tui-latest", "Bot Chat", 5000.0, "tui"),
+            summary("bot-chat", "Bot Chat", 40.0),
+        ];
+        let saved = [
+            ("saved-forex", false, 0.0),
+            ("mt-coder", false, 0.0),
+            ("mt-reviewer", true, 20.0),
+            ("mt-tester", false, 0.0),
+            ("newest", true, 900.0),
+            ("missing-id", true, 1.0),
+            ("", false, 0.0),
+            ("bot-chat", true, 0.0),
+        ];
+        for (id, explicit, anchor) in saved {
+            let opened = session_for_startup(&sessions, id, explicit, anchor)
+                .unwrap_or_else(|| panic!("open {id}"));
+            assert_eq!(opened.id, "bot-chat", "{id}");
+            assert!(!opened.explicit, "{id}");
+            assert_eq!(opened.anchor, 40.0, "{id}");
+        }
+        let plain = vec![
+            summary("desktop", "System Architect", 99.0),
+            summary_source("tui-chat", "Bot Chat", 800.0, "tui"),
+        ];
+        assert!(session_for_startup(&plain, "desktop", true, 0.0).is_none());
+        assert!(session_for_startup(&plain, "", false, 0.0).is_none());
+        assert!(session_for_startup(&[], "saved-forex", true, 1.0).is_none());
+        let open_src = include_str!("lib.rs");
+        let start = open_src
+            .find("async fn open_bot")
+            .expect("open_bot");
+        let end = open_src
+            .find("async fn select_session")
+            .expect("select_session");
+        let open = &open_src[start..end];
+        assert!(open.contains("session_for_startup"));
+        assert!(!open.contains("ensure_bot_chat"));
+        assert!(!open.contains("create_bot_chat"));
+        assert!(!open.contains("create_session"));
     }
 
     #[test]

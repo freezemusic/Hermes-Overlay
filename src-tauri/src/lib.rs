@@ -2026,16 +2026,16 @@ async fn replace_missing_session(
     Ok(id)
 }
 
-/// Monitor size while the window is still hidden. The page waits until its
-/// viewport matches, paints once, then calls `reveal_overlay`.
+/// Monitor size. Linux stays hidden until reveal. Windows is already visible.
+/// The page waits until its viewport matches, paints once, then calls `reveal_overlay`.
 #[tauri::command]
 fn fit_overlay(app: AppHandle) -> OverlayCssSize {
     let Some(window) = app.get_webview_window("main") else {
         return OverlayCssSize { width: 0, height: 0 };
     };
+    #[cfg(target_os = "linux")]
     let _ = window.set_decorations(false);
     interaction::place_overlay(&window);
-    interaction::reassert_window_exstyle(&app);
     let (width, height) = interaction::monitor_css_size(&window).unwrap_or((0, 0));
     OverlayCssSize { width, height }
 }
@@ -2055,6 +2055,7 @@ fn map_overlay_for_layout(app: AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    #[cfg(target_os = "linux")]
     let _ = window.set_decorations(false);
     interaction::place_overlay(&window);
     #[cfg(target_os = "linux")]
@@ -2062,16 +2063,11 @@ fn map_overlay_for_layout(app: AppHandle) {
         interaction::set_window_opacity(&window, 0.0);
         let _ = window.show();
     }
-    interaction::reassert_window_exstyle(&app);
 }
 
-/// First map. The window is created hidden and undecorated, and already
-/// sized to the monitor. Showing any earlier paints the toolkit's titled
-/// 1280×800 frame. Linux tao maps inside `set_visible` before
-/// `set_decorated`, so `visible: false` lets decorations land first.
-/// Windows applies the undecorated style at `CreateWindowEx` and would
-/// still show during `WM_CREATE` if `visible` were true. Do not place
-/// again here: a maximize on this turn is the fullscreen jump.
+/// Linux maps inside `set_visible` before `set_decorated`, so `visible: false`
+/// lets decorations land first. Windows stays on the f8cb046 path: created
+/// visible and maximized, and reveal does not focus or restyle decorations.
 #[tauri::command]
 async fn wait_presented_frames(app: AppHandle, frames: Option<u32>) -> u32 {
     let count = frames.unwrap_or(2);
@@ -2112,18 +2108,25 @@ async fn drive_presented_seam(app: AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+fn focus_revealed_overlay(window: &tauri::WebviewWindow) {
+    #[cfg(not(windows))]
+    let _ = window.set_focus();
+    #[cfg(windows)]
+    let _ = window;
+}
+
 #[tauri::command]
 fn reveal_overlay(app: AppHandle, state: State<'_, AppState>) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    #[cfg(target_os = "linux")]
     let _ = window.set_decorations(false);
     interaction::set_window_opacity(&window, 1.0);
     let _ = window.show();
-    let _ = window.set_focus();
+    focus_revealed_overlay(&window);
     interaction::hold_empty_input_shape();
     interaction::reapply_live_input_shape(&app, state.interaction.as_ref());
-    interaction::reassert_window_exstyle(&app);
 }
 
 #[tauri::command]
@@ -2324,6 +2327,15 @@ mod tests {
         assert_eq!(window["decorations"], false);
         assert_eq!(window["transparent"], true);
         assert_eq!(window["maximized"], false);
+        let windows: serde_json::Value = serde_json::from_str(include_str!(
+            "../tauri.windows.conf.json"
+        ))
+        .expect("tauri.windows.conf");
+        let win = &windows["app"]["windows"][0];
+        assert_eq!(win["visible"], true);
+        assert_eq!(win["maximized"], true);
+        assert_eq!(win["decorations"], false);
+        assert_eq!(win["transparent"], true);
         let src = include_str!("lib.rs");
         assert!(src.contains("icons/tray.png"));
         assert!(src.contains("icon_as_template"));

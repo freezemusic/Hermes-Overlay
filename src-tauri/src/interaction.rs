@@ -5,38 +5,9 @@ use crate::config::InteractionConfig;
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-#[cfg(windows)]
-use std::sync::atomic::AtomicPtr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
-
-/// `WS_EX_TRANSPARENT`. tao caches exstyle and drops this bit on show.
-pub const WS_EX_TRANSPARENT_BIT: i32 = 0x0000_0020;
-
-/// Click-through is the resting state until a hittable region is published.
-static DESIRED_TRANSPARENT: AtomicBool = AtomicBool::new(true);
-
-pub fn note_desired_transparent(transparent: bool) {
-    DESIRED_TRANSPARENT.store(transparent, Ordering::Relaxed);
-}
-
-pub fn desired_transparent() -> bool {
-    DESIRED_TRANSPARENT.load(Ordering::Relaxed)
-}
-
-/// Next exstyle. Pure so the bit can be tested without a window.
-pub fn next_exstyle(actual: i32, transparent: bool) -> i32 {
-    if transparent {
-        actual | WS_EX_TRANSPARENT_BIT
-    } else {
-        actual & !WS_EX_TRANSPARENT_BIT
-    }
-}
-
-pub fn exstyle_needs_write(actual: i32, transparent: bool) -> bool {
-    next_exstyle(actual, transparent) != actual
-}
 
 #[derive(Debug, Clone)]
 pub struct HitRect {
@@ -1419,21 +1390,93 @@ fn screen_cursor() -> &'static Mutex<Option<(f64, f64)>> {
     CURSOR.get_or_init(|| Mutex::new(None))
 }
 
-/// Cover the monitor without mapping the window. The first `show` is
-/// `reveal_overlay`, after the page has painted at this size. Focusing
-/// here would map the creation frame. A later maximize is what leaves the
-/// webview at 1280×800 for the first visible frames.
+/// Linux stays unmapped until `reveal_overlay`. Windows is created visible
+/// and this call shows the monitor rect, then click-through follows the cursor.
 pub fn place_overlay(window: &tauri::WebviewWindow) {
     let _ = window.set_always_on_top(true);
     #[cfg(windows)]
-    if cover_windows_monitor(window) {
+    {
+        if !cover_windows_monitor(window) {
+            let _ = window.maximize();
+        }
+        let _ = apply_ignore_cursor(window, true, 0);
         return;
     }
     #[cfg(target_os = "linux")]
     if cover_linux_monitor(window) {
         return;
     }
-    let _ = window.maximize();
+    #[cfg(not(windows))]
+    {
+        let _ = window.maximize();
+    }
+}
+
+/// Whole-window click-through. tao sets `WS_EX_LAYERED|WS_EX_TRANSPARENT` and
+/// keeps its style cache in sync. Windows then asks the frame to pick that up.
+fn apply_ignore_cursor(window: &tauri::WebviewWindow, ignore: bool, shape_n: usize) -> bool {
+    if window.set_ignore_cursor_events(ignore).is_err() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        commit_exstyle_frame(window);
+        crate::trace_debug(
+            "hit-ipc",
+            &format!("cmd=input-shape n={} platform=windows", shape_n),
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = shape_n;
+    }
+    true
+}
+
+#[cfg(windows)]
+fn commit_exstyle_frame(window: &tauri::WebviewWindow) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::ffi::c_void;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowPos(
+            hwnd: *mut c_void,
+            insert_after: *mut c_void,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = win.hwnd.get() as *mut c_void;
+    if hwnd.is_null() {
+        return;
+    }
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
 }
 
 /// How many GTK after-paint frames actually ran. Zero means the clock did
@@ -1905,8 +1948,7 @@ fn cover_windows_monitor(window: &tauri::WebviewWindow) -> bool {
         if width <= 0 || height <= 0 {
             return false;
         }
-        // Do not pass the show flag. A hidden window keeps this rect, and reveal maps it.
-        const SWP_NOACTIVATE: u32 = 0x0010;
+        const SWP_SHOWWINDOW: u32 = 0x0040;
         const SWP_FRAMECHANGED: u32 = 0x0020;
         SetWindowPos(
             hwnd,
@@ -1915,14 +1957,9 @@ fn cover_windows_monitor(window: &tauri::WebviewWindow) -> bool {
             info.rc_monitor.top,
             width,
             height,
-            SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            SWP_SHOWWINDOW | SWP_FRAMECHANGED,
         ) != 0
     }
-}
-
-#[cfg(not(windows))]
-fn cover_windows_monitor(_window: &tauri::WebviewWindow) -> bool {
-    false
 }
 
 #[cfg(target_os = "linux")]
@@ -2176,8 +2213,6 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 &mut region_signature,
                 defer_shrink,
             );
-            #[cfg(windows)]
-            reconcile_window_exstyle(&app, &window);
             if rects.iter().any(|rect| is_orb_hit(rect) || is_pill_hit(rect)) {
                 remembered_rects = rects.clone();
             }
@@ -2204,7 +2239,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             other_samples = samples;
             if owner == FocusOwner::Other {
                 if !closed_popup_for_other && option_menu_is_open() {
-                    if window.set_ignore_cursor_events(true).is_ok() {
+                    if apply_ignore_cursor(&window, true, 0) {
                         ignoring = Some(true);
                         region_signature.clear();
                     }
@@ -2335,7 +2370,7 @@ fn sync_os_hit_region(
     region_signature: &mut String,
     defer_shrink: bool,
 ) -> Vec<HitRect> {
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     {
         let region = guarded_input_shape(
             held,
@@ -2350,8 +2385,6 @@ fn sync_os_hit_region(
         // Show clears the Linux input shape. For a short beat after reveal,
         // an empty poll must not replace the orb that was just applied.
         if region.is_empty() && mono_ms() < EMPTY_BLOCK_UNTIL.load(Ordering::Relaxed) {
-            #[cfg(windows)]
-            note_desired_transparent(last_painted.is_empty());
             return last_painted.to_vec();
         }
         let origin = window.inner_position().ok();
@@ -2374,14 +2407,6 @@ fn sync_os_hit_region(
         );
         let adds_hit = shape_adds_hittable(last_painted, &region);
         let action = shape_combine_action(defer_shrink, adds_hit, signature == *region_signature);
-        #[cfg(windows)]
-        {
-            let transparent = match action {
-                ShapeCombine::Defer => last_painted.is_empty(),
-                _ => region.is_empty(),
-            };
-            note_desired_transparent(transparent);
-        }
         match action {
             ShapeCombine::Skip => return region,
             // Keep the rects a pointer can already hit. The signature stays
@@ -2390,24 +2415,12 @@ fn sync_os_hit_region(
             ShapeCombine::Apply => {}
         }
         *region_signature = signature;
-        #[cfg(windows)]
-        {
-            remember_hit_region(&region, origin_x, origin_y, scale);
-            let empty = region.is_empty();
-            if *ignoring != Some(empty) {
-                queue_windows_hit_style(app, empty);
-                *ignoring = Some(empty);
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            apply_linux_input_shape(app, &region, scale);
-            *ignoring = Some(region.is_empty());
-        }
-        let _ = window;
+        apply_linux_input_shape(app, &region, scale);
+        *ignoring = Some(region.is_empty());
+        let _ = (window, origin_x, origin_y);
         return region;
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = (
             app,
@@ -2422,219 +2435,15 @@ fn sync_os_hit_region(
             defer_shrink,
         );
         let ignore = !frames.iter().any(|item| item.capture);
-        if *ignoring != Some(ignore) && window.set_ignore_cursor_events(ignore).is_ok() {
+        let shape_n = frames.iter().filter(|item| item.capture).count();
+        if *ignoring != Some(ignore) && apply_ignore_cursor(window, ignore, shape_n) {
             *ignoring = Some(ignore);
         }
         Vec::new()
     }
 }
 
-#[cfg(windows)]
-struct HitRegionCache {
-    rects: Vec<HitRect>,
-    origin_x: f64,
-    origin_y: f64,
-    scale: f64,
-}
 
-#[cfg(windows)]
-fn hit_region_cache() -> &'static Mutex<HitRegionCache> {
-    static CACHE: OnceLock<Mutex<HitRegionCache>> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        Mutex::new(HitRegionCache {
-            rects: Vec::new(),
-            origin_x: 0.0,
-            origin_y: 0.0,
-            scale: 1.0,
-        })
-    })
-}
-
-#[cfg(windows)]
-fn remember_hit_region(rects: &[HitRect], origin_x: f64, origin_y: f64, scale: f64) {
-    let mut cache = hit_region_cache()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
-    cache.rects = rects.to_vec();
-    cache.origin_x = origin_x;
-    cache.origin_y = origin_y;
-    cache.scale = if scale > 0.0 { scale } else { 1.0 };
-    crate::trace_debug(
-        "hit-ipc",
-        &format!("cmd=input-shape n={} platform=windows", cache.rects.len()),
-    );
-}
-
-#[cfg(windows)]
-fn queue_windows_hit_style(app: &AppHandle, transparent: bool) {
-    let app = app.clone();
-    let handle = app.clone();
-    let _ = handle.run_on_main_thread(move || {
-        let Some(window) = app.get_webview_window("main") else {
-            return;
-        };
-        let Some(hwnd) = window_hwnd(&window) else {
-            return;
-        };
-        install_hit_proc(hwnd);
-        set_window_transparent(hwnd, transparent);
-    });
-}
-
-#[cfg(windows)]
-fn window_hwnd(window: &tauri::WebviewWindow) -> Option<*mut std::ffi::c_void> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let handle = window.window_handle().ok()?;
-    let RawWindowHandle::Win32(win) = handle.as_raw() else {
-        return None;
-    };
-    let hwnd = win.hwnd.get() as *mut std::ffi::c_void;
-    if hwnd.is_null() {
-        None
-    } else {
-        Some(hwnd)
-    }
-}
-
-#[cfg(windows)]
-fn install_hit_proc(hwnd: *mut std::ffi::c_void) {
-    static INSTALLED: AtomicBool = AtomicBool::new(false);
-    if INSTALLED.load(Ordering::Relaxed) {
-        return;
-    }
-    const GWLP_WNDPROC: i32 = -4;
-    #[link(name = "user32")]
-    extern "system" {
-        fn SetWindowLongPtrW(hwnd: *mut std::ffi::c_void, index: i32, new_proc: isize) -> isize;
-    }
-    let previous = unsafe {
-        SetWindowLongPtrW(
-            hwnd,
-            GWLP_WNDPROC,
-            hit_window_proc as *const std::ffi::c_void as isize,
-        )
-    };
-    if previous == 0 {
-        return;
-    }
-    HIT_PROC_PREVIOUS.store(previous as *mut std::ffi::c_void, Ordering::Relaxed);
-    INSTALLED.store(true, Ordering::Relaxed);
-}
-
-#[cfg(windows)]
-fn read_exstyle(hwnd: *mut std::ffi::c_void) -> i32 {
-    const GWL_EXSTYLE: i32 = -20;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn SetLastError(err: u32);
-    }
-    #[link(name = "user32")]
-    extern "system" {
-        fn GetWindowLongW(hwnd: *mut std::ffi::c_void, index: i32) -> i32;
-    }
-    unsafe {
-        SetLastError(0);
-        GetWindowLongW(hwnd, GWL_EXSTYLE)
-    }
-}
-
-#[cfg(windows)]
-fn reconcile_window_exstyle(app: &AppHandle, window: &tauri::WebviewWindow) {
-    let Some(hwnd) = window_hwnd(window) else {
-        return;
-    };
-    let actual = read_exstyle(hwnd);
-    let want = desired_transparent();
-    if exstyle_needs_write(actual, want) {
-        queue_windows_hit_style(app, want);
-    }
-}
-
-/// Read `GWL_EXSTYLE` and put the transparent bit back when tao dropped it.
-pub fn reassert_window_exstyle(app: &AppHandle) {
-    #[cfg(windows)]
-    {
-        let Some(window) = app.get_webview_window("main") else {
-            return;
-        };
-        let Some(hwnd) = window_hwnd(&window) else {
-            return;
-        };
-        set_window_transparent(hwnd, desired_transparent());
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-    }
-}
-
-#[cfg(windows)]
-fn set_window_transparent(hwnd: *mut std::ffi::c_void, transparent: bool) {
-    const GWL_EXSTYLE: i32 = -20;
-    #[link(name = "user32")]
-    extern "system" {
-        fn GetWindowLongW(hwnd: *mut std::ffi::c_void, index: i32) -> i32;
-        fn SetWindowLongW(hwnd: *mut std::ffi::c_void, index: i32, value: i32) -> i32;
-    }
-    unsafe {
-        let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        let next = next_exstyle(style, transparent);
-        if next != style {
-            SetWindowLongW(hwnd, GWL_EXSTYLE, next);
-            crate::trace_debug(
-                "exstyle",
-                &format!(
-                    "actual={style:#x} next={next:#x} transparent={}",
-                    u8::from(transparent)
-                ),
-            );
-        }
-    }
-}
-
-#[cfg(windows)]
-unsafe extern "system" fn hit_window_proc(
-    hwnd: *mut std::ffi::c_void,
-    msg: u32,
-    wparam: usize,
-    lparam: isize,
-) -> isize {
-    const WM_NCHITTEST: u32 = 0x0084;
-    const HTTRANSPARENT: isize = -1;
-    if msg == WM_NCHITTEST {
-        let cache = hit_region_cache()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        let x = (lparam as u16) as i16 as f64;
-        let y = ((lparam >> 16) as u16) as i16 as f64;
-        let scale = if cache.scale > 0.0 { cache.scale } else { 1.0 };
-        let css_x = (x - cache.origin_x) / scale;
-        let css_y = (y - cache.origin_y) / scale;
-        let hit = css_point_hits(&cache.rects, css_x, css_y);
-        drop(cache);
-        if !hit {
-            return HTTRANSPARENT;
-        }
-    }
-    #[link(name = "user32")]
-    extern "system" {
-        fn CallWindowProcW(
-            prev: *mut std::ffi::c_void,
-            hwnd: *mut std::ffi::c_void,
-            msg: u32,
-            wparam: usize,
-            lparam: isize,
-        ) -> isize;
-    }
-    let previous = HIT_PROC_PREVIOUS.load(Ordering::Relaxed);
-    if previous.is_null() {
-        return 0;
-    }
-    unsafe { CallWindowProcW(previous, hwnd, msg, wparam, lparam) }
-}
-
-#[cfg(windows)]
-static HIT_PROC_PREVIOUS: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 #[cfg(target_os = "linux")]
 fn apply_linux_input_shape(app: &AppHandle, rects: &[HitRect], scale: f64) {
@@ -2785,13 +2594,14 @@ pub fn reapply_live_input_shape(app: &AppHandle, hub: &InteractionHub) {
         &[],
     );
     SHAPE_GEN.fetch_add(1, Ordering::Relaxed);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let ignore = !frames.iter().any(|item| item.capture);
+        let shape_n = frames.iter().filter(|item| item.capture).count();
+        let _ = apply_ignore_cursor(&window, ignore, shape_n);
+    }
     if region.is_empty() {
         SHAPE_DIRTY.store(true, Ordering::Relaxed);
-        #[cfg(windows)]
-        {
-            note_desired_transparent(true);
-            queue_windows_hit_style(app, true);
-        }
         return;
     }
     let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
@@ -2801,17 +2611,7 @@ pub fn reapply_live_input_shape(app: &AppHandle, hub: &InteractionHub) {
             SHAPE_DIRTY.store(true, Ordering::Relaxed);
         }
     }
-    #[cfg(windows)]
-    {
-        let origin = window.inner_position().ok();
-        let (origin_x, origin_y) = origin
-            .map(|point| (f64::from(point.x), f64::from(point.y)))
-            .unwrap_or((0.0, 0.0));
-        remember_hit_region(&region, origin_x, origin_y, scale);
-        note_desired_transparent(false);
-        queue_windows_hit_style(app, false);
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = (app, scale);
     }
@@ -3223,28 +3023,6 @@ mod tests {
             z: 0,
             round: false,
         }
-    }
-
-    #[test]
-    fn desired_transparent_can_be_stored() {
-        note_desired_transparent(true);
-        assert!(desired_transparent());
-        note_desired_transparent(false);
-        assert!(!desired_transparent());
-        note_desired_transparent(true);
-    }
-
-    #[test]
-    fn exstyle_puts_the_transparent_bit_back() {
-        const LIVE: i32 = 0x40138;
-        const DROPPED: i32 = 0x40118;
-        assert!(!exstyle_needs_write(LIVE, true));
-        assert_eq!(next_exstyle(LIVE, true), LIVE);
-        assert!(exstyle_needs_write(DROPPED, true));
-        assert_eq!(next_exstyle(DROPPED, true), LIVE);
-        assert!(!exstyle_needs_write(DROPPED, false));
-        assert_eq!(next_exstyle(LIVE, false) & WS_EX_TRANSPARENT_BIT, 0);
-        assert_eq!(next_exstyle(LIVE, false), DROPPED);
     }
 
     #[test]
