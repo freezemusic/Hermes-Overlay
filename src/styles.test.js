@@ -789,6 +789,8 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.doesNotMatch(css, /repeating-conic-gradient/);
   assert.doesNotMatch(css, /\.orb--cron \.orb-glyph/);
   assert.match(css, /0 0 10px 2px rgba\(0,\s*0,\s*242,\s*\.25\)/);
+  assert.match(css, /\.bot-btn\.orb--cron\.is-failed::after \{[^}]*#e5484d/s);
+  assert.doesNotMatch(css, /\.is-failed \.orb-core/);
   assert.match(css, /\.cron-readout \{[^}]*background:\s*rgba\(248,\s*248,\s*252,\s*\.82\)/s);
   assert.match(css, /\.orb--cron \.bot-label \{[^}]*background:\s*rgba\(248,\s*248,\s*252,\s*\.82\)/s);
   assert.match(html, /id="cron-panel"[\s\S]{0,500}class="hud-corner br"/);

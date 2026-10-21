@@ -370,9 +370,9 @@ html, body {
   animation: none;
 }
 
+/* Failed keeps the idle core. Only the static red ring (::after) changes. */
 .bot-btn.orb--cron.is-progress .orb-core,
-.bot-btn.orb--cron.is-running .orb-core,
-.bot-btn.orb--cron.is-failed .orb-core {
+.bot-btn.orb--cron.is-running .orb-core {
   background: radial-gradient(#fff 0 30%, rgba(0, 0, 242, .35) 60%, transparent 75%);
   box-shadow: 0 0 10px 2px rgba(0, 0, 242, .25);
 }
