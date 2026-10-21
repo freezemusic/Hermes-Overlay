@@ -334,6 +334,17 @@ html, body {
 
 .orb--cron { --bot: var(--nous-neutral); --bot-rgb: 97 97 145; }
 
+/* The shared ::before wash uses this grey --bot-rgb. Other orbs clip it
+   inside the disc. Cron stays overflow:visible for the status ring, so the
+   wash would read as a dark halo at idle. Status paint is ::after and the
+   running shadow, not this wash. */
+.bot-btn.orb--cron::before,
+.morph.is-morphing .bot-btn.orb--cron::before,
+.morph.is-morphing .bot-btn.orb--cron:hover::before {
+  opacity: 0 !important;
+  background: none;
+}
+
 .bot-btn.orb--cron {
   contain: none;
   overflow: visible;

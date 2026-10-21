@@ -766,6 +766,8 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.morph\[data-plan-open="1"\]:not\(\[data-plan-side="left"\]\) > \.center-panel > \.hud-corner\.tr/);
   assert.match(css, /\.morph\[data-plan-open="1"\]\[data-plan-side="left"\] > \.plan-window > \.hud-corner\.br/);
   assert.match(css, /\.orb--cron \{[^}]*--bot-rgb:\s*97 97 145/s);
+  assert.match(css, /\.bot-btn\.orb--cron::before,[\s\S]*?opacity:\s*0 !important/);
+  assert.match(css, /\.morph\.is-morphing \.bot-btn\.orb--cron::before,[\s\S]*?background:\s*none/);
   assert.match(css, /\.cron-panel \{[^}]*width:\s*min\(320px, 86vw\)/s);
   assert.doesNotMatch(css, /transparent calc\(100% - 3px\)/);
   assert.match(css, /radial-gradient\(circle closest-side,\s*transparent calc\(100% - 2px\)/);

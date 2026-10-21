@@ -176,6 +176,49 @@ test("a running job reports elapsed time and a progress fraction", () => {
   });
   assert.equal(jobFailed(failed.jobs[0]), true);
   assert.equal(cronOrbFace([failed], now).mode, "failed");
+  const oneShot = normalizeCronGroup({
+    jobs: [{
+      id: "once",
+      name: "一次",
+      state: "completed",
+      last_status: "error",
+      last_error: "boom",
+    }],
+  });
+  assert.equal(oneShot.jobs[0].last_status, "error");
+  assert.equal(jobFailed(oneShot.jobs[0]), true);
+  assert.equal(cronOrbFace([oneShot], now).mode, "failed");
+  const recurring = normalizeCronGroup({
+    jobs: [{
+      id: "again",
+      name: "重覆",
+      state: "scheduled",
+      last_status: "error",
+    }],
+  });
+  assert.equal(jobFailed(recurring.jobs[0]), true);
+  assert.equal(cronOrbFace([recurring], now).mode, "failed");
+  const cleared = normalizeCronGroup({
+    jobs: [{ id: "again", state: "scheduled", last_status: "ok", last_error: "stale" }],
+  });
+  assert.equal(jobFailed(cleared.jobs[0]), false);
+  assert.equal(cronOrbFace([cleared], now).mode, "idle");
+  const succeeded = normalizeCronGroup({
+    jobs: [{ id: "ok", state: "completed", last_status: "success" }],
+  });
+  assert.equal(cronOrbFace([succeeded], now).mode, "idle");
+  const restarted = normalizeCronGroup({
+    jobs: [{
+      id: "run",
+      state: "scheduled",
+      last_status: "error",
+      last_error: "boom",
+      running: true,
+      latest_execution: { status: "running" },
+    }],
+  });
+  assert.equal(jobFailed(restarted.jobs[0]), false);
+  assert.equal(cronOrbFace([restarted], now).mode, "spin");
   const next = new Date(2026, 9, 16, 18, 5, 0);
   const idle = cronOrbFace([{
     jobs: [{ enabled: true, next_run_at: next.toISOString(), running: false, state: "scheduled" }],

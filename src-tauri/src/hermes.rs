@@ -213,6 +213,30 @@ pub fn resolve_session(
     })
 }
 
+/// `0.0` is not a timestamp. The same session keeps a saved watermark.
+/// A different session with no timestamp gets `now`.
+pub fn merge_session_anchor(
+    previous_id: &str,
+    previous_anchor: f64,
+    next_id: &str,
+    next_anchor: f64,
+    now: f64,
+) -> f64 {
+    if next_id.trim().is_empty() {
+        return 0.0;
+    }
+    if next_anchor.is_finite() && next_anchor > 0.0 {
+        return next_anchor;
+    }
+    if previous_id == next_id && previous_anchor.is_finite() && previous_anchor > 0.0 {
+        return previous_anchor;
+    }
+    if now.is_finite() && now > 0.0 {
+        return now;
+    }
+    0.0
+}
+
 /// Startup open. Keep a saved id that still exists. Otherwise an existing
 /// Bot Chat, then the latest existing session. Never creates a session.
 pub fn session_for_startup(
@@ -2031,6 +2055,14 @@ mod tests {
         assert_eq!(kept.id, "split");
         assert!(!kept.explicit);
         assert_eq!(kept.anchor, 10.0);
+        assert_eq!(
+            merge_session_anchor("split", 1792566430.7, "split", 0.0, 99.0),
+            1792566430.7
+        );
+        assert_eq!(merge_session_anchor("split", 10.0, "split", 20.0, 99.0), 20.0);
+        assert_eq!(merge_session_anchor("split", 10.0, "", 0.0, 99.0), 0.0);
+        assert_eq!(merge_session_anchor("split", 10.0, "other", 0.0, 99.0), 99.0);
+        assert_eq!(merge_session_anchor("split", 0.0, "split", 0.0, 99.0), 99.0);
         let explicit = session_for_startup(&sessions, "desktop", true, 3.0).unwrap();
         assert_eq!(explicit.id, "desktop");
         assert!(explicit.explicit);

@@ -464,9 +464,30 @@ fn persist_pin(
 ) {
     let _write = config_write.lock().unwrap_or_else(|err| err.into_inner());
     let id = pin.id.trim().to_string();
+    let mut anchor = if id.is_empty() { 0.0 } else { pin.anchor };
+    let loaded = config_path(app).ok().and_then(|path| {
+        config::load(&path).ok().map(|cfg| (path, cfg))
+    });
+    if !id.is_empty() {
+        if let Some((_, cfg)) = loaded.as_ref() {
+            if let Some(bot) = cfg.bot(profile) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|dur| dur.as_secs_f64())
+                    .unwrap_or(0.0);
+                anchor = hermes::merge_session_anchor(
+                    &bot.session_id,
+                    bot.session_anchor,
+                    &id,
+                    anchor,
+                    now,
+                );
+            }
+        }
+    }
     let pin = SessionPin {
         explicit: pin.explicit && !id.is_empty(),
-        anchor: if id.is_empty() { 0.0 } else { pin.anchor },
+        anchor,
         id,
     };
     {
@@ -477,10 +498,7 @@ fn persist_pin(
             map.insert(profile.to_string(), pin.clone());
         }
     }
-    let Ok(path) = config_path(app) else {
-        return;
-    };
-    let Ok(mut cfg) = config::load(&path) else {
+    let Some((path, mut cfg)) = loaded else {
         return;
     };
     let Some(bot) = cfg.bot_mut(profile) else {

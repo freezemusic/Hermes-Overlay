@@ -101,9 +101,39 @@ export function anyJobRunning(groups) {
   return (groups || []).some((group) => (group?.jobs || []).some((job) => jobRunning(job)));
 }
 
+function fieldText(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+/** Hermes reports a finished failure as `last_status: error` while `state` stays `completed` or `scheduled`. */
+function lastStatusOf(job) {
+  return fieldText(job?.last_status ?? job?.lastStatus ?? job?.latest_execution?.last_status);
+}
+
+function lastErrorPresent(job) {
+  const value = job?.last_error ?? job?.lastError ?? job?.latest_execution?.last_error ?? job?.latest_execution?.error;
+  if (value == null || value === false) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function statusFailed(value) {
+  return value === "failed" || value === "error" || value === "failure";
+}
+
+function statusOk(value) {
+  return value === "ok" || value === "success" || value === "succeeded" || value === "successful";
+}
+
 export function jobFailed(job) {
-  const status = String(job?.status || job?.latest_execution?.status || job?.state || "").trim().toLowerCase();
-  return status === "failed" || status === "error" || status === "failure";
+  if (jobRunning(job)) return false;
+  const last = lastStatusOf(job);
+  if (statusOk(last)) return false;
+  if (statusFailed(last) || lastErrorPresent(job)) return true;
+  const status = fieldText(job?.status || job?.latest_execution?.status || job?.state);
+  return statusFailed(status);
 }
 
 function objectTime(value, keys) {
@@ -229,6 +259,8 @@ function jobFrom(raw, index) {
     last_run_at: lastRunValue(raw),
     started_at: runStartValue(raw) || "",
     status: executionStatus(raw) || String(raw.state || "").trim().toLowerCase(),
+    last_status: lastStatusOf(raw),
+    last_error: raw.last_error ?? raw.lastError ?? raw.latest_execution?.last_error ?? raw.latest_execution?.error ?? "",
     running: jobRunning(raw),
   };
 }
