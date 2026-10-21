@@ -444,6 +444,9 @@ test("ctrl+c and ctrl+v do not flash the overlay", () => {
   assert.equal(armed.held, true);
   const paste = modifierEngages({ modifier: "ctrl", keys: ["Control", "v"], now: 2000, armedAt: 0 });
   assert.equal(paste.held, false);
+  const other = modifierEngages({ modifier: "ctrl", keys: ["Control", "x"], now: 2100, armedAt: 0 });
+  assert.equal(other.held, false);
+  assert.equal(other.suppressed, true);
   const shift = modifierEngages({ modifier: "shift", keys: ["Shift", "c"], now: 200, armedAt: 0 });
   assert.equal(shift.held, true);
 });

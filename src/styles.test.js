@@ -167,7 +167,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph\.is-orb-docked:not\(\.is-collapsing\) \.morph-glow \{[^}]*opacity:\s*1/s);
   assert.match(css, /\.morph\.is-orb-docked:not\(\.is-collapsing\) \.morph-glow \{[^}]*opacity 160ms linear 320ms/s);
   assert.match(css, /\.morph\.is-collapsing \.morph-glow \{[^}]*opacity 80ms linear !important/s);
-  assert.doesNotMatch(css, /\.morph-fill::after/);
+  assert.doesNotMatch(css, /(^|\n)\.morph-fill::after \{/);
+  assert.match(css, /\.morph\[data-state="orb"\] \.morph-fill::after \{[^}]*rgb\(var\(--bot-rgb\) \/ \.22\)/s);
   assert.doesNotMatch(css, /\.morph\.is-orb-moving \.morph-glow \{[^}]*opacity:\s*0\.4/s);
   assert.match(mainSrc, /planEase\(/);
   assert.match(mainSrc, /PLAN_EASE/);
@@ -1058,4 +1059,15 @@ test("failed cron ring and done ripple are outside the idle opacity", () => {
   ring.classList.add("is-done");
   assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 0.18)");
   assert.notEqual(getComputedStyle(cron.querySelector(".orb-core")).opacity, "0");
+});
+
+test("muted text is #14142b and the idle orb keeps the f8cb046 rim wash", () => {
+  assert.match(css, /--text-muted:\s*#14142b/);
+  assert.doesNotMatch(css, /--text-muted:\s*#616191/);
+  assert.match(css, /\.plan-toggle \{[^}]*color:\s*#14142b/s);
+  assert.match(css, /\.morph\[data-state="orb"\] \.morph-fill::after \{[^}]*rgb\(var\(--bot-rgb\) \/ \.22\)/s);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  assert.match(main, /dataset\.intent === "close"/);
+  assert.match(main, /state\.modifierHeld === true/);
+  assert.match(main, /function noteChordKey/);
 });

@@ -50,10 +50,12 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
 }
 '@, $utf8)
 
+$shared = [hashtable]::Synchronized(@{ Listener = $null })
 $gwScript = {
-  param($gwLog)
+  param($shared, $gwLog)
   $listener = New-Object System.Net.HttpListener
   $listener.Prefixes.Add("http://127.0.0.1:8642/")
+  $shared.Listener = $listener
   $listener.Start()
   "listening" | Set-Content $gwLog
   try {
@@ -74,11 +76,12 @@ $gwScript = {
       $ctx.Response.Close()
     }
   } finally {
-    $listener.Stop()
+    try { $listener.Stop() } catch {}
+    try { $listener.Close() } catch {}
   }
 }
 $gw = [powershell]::Create()
-$gw.AddScript($gwScript).AddArgument($gwLog) | Out-Null
+$gw.AddScript($gwScript).AddArgument($shared).AddArgument($gwLog) | Out-Null
 $gwHandle = $gw.BeginInvoke()
 $deadline = (Get-Date).AddSeconds(10)
 while (-not (Test-Path $gwLog) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
@@ -258,6 +261,7 @@ function Assert-Sample([string]$label, $orbPoint) {
     throw "$label Ctrl+click on orb rect reached Behind"
   }
   Write-Host "$label ok class=$cls"
+  [Console]::Out.Flush()
 }
 
 $overlay = $null
@@ -287,12 +291,25 @@ try {
     throw "startup created a session: $(Get-Content $gwLog -Raw)"
   }
   Write-Host "click-through ok"
+  [Console]::Out.Flush()
 } catch {
   Dump-Tree
+  Write-Host "click-through failed: $($_.Exception.Message)"
+  [Console]::Out.Flush()
   throw
 } finally {
   [ClickProbe]::Ctrl($false)
   if ($overlay -and -not $overlay.HasExited) { Stop-Process -Id $overlay.Id -Force -ErrorAction SilentlyContinue }
   if ($behind -and -not $behind.HasExited) { Stop-Process -Id $behind.Id -Force -ErrorAction SilentlyContinue }
-  if ($gw) { $gw.Stop(); $gw.Dispose() }
+  # GetContext blocks the runspace. Stop the listener from this scope first,
+  # or $gw.Stop() waits until the 360-minute job timeout.
+  $live = $shared.Listener
+  if ($live) {
+    try { $live.Stop() } catch {}
+    try { $live.Close() } catch {}
+  }
+  if ($gw) {
+    try { $gw.Stop() } catch {}
+    $gw.Dispose()
+  }
 }

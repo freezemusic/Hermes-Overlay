@@ -108,7 +108,7 @@
   --noise: url("./assets/noise.png");
   --text: #0000f2;
   --text-body: #14142b;
-  --text-muted: #616191;
+  --text-muted: #14142b;
   --text-ink: #14142b;
 
   --font-display: "Big Shoulders Display", "Antonio", "Noto Sans HK", sans-serif;
@@ -451,7 +451,7 @@ html, body {
   border: 1px solid rgba(97, 97, 145, .35);
   border-radius: 2px;
   background: rgba(248, 248, 252, .82);
-  color: #616191;
+  color: #14142b;
   font: 400 10px/1.2 var(--font-mono);
   letter-spacing: 0;
   text-transform: none;
@@ -628,7 +628,7 @@ html, body {
 .cron-expr,
 .cron-time {
   margin: 0;
-  color: #616191;
+  color: #14142b;
   font: 400 11px/1.4 var(--font-mono);
 }
 
@@ -637,7 +637,7 @@ html, body {
   padding: 0 4px;
   border: 1px solid #616191;
   border-radius: 2px;
-  color: #616191;
+  color: #14142b;
   font: 400 10px/1.6 var(--font-body);
   letter-spacing: 0;
   text-transform: none;
@@ -680,7 +680,7 @@ html, body {
 
 .cron-note,
 .cron-meta {
-  color: #616191;
+  color: #14142b;
   font: 400 12px/1.4 var(--font-body);
 }
 
@@ -984,8 +984,8 @@ html, body {
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: #616191;
-  font: 500 12px/1 var(--font-body);
+  color: #14142b;
+  font: 400 12px/1 var(--font-body);
   letter-spacing: 0;
   text-transform: none;
   cursor: pointer;
@@ -1514,7 +1514,8 @@ html, body {
 
 .composer input::placeholder,
 .field input::placeholder,
-.bot-row input::placeholder { color: var(--text-muted); }
+.bot-row input::placeholder,
+textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 
 .composer input:focus,
 .field input:focus,
@@ -1606,7 +1607,7 @@ html, body {
 .slash-item.active { background: var(--bot-10); }
 
 .slash-item.disabled,
-.slash-item:disabled { opacity: 0.4; cursor: default; }
+.slash-item:disabled { cursor: default; }
 
 .slash-name {
   flex: none;
@@ -1620,6 +1621,7 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-muted);
+  font-weight: 400;
 }
 
 #panel-host {
@@ -1856,7 +1858,7 @@ html, body {
   flex-direction: column;
   gap: 4px;
   margin: 8px 0;
-  font: 500 var(--fs-micro)/1 var(--font-label);
+  font: 400 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   color: var(--text-muted);
 }
@@ -2105,6 +2107,20 @@ html, body {
     linear-gradient(90deg, var(--grid-line) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
     var(--noise),
     var(--glass-fog);
+}
+
+/* f8cb046 idle disc. The core is transparent past 80%, so this wash is the
+   rim at r≈20–22. The shell clip keeps it inside the orb (r24–48 stays put). */
+.morph[data-state="orb"] .morph-fill::after {
+  content: "";
+  position: absolute;
+  left: var(--ax, 22px);
+  top: var(--ay, 22px);
+  width: 140px;
+  height: 140px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background: radial-gradient(circle, rgb(var(--bot-rgb) / .22) 0%, transparent 70%);
 }
 
 .morph-glow {

@@ -149,6 +149,7 @@ jobs:
 
   windows-clickthrough:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

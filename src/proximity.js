@@ -415,10 +415,11 @@ export function modifierEngages({
 } = {}) {
   const down = keys.some((key) => modifierMatches(modifier, key));
   if (!down) return { held: false, armedAt: null, suppressed: false };
-  const copyPaste = modifier !== "shift"
+  // Any other key, not only C/V. A 40ms Ctrl→C lead must not arm the wash.
+  const chord = modifier !== "shift"
     && modifier !== "alt"
-    && keys.some((key) => key === "c" || key === "C" || key === "v" || key === "V");
-  if (copyPaste) return { held: false, armedAt: null, suppressed: true };
+    && keys.some((key) => !modifierMatches(modifier, key));
+  if (chord) return { held: false, armedAt: null, suppressed: true };
   if (suppressed) return { held: false, armedAt: null, suppressed: true };
   const start = armedAt == null ? now : armedAt;
   return {

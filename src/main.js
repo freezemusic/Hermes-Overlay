@@ -448,6 +448,9 @@ function layoutShell(shell) {
   if (document.querySelector(".morph.is-collapsing")) return;
   if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return;
   const placed = placeShellElement(shell);
+  // Collapse snaps the shell back to the edge anchor. Re-hosting here parks
+  // the plan outside the clip at that old position (R-PN-03 / R-PL-06).
+  if (shell.dataset.intent === "close" || shell._motion === "collapse") return;
   const visual = shell.dataset.visual || "orb";
   // collapse-release lays the resting orb out again. An identical box with
   // a clip already set must not rewrite it: that rebuilds the orb tile.
@@ -492,6 +495,8 @@ function separateOpenShells(shells, extra) {
     const plan = planNode(shell);
     const planOpen = plan && shell.dataset.planOpen === "1";
     if (!planOpen) return box;
+    const paintedH = Math.max(box.height, Number.parseFloat(plan.style.height) || 0);
+    if (paintedH > box.height) box.height = paintedH;
     const dockedWidth = plan.offsetWidth || plan.getBoundingClientRect().width
       || Math.min(420, (window.innerWidth || 1280) * 0.42);
     const dock = includePlan(box, {
@@ -3239,6 +3244,7 @@ async function runShellMorph(shell, target) {
   const alive = () => shell.dataset.morphToken === token && shell.isConnected;
   const from = shell.dataset.visual || shell.dataset.state || "orb";
   window.clearTimeout(shell._pillTimer);
+  if (target === "orb") shell.dataset.intent = "close";
   if (target === "orb" && dropParkedAnchor(state.anchors, shell.dataset.botId)) layoutShell(shell);
   shell.style.willChange = "clip-path, transform, opacity";
   shell.classList.add("is-morphing");
@@ -3418,8 +3424,9 @@ function bindPanelDrag(panel) {
       if (ev.pointerId !== event.pointerId) return;
       host.style.left = `${origin.left + ev.clientX - startX}px`;
       host.style.top = `${origin.top + ev.clientY - startY}px`;
-      placePlanHost(host);
       syncPlanSide(host);
+      if (host.dataset.planHost === "1") placePlanHost(host);
+      else hostOpenPlan(host);
       rememberAnchor(host);
       scheduleHitSync();
     };
@@ -3477,6 +3484,7 @@ const state = {
   pointerHitId: "",
   heldKeys: new Set(),
   osModifierDown: false,
+  modifierHeld: false,
   latchedOrbId: "",
   pressFrozen: false,
   latchedIds: [],
@@ -6691,13 +6699,11 @@ function collectHits() {
         const host = shell.getBoundingClientRect();
         if (width >= 1 && host.height >= 1) {
           const paneX = shell.dataset.planSide === "left" ? host.x - width : host.right;
-          const union = unionOpenPlanRect(rect, {
-            open: true,
-            x: paneX,
-            y: host.y,
-            w: width,
-            h: host.height,
-          });
+          const hosted = shell._planHost?.getBoundingClientRect?.();
+          const pane = hosted && hosted.width >= 1 && hosted.height >= 1
+            ? { x: hosted.x, y: hosted.y, w: hosted.width, h: hosted.height }
+            : { x: paneX, y: host.y, w: width, h: host.height };
+          const union = unionOpenPlanRect(rect, { open: true, ...pane });
           rect.x = union.x;
           rect.y = union.y;
           rect.w = union.w;
@@ -7273,20 +7279,8 @@ function modifierVisuallyDown(down = state.osModifierDown) {
 
 /** Settled panel. The OS flag, the DOM key, or one fresh sample. */
 function paintOpenedHeldLook() {
-  paintHeldPanels(modifierVisuallyDown());
-  if (modifierVisuallyDown() || !inTauri()) return;
-  const generation = (paintOpenedHeldLook.gen = (paintOpenedHeldLook.gen || 0) + 1);
-  const seq = modifierSeq;
-  import("@tauri-apps/api/core")
-    .then(({ invoke }) => invoke("modifier_down_now"))
-    .then((down) => {
-      if (paintOpenedHeldLook.gen !== generation || modifierSeq !== seq) return;
-      if (down === true) {
-        state.osModifierDown = true;
-        paintHeldPanels(true);
-      }
-    })
-    .catch(() => {});
+  // Physical Ctrl is not the wash. A chord in the first 100ms must stay solid.
+  paintHeldPanels(state.modifierHeld === true);
 }
 
 function paintHeldPanels(down) {
@@ -7308,7 +7302,7 @@ function paintHeldPanels(down) {
 function applyOpacityEdge(payload) {
   const seen = Date.now();
   if (!acceptModifier(payload)) return false;
-  const panels = paintHeldPanels(state.osModifierDown);
+  const panels = paintHeldPanels(state.modifierHeld === true);
   renderCronOrb({ force: true });
   const unix = Date.now();
   const seq = Number(payload?.modifier_seq) || 0;
@@ -7346,6 +7340,16 @@ function acceptModifier(payload) {
   else if (payload?.modifier_down === false) state.osModifierDown = false;
   else if (payload?.held === true) state.osModifierDown = true;
   else if (payload?.held === false) state.osModifierDown = false;
+  // Opacity follows the armed flag. modifier_down is the physical key and
+  // is true for the whole Ctrl→C lead; painting from it flashes the panel.
+  if (payload?.modifier_down === false && payload?.held !== true) {
+    modifierArm.suppressed = false;
+    modifierArm.at = null;
+    state.modifierHeld = false;
+  } else if (modifierArm.suppressed) {
+    state.modifierHeld = false;
+  } else if (payload?.held === true) state.modifierHeld = true;
+  else if (payload?.held === false) state.modifierHeld = false;
   return true;
 }
 
@@ -7486,10 +7490,19 @@ function queryOsFocus() {
 
 const modifierArm = { at: null, suppressed: false, timer: 0 };
 
+function noteChordKey() {
+  modifierArm.suppressed = true;
+  modifierArm.at = null;
+  state.modifierHeld = false;
+  window.clearTimeout(modifierArm.timer);
+  paintHeldPanels(false);
+  delete document.documentElement.dataset.pass;
+}
+
 function engagedModifier(now = performance.now()) {
-  // The OS monitor is the authority. Webview keydown never fires when the
-  // press started on a click-through, unfocused overlay.
-  if (state.osModifierDown) return true;
+  // Physical Ctrl is not enough. The wash waits out MODIFIER_ARM_MS, and any
+  // other key cancels it. The OS `held` flag is what paints in Tauri.
+  if (state.modifierHeld === true && !modifierArm.suppressed) return true;
   const next = modifierEngages({
     modifier: state.interaction.modifier,
     keys: [...state.heldKeys],
@@ -7633,13 +7646,26 @@ function setupProximity() {
   }, true);
   window.addEventListener("keydown", (event) => {
     if (event.repeat) return;
-    if (event.key !== "Control" && event.key !== "Shift" && event.key !== "Alt") return;
+    const isMod = event.key === "Control" || event.key === "Shift" || event.key === "Alt";
+    if (!isMod) {
+      if (state.osModifierDown || state.modifierHeld || modifierArm.at != null || event.ctrlKey) {
+        noteChordKey();
+      }
+      return;
+    }
     state.heldKeys.add(event.key);
     logCtrlEdge("down", event.ctrlKey || event.key === "Control");
   });
   window.addEventListener("keyup", (event) => {
     if (event.key !== "Control" && event.key !== "Shift" && event.key !== "Alt") return;
     state.heldKeys.delete(event.key);
+    if (event.key === modifierKeyName()) {
+      modifierArm.suppressed = false;
+      modifierArm.at = null;
+      state.modifierHeld = false;
+      paintHeldPanels(false);
+      delete document.documentElement.dataset.pass;
+    }
     logCtrlEdge("up", event.ctrlKey);
   });
   if (inTauri()) {
@@ -7670,8 +7696,8 @@ function setupProximity() {
         if (typeof payload.latched_orb === "string") state.latchedOrbId = payload.latched_orb;
         state.pressFrozen = payload.press_frozen === true;
         applyFrames(payload.opacities || []);
-        if (freshModifier && beforeModifier !== state.osModifierDown) {
-          paintHeldPanels(state.osModifierDown);
+        if (freshModifier && (beforeModifier !== state.osModifierDown || payload.held === true || payload.held === false)) {
+          paintHeldPanels(state.modifierHeld === true);
         }
       });
     });

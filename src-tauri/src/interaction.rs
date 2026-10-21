@@ -56,12 +56,25 @@ pub fn platform_supports_global_input() -> bool {
 /// Ctrl+C / Ctrl+V is sampled before the HUD changes.
 pub const MODIFIER_ARM: Duration = Duration::from_millis(100);
 
+fn configured_modifier_key(key: &Keycode, modifier: &str) -> bool {
+    match modifier {
+        "shift" => matches!(key, Keycode::LShift | Keycode::RShift),
+        "alt" => matches!(
+            key,
+            Keycode::LAlt | Keycode::RAlt | Keycode::LOption | Keycode::ROption
+        ),
+        _ => matches!(key, Keycode::LControl | Keycode::RControl),
+    }
+}
+
+/// Any key beside the configured modifier. Ctrl+C / Ctrl+V is the case the
+/// box measured, and Ctrl+another key is the same chord: it must not arm.
 pub fn copy_paste_chord(keys: &[Keycode], modifier: &str) -> bool {
     if modifier == "shift" || modifier == "alt" {
         return false;
     }
     keys.iter()
-        .any(|key| matches!(key, Keycode::C | Keycode::V))
+        .any(|key| !configured_modifier_key(key, modifier))
 }
 
 /// Copy and paste stay at rest, including after C or V lifts while Ctrl is held.
@@ -3943,6 +3956,15 @@ mod tests {
         let paste = [Keycode::RControl, Keycode::V];
         assert!(!modifier_engages(
             &paste,
+            "ctrl",
+            now,
+            &mut armed,
+            &mut suppressed
+        ));
+        assert!(suppressed);
+        let other = [Keycode::LControl, Keycode::A];
+        assert!(!modifier_engages(
+            &other,
             "ctrl",
             now,
             &mut armed,

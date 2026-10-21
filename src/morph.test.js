@@ -365,6 +365,22 @@ test("open top and bottom panels keep a 12px gap", () => {
   assert.ok(docked[1].top - (docked[0].top + docked[0].height) >= 12);
   assert.ok(docked[0].height >= 160);
   assert.ok(docked[1].height >= 160);
+  const four = separateStackedPanels([
+    includePlan({ top: 8, height: 520, left: 80, width: 420, edge: "top" }, { side: "right", width: 420 }),
+    { top: 180, height: 480, left: 860, width: 420, edge: "right" },
+    includePlan({ top: 620, height: 520, left: 160, width: 420, edge: "bottom" }, { side: "right", width: 420 }),
+    { top: 360, height: 480, left: 20, width: 420, edge: "left" },
+  ], 1200, 18);
+  const overlaps = (a, b) => {
+    const x = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
+    const y = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
+    return x > 0 && y > 0;
+  };
+  for (let i = 0; i < four.length; i += 1) {
+    for (let j = i + 1; j < four.length; j += 1) {
+      assert.equal(overlaps(four[i], four[j]), false, `${i}:${j}`);
+    }
+  }
 });
 
 test("clip-path is inset() round and the hairline sits one pixel inside", () => {
@@ -624,8 +640,14 @@ test("open plan controls are the hit target outside the shell clip", () => {
   const shellLeft = shell.style.left;
   const shellWidth = shell.style.width;
   const shellClip = shell.style.clipPath;
+  anim.playState = "running";
+  anim.currentTime = 12;
   assert.equal(hostOpenPlan(shell), true);
   assert.equal(plan.parentElement.className, "plan-hit-host");
+  assert.equal(plan.style.clipPath, "none");
+  assert.equal(plan.style.height, "560px");
+  anim.playState = "finished";
+  anim.currentTime = 280;
   assert.equal(shell.style.left, shellLeft);
   assert.equal(shell.style.width, shellWidth);
   assert.equal(shell.style.clipPath, shellClip);
@@ -649,6 +671,14 @@ test("open plan controls are the hit target outside the shell clip", () => {
   assert.equal(document.elementFromPoint(center(close).x, center(close).y), close);
   assert.equal(restoreHostedPlan(shell), true);
   assert.equal(plan.parentElement, shell);
+  shell.dataset.intent = "close";
+  shell.dataset.planOpen = "1";
+  plan.hidden = false;
+  plan._seamPhase = "grown";
+  assert.equal(hostOpenPlan(shell), false);
+  assert.equal(plan.parentElement, shell);
+  assert.equal(shell.querySelector(".plan-hit-host"), null);
+  delete shell.dataset.intent;
   assert.equal(shell.style.left, "140px");
   assert.equal(shell.style.width, "420px");
   assert.equal(shell.style.clipPath, openClip);

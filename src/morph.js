@@ -358,6 +358,20 @@ export function separateStackedPanels(boxes, screenH, gap = STACK_GAP) {
       b.height -= bShrink;
     }
   }
+  // Adjacent passes miss a plan that bridges two non-neighbours. Every
+  // horizontally overlapping pair keeps the gap, pushing the lower one down.
+  for (let pass = 0; pass < next.length; pass += 1) {
+    for (let i = 0; i < next.length; i += 1) {
+      for (let j = i + 1; j < next.length; j += 1) {
+        const upper = next[i].top <= next[j].top ? next[i] : next[j];
+        const lower = upper === next[i] ? next[j] : next[i];
+        if (!rangesOverlap(upper.left, upper.left + upper.width, lower.left, lower.left + lower.width)) continue;
+        const space = lower.top - (upper.top + upper.height);
+        if (space >= gap) continue;
+        lower.top += gap - space;
+      }
+    }
+  }
   return next;
 }
 
@@ -682,24 +696,6 @@ export function previewBlocked({
   return visual === "panel" || visual === "wide" || visual === "tall";
 }
 
-function revealClipStillRunning(shell) {
-  const anims = shell.getAnimations?.() || [];
-  for (const anim of anims) {
-    let state = "";
-    try { state = anim.playState || ""; } catch { state = ""; }
-    if (state !== "running" && state !== "pending") continue;
-    let frames = [];
-    try { frames = anim.effect?.getKeyframes?.() || []; } catch { frames = []; }
-    const clips = frames.map((frame) => frame?.clipPath).filter(Boolean);
-    if (!clips.length) continue;
-    if (clips.length >= 2 && clips.every((clip) => clip === clips[0])) continue;
-    const duration = Number(anim.effect?.getTiming?.().duration) || 0;
-    const now = Number(anim.currentTime) || 0;
-    if (!(duration > 0 && now >= duration - 16)) return true;
-  }
-  return false;
-}
-
 function planNodeOf(shell) {
   if (!shell?.querySelector) return null;
   return shell.querySelector(".plan-window") || shell._planHost?.querySelector(".plan-window") || null;
@@ -727,6 +723,11 @@ export function placePlanHost(shell) {
   host.style.width = `${planW}px`;
   host.style.height = `${shellH}px`;
   host.style.left = `${side === "left" ? shellLeft - planW : shellLeft + shellW}px`;
+  // A stacked shell can shrink. A locked plan height would keep painting
+  // over the panel below (R-PN-07).
+  plan.style.height = `${shellH}px`;
+  plan.style.maxHeight = `${shellH}px`;
+  shell.dataset.planHeight = String(shellH);
   const z = shell.style.zIndex;
   if (z) host.style.zIndex = z;
   else host.style.removeProperty("z-index");
@@ -750,7 +751,9 @@ export function hostOpenPlan(shell) {
   if (!plan || plan.hidden) return false;
   const phase = plan._seamPhase || plan.dataset.seam || "";
   if (phase !== "grown") return false;
-  if (shell.dataset.planHost !== "1" && revealClipStillRunning(shell)) return false;
+  // A stuck reveal animation stays "running" after the plan is already open.
+  // Waiting on it left the plan under the clip, so 預覽/原文/× hit BODY.
+  if (shell.dataset.intent === "close" || shell._motion === "collapse") return false;
   const parent = shell.parentElement;
   if (!parent) return false;
   let host = shell._planHost;
@@ -764,6 +767,20 @@ export function hostOpenPlan(shell) {
   plan._planShell = shell;
   host._planShell = shell;
   shell.dataset.planHost = "1";
+  // The plan window is the clip-path ancestor once the warm sweep's
+  // fill:forwards clip stays on it. That clip is not the reveal (the shell
+  // clip is), and it drops 預覽/原文/× out of the hit region. Clear it only
+  // after the plan has left the shell, so the shell clip still paints.
+  plan.classList.remove("is-plan-parked");
+  if (plan.style.pointerEvents === "none") plan.style.removeProperty("pointer-events");
+  plan.getAnimations?.().forEach((anim) => {
+    let frames = [];
+    try { frames = anim.effect?.getKeyframes?.() || []; } catch { frames = []; }
+    if (!frames.some((frame) => frame?.clipPath)) return;
+    try { anim.cancel(); } catch { /* the inline value below replaces it */ }
+  });
+  plan.style.clipPath = "none";
+  if (/translate/i.test(plan.style.transform || "")) plan.style.transform = "none";
   return placePlanHost(shell);
 }
 
