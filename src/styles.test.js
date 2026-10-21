@@ -527,8 +527,15 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(keyEdge, /stage=emit/);
   assert.ok(keyEdge.indexOf("arm_opacity_shape_hold") < keyEdge.indexOf("push_opacity_edge"));
   assert.ok(keyEdge.indexOf("push_opacity_edge") < keyEdge.indexOf("app.emit"));
-  assert.match(interactionRs, /let defer_shape = opacity_shape_deferred/);
-  assert.match(interactionRs, /if defer_shape/);
+  assert.match(interactionRs, /let defer_shrink = opacity_shape_deferred/);
+  assert.match(interactionRs, /fn shape_adds_hittable/);
+  assert.match(interactionRs, /fn shape_combine_action/);
+  assert.match(interactionRs, /ShapeCombine::Apply/);
+  assert.doesNotMatch(interactionRs, /if defer_shape/);
+  assert.doesNotMatch(interactionRs, /painted_shape\.clone\(\)/);
+  assert.doesNotMatch(interactionRs, /HardwareAccelerationPolicy/);
+  assert.doesNotMatch(libRs, /WEBKIT_DISABLE_COMPOSITING_MODE/);
+  assert.doesNotMatch(libRs, /tune_overlay_webview/);
   assert.match(interactionRs, /fn page_modifier/);
   assert.match(interactionRs, /"key_edge": true/);
   assert.match(interactionRs, /spawn_modifier_monitor\(app\.clone\(\)/);
@@ -540,7 +547,6 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.doesNotMatch(monitor, /sync_os_hit_region|FocusProbe|hitBlockReason/);
   assert.match(interactionRs, /__hermesOpacityEdge/);
   assert.match(interactionRs, /fn release_opacity_shape_next_frame/);
-  assert.match(interactionRs, /HardwareAccelerationPolicy::Never/);
   assert.match(interactionRs, /OPACITY_SHAPE_GEN/);
   const presentLog = interactionRs.slice(interactionRs.indexOf("fn log_opacity_present"), interactionRs.indexOf("pub fn note_opacity_written"));
   assert.match(presentLog, /after-paint/);

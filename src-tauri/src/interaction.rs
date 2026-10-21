@@ -1313,9 +1313,9 @@ fn clear_opacity_shape_hold() {
 }
 
 /// One frame after the opacity present. A newer key edge bumps the
-/// generation, so this timer must not release that newer hold. Skipping
-/// `SHAPE_DIRTY` leaves an unchanged region signature in place, and the
-/// poll then does not call `input_shape_combine_region`.
+/// generation, so this timer must not release that newer hold. The hold
+/// only skips a Ctrl-edge combine that does not add a hittable rect.
+/// Skipping `SHAPE_DIRTY` leaves an unchanged region signature in place.
 fn release_opacity_shape_next_frame(gen: u64) {
     #[cfg(target_os = "linux")]
     {
@@ -1390,30 +1390,6 @@ pub fn modifier_down_now(hub: &InteractionHub) -> bool {
 fn screen_cursor() -> &'static Mutex<Option<(f64, f64)>> {
     static CURSOR: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
     CURSOR.get_or_init(|| Mutex::new(None))
-}
-
-/// Software compositing for the transparent window. Accelerated compositing
-/// was presenting two or three frames after GTK after-paint. `Never` plus a
-/// transparent background keeps the overlay from painting a black plate.
-#[allow(deprecated)]
-pub fn tune_overlay_webview(window: &tauri::WebviewWindow) {
-    #[cfg(target_os = "linux")]
-    {
-        let _ = window.with_webview(|webview| {
-            use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
-            let view = webview.inner();
-            if let Some(settings) = view.settings() {
-                settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
-                settings.set_enable_accelerated_2d_canvas(false);
-            }
-            view.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
-            crate::trace_debug("opacity-stage", "stage=accel policy=never");
-        });
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = window;
-    }
 }
 
 /// Cover the monitor without mapping the window. The first `show` is
@@ -1661,9 +1637,9 @@ fn log_opacity_present(write_unix: u64, source: &str, gen: u64) {
     );
 }
 
-/// The page has written panel opacity. Log the next presented frame, then
-/// let the poll apply the input shape one frame later. Do not combine the
-/// shape on this turn.
+/// The page has written panel opacity. Log the next presented frame.
+/// A Ctrl-edge hold may skip a combine that does not add a hittable rect.
+/// Opens, morphs, and startup rects are not held here.
 pub fn note_opacity_written(window: Option<&tauri::WebviewWindow>, write_unix: u64, gen: u64) {
     #[cfg(target_os = "linux")]
     {
@@ -1949,8 +1925,8 @@ fn push_opacity_edge(app: &AppHandle, key_down: bool, held: bool, seq: u64, gen:
 fn publish_key_edge(app: &AppHandle, held: bool, key_down: bool) {
     KEY_DOWN.store(key_down, Ordering::Release);
     LAST_HELD.store(held, Ordering::Release);
-    // Shape waits until the page has written opacity and one frame after
-    // that present. Applying it on this turn stalls the compositor.
+    // Unchanged Ctrl-edge shapes skip combine. A new hittable rect is
+    // applied on the next poll and is not held for the opacity present.
     arm_opacity_shape_hold();
     let seq = MODIFIER_SEQ.fetch_add(1, Ordering::Release) + 1;
     let gen = OPACITY_SHAPE_GEN.load(Ordering::Acquire);
@@ -2108,8 +2084,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             POINTER_DOWN.store(pointer_down, Ordering::Relaxed);
             let mouse = device.get_mouse();
             remember_screen_cursor(&window, f64::from(mouse.coords.0), f64::from(mouse.coords.1));
-            let defer_shape = opacity_shape_deferred(mono_ms());
-            if !defer_shape && SHAPE_DIRTY.swap(false, Ordering::Relaxed) {
+            let defer_shrink = opacity_shape_deferred(mono_ms());
+            if !defer_shrink && SHAPE_DIRTY.swap(false, Ordering::Relaxed) {
                 region_signature.clear();
             }
             let rects = hub
@@ -2158,24 +2134,21 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 }
                 logged_held = Some(held);
             }
-            let region = if defer_shape {
-                painted_shape.clone()
-            } else {
-                sync_os_hit_region(
-                    &app,
-                    &window,
-                    held,
-                    key_down,
-                    pointer_down,
-                    cursor,
-                    &rects,
-                    &frames,
-                    &remembered_rects,
-                    &painted_shape,
-                    &mut ignoring,
-                    &mut region_signature,
-                )
-            };
+            let region = sync_os_hit_region(
+                &app,
+                &window,
+                held,
+                key_down,
+                pointer_down,
+                cursor,
+                &rects,
+                &frames,
+                &remembered_rects,
+                &painted_shape,
+                &mut ignoring,
+                &mut region_signature,
+                defer_shrink,
+            );
             if rects.iter().any(|rect| is_orb_hit(rect) || is_pill_hit(rect)) {
                 remembered_rects = rects.clone();
             }
@@ -2281,6 +2254,43 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
     });
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeCombine {
+    Apply,
+    Skip,
+    Defer,
+}
+
+/// A pointer can hit `inner` somewhere `outer` does not already cover.
+fn rect_covers(outer: &HitRect, inner: &HitRect) -> bool {
+    const SLOP: f64 = 0.5;
+    outer.x <= inner.x + SLOP
+        && outer.y <= inner.y + SLOP
+        && outer.x + outer.w + SLOP >= inner.x + inner.w
+        && outer.y + outer.h + SLOP >= inner.y + inner.h
+}
+
+/// True when `next` contains a rect a pointer could not hit in `painted`.
+pub fn shape_adds_hittable(painted: &[HitRect], next: &[HitRect]) -> bool {
+    next.iter()
+        .any(|rect| !painted.iter().any(|old| rect_covers(old, rect)))
+}
+
+/// Opens, morphs, and startup always apply. A Ctrl-edge hold may skip an
+/// unchanged region or defer a shrink. It must not defer a new hittable rect.
+pub fn shape_combine_action(hold: bool, adds_hit: bool, unchanged: bool) -> ShapeCombine {
+    if adds_hit {
+        return ShapeCombine::Apply;
+    }
+    if unchanged {
+        return ShapeCombine::Skip;
+    }
+    if hold {
+        return ShapeCombine::Defer;
+    }
+    ShapeCombine::Apply
+}
+
 fn sync_os_hit_region(
     app: &AppHandle,
     window: &tauri::WebviewWindow,
@@ -2294,6 +2304,7 @@ fn sync_os_hit_region(
     last_painted: &[HitRect],
     ignoring: &mut Option<bool>,
     region_signature: &mut String,
+    defer_shrink: bool,
 ) -> Vec<HitRect> {
     #[cfg(any(windows, target_os = "linux"))]
     {
@@ -2330,8 +2341,13 @@ fn sync_os_hit_region(
                 .collect::<Vec<_>>()
                 .join(";")
         );
-        if signature == *region_signature {
-            return region;
+        let adds_hit = shape_adds_hittable(last_painted, &region);
+        match shape_combine_action(defer_shrink, adds_hit, signature == *region_signature) {
+            ShapeCombine::Skip => return region,
+            // Keep the rects a pointer can already hit. The signature stays
+            // so the shrink still applies once the Ctrl-edge hold ends.
+            ShapeCombine::Defer => return last_painted.to_vec(),
+            ShapeCombine::Apply => {}
         }
         *region_signature = signature;
         #[cfg(windows)]
@@ -2363,6 +2379,7 @@ fn sync_os_hit_region(
             previous_rects,
             last_painted,
             region_signature,
+            defer_shrink,
         );
         let ignore = !frames.iter().any(|item| item.capture);
         if *ignoring != Some(ignore) && window.set_ignore_cursor_events(ignore).is_ok() {
@@ -3119,6 +3136,53 @@ mod tests {
         assert_eq!(opacity_shape_gate(10, true, 50), OpacityShapeGate::Defer);
         assert_eq!(opacity_shape_gate(50, true, 50), OpacityShapeGate::Fallback);
         assert_eq!(opacity_shape_gate(80, true, 0), OpacityShapeGate::Defer);
+    }
+
+    fn hit(id: &str, x: f64, y: f64, w: f64, h: f64) -> HitRect {
+        HitRect {
+            id: id.into(),
+            x,
+            y,
+            w,
+            h,
+            z: 0,
+            round: true,
+        }
+    }
+
+    #[test]
+    fn ctrl_edge_hold_never_delays_a_new_hit_rect() {
+        let orb = hit("orb:default", 10.0, 20.0, 44.0, 44.0);
+        let panel = hit("panel:default", 10.0, 80.0, 420.0, 560.0);
+        assert!(shape_adds_hittable(&[], &[orb.clone()]));
+        assert!(!shape_adds_hittable(&[orb.clone()], &[orb.clone()]));
+        assert!(shape_adds_hittable(&[orb.clone()], &[orb.clone(), panel.clone()]));
+        assert!(!shape_adds_hittable(
+            &[orb.clone(), panel.clone()],
+            &[orb.clone()]
+        ));
+        let moved = hit("orb:default", 80.0, 20.0, 44.0, 44.0);
+        assert!(shape_adds_hittable(&[orb.clone()], &[moved]));
+        assert_eq!(
+            shape_combine_action(true, true, false),
+            ShapeCombine::Apply
+        );
+        assert_eq!(
+            shape_combine_action(true, false, true),
+            ShapeCombine::Skip
+        );
+        assert_eq!(
+            shape_combine_action(true, false, false),
+            ShapeCombine::Defer
+        );
+        assert_eq!(
+            shape_combine_action(false, false, false),
+            ShapeCombine::Apply
+        );
+        assert_eq!(
+            shape_combine_action(false, true, false),
+            ShapeCombine::Apply
+        );
     }
 
     #[test]
