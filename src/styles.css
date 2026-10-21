@@ -2227,11 +2227,19 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 
 .morph .active-avatar { display: none; }
 
-.morph[data-anchor="start"] .panel-header,
+.morph[data-anchor="start"] .center-panel > .panel-header,
 .morph[data-anchor="start"] .settings-head { padding-left: 40px; }
 
-.morph[data-anchor="end"] .panel-header,
+.morph[data-anchor="end"] .center-panel > .panel-header,
 .morph[data-anchor="end"] .settings-head { padding-right: 40px; }
+
+.morph .plan-window .plan-head {
+  max-width: 100%;
+  min-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  box-sizing: border-box;
+}
 
 /* The header slot is the orb. A bottom slot sits under the composer. */
 .morph[data-header="bottom"] .center-panel {

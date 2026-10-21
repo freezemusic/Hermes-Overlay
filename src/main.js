@@ -21,6 +21,7 @@ import {
   COLLAPSE_EASE,
   planEase,
   seamFrameStep,
+  seamVisibleMs,
   seamClipStillClosed,
   clipPath,
   distributeEdges,
@@ -1058,7 +1059,9 @@ function lockPlanRevealed(plan) {
   if (fit) {
     fit.style.removeProperty("transform");
     fit.style.flex = "none";
-    fit.style.width = `${full}px`;
+    fit.style.width = "100%";
+    fit.style.maxWidth = "100%";
+    fit.style.boxSizing = "border-box";
     fit.style.alignSelf = shell?.dataset.planSide === "left" ? "flex-end" : "flex-start";
   }
   plan.style.width = `${full}px`;
@@ -1099,7 +1102,9 @@ function retireGrownSeam(plan) {
   plan.style.width = `${full}px`;
   if (fit) {
     fit.style.flex = "none";
-    fit.style.width = `${full}px`;
+    fit.style.width = "100%";
+    fit.style.maxWidth = "100%";
+    fit.style.boxSizing = "border-box";
   }
   plan.style.removeProperty("transform");
   if (fit) fit.style.removeProperty("transform");
@@ -1307,7 +1312,9 @@ function lockPlanBox(shell, plan) {
   const fit = ensurePlanFit(plan);
   fit.style.overflow = "hidden";
   fit.style.flex = "none";
-  fit.style.width = `${width}px`;
+  fit.style.width = "100%";
+  fit.style.maxWidth = "100%";
+  fit.style.boxSizing = "border-box";
   fit.style.height = "100%";
   fit.style.alignSelf = shell?.dataset.planSide === "left" ? "flex-end" : "flex-start";
 }
@@ -1318,6 +1325,10 @@ function releasePlanBox(plan) {
   if (shellFrozen(shell) || shell?.classList.contains("is-plan-seam")) return;
   if (seamPhase(plan) === "grown" || seamPhase(plan) === "growing") {
     debugLog("plan-unlock", "keep-fill");
+    return;
+  }
+  if (shell?.dataset.planOpen === "1") {
+    debugLog("plan-unlock", "keep-open");
     return;
   }
   delete plan.dataset.sizeLock;
@@ -1581,7 +1592,9 @@ function warmPlanLayer(shell) {
   shell.dataset.planHeight = String(Math.round(plan.offsetHeight || 0));
   const fit = ensurePlanFit(plan);
   fit.style.flex = "none";
-  fit.style.width = `${width}px`;
+  fit.style.width = "100%";
+  fit.style.maxWidth = "100%";
+  fit.style.boxSizing = "border-box";
   fit.style.height = "100%";
   fit.style.alignSelf = shell.dataset.planSide === "left" ? "flex-end" : "flex-start";
   plan.style.width = `${width}px`;
@@ -1989,6 +2002,13 @@ function alignSeamClock(anim, onPresented) {
       return;
     }
     if (!heldOpen && (current <= 16 || (presented >= 2 && gap > 0 && gap <= 40))) {
+      // A reanchor that is not a 75ms hole still presents this sample.
+      // Cap that first visible frame at 45ms even when the gap stayed small.
+      const shown = seamVisibleMs(current);
+      if (shown < current) {
+        try { anim.currentTime = 45; } catch { /* the closed keyframe stays */ }
+        debugLog("seam-clock", `reanchor gap=${current.toFixed(1)} frame=${presented} pin=45`);
+      }
       heldOpen = true;
       confirm(presented);
     }
@@ -2213,7 +2233,9 @@ function growPlan(shell, token) {
   const origin = seamOrigin(shell);
   const full = Number(shell.dataset.planWidth) || planWidthPx();
   fit.style.flex = "none";
-  fit.style.width = `${Math.round(full)}px`;
+  fit.style.width = "100%";
+  fit.style.maxWidth = "100%";
+  fit.style.boxSizing = "border-box";
   fit.style.height = "100%";
   fit.style.alignSelf = side === "left" ? "flex-end" : "flex-start";
   fit.style.transformOrigin = origin;
@@ -2392,26 +2414,67 @@ function deferredParts(shell) {
   return `chat=${chatPart} plan=${planPart} session=${sessionPart} soul=${soulPart} tab=${showChat ? "chat" : "bot"} dirty=${shell?.dataset.chatDirty || 0}/${shell?.dataset.planDirty || 0}${focusBot}`;
 }
 
+function snapshotPlanGeometry(plan) {
+  if (!plan) return null;
+  const fit = plan.querySelector(".plan-fit");
+  return {
+    width: plan.style.width,
+    height: plan.style.height,
+    top: plan.style.top,
+    left: plan.style.left,
+    right: plan.style.right,
+    fitWidth: fit?.style.width || "",
+    fitHeight: fit?.style.height || "",
+    fitMax: fit?.style.maxWidth || "",
+  };
+}
+
+function restorePlanGeometry(plan, snap) {
+  if (!plan || !snap) return;
+  plan.style.width = snap.width;
+  plan.style.height = snap.height;
+  plan.style.top = snap.top;
+  plan.style.left = snap.left;
+  plan.style.right = snap.right;
+  const fit = plan.querySelector(".plan-fit");
+  if (!fit) return;
+  fit.style.width = snap.fitWidth;
+  fit.style.height = snap.fitHeight;
+  fit.style.maxWidth = snap.fitMax;
+}
+
+function seamRevealLive(shell) {
+  if (!shell) return false;
+  const plan = shell.querySelector?.(".plan-window");
+  return shell.classList.contains("is-plan-seam")
+    || shell.classList.contains("is-plan-arming")
+    || seamPhase(plan) === "growing";
+}
+
 function applyQueuedShell(shell, tag) {
   if (!shell?.isConnected) return;
-  if (freezeCooling(shell) || collapseBusy() || collapseQuiet()) {
+  const plan = shell.querySelector(".plan-window");
+  if (seamRevealLive(shell) || freezeCooling(shell) || collapseBusy() || collapseQuiet()) {
     armQuietFlush(shell);
     return;
   }
   const parts = deferredParts(shell);
   debugLog("queued-apply", `bot=${shell.dataset.botId || ""} tag=${tag} ${parts}`);
+  const snap = snapshotPlanGeometry(plan);
   pinRestingNodes(shell);
   shell.classList.remove("is-morphing", "is-plan-seam", "is-plan-arming", "is-growing-panel");
   delete shell.dataset.chatDirty;
   delete shell.dataset.planDirty;
   renderChat(shell.dataset.botId, { inplace: true, tag, resting: true });
+  restorePlanGeometry(plan, snap);
   pinRestingNodes(shell);
   requestAnimationFrame(() => {
-    if (!shell.isConnected || freezeCooling(shell) || collapseBusy() || collapseQuiet()) {
+    if (!shell.isConnected || seamRevealLive(shell) || freezeCooling(shell) || collapseBusy() || collapseQuiet()) {
       armQuietFlush(shell);
       return;
     }
     releasePlanBox(shell.querySelector(".plan-window"));
+    restorePlanGeometry(plan, snap);
     releaseHitSilence(tag);
     if (renderBots.pending) renderBots(tag);
   });
@@ -3618,6 +3681,13 @@ function renderChat(id = state.activeId, options = {}) {
   const shell = shellFor(id);
   const force = options.force === true;
   const tag = options.tag || "renderChat";
+  if (shell && seamRevealLive(shell) && shell.dataset.paintThrough !== "1") {
+    shell.dataset.chatDirty = "1";
+    shell.dataset.planDirty = "1";
+    debugLog("render-panel-defer", `id=${id} tag=${tag} seam=1`);
+    armQuietFlush(shell);
+    return;
+  }
   if (shell && !force && deferShellWork(shell)) {
     shell.dataset.chatDirty = "1";
     debugLog("render-panel-defer", `id=${id} tag=${tag}`);
@@ -4170,10 +4240,18 @@ function armChatRefresh() {
   state.chatRefresh = window.setInterval(refreshBotChats, 4000);
 }
 
+const pendingHistory = new Map();
+
 async function loadBotHistory(id, token) {
   const { invoke } = await import("@tauri-apps/api/core");
   const opened = await invoke("open_bot", { profile: id });
   if (token !== state.reconnectToken || state.mode !== "hermes") return false;
+  if (backgroundBlocked()) {
+    pendingHistory.set(id, { opened, token });
+    armPresentationFlush();
+    debugLog("history-defer", `id=${id}`);
+    return false;
+  }
   applyOpened(id, opened);
   return true;
 }
@@ -6481,6 +6559,20 @@ function releaseDeferredTicks() {
     state.cronDeferred = false;
     refreshCron();
   }
+  if (pendingHistory.size) {
+    for (const [id, job] of [...pendingHistory]) {
+      if (job.token !== state.reconnectToken) {
+        pendingHistory.delete(id);
+        continue;
+      }
+      if (backgroundBlocked()) {
+        armPresentationFlush();
+        return;
+      }
+      pendingHistory.delete(id);
+      applyOpened(id, job.opened);
+    }
+  }
   if (renderBots.pending) renderBots("after-collapse");
   releaseHitSilence("after-collapse");
   flushIdleChats();
@@ -6615,11 +6707,39 @@ function paintHeldPanels(down) {
   return panels.length;
 }
 
+function applyOpacityEdge(payload) {
+  const seen = Date.now();
+  if (!acceptModifier(payload)) return false;
+  const panels = paintHeldPanels(state.osModifierDown);
+  const unix = Date.now();
+  const seq = Number(payload?.modifier_seq) || 0;
+  debugLog("opacity-stage", `stage=js seq=${seq} rust=${Number(payload?.unix) || 0} seen=${seen}`);
+  debugLog("opacity-stage", `stage=write unix=${unix} panels=${panels}`);
+  debugLog("opacity-write", `unix=${unix} down=${state.osModifierDown ? 1 : 0} panels=${panels}`);
+  debugLog("key-edge", `down=${state.osModifierDown ? 1 : 0} panels=${panels}`);
+  if (inTauri()) {
+    const gen = Number(payload?.shape_gen) || 0;
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("note_opacity_written", { unix, gen }))
+      .catch(() => {});
+  }
+  return true;
+}
+
+window.__hermesOpacityEdge = (edge) => applyOpacityEdge({
+  key_edge: true,
+  modifier_down: edge?.down === 1 || edge?.down === true,
+  held: edge?.held === 1 || edge?.held === true,
+  modifier_seq: Number(edge?.seq) || 0,
+  unix: Number(edge?.unix) || 0,
+  shape_gen: Number(edge?.gen) || 0,
+});
+
 let modifierSeq = 0;
 
 function acceptModifier(payload) {
   const seq = Number(payload?.modifier_seq);
-  if (Number.isFinite(seq) && seq < modifierSeq) return false;
+  if (Number.isFinite(seq) && seq > 0 && seq <= modifierSeq) return false;
   if (Number.isFinite(seq)) modifierSeq = seq;
   // The physical key is the panel look. `held` can still be true for one
   // poll after the key is up, and that one sample was a full-panel flash.
@@ -6942,17 +7062,7 @@ function setupProximity() {
           return;
         }
         if (payload.key_edge === true) {
-          if (acceptModifier(payload)) {
-            const panels = paintHeldPanels(state.osModifierDown);
-            const unix = Date.now();
-            debugLog("opacity-write", `unix=${unix} down=${state.osModifierDown ? 1 : 0} panels=${panels}`);
-            debugLog("key-edge", `down=${state.osModifierDown ? 1 : 0} panels=${panels}`);
-            if (inTauri()) {
-              import("@tauri-apps/api/core")
-                .then(({ invoke }) => invoke("note_opacity_written", { unix }))
-                .catch(() => {});
-            }
-          }
+          applyOpacityEdge(payload);
           return;
         }
         if (payload.focus_owner) applyOsFocus(payload.focus_owner);

@@ -2099,9 +2099,9 @@ fn armed_press(consume: Option<bool>) -> String {
 /// Page finished the opacity write. The next GTK after-paint logs
 /// `opacity-present` and only then may the poll update the input shape.
 #[tauri::command]
-fn note_opacity_written(app: AppHandle, unix: Option<u64>) {
+fn note_opacity_written(app: AppHandle, unix: Option<u64>, gen: Option<u64>) {
     let window = app.get_webview_window("main");
-    interaction::note_opacity_written(window.as_ref(), unix.unwrap_or(0));
+    interaction::note_opacity_written(window.as_ref(), unix.unwrap_or(0), gen.unwrap_or(0));
 }
 
 #[tauri::command]
@@ -2142,6 +2142,14 @@ fn stop_chat(state: State<'_, AppState>, profile: String) -> Result<(), String> 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    {
+        // Read when the WebKit process starts, which is before the setup
+        // hook can touch the view. Software ARGB skips the GL swapchain
+        // that was adding frames after GTK after-paint. The view background
+        // stays transparent so the overlay does not turn into a black sheet.
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -2166,6 +2174,7 @@ pub fn run() {
             }
             let hub = Arc::clone(&app.state::<AppState>().interaction);
             if let Some(window) = app.get_webview_window("main") {
+                interaction::tune_overlay_webview(&window);
                 // 無邊框透明視窗喺未顯示時會跳過 SW_MAXIMIZE，再加 center 就停喺 1280×800。
                 interaction::place_overlay(&window);
                 interaction::install_option_menu_hook(&window);

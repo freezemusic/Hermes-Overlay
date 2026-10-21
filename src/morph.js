@@ -495,6 +495,13 @@ export function seamFrameStep(elapsedMs, { first = false, duration = PLAN_GROW_M
   return { restart: false, t };
 }
 
+/** First painted reveal after a reanchor. Anything later than 45ms is
+ *  planEase past the 45% gate, so that sample is shown at 45ms. */
+export function seamVisibleMs(elapsedMs) {
+  const elapsed = Math.max(0, Number(elapsedMs) || 0);
+  return elapsed > 45 ? 45 : elapsed;
+}
+
 /** Outward inset of an `inset()` clip, in px. The plan edge is the most
  *  negative side. A closed seam is only the bleed; an open one is the plan. */
 export function seamClipOutset(value) {

@@ -1278,6 +1278,7 @@ static SHAPE_DIRTY: AtomicBool = AtomicBool::new(false);
 /// Key edge defers the input shape until the page has written opacity.
 static OPACITY_SHAPE_HOLD: AtomicBool = AtomicBool::new(false);
 static OPACITY_SHAPE_UNTIL: AtomicU64 = AtomicU64::new(0);
+static OPACITY_SHAPE_GEN: AtomicU64 = AtomicU64::new(0);
 const OPACITY_SHAPE_HOLD_MS: u64 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1303,12 +1304,35 @@ fn arm_opacity_shape_hold() {
     let until = mono_ms().saturating_add(OPACITY_SHAPE_HOLD_MS).max(1);
     OPACITY_SHAPE_UNTIL.store(until, Ordering::Release);
     OPACITY_SHAPE_HOLD.store(true, Ordering::Release);
+    OPACITY_SHAPE_GEN.fetch_add(1, Ordering::Release);
 }
 
 fn clear_opacity_shape_hold() {
     OPACITY_SHAPE_HOLD.store(false, Ordering::Release);
     OPACITY_SHAPE_UNTIL.store(0, Ordering::Release);
-    SHAPE_DIRTY.store(true, Ordering::Release);
+}
+
+/// One frame after the opacity present. A newer key edge bumps the
+/// generation, so this timer must not release that newer hold. Skipping
+/// `SHAPE_DIRTY` leaves an unchanged region signature in place, and the
+/// poll then does not call `input_shape_combine_region`.
+fn release_opacity_shape_next_frame(gen: u64) {
+    #[cfg(target_os = "linux")]
+    {
+        gtk::glib::timeout_add_local(Duration::from_millis(16), move || {
+            if OPACITY_SHAPE_GEN.load(Ordering::Acquire) == gen {
+                clear_opacity_shape_hold();
+                crate::trace_debug("opacity-shape", "release=frame");
+            }
+            gtk::glib::ControlFlow::Break
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if OPACITY_SHAPE_GEN.load(Ordering::Acquire) == gen {
+            clear_opacity_shape_hold();
+        }
+    }
 }
 
 fn opacity_shape_deferred(now_ms: u64) -> bool {
@@ -1366,6 +1390,30 @@ pub fn modifier_down_now(hub: &InteractionHub) -> bool {
 fn screen_cursor() -> &'static Mutex<Option<(f64, f64)>> {
     static CURSOR: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
     CURSOR.get_or_init(|| Mutex::new(None))
+}
+
+/// Software compositing for the transparent window. Accelerated compositing
+/// was presenting two or three frames after GTK after-paint. `Never` plus a
+/// transparent background keeps the overlay from painting a black plate.
+#[allow(deprecated)]
+pub fn tune_overlay_webview(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = window.with_webview(|webview| {
+            use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
+            let view = webview.inner();
+            if let Some(settings) = view.settings() {
+                settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+                settings.set_enable_accelerated_2d_canvas(false);
+            }
+            view.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
+            crate::trace_debug("opacity-stage", "stage=accel policy=never");
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+    }
 }
 
 /// Cover the monitor without mapping the window. The first `show` is
@@ -1597,21 +1645,30 @@ fn eval_seam_frame(view: &webkit2gtk::WebView, elapsed_ms: f64) {
     view.run_javascript(&script, None::<&gtk::gio::Cancellable>, |_| {});
 }
 
-fn log_opacity_present(write_unix: u64, source: &str) {
-    clear_opacity_shape_hold();
+fn log_opacity_present(write_unix: u64, source: &str, gen: u64) {
+    if source == "after-paint" {
+        release_opacity_shape_next_frame(gen);
+    } else if gen == 0 || OPACITY_SHAPE_GEN.load(Ordering::Acquire) == gen {
+        clear_opacity_shape_hold();
+    }
     crate::trace_debug(
         "opacity-present",
         &format!("source={source} write_unix={write_unix}"),
     );
+    crate::trace_debug(
+        "opacity-stage",
+        &format!("stage=present source={source} write_unix={write_unix}"),
+    );
 }
 
 /// The page has written panel opacity. Log the next presented frame, then
-/// let the poll apply the input shape. Do not combine the shape on this turn.
-pub fn note_opacity_written(window: Option<&tauri::WebviewWindow>, write_unix: u64) {
+/// let the poll apply the input shape one frame later. Do not combine the
+/// shape on this turn.
+pub fn note_opacity_written(window: Option<&tauri::WebviewWindow>, write_unix: u64, gen: u64) {
     #[cfg(target_os = "linux")]
     {
         if let Some(window) = window {
-            if schedule_opacity_present(window, write_unix) {
+            if schedule_opacity_present(window, write_unix, gen) {
                 return;
             }
         }
@@ -1620,16 +1677,16 @@ pub fn note_opacity_written(window: Option<&tauri::WebviewWindow>, write_unix: u
     {
         let _ = window;
     }
-    log_opacity_present(write_unix, "immediate");
+    log_opacity_present(write_unix, "immediate", gen);
 }
 
 #[cfg(target_os = "linux")]
-fn schedule_opacity_present(window: &tauri::WebviewWindow, write_unix: u64) -> bool {
+fn schedule_opacity_present(window: &tauri::WebviewWindow, write_unix: u64, gen: u64) -> bool {
     let posted = window.with_webview(move |webview| {
         use gtk::prelude::*;
         let view = webview.inner();
         let Some(clock) = view.frame_clock() else {
-            log_opacity_present(write_unix, "no-clock");
+            log_opacity_present(write_unix, "no-clock", gen);
             return;
         };
         let clock_cb = clock.clone();
@@ -1641,7 +1698,7 @@ fn schedule_opacity_present(window: &tauri::WebviewWindow, write_unix: u64) -> b
             if let Some(handler) = handler {
                 clock_cb.disconnect(handler);
             }
-            log_opacity_present(write_unix, "after-paint");
+            log_opacity_present(write_unix, "after-paint", gen);
         });
         *slot.lock().unwrap_or_else(|err| err.into_inner()) = Some(id);
         clock.request_phase(gtk::gdk::FrameClockPhase::AFTER_PAINT);
@@ -1865,13 +1922,52 @@ fn cover_windows_monitor(_window: &tauri::WebviewWindow) -> bool {
     false
 }
 
+#[cfg(target_os = "linux")]
+#[allow(deprecated)]
+fn push_opacity_edge(app: &AppHandle, key_down: bool, held: bool, seq: u64, gen: u64, unix: u64) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let down = u8::from(key_down);
+    let held_n = u8::from(held);
+    let _ = window.with_webview(move |webview| {
+        use webkit2gtk::WebViewExt;
+        let script = format!(
+            "window.__hermesOpacityEdge&&window.__hermesOpacityEdge({{down:{down},held:{held_n},seq:{seq},unix:{unix},gen:{gen}}})"
+        );
+        webview
+            .inner()
+            .run_javascript(&script, None::<&gtk::gio::Cancellable>, |_| {});
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn push_opacity_edge(app: &AppHandle, key_down: bool, held: bool, seq: u64, gen: u64, unix: u64) {
+    let _ = (app, key_down, held, seq, gen, unix);
+}
+
 fn publish_key_edge(app: &AppHandle, held: bool, key_down: bool) {
     KEY_DOWN.store(key_down, Ordering::Release);
     LAST_HELD.store(held, Ordering::Release);
-    // Shape waits until the page has written opacity. Applying it on this
-    // turn stalls the compositor before that write is presented.
+    // Shape waits until the page has written opacity and one frame after
+    // that present. Applying it on this turn stalls the compositor.
     arm_opacity_shape_hold();
     let seq = MODIFIER_SEQ.fetch_add(1, Ordering::Release) + 1;
+    let gen = OPACITY_SHAPE_GEN.load(Ordering::Acquire);
+    let unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|dur| dur.as_millis() as u64)
+        .unwrap_or(0);
+    crate::trace_debug(
+        "opacity-stage",
+        &format!(
+            "stage=rust down={} held={} seq={seq} gen={gen}",
+            u8::from(key_down),
+            u8::from(held)
+        ),
+    );
+    push_opacity_edge(app, key_down, held, seq, gen, unix);
+    crate::trace_debug("opacity-stage", &format!("stage=emit seq={seq} gen={gen}"));
     crate::trace_debug(
         "key-edge",
         &format!(
@@ -1889,6 +1985,8 @@ fn publish_key_edge(app: &AppHandle, held: bool, key_down: bool) {
             "held": held,
             "modifier_down": key_down,
             "modifier_seq": seq,
+            "shape_gen": gen,
+            "unix": unix,
         }),
     );
 }
@@ -1926,7 +2024,7 @@ fn spawn_modifier_monitor(app: AppHandle, hub: Arc<InteractionHub>) {
                 last = Some((held, key_down));
                 publish_key_edge(&app, held, key_down);
             }
-            std::thread::sleep(Duration::from_millis(16));
+            std::thread::sleep(Duration::from_millis(5));
         }
     });
 }
