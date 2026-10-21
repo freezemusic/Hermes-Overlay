@@ -318,6 +318,15 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /orb-restyle/);
   assert.match(mainSrc, /for \(const el of \[shell, fill, orb, glow, stroke\]\)/);
   assert.match(mainSrc, /el\.style\.removeProperty\("will-change"\)/);
+  assert.match(mainSrc, /el\.style\.removeProperty\("background"\)/);
+  assert.match(mainSrc, /el\.style\.removeProperty\("overflow"\)/);
+  assert.match(mainSrc, /el\.style\.removeProperty\("box-shadow"\)/);
+  assert.match(mainSrc, /shell\.style\.removeProperty\("--bot-rgb"\)/);
+  assert.match(mainSrc, /function paintIdleChromeColor/);
+  assert.match(mainSrc, /function retractPlanHit/);
+  assert.match(mainSrc, /sendHitRects\(keep, "plan-close", true\)/);
+  assert.match(mainSrc, /paintPlan\(id, \{ force: true \}\)/);
+  assert.match(mainSrc, /dataset\.planRepublish = "1"/);
   assert.match(mainSrc, /function restingTransform/);
   assert.match(mainSrc, /shell\._idleDim = null/);
   assert.match(mainSrc, /class=active-off/);
@@ -554,6 +563,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /guardPublishedHits/);
   assert.match(mainSrc, /ctrlOrbRect/);
   assert.match(libRs, /cmd=set_hit_rects/);
+  assert.match(libRs, /trace_debug\("hit-rects"/);
   assert.match(libRs, /let mapped: Vec<interaction::HitRect>/);
   assert.match(interactionRs, /hit-ctrl/);
   assert.match(mainSrc, /hit-ctrl/);

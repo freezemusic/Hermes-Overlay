@@ -87,3 +87,25 @@ test("the last plan is cached per bot and used only before the session loads", (
   noteNewestPlan(thread, plansIn(thread.messages));
   assert.equal(planForPanel(thread).markdown, thread.messages[0].text);
 });
+
+test("睇計劃 clears a dismiss so the same plan shows again", () => {
+  const markdown = planDemoMarkdown("再開");
+  const thread = {
+    messages: [{ role: "bot", text: markdown }],
+    loaded: true,
+    planDismissed: "",
+    planFocus: "",
+  };
+  const plan = planForPanel(thread);
+  assert.ok(plan);
+  thread.planFocus = plan.key;
+  thread.planDismissed = plan.key;
+  thread.seenPlanKey = plan.key;
+  assert.equal(planForPanel(thread), null);
+  assert.equal(noteNewestPlan(thread, plansIn(thread.messages)), false);
+  assert.equal(thread.planDismissed, plan.key);
+  assert.equal(planForPanel(thread), null);
+  thread.planDismissed = "";
+  thread.planFocus = plan.key;
+  assert.equal(planForPanel(thread).key, plan.key);
+});

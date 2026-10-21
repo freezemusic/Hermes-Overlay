@@ -1553,7 +1553,18 @@ fn set_hit_rects(
     }
     let added = u8::from(why != "up" && why != "hit-new");
     let count = mapped.len();
+    let listed = mapped
+        .iter()
+        .map(|rect| {
+            format!(
+                "{}@{:.0},{:.0},{:.0}x{:.0}",
+                rect.id, rect.x, rect.y, rect.w, rect.h
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     *slot = mapped;
+    trace_debug("hit-rects", &listed);
     trace_debug(
         "hit-ipc",
         &format!(

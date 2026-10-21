@@ -32,6 +32,10 @@ export const PLAN_COLLAPSE_HANDOFF_MS = 160;
  */
 export const PLAN_EASE = "cubic-bezier(.3,.6,.2,1)";
 export const STACK_GAP = 12;
+/** Open panels stay usable. Stacking may overlap; it may not squash. */
+export const MIN_PANEL_H = 240;
+/** Art-director floor for the cron column (`cronShellHeight`). */
+export const CRON_MIN_H = 140;
 /** HUD corner L sits this far outside the frame. Both sides count toward the visible gap. */
 export const FRAME_BLEED = 3;
 export const EASE = "cubic-bezier(.2,.8,.2,1)";
@@ -196,7 +200,7 @@ export function seamInsets(width, side, revealed) {
 }
 
 /** Cron column height follows its content and never exceeds 70vh. */
-export function cronShellHeight(contentHeight, viewportHeight, min = 140) {
+export function cronShellHeight(contentHeight, viewportHeight, min = CRON_MIN_H) {
   const view = viewportHeight > 0 ? viewportHeight : 800;
   const max = view * 0.7;
   const content = Number.isFinite(contentHeight) && contentHeight > 0 ? contentHeight : min;
@@ -331,43 +335,50 @@ function panelPin(box) {
 }
 
 /**
+ * Lowest height stacking may leave. The design height is the floor when it
+ * is already under the usable minimum (the cron column). A panel is never
+ * grown, and never cut below this.
+ */
+function stackFloor(box, view) {
+  const design = Math.max(0, box.design);
+  const asked = box.minHeight > 0 ? box.minHeight : MIN_PANEL_H;
+  let floor = Math.min(design, asked);
+  if (view > 0) floor = Math.min(floor, view);
+  return Math.max(0, floor);
+}
+
+/**
  * Keep every open panel fully on screen and pinned to its own orb.
  * A top header stays on `top`; a bottom header stays on `top + height`.
- * Overlap is resolved by shortening the free edge. Nothing is pushed
- * past the screen.
+ * The free edge shortens to keep `gap`, and stops at the usable minimum.
+ * Whatever still overlaps stays overlapped. Nothing is pushed off screen
+ * and nothing is squashed to a line.
  */
 export function separateStackedPanels(boxes, screenH, gap = STACK_GAP) {
   const view = screenH > 0 ? screenH : 0;
   const next = (boxes || []).map((box) => {
     const pin = panelPin(box);
-    const anchor = pin === "end" ? box.top + box.height : box.top;
+    const height = Math.max(0, box.height);
+    const anchor = pin === "end" ? box.top + height : box.top;
     return {
       top: box.top,
-      height: box.height,
+      height,
       left: box.left,
       width: box.width,
       edge: box.edge || "",
       pin,
       anchor,
+      design: height,
+      minHeight: box.minHeight > 0 ? box.minHeight : MIN_PANEL_H,
     };
   });
   const fit = (box) => {
-    const anchor = Math.min(view, Math.max(0, box.anchor));
-    let height = Math.max(0, box.height);
-    if (box.pin === "end") {
-      const bottom = anchor;
-      let top = bottom - height;
-      if (top < 0) {
-        top = 0;
-        height = bottom;
-      }
-      if (top + height > view) height = Math.max(0, view - top);
-      box.top = top;
-      box.height = height;
-      return;
-    }
-    const top = anchor;
-    if (top + height > view) height = Math.max(0, view - top);
+    const floor = stackFloor(box, view);
+    let height = Math.max(floor, box.height);
+    if (view > 0 && height > view) height = view;
+    let top = box.pin === "end" ? box.anchor - height : box.anchor;
+    if (top < 0) top = 0;
+    if (view > 0 && top + height > view) top = Math.max(0, view - height);
     box.top = top;
     box.height = height;
   };
@@ -383,14 +394,16 @@ export function separateStackedPanels(boxes, screenH, gap = STACK_GAP) {
         const space = lower.top - (upper.top + upper.height);
         if (space >= gap) continue;
         let deficit = gap - space;
-        if (upper.pin !== "end" && upper.height > 0 && deficit > 0) {
-          const shrink = Math.min(upper.height, deficit);
+        const upperRoom = Math.max(0, upper.height - stackFloor(upper, view));
+        if (upper.pin !== "end" && upperRoom > 0 && deficit > 0) {
+          const shrink = Math.min(upperRoom, deficit);
           upper.height -= shrink;
           deficit -= shrink;
           changed = true;
         }
-        if (lower.pin === "end" && lower.height > 0 && deficit > 0) {
-          const shrink = Math.min(lower.height, deficit);
+        const lowerRoom = Math.max(0, lower.height - stackFloor(lower, view));
+        if (lower.pin === "end" && lowerRoom > 0 && deficit > 0) {
+          const shrink = Math.min(lowerRoom, deficit);
           lower.height -= shrink;
           lower.top += shrink;
           deficit -= shrink;

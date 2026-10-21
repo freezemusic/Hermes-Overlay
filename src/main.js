@@ -48,6 +48,8 @@ import {
   FRAME_BLEED,
   HAIRLINE,
   STACK_GAP,
+  MIN_PANEL_H,
+  CRON_MIN_H,
   tighten,
   cronShellHeight,
   chatTailAction,
@@ -494,6 +496,7 @@ function separateOpenShells(shells, extra) {
       width: Number.parseFloat(shell.style.width) || 0,
       edge: shell.dataset.edge || "",
       pin: shell.dataset.header === "bottom" ? "end" : "start",
+      minHeight: shell.dataset.botId === "cron" ? CRON_MIN_H : MIN_PANEL_H,
     };
     const plan = planNode(shell);
     const planOpen = plan && shell.dataset.planOpen === "1";
@@ -508,6 +511,7 @@ function separateOpenShells(shells, extra) {
     });
     dock.shell = shell;
     dock.pin = box.pin;
+    dock.minHeight = box.minHeight;
     return dock;
   });
   const after = separateStackedPanels(before, vh, STACK_GAP + 2 * FRAME_BLEED);
@@ -976,8 +980,22 @@ function commitClosedShell(shell) {
     if (!el) continue;
     el.style.removeProperty("will-change");
     el.style.removeProperty("filter");
+    el.style.removeProperty("background");
+    el.style.removeProperty("background-color");
+    el.style.removeProperty("overflow");
+    el.style.removeProperty("box-shadow");
     if (restingTransform(el.style.transform)) el.style.removeProperty("transform");
     el.style.removeProperty("transition");
+    el.style.removeProperty("transition-delay");
+  }
+  // Kanban and settings stamp --bot-rgb onto the shell while the panel is
+  // open. The idle ::after rim inherits that and the blue edge is gone
+  // (R-OB-01). A fresh chrome orb has the colour on the button only.
+  // Cron's idle disc is painted with the shell colour from the first frame.
+  if (shell.dataset.kind === "chrome" && shell.dataset.botId !== "cron") {
+    shell.style.removeProperty("--bot");
+    shell.style.removeProperty("--bot-rgb");
+    shell.style.removeProperty("--bot-color");
   }
   const idle = insetsFor("orb", shellGeom(shell));
   writeClip(shell, idle);
@@ -2579,6 +2597,7 @@ function growPlan(shell, token) {
     plan.style.removeProperty("display");
     plan.classList.remove("is-seam-grow");
     endPlanSeam(shell);
+    releaseReopenedPlan(shell);
     return Promise.resolve();
   }
   shell.classList.add("is-plan-seam");
@@ -2658,6 +2677,8 @@ function growPlan(shell, token) {
     holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
     setSeamPhase(plan, "grown", { dom: false });
     hostOpenPlan(shell);
+    logPlanHitBox(shell);
+    releaseReopenedPlan(shell);
     armQuietFlush(shell);
     return true;
   })();
@@ -3944,6 +3965,25 @@ function renderBots(tag = "renderBots") {
   schedulePlanRehearsal();
 }
 
+/** Button keeps the swatch. The shell colour tints `.morph-fill::after`, so an
+ *  idle kanban or settings shell must not keep the open-panel channels. */
+function paintIdleChromeColor(shell, btn, hex) {
+  applyBotColor(btn, hex);
+  const open = !!shell && (
+    (shell.dataset.visual || shell.dataset.state) === "panel"
+    || shell.dataset.opening === "panel"
+  );
+  if (open) {
+    applyBotColor(shell, hex);
+    return;
+  }
+  if (shell?.dataset.kind === "chrome" && shell.dataset.botId !== "cron") {
+    shell.style.removeProperty("--bot");
+    shell.style.removeProperty("--bot-rgb");
+    shell.style.removeProperty("--bot-color");
+  }
+}
+
 function renderSettingsOrb() {
   ensureChrome();
   const shell = shellFor("settings");
@@ -3952,8 +3992,7 @@ function renderSettingsOrb() {
   const next = ["bot-btn", "morph-orb", "orb--settings", settingsOpen() ? "active" : ""].filter(Boolean).join(" ");
   if (btn.className === next && shell.style.width) return;
   btn.className = next;
-  applyBotColor(shell, NOUS.blue);
-  applyBotColor(btn, NOUS.blue);
+  paintIdleChromeColor(shell, btn, NOUS.blue);
   btn.setAttribute("aria-label", "Hermes 設定");
   btn.title = "Hermes 設定";
   layoutShell(shell);
@@ -3985,8 +4024,7 @@ function renderKanbanOrb() {
     .join(" ");
   if (btn.className === next && shell.style.width) return;
   btn.className = next;
-  applyBotColor(shell, NOUS.neutral);
-  applyBotColor(btn, NOUS.neutral);
+  paintIdleChromeColor(shell, btn, NOUS.neutral);
   btn.setAttribute("aria-label", "看板");
   btn.title = "看板";
   layoutShell(shell);
@@ -4316,8 +4354,12 @@ function renderChat(id = state.activeId, options = {}) {
     if (chat.childElementCount > 0) syncChatInPlace(chat, thread, bot.id, resting);
     else mountChat(chat, thread, bot.id, resting);
     stickChat(id);
-  } else if (resting) {
-    chat.querySelectorAll(".bubble").forEach((node) => restBubble(node));
+  } else {
+    chat.querySelectorAll(".bubble").forEach((node, index) => {
+      const message = thread.messages[index];
+      if (resting) restBubble(node);
+      if (message?.role === "bot") ensurePlanChip(node, message, bot.id);
+    });
   }
   paintPlan(id, { force });
   const stop = role(panel, "stop");
@@ -4357,7 +4399,11 @@ function openPlanWindow(id, key) {
   const thread = threadFor(id);
   thread.planFocus = key || "";
   thread.planDismissed = "";
-  paintPlan(id);
+  const shell = shellFor(id);
+  if (shell) shell.dataset.planRepublish = "1";
+  // Quiet and the frozen hit list used to swallow this until relaunch.
+  paintPlan(id, { force: true });
+  if (shell?.dataset.planDirty === "1") armQuietFlush(shell);
 }
 
 function planSwapBlocked(shell, section) {
@@ -4394,6 +4440,7 @@ function paintPlan(id, options = {}) {
   if (!open && (seamPhase(section) === "growing" || freezeCooling(shell) || shell.classList.contains("is-plan-seam"))) {
     shell.dataset.planDirty = "1";
     debugLog("plan-hide-blocked", `seam=${seamPhase(section) || "-"}`);
+    if (force) armQuietFlush(shell);
     return;
   }
   if (section.hidden !== !open) section.hidden = !open;
@@ -4414,7 +4461,11 @@ function paintPlan(id, options = {}) {
     delete shell.dataset.planWidth;
     delete shell.dataset.planHeight;
     shell.classList.remove("is-plan-seam");
-    scheduleHitSync();
+    debugLog("plan-rect", `bot=${id} open=0`);
+    // hitSilence kept the union that announcePanelHits published. A deferred
+    // flush never runs while the panel stays open, so the empty plan rect
+    // was still capturing 15s later (R-CT-01).
+    retractPlanHit(shell);
     return;
   }
   const heldFrame = section.dataset.sizeLock === "1"
@@ -4495,7 +4546,7 @@ function wirePlanWindow(section, id) {
     const thread = threadFor(id);
     const focus = plansIn(thread.messages).find((item) => item.key === thread.planFocus) || latestPlan(thread.messages);
     thread.planDismissed = focus?.key || "closed";
-    paintPlan(id);
+    paintPlan(id, { force: true });
   });
   role(section, "plan-preview-mode")?.addEventListener("click", () => {
     section.dataset.mode = "preview";
@@ -7105,6 +7156,67 @@ function publishHits(tag = "publish", force = false) {
 
 /** Final geometry, announced once before the clip. Later frames must not
  *  send another input shape until the freeze or the collapse quiet ends. */
+/** 睇計劃 sets planRepublish after × dropped the union. The first open
+ *  already announced it, so this stays quiet unless that flag is set. */
+function releaseReopenedPlan(shell) {
+  if (!shell || shell.dataset.planRepublish !== "1") return;
+  delete shell.dataset.planRepublish;
+  const plan = planNode(shell);
+  if (plan && (plan._seamPhase || plan.dataset.seam || "") !== "grown") {
+    setSeamPhase(plan, "grown", { dom: false });
+    hostOpenPlan(shell);
+    logPlanHitBox(shell);
+  }
+  announcePanelHits(shell);
+}
+
+function logPlanHitBox(shell) {
+  const plan = planNode(shell);
+  if (!shell || !plan || shell.dataset.planOpen !== "1") return;
+  const box = plan.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return;
+  debugLog(
+    "plan-rect",
+    `bot=${shell.dataset.botId || ""} open=1 x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`,
+  );
+  const close = plan.querySelector("[data-role='plan-close']");
+  const button = close?.getBoundingClientRect();
+  const x = button && button.width >= 1 ? button.x + button.width / 2 : box.right - 16;
+  const y = button && button.height >= 1 ? button.y + button.height / 2 : box.y + 16;
+  debugLog(
+    "plan-close-at",
+    `bot=${shell.dataset.botId || ""} x=${Math.round(x)} y=${Math.round(y)}`,
+  );
+}
+
+/** Replace this panel's published rect with the shell box. The plan is
+ *  already hidden. Silence from the open announce must not keep the union. */
+function retractPlanHit(shell) {
+  if (!shell) return;
+  hitSilence.delete(shell);
+  const id = shell.dataset.hitId || hitFor(shell.dataset.botId, shell.dataset.state || "panel");
+  const host = shell.getBoundingClientRect();
+  const rect = {
+    id,
+    x: host.x,
+    y: host.y,
+    w: host.width,
+    h: host.height,
+    z: 1,
+    round: false,
+  };
+  coverBottomFooter(rect, shell);
+  const closeId = `close:${shell.dataset.botId || ""}`;
+  const source = lastHitList.length ? lastHitList.map((item) => ({ ...item })) : collectHits();
+  const keep = source.filter((item) => item.id !== id && item.id !== closeId);
+  keep.push(rect);
+  sendHitRects(keep, "plan-close", true);
+  debugLog(
+    "plan-hit-drop",
+    `bot=${shell.dataset.botId || ""} x=${Math.round(rect.x)} y=${Math.round(rect.y)} w=${Math.round(rect.w)} h=${Math.round(rect.h)}`,
+  );
+}
+
 function announcePanelHits(shell) {
   const id = hitFor(shell.dataset.botId, "panel");
   const host = shell.getBoundingClientRect();

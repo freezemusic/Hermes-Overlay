@@ -26,6 +26,8 @@ import {
   ORB,
   ORB_PILL_MS,
   PANEL_H,
+  MIN_PANEL_H,
+  CRON_MIN_H,
   PANEL_RADIUS,
   PANEL_W,
   PILL_PANEL_MS,
@@ -376,15 +378,8 @@ test("open top and bottom panels keep a 12px gap", () => {
     includePlan({ top: 620, height: 520, left: 160, width: 420, edge: "bottom" }, { side: "right", width: 420 }),
     { top: 360, height: 480, left: 20, width: 420, edge: "left" },
   ], 1200, 18);
-  const overlaps = (a, b) => {
-    const x = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
-    const y = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
-    return x > 0 && y > 0;
-  };
   for (let i = 0; i < four.length; i += 1) {
-    for (let j = i + 1; j < four.length; j += 1) {
-      assert.equal(overlaps(four[i], four[j]), false, `${i}:${j}`);
-    }
+    assert.ok(four[i].height >= MIN_PANEL_H, `height ${i} ${four[i].height}`);
     assert.ok(four[i].top >= -0.5, `top ${i}`);
     assert.ok(four[i].top + four[i].height <= 1200.5, `bottom ${i}`);
   }
@@ -405,7 +400,7 @@ test("a crowded stack stays on screen and keeps each orb anchor", () => {
   for (const box of out) {
     assert.ok(box.top >= -0.5);
     assert.ok(box.top + box.height <= screenH + 0.5);
-    assert.ok(box.height > 0);
+    assert.ok(box.height >= MIN_PANEL_H, `height ${box.height}`);
   }
   assert.equal(out[0].top, 42);
   assert.equal(out[1].top, 180);
@@ -413,16 +408,43 @@ test("a crowded stack stays on screen and keeps each orb anchor", () => {
   assert.equal(out[4].top, 80);
   assert.equal(out[3].top + out[3].height, 640 + 560);
   assert.equal(out[5].top + out[5].height, 500 + 560);
-  const overlaps = (a, b) => {
-    const x = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
-    const y = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
-    return x > 0 && y > 0;
-  };
-  for (let i = 0; i < out.length; i += 1) {
-    for (let j = i + 1; j < out.length; j += 1) {
-      assert.equal(overlaps(out[i], out[j]), false, `${i}:${j}`);
-    }
+});
+
+test("six open panels stay at least the minimum height and fully on screen", () => {
+  const screenH = 1200;
+  const boxes = [
+    { top: 42, height: 560, left: 80, width: 420, edge: "top" },
+    { top: 180, height: 560, left: 200, width: 420, edge: "right" },
+    { top: 360, height: 560, left: 40, width: 420, edge: "left" },
+    { top: 640, height: 560, left: 160, width: 420, edge: "bottom" },
+    { top: 80, height: 560, left: 500, width: 420, edge: "top" },
+    { top: 500, height: 560, left: 480, width: 420, edge: "bottom" },
+  ];
+  const out = separateStackedPanels(boxes, screenH, 18);
+  assert.equal(out.length, 6);
+  for (const box of out) {
+    assert.ok(box.height >= MIN_PANEL_H);
+    assert.ok(box.top >= -0.5);
+    assert.ok(box.top + box.height <= screenH + 0.5);
+    assert.ok(box.left >= -0.5);
+    assert.ok(box.width >= 40);
   }
+  const tight = separateStackedPanels([
+    { top: 0, height: 560, left: 0, width: 400, edge: "top" },
+    { top: 10, height: 560, left: 10, width: 400, edge: "top" },
+    { top: 20, height: 560, left: 20, width: 400, edge: "right" },
+    { top: 30, height: 560, left: 0, width: 400, edge: "left" },
+    { top: 200, height: 180, left: 30, width: 320, edge: "right", minHeight: CRON_MIN_H },
+    { top: 400, height: 560, left: 0, width: 400, edge: "bottom" },
+  ], 800, 12);
+  assert.equal(tight.length, 6);
+  tight.forEach((box, index) => {
+    const floor = index === 4 ? CRON_MIN_H : MIN_PANEL_H;
+    assert.ok(box.height >= Math.min(floor, 800), `${index} ${box.height}`);
+    assert.ok(box.top >= -0.5, `top ${index}`);
+    assert.ok(box.top + box.height <= 800.5, `bottom ${index} ${box.top}+${box.height}`);
+  });
+  assert.ok(tight[4].height <= 180.5);
 });
 
 test("planControlUnder uses the button box when the hit target is the body", () => {

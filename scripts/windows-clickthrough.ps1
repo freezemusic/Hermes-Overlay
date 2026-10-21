@@ -66,7 +66,9 @@ $gwScript = {
       $method = $ctx.Request.HttpMethod
       Add-Content $gwLog "$method $path"
       $body = '{"ok":true}'
-      if ($path -like "/api/sessions*") {
+      if ($path -like "/api/sessions/*/messages*") {
+        $body = '{"data":[{"role":"user","content":"/plan ship"},{"role":"assistant","content":"# Ship Implementation Plan\n\n**Goal:** keep click-through honest.\n\n- leave the plan rect\n- reopen from the chip\n\nFile: `.hermes/plans/ship.md`"}]}'
+      } elseif ($path -like "/api/sessions*") {
         $body = '{"data":[{"id":"bot-chat","title":"Bot Chat","source":"api_server","last_active":40},{"id":"saved-field","title":"notes","source":"api_server","last_active":10},{"id":"newest","title":"System Architect","source":"api_server","last_active":900}]}'
       }
       $bytes = [Text.Encoding]::UTF8.GetBytes($body)
@@ -310,16 +312,61 @@ function Note-Fail([string]$label, [string]$detail) {
 }
 
 function Assert-Empty([string]$label) {
+  Assert-Through $label $empty.x $empty.y
+}
+
+function Read-HitRects {
+  if (-not (Test-Path $log)) { return @() }
+  $hits = Select-String -Path $log -Pattern "hit-rects " | Select-Object -Last 1
+  if (-not $hits) { return @() }
+  $found = @()
+  foreach ($m in [regex]::Matches($hits.Line, '(?<id>\S+)@(?<x>-?\d+),(?<y>-?\d+),(?<w>-?\d+)x(?<h>-?\d+)')) {
+    $found += @{
+      id = $m.Groups['id'].Value
+      x = [int]$m.Groups['x'].Value
+      y = [int]$m.Groups['y'].Value
+      w = [int]$m.Groups['w'].Value
+      h = [int]$m.Groups['h'].Value
+    }
+  }
+  return $found
+}
+
+function Wait-Log([string]$pattern, [int]$seconds = 10) {
+  $deadline = (Get-Date).AddSeconds($seconds)
+  while ((Get-Date) -lt $deadline) {
+    if ((Test-Path $log) -and (Select-String -Path $log -Pattern $pattern -Quiet)) { return $true }
+    Start-Sleep -Milliseconds 200
+  }
+  return $false
+}
+
+function Wait-PanelRect([string]$id, [int]$minH = 200) {
+  $deadline = (Get-Date).AddSeconds(12)
+  while ((Get-Date) -lt $deadline) {
+    $rects = @(Read-HitRects)
+    $hit = $rects | Where-Object { $_.id -eq $id -and $_.h -ge $minH -and $_.w -ge 40 } | Select-Object -First 1
+    if ($hit) { return $hit }
+    Start-Sleep -Milliseconds 200
+  }
+  return $null
+}
+
+function Point-Inside($p, $rect) {
+  return $p.x -ge $rect.x -and $p.x -lt ($rect.x + $rect.w) -and $p.y -ge $rect.y -and $p.y -lt ($rect.y + $rect.h)
+}
+
+function Assert-Through([string]$label, [int]$x, [int]$y) {
   [ClickProbe]::Ctrl($false)
-  [ClickProbe]::SetCursorPos($empty.x, $empty.y) | Out-Null
+  [ClickProbe]::SetCursorPos($x, $y) | Out-Null
   Start-Sleep -Milliseconds 250
-  $hit = [ClickProbe]::HitAt($empty.x, $empty.y)
+  $hit = [ClickProbe]::HitAt($x, $y)
   $root = [ClickProbe]::GetAncestor($hit, 2)
   $cls = [ClickProbe]::ClassName($hit)
   $title = [ClickProbe]::Title($hit)
   if ($cls.StartsWith("Chrome_") -or ($root -ne $behindHwnd -and $hit -ne $behindHwnd)) {
     Dump-Tree
-    Note-Fail $label "WindowFromPoint class=$cls title=$title hwnd=$hit root=$root expected Behind $behindHwnd"
+    Note-Fail $label "WindowFromPoint ($x,$y) class=$cls title=$title hwnd=$hit root=$root expected Behind $behindHwnd"
     return
   }
   $before = Click-Count
@@ -331,10 +378,72 @@ function Assert-Empty([string]$label) {
   } while ((Get-Date) -lt $limit)
   if ((Click-Count) -le $before) {
     Dump-Tree
-    Note-Fail $label "SendInput at empty point did not reach Behind within 500ms class=$cls"
+    Note-Fail $label "SendInput at ($x,$y) did not reach Behind within 500ms class=$cls"
     return
   }
-  Note-Ok $label "class=$cls"
+  Note-Ok $label "($x,$y) class=$cls"
+}
+
+function Assert-Captured([string]$label, [int]$x, [int]$y) {
+  [ClickProbe]::Ctrl($false)
+  [ClickProbe]::SetCursorPos($x, $y) | Out-Null
+  Start-Sleep -Milliseconds 200
+  $before = Click-Count
+  [ClickProbe]::Click()
+  Start-Sleep -Milliseconds 400
+  if ((Click-Count) -gt $before) {
+    Dump-Tree
+    Note-Fail $label "click at ($x,$y) reached Behind"
+    return
+  }
+  Note-Ok $label "($x,$y)"
+}
+
+function Assert-Outside([string]$label, $rect) {
+  $all = @(Read-HitRects)
+  $points = @(
+    @{ name = "left"; x = [int]$rect.x - 10; y = [int]($rect.y + $rect.h / 2) },
+    @{ name = "right"; x = [int]($rect.x + $rect.w + 10); y = [int]($rect.y + $rect.h / 2) },
+    @{ name = "top"; x = [int]($rect.x + $rect.w / 2); y = [int]$rect.y - 10 },
+    @{ name = "bottom"; x = [int]($rect.x + $rect.w / 2); y = [int]($rect.y + $rect.h + 10) }
+  )
+  $checked = 0
+  foreach ($p in $points) {
+    if ($p.x -lt 2 -or $p.y -lt 2 -or $p.x -ge ($w - 2) -or $p.y -ge ($h - 48)) { continue }
+    $inside = $false
+    foreach ($other in $all) {
+      if (Point-Inside $p $other) { $inside = $true; break }
+    }
+    if ($inside) { continue }
+    $checked++
+    Assert-Through "$label-$($p.name)" $p.x $p.y
+  }
+  if ($checked -lt 1) {
+    Note-Fail $label "no on-screen point 10px outside $($rect.id) $($rect.x),$($rect.y) $($rect.w)x$($rect.h)"
+  }
+}
+
+function Read-PlanRect([string]$bot) {
+  if (-not (Test-Path $log)) { return $null }
+  $hits = Select-String -Path $log -Pattern "plan-rect bot=$bot open=1 " | Select-Object -Last 1
+  if (-not $hits) { return $null }
+  $m = [regex]::Match($hits.Line, 'x=(?<x>-?\d+) y=(?<y>-?\d+) w=(?<w>-?\d+) h=(?<h>-?\d+)')
+  if (-not $m.Success) { return $null }
+  return @{
+    x = [int]$m.Groups['x'].Value
+    y = [int]$m.Groups['y'].Value
+    w = [int]$m.Groups['w'].Value
+    h = [int]$m.Groups['h'].Value
+  }
+}
+
+function Read-PlanClose([string]$bot) {
+  if (-not (Test-Path $log)) { return $null }
+  $hits = Select-String -Path $log -Pattern "plan-close-at bot=$bot " | Select-Object -Last 1
+  if (-not $hits) { return $null }
+  $m = [regex]::Match($hits.Line, 'x=(?<x>-?\d+) y=(?<y>-?\d+)')
+  if (-not $m.Success) { return $null }
+  return @{ x = [int]$m.Groups['x'].Value; y = [int]$m.Groups['y'].Value }
 }
 
 function Assert-Orb([string]$label, $orbPoint) {
@@ -377,14 +486,69 @@ try {
   # Settings is still closed. Empty space passes through, then Ctrl+click opens it.
   Assert-Empty "reveal+2s"
   Assert-Orb "reveal+2s-settings" $settings
+  $settingsRect = Wait-PanelRect "settings" 200
+  if (-not $settingsRect) {
+    Note-Fail "settings-opened" "hit-rects never published settings with height >= 200"
+  } else {
+    Note-Ok "settings-opened" "$($settingsRect.x),$($settingsRect.y) $($settingsRect.w)x$($settingsRect.h)"
+    Assert-Outside "settings-edge" $settingsRect
+  }
   # Settings is open. The blank point is outside that card.
   Assert-Empty "settings-open"
-  # Open the field bot panel and sample the same blank point again.
+  # Open the field bot panel. The gateway plan must come up before edge samples.
   Assert-Orb "bot-open" $field
+  if (-not (Wait-Log "hit-announce bot=field mode=panel" 12)) {
+    Note-Fail "bot-opened" "debug log has no hit-announce bot=field mode=panel"
+  }
+  $fieldRect = Wait-PanelRect "panel:field" 200
+  if (-not $fieldRect) {
+    Note-Fail "bot-opened" "hit-rects never published panel:field with height >= 200"
+  } else {
+    Note-Ok "bot-opened" "$($fieldRect.x),$($fieldRect.y) $($fieldRect.w)x$($fieldRect.h)"
+    Assert-Outside "bot-edge" $fieldRect
+  }
+  if (-not (Wait-Log "plan-close-at bot=field " 12)) {
+    Note-Fail "plan-opened" "debug log has no plan-close-at for field"
+  } else {
+    $plan = Read-PlanRect "field"
+    $closer = Read-PlanClose "field"
+    if (-not $plan -or -not $closer) {
+      Note-Fail "plan-opened" "plan rect or close point missing"
+    } else {
+      Note-Ok "plan-opened" "$($plan.x),$($plan.y) $($plan.w)x$($plan.h) close $($closer.x),$($closer.y)"
+      Assert-Captured "plan-close" $closer.x $closer.y
+      if (-not (Wait-Log "plan-hit-drop bot=field " 8)) {
+        Note-Fail "plan-closed" "x did not drop the plan hit rect"
+      } else {
+        $cx = [int]($plan.x + $plan.w / 2)
+        $cy = [int]($plan.y + $plan.h / 2)
+        Assert-Through "plan-former" $cx $cy
+        Start-Sleep -Seconds 1
+        Assert-Through "plan-former+1s" $cx $cy
+      }
+    }
+  }
   Assert-Empty "bot-panel-open"
+  $beforeEscape = @(Read-HitRects | Where-Object { $_.id -notlike "close:*" -and $_.id -notlike "slash:*" -and $_.id -notlike "bot:*" -and $_.id -notlike "pill:*" -and $_.h -ge 80 })
   [ClickProbe]::Ctrl($false)
   [ClickProbe]::Tap(0x1B)
-  Start-Sleep -Milliseconds 400
+  $gone = $null
+  $deadline = (Get-Date).AddSeconds(6)
+  while ((Get-Date) -lt $deadline -and -not $gone) {
+    Start-Sleep -Milliseconds 200
+    $nowIds = @((Read-HitRects) | ForEach-Object { $_.id })
+    foreach ($was in $beforeEscape) {
+      if ($nowIds -notcontains $was.id) { $gone = $was; break }
+    }
+  }
+  if (-not $gone) {
+    Note-Fail "escape-closed" "no published panel rect left the hit list"
+  } else {
+    $gx = [int]($gone.x + $gone.w / 2)
+    $gy = [int]($gone.y + $gone.h / 2)
+    Note-Ok "escape-closed" "$($gone.id) $($gone.x),$($gone.y)"
+    Assert-Through "escape-former" $gx $gy
+  }
   Assert-Empty "after-escape"
   $remain = 32 - ((Get-Date) - $revealedAt).TotalSeconds
   if ($remain -gt 0) { Start-Sleep -Seconds $remain }
