@@ -52,7 +52,7 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
 
 $shared = [hashtable]::Synchronized(@{ Listener = $null })
 $gwScript = {
-  param($shared, $gwLog)
+  param($shared, $gwLog, $debugLog)
   $listener = New-Object System.Net.HttpListener
   $listener.Prefixes.Add("http://127.0.0.1:8642/")
   $shared.Listener = $listener
@@ -64,7 +64,9 @@ $gwScript = {
       try { $ctx = $listener.GetContext() } catch { break }
       $path = $ctx.Request.Url.AbsolutePath
       $method = $ctx.Request.HttpMethod
-      Add-Content $gwLog "$method $path"
+      $line = "$method $path"
+      Add-Content $gwLog $line
+      if ($debugLog) { Add-Content $debugLog "gateway $line" }
       $body = '{"ok":true}'
       # Named profiles call /p/<profile>/api/sessions/..., not /api/sessions/...
       if ($path -like "*/messages*") {
@@ -86,7 +88,7 @@ $gwScript = {
   }
 }
 $gw = [powershell]::Create()
-$gw.AddScript($gwScript).AddArgument($shared).AddArgument($gwLog) | Out-Null
+$gw.AddScript($gwScript).AddArgument($shared).AddArgument($gwLog).AddArgument($log) | Out-Null
 $gwHandle = $gw.BeginInvoke()
 $deadline = (Get-Date).AddSeconds(10)
 while (-not (Test-Path $gwLog) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
@@ -204,6 +206,40 @@ public static class ClickProbe {
     up.u.ki.dwFlags = KEYEVENTF_KEYUP;
     SendInput(1, new[] { down }, Marshal.SizeOf(typeof(INPUT)));
     SendInput(1, new[] { up }, Marshal.SizeOf(typeof(INPUT)));
+  }
+  [DllImport("advapi32", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern bool CredWrite(ref CREDENTIAL cred, uint flags);
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct CREDENTIAL {
+    public uint Flags;
+    public uint Type;
+    public string TargetName;
+    public string Comment;
+    public long LastWritten;
+    public uint CredentialBlobSize;
+    public IntPtr CredentialBlob;
+    public uint Persist;
+    public uint AttributeCount;
+    public IntPtr Attributes;
+    public string TargetAlias;
+    public string UserName;
+  }
+  public static void StoreKey(string target, string user, string secret) {
+    var bytes = System.Text.Encoding.Unicode.GetBytes(secret);
+    var ptr = Marshal.AllocHGlobal(bytes.Length);
+    Marshal.Copy(bytes, 0, ptr, bytes.Length);
+    var cred = new CREDENTIAL();
+    cred.Type = 1;
+    cred.TargetName = target;
+    cred.UserName = user;
+    cred.Comment = "hermes-overlay-clickthrough";
+    cred.CredentialBlobSize = (uint)bytes.Length;
+    cred.CredentialBlob = ptr;
+    cred.Persist = 3;
+    if (!CredWrite(ref cred, 0)) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+    Marshal.FreeHGlobal(ptr);
   }
   public static void Dump(string path) {
     var lines = new StringBuilder();
@@ -494,6 +530,8 @@ $overlay = $null
 try {
   $env:HERMES_OVERLAY_DEBUG_LOG = $log
   $env:HERMES_HOME = $hermesHome
+  # open_bot refuses a profile with no keyring entry, so the plan never loads.
+  [ClickProbe]::StoreKey("profile:field.com.freezemusic.hermes-overlay", "profile:field", "clickthrough-key")
   $overlay = Start-Process -FilePath $exe.FullName -WorkingDirectory $root -PassThru
   $deadline = (Get-Date).AddSeconds(90)
   $revealed = $false

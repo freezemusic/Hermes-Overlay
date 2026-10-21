@@ -5072,6 +5072,7 @@ function noteHistoryError(id, err) {
   const thread = threadFor(id);
   thread.loaded = false;
   const message = String(err);
+  debugLog("history-error", `id=${id} ${message}`);
   if (gatewayDown(message)) {
     setBotStatus(id, "連線錯誤", "error");
     setBanner(message, "error");
