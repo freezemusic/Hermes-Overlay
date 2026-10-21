@@ -621,7 +621,7 @@ export function seamClipStillClosed(computed, open) {
   return seamClipOutset(computed) < full * 0.5;
 }
 
-/** Inline scale for one growth sample. t is 0..1 over 240ms. The resting
+/** Inline scale for one growth sample. t is 0..1 over PLAN_GROW_MS. The resting
  *  value is 1; 0.001 exists only on the frame the clock starts. */
 export function seamScaleAt(t) {
   if (t <= 0) return SEAM_MIN;
@@ -640,7 +640,7 @@ export function seamClip(side, t) {
 }
 
 /** Outer wrapper width for one growth sample. The inner content stays at
- *  `full`. t is 0..1 over 240ms. A positive t never rounds back to 0. */
+ *  `full`. t is 0..1 over PLAN_GROW_MS. A positive t never rounds back to 0. */
 export function seamWidthPx(full, t) {
   const width = Number(full) || 0;
   if (!(width > 0) || t <= 0) return 0;
@@ -650,7 +650,7 @@ export function seamWidthPx(full, t) {
 }
 
 /** Composited seam. WebKitGTK does not run clip-path on the compositor, so a
- *  240ms inset animation paints on the main thread and the first presented
+ *  PLAN_GROW_MS inset animation paints on the main thread and the first presented
  *  frame is already most of the way open. scaleX is composited. The inner
  *  track is the reciprocal, with the ease baked into the values and a linear
  *  clock, so the text is not stretched. */

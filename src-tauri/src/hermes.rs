@@ -521,20 +521,14 @@ pub async fn create_bot_chat(http: &Client, root: &str, key: &str) -> Result<Str
     }
 }
 
-/// Most recently active overlay Bot Chat. If none exists, create one. If create
-/// is not feasible, fall back to the latest session that is not another
-/// surface's Bot Chat.
+/// Most recently active overlay Bot Chat. If none exists, create one.
+/// Create failure stays an error. Do not open another session instead.
 pub async fn ensure_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
     let sessions = list_sessions(http, root, key).await?;
     if let Some(session) = most_recent_bot_chat(&sessions) {
         return Ok(session.id.clone());
     }
-    match create_bot_chat(http, root, key).await {
-        Ok(id) => Ok(id),
-        Err(err) => fallback_session(&sessions)
-            .map(|session| session.id.clone())
-            .ok_or(err),
-    }
+    create_bot_chat(http, root, key).await
 }
 
 pub async fn fetch_messages(
