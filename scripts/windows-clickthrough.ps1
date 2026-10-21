@@ -594,7 +594,8 @@ try {
     $bx = [int]($button.x + $button.w / 2)
     $by = [int]($button.y + $button.h / 2)
     Assert-Captured "settings-close" $bx $by
-    if (-not (Wait-IdGone "settings" 8)) {
+    $settingsGone = (Wait-IdGone "settings" 8) -and (Wait-IdGone "close:settings" 8)
+    if (-not $settingsGone) {
       Note-Fail "settings-closed" "settings rect stayed in the hit list after ($bx,$by)"
     } else {
       Note-Ok "settings-closed" "$bx,$by"

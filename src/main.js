@@ -1212,8 +1212,13 @@ function hideUnwarmedPlan(shell) {
   }
   if (shell) {
     restoreHostedPlan(shell);
+    const wasOpen = shell.dataset.planOpen === "1";
     delete shell.dataset.planOpen;
     shell.classList.remove("is-plan-seam", "is-plan-arming");
+    // announcePanelHits already published the plan union and then went
+    // silent. Hiding the plan without retracting leaves that empty pane
+    // capturing clicks (R-CT-01).
+    if (wasOpen) retractPlanHit(shell);
   }
 }
 
@@ -3439,13 +3444,18 @@ async function runShellMorph(shell, target) {
       warmPlanLayer(shell);
       shell.classList.add("is-plan-seam");
       const ready = alive() && await waitPlanPresented(shell);
-      if (alive() && ready) await playPlanSeam(shell, token);
+      // The 340ms warm wait often ends before six presented frames. The
+      // seam still hosts on that warm layer; hiding here left the union
+      // in the hit list and never logged the close point (R-CT-01).
+      const hosted = plan.dataset.warm === "1" && !!plan.dataset.key;
+      if (alive() && (ready || hosted)) await playPlanSeam(shell, token);
       else if (alive()) hideUnwarmedPlan(shell);
     } else {
       warmPlanLayer(shell);
       shell.classList.add("is-plan-seam");
       const ready = alive() && await waitPlanPresented(shell);
-      if (alive() && ready) await playPlanSeam(shell, token);
+      const hosted = plan.dataset.warm === "1" && !!plan.dataset.key;
+      if (alive() && (ready || hosted)) await playPlanSeam(shell, token);
       else if (alive()) {
         shell.dataset.seamWait = "1";
         hideUnwarmedPlan(shell);
@@ -6843,6 +6853,21 @@ function collectHits() {
         z: 1000,
         round: false,
       });
+    } else if (shell.classList.contains("is-collapsing")) {
+      // State is still "panel" until the clip ends. Publishing that box
+      // puts the closing card, and its old close button, back in the list.
+      const host = shell.getBoundingClientRect();
+      const ax = Number(shell.dataset.ax) || ORB / 2;
+      const ay = Number(shell.dataset.ay) || ORB / 2;
+      rects.push({
+        id: hitFor(shell.dataset.botId, "orb"),
+        x: host.x + ax - ORB / 2,
+        y: host.y + ay - ORB / 2,
+        w: ORB,
+        h: ORB,
+        z: 0,
+        round: true,
+      });
     } else if (shell.dataset.rehearsal === "1" && shell._rehearsalHit) {
       const hit = shell._rehearsalHit;
       rects.push({
@@ -6910,7 +6935,7 @@ function collectHits() {
       coverBottomFooter(rect, shell);
       rects.push(rect);
     }
-    if (shell.dataset.state === "panel") {
+    if (shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) {
       const slash = role(shell, "slash");
       if (slash?.dataset.hitId) push(slash.dataset.hitId, slash, level + 20);
       pushCloseHit(rects, shell, level);
@@ -7334,7 +7359,8 @@ function announceOrbHits(shell) {
     z: 0,
     round: true,
   };
-  const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id);
+  const closeId = `close:${shell.dataset.botId || ""}`;
+  const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id && item.id !== closeId);
   keep.push(rect);
   hitSilence.add(shell);
   pauseHitSync();
