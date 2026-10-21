@@ -4476,9 +4476,13 @@ function paintPlan(id, options = {}) {
   const open = !!focus;
   const wasOpen = shell.dataset.planOpen === "1";
   seamLog("paint", `open=${open ? 1 : 0} was=${wasOpen ? 1 : 0} key=${focus?.key || ""}`);
-  if (!open && (seamPhase(section) === "growing" || freezeCooling(shell) || shell.classList.contains("is-plan-seam"))) {
+  // A grown seam keeps is-plan-seam while the open morph holds the collapse
+  // gate, so a deferred × never runs. Forced close of a grown plan drops
+  // the pane on this turn (R-CT-01). Only a still-growing seam waits.
+  const growing = seamPhase(section) === "growing";
+  if (!open && (growing || (!force && (freezeCooling(shell) || shell.classList.contains("is-plan-seam"))))) {
     shell.dataset.planDirty = "1";
-    debugLog("plan-hide-blocked", `seam=${seamPhase(section) || "-"}`);
+    debugLog("plan-hide-blocked", `seam=${seamPhase(section) || "-"} force=${force ? 1 : 0}`);
     if (force) armQuietFlush(shell);
     return;
   }
@@ -4499,7 +4503,7 @@ function paintPlan(id, options = {}) {
     forgetPlanWarm(section);
     delete shell.dataset.planWidth;
     delete shell.dataset.planHeight;
-    shell.classList.remove("is-plan-seam");
+    shell.classList.remove("is-plan-seam", "is-plan-arming");
     debugLog("plan-rect", `bot=${id} open=0`);
     // hitSilence kept the union that announcePanelHits published. A deferred
     // flush never runs while the panel stays open, so the empty plan rect
