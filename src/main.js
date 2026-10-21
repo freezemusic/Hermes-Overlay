@@ -3092,8 +3092,8 @@ function logCollapseSpan(shell) {
 }
 
 /** Start the panel clip at the plan handoff, before class changes. Waiting
- *  until the plan animation's finished state made the top edge add the full
- *  382ms after the 200ms plan clip. */
+ *  until the plan animation's finished state made the top edge add its full
+ *  300ms clock after the 200ms plan clip. */
 function armPanelCollapse(shell) {
   if (!shell || shell.dataset.planOpen !== "1" || !(shell._collapsePlanAt > 0)) return null;
   const panelMs = collapseMs(shell.dataset.edge || "bottom");
