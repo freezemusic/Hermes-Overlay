@@ -109,7 +109,7 @@
   --text: #000091;
   --text-body: #1a1a1a;
   --text-muted: #616191;
-  --text-ink: var(--bot);
+  --text-ink: #14142b;
 
   --font-display: "Big Shoulders Display", "Antonio", "Noto Sans HK", sans-serif;
   --font-label: "Barlow Condensed", "Noto Sans HK", sans-serif;
@@ -227,7 +227,7 @@ html, body {
   display: grid;
   place-items: center;
   user-select: none;
-  color: var(--bot);
+  color: #14142b;
 }
 
 .active-avatar {
@@ -264,7 +264,7 @@ html, body {
   position: relative;
   z-index: 1;
   font: 500 18px/1 var(--font-display);
-  color: var(--bot);
+  color: #14142b;
   pointer-events: none;
   text-shadow: 0 0 4px #fff;
 }
@@ -298,7 +298,7 @@ html, body {
 .orb--cron .bot-label { background: rgba(248, 248, 252, .82); }
 
 .bot-btn:hover::before { opacity: 1; transform: scale(1.08); }
-.bot-btn:hover .bot-label { color: var(--bot); }
+.bot-btn:hover .bot-label { color: #0000f2; }
 
 .bot-btn.active .orb-core {
   box-shadow: none;
@@ -334,31 +334,9 @@ html, body {
 
 .orb--cron { --bot: var(--nous-neutral); --bot-rgb: 97 97 145; }
 
-.orb--cron .orb-glyph {
-  color: #616191;
-  font-weight: 600;
-  text-shadow: none;
-}
-
 .bot-btn.orb--cron {
   contain: none;
   overflow: visible;
-}
-
-.bot-btn.orb--cron::before {
-  inset: -3px;
-  z-index: 2;
-  opacity: 1;
-  transform: none;
-  background: repeating-conic-gradient(rgba(97, 97, 145, .45) 0 2deg, transparent 2deg 30deg);
-  -webkit-mask: radial-gradient(circle closest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
-  mask: radial-gradient(circle closest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
-  animation: none;
-}
-
-.bot-btn.orb--cron:hover::before {
-  opacity: 1;
-  transform: none;
 }
 
 .bot-btn.orb--cron::after {
@@ -385,7 +363,7 @@ html, body {
 .bot-btn.orb--cron.is-running .orb-core,
 .bot-btn.orb--cron.is-failed .orb-core {
   background: radial-gradient(#fff 0 30%, rgba(0, 0, 242, .35) 60%, transparent 75%);
-  box-shadow: 0 0 14px 4px rgba(0, 0, 242, .35);
+  box-shadow: 0 0 10px 2px rgba(0, 0, 242, .25);
 }
 
 .bot-btn.orb--cron.is-running::after {
@@ -699,7 +677,7 @@ html, body {
   font: 500 var(--fs-title)/1 var(--font-display);
   letter-spacing: 0;
   text-transform: none;
-  color: var(--bot);
+  color: #0000f2;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -782,12 +760,12 @@ html, body {
 
 .send-btn {
   height: 36px;
-  background: var(--bot);
-  border-color: var(--bot);
+  background: #0000f2;
+  border-color: #0000f2;
   color: #fff;
 }
 
-.send-btn:hover { background: var(--bot); box-shadow: var(--glow-sm); }
+.send-btn:hover { background: #0000f2; box-shadow: var(--glow-sm); }
 
 .send-btn:disabled,
 .icon-btn:disabled { opacity: 0.45; cursor: default; }
@@ -1064,8 +1042,8 @@ html, body {
 }
 
 .panel-tab[aria-selected="true"] {
-  background: var(--bot);
-  border-color: var(--bot);
+  background: #0000f2;
+  border-color: #0000f2;
   color: #fff;
 }
 
@@ -1216,8 +1194,8 @@ html, body {
   -webkit-appearance: none;
   color-scheme: light;
   cursor: pointer;
-  background-image: linear-gradient(45deg, transparent 50%, var(--bot) 50%),
-    linear-gradient(135deg, var(--bot) 50%, transparent 50%);
+  background-image: linear-gradient(45deg, transparent 50%, #14142b 50%),
+    linear-gradient(135deg, #14142b 50%, transparent 50%);
   background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
@@ -1284,7 +1262,7 @@ html, body {
   align-self: flex-start;
   background: rgb(255 255 255 / .94);
   border: none;
-  border-left: 2px solid var(--bot-40);
+  border-left: 2px solid var(--bot);
   color: #1a1a1a;
   white-space: normal;
   overflow-wrap: break-word;
@@ -1317,7 +1295,7 @@ html, body {
 .bubble.bot ol { padding-left: 1.35em; }
 
 .bubble.bot a {
-  color: var(--bot);
+  color: #0000f2;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
 }
@@ -1337,7 +1315,7 @@ html, body {
   background: var(--bot-5);
   border: 1px solid var(--bot-20);
   border-radius: var(--r-xs);
-  color: var(--bot);
+  color: #14142b;
 }
 
 .bubble.bot pre {
@@ -1374,7 +1352,7 @@ html, body {
 
 .bubble.bot blockquote {
   padding-left: 10px;
-  border-left: 2px solid var(--bot-40);
+  border-left: 2px solid var(--bot);
   color: var(--text-muted);
 }
 
@@ -1399,8 +1377,8 @@ html, body {
   margin-left: auto;
   max-width: 85%;
   background: var(--bot-10);
-  border: 1px solid var(--bot-60);
-  color: var(--bot);
+  border: 1px solid #0000f2;
+  color: #14142b;
 }
 
 .user-line { white-space: pre-wrap; }
@@ -1417,7 +1395,7 @@ html, body {
   padding: 0;
   border: 0;
   background: none;
-  color: var(--bot);
+  color: #0000f2;
   font: 400 var(--fs-meta)/1.4 var(--font-mono);
   cursor: pointer;
 }
@@ -1430,7 +1408,7 @@ html, body {
 
 .chat-messages.streaming .bubble.bot[data-live]::after {
   content: "▍";
-  color: var(--bot);
+  color: #0000f2;
   animation: blink 1s steps(2) infinite;
 }
 
@@ -1496,8 +1474,8 @@ html, body {
   background-color: rgb(255 255 255 / .96);
   color: #1a1a1a;
   padding-right: 28px;
-  background-image: linear-gradient(45deg, transparent 50%, var(--bot) 50%),
-    linear-gradient(135deg, var(--bot) 50%, transparent 50%);
+  background-image: linear-gradient(45deg, transparent 50%, #14142b 50%),
+    linear-gradient(135deg, #14142b 50%, transparent 50%);
   background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
@@ -1545,7 +1523,7 @@ html, body {
 .slash-cat,
 .slash-hint {
   margin: 6px 4px 2px;
-  color: var(--bot-80);
+  color: #0000f2;
   font: 500 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   text-transform: none;
@@ -1575,7 +1553,7 @@ html, body {
 .slash-name {
   flex: none;
   font: 400 var(--fs-meta)/1.4 var(--font-mono);
-  color: var(--bot);
+  color: #0000f2;
 }
 
 .slash-desc {
@@ -1625,9 +1603,9 @@ html, body {
 }
 
 .conn-banner.info {
-  border-color: var(--bot-40);
+  border-color: #0000f2;
   background: var(--bot-10);
-  color: var(--bot);
+  color: #14142b;
 }
 
 .conn-banner.ok,
@@ -1688,7 +1666,7 @@ html, body {
   font: 500 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   text-transform: none;
-  color: var(--bot);
+  color: #0000f2;
 }
 
 .toast time {
@@ -2048,8 +2026,7 @@ html, body {
 .morph.is-collapsing,
 .morph.is-collapsing .morph-fill,
 .morph.is-collapsing .morph-stroke,
-.morph.is-collapsing .morph-orb,
-.morph.is-collapsing .morph-glow {
+.morph.is-collapsing .morph-orb {
   transition: none !important;
 }
 
@@ -2070,35 +2047,45 @@ html, body {
   position: absolute;
   left: var(--ax, 22px);
   top: var(--ay, 22px);
-  width: 140px;
-  height: 140px;
-  transform: translate(-70px, -70px);
+  width: 96px;
+  height: 96px;
+  transform: translate(-48px, -48px);
   pointer-events: none;
-  background: radial-gradient(circle, rgb(var(--bot-rgb) / .22) 0%, transparent 70%);
+  opacity: 0;
+  background: radial-gradient(circle, rgb(var(--bot-rgb) / .12) 0%, transparent 70%);
 }
 
 .morph.is-orb-docked .morph-glow {
-  transform: translate(-70px, -70px);
+  transform: translate(-48px, -48px);
 }
 
 .morph.is-morphing:not(.is-orb-docked):not(.is-orb-moving) .morph-glow,
 .morph.is-collapsing .morph-glow {
-  transform: translate(-70px, -70px);
+  transform: translate(-48px, -48px);
 }
 
-.morph.is-orb-moving .morph-orb,
-.morph.is-orb-moving .morph-glow {
+.morph.is-orb-moving .morph-orb {
   transition: none;
   will-change: transform;
 }
 
 .morph.is-orb-moving .morph-glow {
-  opacity: 0.4;
+  will-change: transform;
 }
 
-.morph.is-orb-docked .morph-glow {
+.morph[data-state="orb"] .morph-glow {
+  opacity: 0;
+}
+
+.morph[data-state="panel"]:not(.is-collapsing) .morph-glow,
+.morph.is-orb-docked:not(.is-collapsing) .morph-glow {
   opacity: 1;
-  transition: none;
+  transition: opacity 160ms linear 320ms;
+}
+
+.morph.is-collapsing .morph-glow {
+  opacity: 0;
+  transition: opacity 80ms linear !important;
 }
 
 /* Dropping is-orb-moving must not evict the header layer. The left orb
@@ -2464,7 +2451,7 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   border: var(--hair);
 }
 
-.experimental legend { padding: 0 6px; color: var(--bot); }
+.experimental legend { padding: 0 6px; color: #0000f2; }
 
 .settings-status {
   min-height: 1.2em;
@@ -2569,7 +2556,7 @@ html.overlay-passthrough .morph[data-state="panel"] :is(input, textarea):focus {
   .center-panel.is-thinking .spinner::before,
   .is-thinking .bot-status .spinner::before {
     content: "···";
-    color: var(--bot);
+    color: #0000f2;
     font: 400 var(--fs-meta)/1 var(--font-mono);
   }
 }

@@ -11,6 +11,33 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
+/// `WS_EX_TRANSPARENT`. tao caches exstyle and drops this bit on show.
+pub const WS_EX_TRANSPARENT_BIT: i32 = 0x0000_0020;
+
+/// Click-through is the resting state until a hittable region is published.
+static DESIRED_TRANSPARENT: AtomicBool = AtomicBool::new(true);
+
+pub fn note_desired_transparent(transparent: bool) {
+    DESIRED_TRANSPARENT.store(transparent, Ordering::Relaxed);
+}
+
+pub fn desired_transparent() -> bool {
+    DESIRED_TRANSPARENT.load(Ordering::Relaxed)
+}
+
+/// Next exstyle. Pure so the bit can be tested without a window.
+pub fn next_exstyle(actual: i32, transparent: bool) -> i32 {
+    if transparent {
+        actual | WS_EX_TRANSPARENT_BIT
+    } else {
+        actual & !WS_EX_TRANSPARENT_BIT
+    }
+}
+
+pub fn exstyle_needs_write(actual: i32, transparent: bool) -> bool {
+    next_exstyle(actual, transparent) != actual
+}
+
 #[derive(Debug, Clone)]
 pub struct HitRect {
     pub id: String,
@@ -2149,6 +2176,8 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 &mut region_signature,
                 defer_shrink,
             );
+            #[cfg(windows)]
+            reconcile_window_exstyle(&app, &window);
             if rects.iter().any(|rect| is_orb_hit(rect) || is_pill_hit(rect)) {
                 remembered_rects = rects.clone();
             }
@@ -2321,6 +2350,8 @@ fn sync_os_hit_region(
         // Show clears the Linux input shape. For a short beat after reveal,
         // an empty poll must not replace the orb that was just applied.
         if region.is_empty() && mono_ms() < EMPTY_BLOCK_UNTIL.load(Ordering::Relaxed) {
+            #[cfg(windows)]
+            note_desired_transparent(last_painted.is_empty());
             return last_painted.to_vec();
         }
         let origin = window.inner_position().ok();
@@ -2342,7 +2373,16 @@ fn sync_os_hit_region(
                 .join(";")
         );
         let adds_hit = shape_adds_hittable(last_painted, &region);
-        match shape_combine_action(defer_shrink, adds_hit, signature == *region_signature) {
+        let action = shape_combine_action(defer_shrink, adds_hit, signature == *region_signature);
+        #[cfg(windows)]
+        {
+            let transparent = match action {
+                ShapeCombine::Defer => last_painted.is_empty(),
+                _ => region.is_empty(),
+            };
+            note_desired_transparent(transparent);
+        }
+        match action {
             ShapeCombine::Skip => return region,
             // Keep the rects a pointer can already hit. The signature stays
             // so the shrink still applies once the Ctrl-edge hold ends.
@@ -2482,9 +2522,55 @@ fn install_hit_proc(hwnd: *mut std::ffi::c_void) {
 }
 
 #[cfg(windows)]
+fn read_exstyle(hwnd: *mut std::ffi::c_void) -> i32 {
+    const GWL_EXSTYLE: i32 = -20;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetLastError(err: u32);
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowLongW(hwnd: *mut std::ffi::c_void, index: i32) -> i32;
+    }
+    unsafe {
+        SetLastError(0);
+        GetWindowLongW(hwnd, GWL_EXSTYLE)
+    }
+}
+
+#[cfg(windows)]
+fn reconcile_window_exstyle(app: &AppHandle, window: &tauri::WebviewWindow) {
+    let Some(hwnd) = window_hwnd(window) else {
+        return;
+    };
+    let actual = read_exstyle(hwnd);
+    let want = desired_transparent();
+    if exstyle_needs_write(actual, want) {
+        queue_windows_hit_style(app, want);
+    }
+}
+
+/// Read `GWL_EXSTYLE` and put the transparent bit back when tao dropped it.
+pub fn reassert_window_exstyle(app: &AppHandle) {
+    #[cfg(windows)]
+    {
+        let Some(window) = app.get_webview_window("main") else {
+            return;
+        };
+        let Some(hwnd) = window_hwnd(&window) else {
+            return;
+        };
+        set_window_transparent(hwnd, desired_transparent());
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+    }
+}
+
+#[cfg(windows)]
 fn set_window_transparent(hwnd: *mut std::ffi::c_void, transparent: bool) {
     const GWL_EXSTYLE: i32 = -20;
-    const WS_EX_TRANSPARENT: i32 = 0x0000_0020;
     #[link(name = "user32")]
     extern "system" {
         fn GetWindowLongW(hwnd: *mut std::ffi::c_void, index: i32) -> i32;
@@ -2492,13 +2578,16 @@ fn set_window_transparent(hwnd: *mut std::ffi::c_void, transparent: bool) {
     }
     unsafe {
         let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        let next = if transparent {
-            style | WS_EX_TRANSPARENT
-        } else {
-            style & !WS_EX_TRANSPARENT
-        };
+        let next = next_exstyle(style, transparent);
         if next != style {
             SetWindowLongW(hwnd, GWL_EXSTYLE, next);
+            crate::trace_debug(
+                "exstyle",
+                &format!(
+                    "actual={style:#x} next={next:#x} transparent={}",
+                    u8::from(transparent)
+                ),
+            );
         }
     }
 }
@@ -2698,6 +2787,11 @@ pub fn reapply_live_input_shape(app: &AppHandle, hub: &InteractionHub) {
     SHAPE_GEN.fetch_add(1, Ordering::Relaxed);
     if region.is_empty() {
         SHAPE_DIRTY.store(true, Ordering::Relaxed);
+        #[cfg(windows)]
+        {
+            note_desired_transparent(true);
+            queue_windows_hit_style(app, true);
+        }
         return;
     }
     let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
@@ -2714,6 +2808,7 @@ pub fn reapply_live_input_shape(app: &AppHandle, hub: &InteractionHub) {
             .map(|point| (f64::from(point.x), f64::from(point.y)))
             .unwrap_or((0.0, 0.0));
         remember_hit_region(&region, origin_x, origin_y, scale);
+        note_desired_transparent(false);
         queue_windows_hit_style(app, false);
     }
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -3128,6 +3223,28 @@ mod tests {
             z: 0,
             round: false,
         }
+    }
+
+    #[test]
+    fn desired_transparent_can_be_stored() {
+        note_desired_transparent(true);
+        assert!(desired_transparent());
+        note_desired_transparent(false);
+        assert!(!desired_transparent());
+        note_desired_transparent(true);
+    }
+
+    #[test]
+    fn exstyle_puts_the_transparent_bit_back() {
+        const LIVE: i32 = 0x40138;
+        const DROPPED: i32 = 0x40118;
+        assert!(!exstyle_needs_write(LIVE, true));
+        assert_eq!(next_exstyle(LIVE, true), LIVE);
+        assert!(exstyle_needs_write(DROPPED, true));
+        assert_eq!(next_exstyle(DROPPED, true), LIVE);
+        assert!(!exstyle_needs_write(DROPPED, false));
+        assert_eq!(next_exstyle(LIVE, false) & WS_EX_TRANSPARENT_BIT, 0);
+        assert_eq!(next_exstyle(LIVE, false), DROPPED);
     }
 
     #[test]

@@ -8,9 +8,12 @@ import {
   CONTENT_IN_MS,
   CONTENT_OUT_MS,
   EASE,
+  PLAN_COLLAPSE_HANDOFF_MS,
   PLAN_COLLAPSE_MS,
   PLAN_EASE,
   PLAN_GROW_MS,
+  collapseEase,
+  overlappedCollapseInsets,
   planEase,
   seamAdvanceMs,
   seamFrameStep,
@@ -109,6 +112,9 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(PLAN_GROW_MS, 280);
   assert.ok(PLAN_GROW_MS <= 300);
   assert.equal(PLAN_COLLAPSE_MS, 200);
+  assert.equal(PLAN_COLLAPSE_HANDOFF_MS, 160);
+  assert.equal(collapseEase(0), 0);
+  assert.equal(collapseEase(1), 1);
   assert.equal(PLAN_EASE, "cubic-bezier(.3,.6,.2,1)");
   assert.equal(planEase(0), 0);
   assert.equal(planEase(1), 1);
@@ -445,4 +451,30 @@ test("collapse drops a dragged park so the orb can return to its edge", () => {
   assert.equal(anchors.kanban.placed, true);
   assert.equal(dropParkedAnchor(anchors, "planner"), false);
   assert.equal(dropParkedAnchor(null, "planner"), false);
+});
+
+test("panel collapse starts while the plan clip is still closing", () => {
+  const planOpen = { top: 0, right: -420, bottom: 0, left: 0, radius: 3 };
+  const planClosed = { top: -4, right: 0, bottom: -4, left: -4, radius: 12 };
+  const panelFrom = { top: 0, right: 0, bottom: 0, left: 0, radius: 12 };
+  const panelTo = { top: 80, right: 80, bottom: 80, left: 80, radius: 22 };
+  const panelMs = 300;
+  const at = (elapsedMs) => overlappedCollapseInsets({
+    planOpen,
+    planClosed,
+    panelFrom,
+    panelTo,
+    planSide: "right",
+    elapsedMs,
+    panelMs,
+  });
+  const mid = at(160);
+  const along = planOpen.right + (planClosed.right - planOpen.right) * collapseEase(0.8);
+  assert.ok(Math.abs(mid.right - along) < 1e-6);
+  assert.ok(1 - collapseEase(0.8) > 0.2);
+  assert.ok(Math.abs(at(200).right - planClosed.right) < 1e-6);
+  const done = at(160 + panelMs);
+  assert.ok(Math.abs(done.right - panelTo.right) < 1e-4);
+  assert.ok(Math.abs(done.top - panelTo.top) < 1e-4);
+  assert.ok(at(180).right > mid.right);
 });

@@ -213,6 +213,38 @@ pub fn resolve_session(
     })
 }
 
+/// Startup open. Keep a saved id that still exists. Otherwise an existing
+/// Bot Chat, then the latest existing session. Never creates a session.
+pub fn session_for_startup(
+    sessions: &[SessionSummary],
+    remembered: &str,
+    explicit: bool,
+    anchor: f64,
+) -> Option<ResolvedSession> {
+    let remembered = remembered.trim();
+    if !remembered.is_empty() {
+        if let Some(picked) = sessions.iter().find(|session| session.id == remembered) {
+            return Some(ResolvedSession {
+                id: picked.id.clone(),
+                explicit,
+                anchor,
+            });
+        }
+    }
+    if let Some(chat) = most_recent_bot_chat(sessions) {
+        return Some(ResolvedSession {
+            id: chat.id.clone(),
+            explicit: false,
+            anchor: chat.last_active,
+        });
+    }
+    most_recent_session(sessions).map(|session| ResolvedSession {
+        id: session.id.clone(),
+        explicit: false,
+        anchor: session.last_active,
+    })
+}
+
 /// Suffix of `next` that was not in `seen`. `None` means the transcript diverged.
 pub fn fresh_messages<'a>(seen: &[UiMessage], next: &'a [UiMessage]) -> Option<&'a [UiMessage]> {
     if next.len() < seen.len() || next[..seen.len()] != *seen {
@@ -1995,10 +2027,22 @@ mod tests {
         assert_eq!(missing.id, "newer");
         assert!(!missing.explicit);
         assert!(resolve_session(&[], "split", true, 1.0).is_none());
+        let kept = session_for_startup(&sessions, "split", false, 10.0).unwrap();
+        assert_eq!(kept.id, "split");
+        assert!(!kept.explicit);
+        assert_eq!(kept.anchor, 10.0);
+        let explicit = session_for_startup(&sessions, "desktop", true, 3.0).unwrap();
+        assert_eq!(explicit.id, "desktop");
+        assert!(explicit.explicit);
+        assert_eq!(explicit.anchor, 3.0);
+        assert_eq!(session_for_startup(&sessions, "", false, 0.0).unwrap().id, "newer");
+        assert_eq!(session_for_startup(&sessions, "missing", false, 1.0).unwrap().id, "newer");
+        assert!(session_for_startup(&[], "split", true, 1.0).is_none());
         let tied = vec![summary("b", "Bot Chat", 5.0), summary("a", "Bot Chat", 5.0)];
         assert_eq!(resolve_session(&tied, "", false, 0.0).unwrap().id, "a");
         let plain = vec![summary("desktop", "System Architect", 99.0), summary("split", "_splitLot", 10.0)];
         assert_eq!(resolve_session(&plain, "", false, 0.0).unwrap().id, "desktop");
+        assert_eq!(session_for_startup(&plain, "", false, 0.0).unwrap().id, "desktop");
         assert_eq!(
             session_menu_order(&sessions)
                 .into_iter()

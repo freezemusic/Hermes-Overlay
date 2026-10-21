@@ -19,8 +19,11 @@ export const CONTENT_IN_MS = 160;
 /** The fade starts with the clip. A delay makes WebKitGTK replay opacity from 0. */
 export const CONTENT_IN_DELAY_MS = 0;
 export const PLAN_GROW_MS = 280;
-/** Plan closes before the panel. Do not add this onto the per-edge panel clocks. */
+/** Plan clip stays 200ms. The panel clip starts at the handoff so the two
+ *  overlap. Do not add the whole 200ms onto the per-edge clocks, and do not
+ *  change either ease or duration. */
 export const PLAN_COLLAPSE_MS = 200;
+export const PLAN_COLLAPSE_HANDOFF_MS = 160;
 /**
  * Plan growth only. Art direction kept this curve; do not swap it.
  * Box gate: first painted frame ≤30%, ~100ms ≤80%, ~200ms ≥90%,
@@ -474,6 +477,55 @@ export function cubicBezierY(x1, y1, x2, y2, t) {
 /** y at time t for cubic-bezier(.2, .8, .2, 1). The panel clip uses this. */
 export function seamEase(t) {
   return cubicBezierY(0.2, 0.8, 0.2, 1, t);
+}
+
+/** y at time t for COLLAPSE_EASE. Plan close and panel close share it. */
+export function collapseEase(t) {
+  return cubicBezierY(0.4, 0, 1, 1, t);
+}
+
+/**
+ * Shell insets while a plan collapse and a panel collapse overlap.
+ * Until `planMs` the plan edge follows the plan curve. Other edges follow
+ * the panel curve from the handoff, keeping the bleed that is already on
+ * screen. After the plan is shut, the plan edge joins the rest of the
+ * panel curve. Neither duration nor ease changes.
+ */
+export function overlappedCollapseInsets({
+  planOpen,
+  planClosed,
+  panelFrom,
+  panelTo,
+  planSide = "right",
+  elapsedMs,
+  planMs = PLAN_COLLAPSE_MS,
+  handoffMs = PLAN_COLLAPSE_HANDOFF_MS,
+  panelMs,
+}) {
+  const t = Math.max(0, Number(elapsedMs) || 0);
+  const panelSpan = panelMs > 0 ? panelMs : 1;
+  const pPlan = t >= planMs ? 1 : collapseEase(Math.min(1, t / planMs));
+  const along = Math.max(0, t - handoffMs);
+  const pPanel = collapseEase(Math.min(1, along / panelSpan));
+  const joinAt = Math.max(0, planMs - handoffMs);
+  const pJoin = collapseEase(Math.min(1, joinAt / panelSpan));
+  const out = {};
+  for (const key of ["top", "right", "bottom", "left", "radius"]) {
+    const planV = planOpen[key] + (planClosed[key] - planOpen[key]) * pPlan;
+    const panelV = panelFrom[key] + (panelTo[key] - panelFrom[key]) * pPanel;
+    if (key === planSide) {
+      if (t <= planMs) out[key] = planV;
+      else {
+        const span = 1 - pJoin;
+        const local = span > 1e-6 ? Math.min(1, Math.max(0, (pPanel - pJoin) / span)) : 1;
+        out[key] = planClosed[key] + (panelTo[key] - planClosed[key]) * local;
+      }
+    } else {
+      const bleed = planClosed[key] - panelFrom[key];
+      out[key] = panelV + bleed * (1 - pPanel);
+    }
+  }
+  return out;
 }
 
 /** y at time t for PLAN_EASE. The string is the only growth curve to edit. */

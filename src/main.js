@@ -5,7 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { latestPlan, noteNewestPlan, planDemoMarkdown, planForPanel, planTask, plansIn, rememberPlan } from "./plan.js";
+import { latestPlan, noteNewestPlan, planBodyLead, planDemoMarkdown, planForPanel, planTask, plansIn, rememberPlan } from "./plan.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
   CONTENT_IN_MS,
@@ -16,7 +16,9 @@ import {
   PANEL_W,
   PILL_PANEL_MS,
   PLAN_COLLAPSE_MS,
+  PLAN_COLLAPSE_HANDOFF_MS,
   PLAN_EASE,
+  overlappedCollapseInsets,
   PLAN_GROW_MS,
   COLLAPSE_EASE,
   planEase,
@@ -632,6 +634,37 @@ function sealPlanSide(shell, insets) {
   return insets;
 }
 
+/** Plan collapse is still running. Sample both curves into one shell clip
+ *  so the panel can start at the handoff without popping the plan shut. */
+function shellOverlapClip(shell, panelMs) {
+  if (!(panelMs > 0) || shell.dataset.planOpen !== "1") return null;
+  const anim = shell.getAnimations?.().find((item) => item.id === "plan-collapse");
+  if (!anim || anim.playState === "finished" || anim.playState === "idle") return null;
+  const planOpen = planRevealClip(shell, 1).insets;
+  const planClosed = planRevealClip(shell, 0).insets;
+  const geom = shellGeom(shell);
+  const panelFrom = insetsFor("panel", geom);
+  const panelTo = insetsFor("orb", geom);
+  const planSide = shell.dataset.planSide === "left" ? "left" : "right";
+  const count = Math.max(2, Math.round(panelMs / 16));
+  const frames = [];
+  let start = null;
+  for (let i = 0; i <= count; i += 1) {
+    const insets = overlappedCollapseInsets({
+      planOpen,
+      planClosed,
+      panelFrom,
+      panelTo,
+      planSide,
+      elapsedMs: PLAN_COLLAPSE_HANDOFF_MS + (panelMs * i) / count,
+      panelMs,
+    });
+    if (!start) start = insets;
+    frames.push({ clipPath: clipPath(insets), offset: i / count });
+  }
+  return { start, frames };
+}
+
 function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const fill = shell.querySelector(".morph-fill");
   const stroke = shell.querySelector(".morph-stroke");
@@ -649,6 +682,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   const fillFrom = tighten(from);
   const fillTo = tighten(to);
   if (shell.dataset.morphToken !== token) return Promise.resolve(false);
+  const overlap = toState === "orb" ? shellOverlapClip(shell, duration) : null;
   shell.classList.remove("is-growing-pill", "is-growing-panel");
   holdMotion(shell);
   holdMotion(fill);
@@ -671,9 +705,9 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   // Drop the pill's 200ms transition before the panel clip. The panel clock
   // is the WAAPI duration (480ms), and transition-delay stays 0. Collapse
   // skips the layout flush: it was pushing the 300ms clock out by a frame.
-  writeClip(shell, from);
+  writeClip(shell, overlap ? overlap.start : from);
   if (toState !== "orb") void shell.offsetWidth;
-  shell.style.clipPath = clipPath(shellFrom);
+  shell.style.clipPath = clipPath(overlap ? overlap.start : shellFrom);
   if (fill) fill.style.clipPath = clipPath(fillFrom);
   if (stroke && toState === "panel") stroke.style.clipPath = clipPath(to);
   if (toState === "panel") {
@@ -691,10 +725,14 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   let fillAnim;
   let strokeAnim;
   try {
-    shellAnim = shell.animate([
-      { clipPath: clipPath(shellFrom) },
-      { clipPath: clipPath(shellTo) },
-    ], timing);
+    shellAnim = shell.animate(
+      overlap ? overlap.frames : [
+        { clipPath: clipPath(shellFrom) },
+        { clipPath: clipPath(shellTo) },
+      ],
+      overlap ? { duration, easing: "linear", fill: "forwards" } : timing,
+    );
+    if (overlap) debugLog("collapse-overlap", `edge=${shell.dataset.edge || ""} handoff=${PLAN_COLLAPSE_HANDOFF_MS} panel=${duration}`);
     if (toState === "panel") {
       // Underlying opacity is 1 before the fade exists, so a later fill drop
       // cannot present the stylesheet's opacity 0. Setting it after animate()
@@ -2956,10 +2994,16 @@ async function collapsePlanSeam(shell, token) {
   shell.style.clipPath = closed;
   pumpSeamPresent(shell, duration);
   watchPresent(shell, anim, "plan-collapse");
-  await whenAnimEnds(anim, duration);
+  await whenAnimReaches(anim, PLAN_COLLAPSE_HANDOFF_MS);
   if (!shell.isConnected || (token && shell.dataset.morphToken !== token)) return;
   setSeamPhase(plan, "", { dom: false });
-  debugLog("collapse-finish", `plan=0 edge=${shell.dataset.edge || ""}`);
+  debugLog("collapse-handoff", `at=${PLAN_COLLAPSE_HANDOFF_MS} edge=${shell.dataset.edge || ""}`);
+}
+
+function whenAnimReaches(anim, ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, anim ? ms : 0);
+  });
 }
 
 async function runShellMorph(shell, target) {
@@ -3254,6 +3298,7 @@ const state = {
   cronClock: 0,
   cronBoxH: 0,
   cronBurst: false,
+  cronHover: false,
   cronSeenRun: new Set(),
   cronRunMarks: new Map(),
   cronPrimed: false,
@@ -3709,12 +3754,17 @@ function noteCronTransition(groups) {
   return finished;
 }
 
+function cronReadoutVisible(shell, text) {
+  const orb = (shell?.dataset.visual || shell?.dataset.state) === "orb";
+  return !!text && orb && state.osModifierDown === true && state.cronHover === true;
+}
+
 function placeCronReadout(shell, face) {
   const label = document.getElementById("cron-readout");
   const btn = shell?.querySelector(".orb--cron");
   if (!label || !btn) return;
   const text = face?.label || "";
-  const show = !!text && (shell.dataset.visual || shell.dataset.state) === "orb";
+  const show = cronReadoutVisible(shell, text);
   if (!show) {
     label.hidden = true;
     label.textContent = "";
@@ -3759,6 +3809,17 @@ function renderCronOrb(options = {}) {
   const shell = shellFor("cron");
   const btn = shell?.querySelector(".orb--cron");
   if (!btn) return;
+  if (btn.dataset.hoverWatch !== "1") {
+    btn.dataset.hoverWatch = "1";
+    btn.addEventListener("pointerenter", () => {
+      state.cronHover = true;
+      renderCronOrb({ force: true });
+    });
+    btn.addEventListener("pointerleave", () => {
+      state.cronHover = false;
+      renderCronOrb({ force: true });
+    });
+  }
   pruneRunMarks(state.cronGroups, state.cronRunMarks);
   const face = cronOrbFace(state.cronGroups, new Date(), state.cronRunMarks);
   if (!options.tick && noteCronTransition(state.cronGroups) && face.mode !== "failed" && !state.cronBurst) {
@@ -3776,7 +3837,7 @@ function renderCronOrb(options = {}) {
   if (face.mode === "failed") classes.push("is-failed");
   if (state.cronBurst) classes.push("is-done");
   const label = face.label || "";
-  const show = !!label && (shell.dataset.visual || shell.dataset.state) === "orb";
+  const show = cronReadoutVisible(shell, label);
   const sig = `${classes.join(" ")}|${face.p}|${label}|${show ? 1 : 0}|${live ? 1 : 0}`;
   if (shell.dataset.cronSig === sig) return;
   shell.dataset.cronSig = sig;
@@ -4031,7 +4092,8 @@ function paintPlan(id) {
   const frameSnap = heldFrame ? snapshotPlanGeometry(section) : null;
   section.dataset.key = focus.key;
   const title = role(section, "plan-title");
-  if (title) title.textContent = focus.title;
+  if (title && title.textContent !== "計劃") title.textContent = "計劃";
+  const lead = planBodyLead(focus.markdown, focus.title);
   const mode = section.dataset.mode === "source" ? "source" : "preview";
   section.dataset.mode = mode;
   const previewBtn = role(section, "plan-preview-mode");
@@ -4043,7 +4105,7 @@ function paintPlan(id) {
   if (body) {
     body.hidden = mode !== "preview";
     if (mode === "preview") {
-      const html = renderAssistantMarkdown(focus.markdown);
+      const html = renderAssistantMarkdown(lead);
       if (body.dataset.md !== html) {
         if (planSwapBlocked(shell, section)) {
           shell.dataset.planDirty = "1";
@@ -4061,9 +4123,9 @@ function paintPlan(id) {
   }
   if (source) {
     source.hidden = mode !== "source";
-    if (mode === "source" && source.textContent !== focus.markdown) {
+    if (mode === "source" && source.textContent !== lead) {
       if (planSwapBlocked(shell, section)) shell.dataset.planDirty = "1";
-      else source.textContent = focus.markdown;
+      else source.textContent = lead;
     }
   }
   if (seamLocked(section)) {
@@ -6932,6 +6994,7 @@ function applyOpacityEdge(payload) {
   const seen = Date.now();
   if (!acceptModifier(payload)) return false;
   const panels = paintHeldPanels(state.osModifierDown);
+  renderCronOrb({ force: true });
   const unix = Date.now();
   const seq = Number(payload?.modifier_seq) || 0;
   debugLog("opacity-stage", `stage=js seq=${seq} rust=${Number(payload?.unix) || 0} seen=${seen}`);

@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { latestPlan, looksLikePlan, noteNewestPlan, planDemoMarkdown, planForPanel, planSource, plansIn, planTask, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
+import { latestPlan, looksLikePlan, noteNewestPlan, planBodyLead, planDemoMarkdown, planForPanel, planSource, plansIn, planTask, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
 
 test("plan markdown is recognized and a short ack is not", () => {
   const body = planDemoMarkdown("整理設定");
   assert.equal(looksLikePlan(body), true);
   assert.equal(planTitle(body), "整理設定 Implementation Plan");
+  assert.equal(planBodyLead(body, "計劃"), body);
+  assert.equal(planBodyLead(body, planTitle(body)), body);
+  assert.equal(planBodyLead("正文", "v25 replace test"), "# v25 replace test\n\n正文");
   assert.equal(looksLikePlan("收到，我再諗。"), false);
   assert.equal(looksLikePlan("# 筆記\n\n**Goal:** 對齊面板"), true);
   assert.equal(looksLikePlan("# 已寫\n\n`.hermes/plans/2026-10-15_120000-setup.md`"), true);

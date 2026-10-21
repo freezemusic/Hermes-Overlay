@@ -58,6 +58,17 @@ export function planTitle(markdown) {
   return title || "計劃";
 }
 
+/** Header stays 「計劃」. The plan name is the first line of the body. */
+export function planBodyLead(markdown, title) {
+  const name = String(title || "").replace(/[*_`]/g, "").trim();
+  const source = String(markdown || "");
+  if (!name || name === "計劃") return source;
+  const line = source.split(/\r?\n/).find((item) => item.trim()) || "";
+  const shown = line.trim().replace(/^#{1,3}\s+/, "").replace(/[*_`]/g, "").trim();
+  if (shown === name) return source;
+  return `# ${name}\n\n${source}`;
+}
+
 /** Task text after `/plan`, or null when the message is not that command. */
 export function planTask(text) {
   const match = String(text || "").trim().match(/^\/plan\b\s*(.*)$/i);

@@ -382,18 +382,14 @@ async fn watch_profile(
     key: &str,
 ) -> Result<WatchHit, HermesError> {
     let sessions = hermes::list_sessions(http, root, key).await?;
-    let session_id = if let Some(session) = hermes::most_recent_bot_chat(&sessions) {
-        session.id.clone()
-    } else {
-        match hermes::create_bot_chat(http, root, key).await {
-            Ok(id) => id,
-            Err(_) => {
-                return Ok(WatchHit {
-                    session_id: String::new(),
-                    messages: Vec::new(),
-                })
-            }
-        }
+    let Some(session_id) = hermes::most_recent_bot_chat(&sessions)
+        .or_else(|| hermes::most_recent_session(&sessions))
+        .map(|session| session.id.clone())
+    else {
+        return Ok(WatchHit {
+            session_id: String::new(),
+            messages: Vec::new(),
+        });
     };
     let messages = hermes::fetch_messages(http, root, key, &session_id).await?;
     let fresh = {
@@ -1050,49 +1046,31 @@ async fn open_bot(
     emit_status(&app, &profile, "busy", "載入對話…");
     let pin = load_pin(&app, &state, &profile);
     let result = async {
-        let mut sessions = hermes::list_sessions(&state.http, &root, &key).await?;
-        let resolved = hermes::resolve_session(&sessions, &pin.id, pin.explicit, pin.anchor);
-        let has_bot_chat = hermes::most_recent_bot_chat(&sessions).is_some();
-        let (session_id, explicit, anchor) = if let Some(resolved) = resolved {
-            if resolved.explicit || has_bot_chat {
-                (resolved.id, resolved.explicit, resolved.anchor)
-            } else {
-                match hermes::create_bot_chat(&state.http, &root, &key).await {
-                    Ok(id) => {
-                        if let Ok(fresh) = hermes::list_sessions(&state.http, &root, &key).await {
-                            sessions = fresh;
-                        }
-                        (id, false, 0.0)
-                    }
-                    Err(err) => match hermes::fallback_session(&sessions) {
-                        Some(other) => (other.id.clone(), false, other.last_active),
-                        None => return Err(err),
-                    },
-                }
-            }
+        let sessions = hermes::list_sessions(&state.http, &root, &key).await?;
+        let resolved = hermes::session_for_startup(&sessions, &pin.id, pin.explicit, pin.anchor);
+        let (session_id, explicit, anchor, messages) = if let Some(resolved) = resolved {
+            let messages = hermes::fetch_messages(&state.http, &root, &key, &resolved.id).await?;
+            (resolved.id, resolved.explicit, resolved.anchor, messages)
         } else {
-            let id = hermes::create_bot_chat(&state.http, &root, &key).await?;
-            if let Ok(fresh) = hermes::list_sessions(&state.http, &root, &key).await {
-                sessions = fresh;
-            }
-            (id, false, 0.0)
+            (String::new(), pin.explicit, pin.anchor, Vec::new())
         };
-        let messages = hermes::fetch_messages(&state.http, &root, &key, &session_id).await?;
         Ok::<_, HermesError>((session_id, explicit, anchor, messages, sessions))
     }
     .await;
     match result {
         Ok((session_id, explicit, anchor, messages, sessions)) => {
-            remember_pin(
-                &app,
-                &state,
-                &profile,
-                SessionPin {
-                    id: session_id.clone(),
-                    explicit,
-                    anchor,
-                },
-            );
+            if !session_id.is_empty() {
+                remember_pin(
+                    &app,
+                    &state,
+                    &profile,
+                    SessionPin {
+                        id: session_id.clone(),
+                        explicit,
+                        anchor,
+                    },
+                );
+            }
             emit_status(&app, &profile, "idle", "閒置");
             Ok(OpenedChat {
                 sessions: session_choices(&sessions, &session_id),
@@ -2039,6 +2017,7 @@ fn fit_overlay(app: AppHandle) -> OverlayCssSize {
     };
     let _ = window.set_decorations(false);
     interaction::place_overlay(&window);
+    interaction::reassert_window_exstyle(&app);
     let (width, height) = interaction::monitor_css_size(&window).unwrap_or((0, 0));
     OverlayCssSize { width, height }
 }
@@ -2065,6 +2044,7 @@ fn map_overlay_for_layout(app: AppHandle) {
         interaction::set_window_opacity(&window, 0.0);
         let _ = window.show();
     }
+    interaction::reassert_window_exstyle(&app);
 }
 
 /// First map. The window is created hidden and undecorated, and already
@@ -2125,6 +2105,7 @@ fn reveal_overlay(app: AppHandle, state: State<'_, AppState>) {
     let _ = window.set_focus();
     interaction::hold_empty_input_shape();
     interaction::reapply_live_input_shape(&app, state.interaction.as_ref());
+    interaction::reassert_window_exstyle(&app);
 }
 
 #[tauri::command]
