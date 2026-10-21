@@ -147,6 +147,35 @@ export function orbOpenFromPress({
  * `orb` is the live orb/pill under the cursor when the fresh list missed it.
  * `kept` means the previous list should stay on the OS shape (`n=0` is not sent).
  */
+/**
+ * GDK input shape and WM_NCHITTEST share this rect. An open plan pane sits
+ * outside the chat border box, so the published region has to cover it or
+ * 預覽, 原文 and × fall through to the page.
+ */
+export function unionOpenPlanRect(panel, plan) {
+  const next = {
+    x: panel.x,
+    y: panel.y,
+    w: panel.w,
+    h: panel.h,
+  };
+  if (!plan || plan.open === false || !(plan.w >= 1) || !(plan.h >= 1)) return next;
+  const left = Math.min(next.x, plan.x);
+  const top = Math.min(next.y, plan.y);
+  const right = Math.max(next.x + next.w, plan.x + plan.w);
+  const bottom = Math.max(next.y + next.h, plan.y + plan.h);
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+/** True when every edge of `pane` lies inside `region`. */
+export function inputRegionCovers(region, pane) {
+  if (!region || !pane || !(pane.w >= 1) || !(pane.h >= 1)) return false;
+  return region.x <= pane.x + 0.01
+    && region.y <= pane.y + 0.01
+    && region.x + region.w + 0.01 >= pane.x + pane.w
+    && region.y + region.h + 0.01 >= pane.y + pane.h;
+}
+
 export function guardPublishedHits({
   rects = [],
   previous = [],

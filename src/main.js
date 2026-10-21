@@ -110,6 +110,7 @@ import {
   modifierMatches,
   modifierEngages,
   guardPublishedHits,
+  unionOpenPlanRect,
   rehearsalDeferReason,
   pressOrbId,
   orbOpenFromPress,
@@ -760,6 +761,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
   let shellAnim;
   let fillAnim;
   let strokeAnim;
+  let contentAnim;
   try {
     if (armedLive) shellAnim = armedAnim;
     else {
@@ -802,6 +804,22 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
         { clipPath: clipPath(fillTo) },
       ], toState === "orb" ? orbTiming : timing);
     }
+    if (toState === "orb") {
+      const content = shell.querySelector(".center-panel");
+      if (content) {
+        holdMotion(content);
+        content.style.overflow = "hidden";
+        content.getAnimations?.().forEach((anim) => {
+          if (anim.id === "content-collapse") anim.cancel();
+        });
+        try {
+          contentAnim = content.animate([
+            { clipPath: clipPath(fillFrom) },
+            { clipPath: clipPath(fillTo) },
+          ], { ...orbTiming, id: "content-collapse" });
+        } catch { /* the shell clip still covers the panel */ }
+      }
+    }
     if (toState === "panel") {
       // Resting clip is the final keyframe. The animation paints the from
       // frame; the inline value is what remains if that fill drops.
@@ -831,6 +849,10 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
         if (fillAnim) {
           fillAnim.startTime = now;
           try { fillAnim.currentTime = 0; } catch { /* same clock */ }
+        }
+        if (contentAnim) {
+          contentAnim.startTime = now;
+          try { contentAnim.currentTime = 0; } catch { /* same clock */ }
         }
         if (strokeAnim) {
           strokeAnim.startTime = now;
@@ -901,6 +923,11 @@ function commitClosedShell(shell) {
   shell.dataset.intent = "";
   shell.querySelectorAll(".center-panel").forEach((panel) => {
     panel.hidden = true;
+    panel.getAnimations?.().forEach((anim) => {
+      if (anim.id === "content-collapse") anim.cancel();
+    });
+    panel.style.removeProperty("clip-path");
+    panel.style.removeProperty("overflow");
   });
   const plan = shell.querySelector(".plan-window");
   if (plan) {
@@ -2748,6 +2775,11 @@ function seamRevealLive(shell) {
 function applyQueuedShell(shell, tag) {
   if (!shell?.isConnected) return;
   const plan = shell.querySelector(".plan-window");
+  // A grown plan used to keep is-plan-seam forever, so chat and plan paints
+  // deferred until the panel closed. Drop the lock once the freeze is over.
+  if (seamPhase(plan) === "grown" && !freezeCooling(shell) && !collapseBusy() && !collapseQuiet()) {
+    shell.classList.remove("is-plan-seam", "is-plan-arming");
+  }
   if (seamRevealLive(shell) || freezeCooling(shell) || collapseBusy() || collapseQuiet()) {
     armQuietFlush(shell);
     return;
@@ -3169,6 +3201,13 @@ async function runShellMorph(shell, target) {
   shell.style.removeProperty("overflow");
   shell.querySelector(".plan-window")?.style.removeProperty("clip-path");
   shell.querySelector(".plan-window")?.style.removeProperty("overflow");
+  shell.querySelectorAll(".center-panel").forEach((panel) => {
+    panel.getAnimations?.().forEach((anim) => {
+      if (anim.id === "content-collapse") anim.cancel();
+    });
+    panel.style.removeProperty("clip-path");
+    panel.style.removeProperty("overflow");
+  });
   const alive = () => shell.dataset.morphToken === token && shell.isConnected;
   const from = shell.dataset.visual || shell.dataset.state || "orb";
   window.clearTimeout(shell._pillTimer);
@@ -3966,16 +4005,19 @@ function renderCronOrb(options = {}) {
     state.cronBurst = true;
     window.setTimeout(() => {
       state.cronBurst = false;
-      btn.classList.remove("is-done");
+      btn.classList.remove("is-done", "is-running", "is-progress", "is-failed");
+      btn.classList.add("is-idle");
+      delete shell.dataset.cronSig;
     }, 400);
   }
   const live = face.mode === "spin" || face.mode === "progress";
   const classes = ["bot-btn", "morph-orb", "orb--cron"];
   if (state.cronOpen) classes.push("active");
   if (face.mode === "spin") classes.push("is-running");
-  if (face.mode === "progress") classes.push("is-progress");
-  if (face.mode === "failed") classes.push("is-failed");
-  if (state.cronBurst) classes.push("is-done");
+  else if (face.mode === "progress") classes.push("is-progress");
+  else if (face.mode === "failed") classes.push("is-failed");
+  else if (state.cronBurst) classes.push("is-done");
+  else classes.push("is-idle");
   const label = face.label || "";
   const show = cronReadoutVisible(shell, label);
   const sig = `${classes.join(" ")}|${face.p}|${label}|${show ? 1 : 0}|${live ? 1 : 0}`;
@@ -4096,7 +4138,8 @@ function renderChat(id = state.activeId, options = {}) {
   const shell = shellFor(id);
   const force = options.force === true;
   const tag = options.tag || "renderChat";
-  if (shell && seamRevealLive(shell) && shell.dataset.paintThrough !== "1") {
+  const growing = !!shell && (seamPhase(shell.querySelector(".plan-window")) === "growing" || shell.classList.contains("is-plan-arming"));
+  if (shell && (growing || (seamRevealLive(shell) && !force)) && shell.dataset.paintThrough !== "1") {
     shell.dataset.chatDirty = "1";
     shell.dataset.planDirty = "1";
     debugLog("render-panel-defer", `id=${id} tag=${tag} seam=1`);
@@ -4148,7 +4191,7 @@ function renderChat(id = state.activeId, options = {}) {
   } else if (resting) {
     chat.querySelectorAll(".bubble").forEach((node) => restBubble(node));
   }
-  paintPlan(id);
+  paintPlan(id, { force });
   const stop = role(panel, "stop");
   const send = role(panel, "send");
   if (stop) stop.hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
@@ -4182,12 +4225,19 @@ function planSwapBlocked(shell, section) {
   return planContentHeld(shell);
 }
 
-function paintPlan(id) {
+function paintPlan(id, options = {}) {
   const shell = shellFor(id);
   const section = planWindow(id);
   if (!shell || !section) return;
+  const force = options.force === true;
   const through = shell.dataset.paintThrough === "1";
-  if (!through && (visualQuiet(shell) || shellFrozen(shell))) {
+  const growing = seamPhase(section) === "growing" || shell.classList.contains("is-plan-arming");
+  if (force && growing) {
+    shell.dataset.planDirty = "1";
+    debugLog("render-plan-defer", `id=${id}`);
+    return;
+  }
+  if (!through && !force && (visualQuiet(shell) || shellFrozen(shell))) {
     shell.dataset.planDirty = "1";
     debugLog("render-plan-defer", `id=${id}`);
     return;
@@ -4566,6 +4616,12 @@ function applyOpened(id, opened) {
   rememberPlan(thread, thread.messages);
   clearConnectionBanner();
   const shell = shellFor(id);
+  const openPanel = shell?.dataset.state === "panel" && !shell.classList.contains("is-collapsing");
+  if (openPanel) {
+    setBotStatus(id, "閒置", "idle");
+    renderChat(id, { force: true, tag: "session-switch" });
+    return;
+  }
   if (shell && (visualQuiet(shell) || presentationBusy())) {
     thread.status = "閒置";
     thread.statusState = "idle";
@@ -6525,15 +6581,18 @@ function collectHits() {
           : (plan.offsetWidth || cached || planWidthPx());
         const host = shell.getBoundingClientRect();
         if (width >= 1 && host.height >= 1) {
-          const dockX = shell.dataset.planSide === "left" ? host.x - width : host.right;
-          const left = Math.min(rect.x, dockX);
-          const top = Math.min(rect.y, host.y);
-          const right = Math.max(rect.x + rect.w, dockX + width);
-          const bottom = Math.max(rect.y + rect.h, host.bottom);
-          rect.x = left;
-          rect.y = top;
-          rect.w = right - left;
-          rect.h = bottom - top;
+          const paneX = shell.dataset.planSide === "left" ? host.x - width : host.right;
+          const union = unionOpenPlanRect(rect, {
+            open: true,
+            x: paneX,
+            y: host.y,
+            w: width,
+            h: host.height,
+          });
+          rect.x = union.x;
+          rect.y = union.y;
+          rect.w = union.w;
+          rect.h = union.h;
         }
       }
       coverBottomFooter(rect, shell);
@@ -6847,11 +6906,18 @@ function announcePanelHits(shell) {
   };
   if (shell.dataset.planOpen === "1" && host.width >= 1) {
     const width = Number(shell.dataset.planWidth) || planWidthPx();
-    const dockX = shell.dataset.planSide === "left" ? host.x - width : host.right;
-    const left = Math.min(rect.x, dockX);
-    const right = Math.max(rect.x + rect.w, dockX + width);
-    rect.x = left;
-    rect.w = right - left;
+    const paneX = shell.dataset.planSide === "left" ? host.x - width : host.right;
+    const union = unionOpenPlanRect(rect, {
+      open: true,
+      x: paneX,
+      y: host.y,
+      w: width,
+      h: host.height,
+    });
+    rect.x = union.x;
+    rect.y = union.y;
+    rect.w = union.w;
+    rect.h = union.h;
   }
   coverBottomFooter(rect, shell);
   const closeId = `close:${shell.dataset.botId || ""}`;

@@ -21,6 +21,8 @@ import {
   modifierMatches,
   modifierEngages,
   guardPublishedHits,
+  unionOpenPlanRect,
+  inputRegionCovers,
   rehearsalDeferReason,
   botIdFromHit,
   pressOrbId,
@@ -545,6 +547,21 @@ test("selected orb pulses only after the first known selection changes", () => {
   const cleared = nextOrbPulse(changed.rendered, null);
   assert.equal(cleared.pulseId, null);
   assert.equal(cleared.rendered, null);
+});
+
+test("open plan pane is inside the input region", () => {
+  const panel = { x: 470, y: 42, w: 420, h: 560 };
+  const plan = { open: true, x: 890, y: 42, w: 420, h: 560 };
+  const region = unionOpenPlanRect(panel, plan);
+  assert.equal(inputRegionCovers(region, plan), true);
+  assert.equal(inputRegionCovers(region, panel), true);
+  const closed = unionOpenPlanRect(panel, { open: false, x: 890, y: 42, w: 420, h: 560 });
+  assert.equal(closed.w, panel.w);
+  assert.equal(inputRegionCovers(closed, plan), false);
+  const leftPane = { open: true, x: 50, y: 42, w: 420, h: 560 };
+  const left = unionOpenPlanRect(panel, leftPane);
+  assert.equal(inputRegionCovers(left, leftPane), true);
+  assert.equal(inputRegionCovers(left, panel), true);
 });
 
 test("linux alt modifier shows a warning", () => {

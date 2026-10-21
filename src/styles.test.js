@@ -390,6 +390,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   const hitCollect = mainSrc.slice(mainSrc.indexOf("function collectHits"), mainSrc.indexOf("let hitFrame"));
   assert.match(hitCollect, /dataset\.rehearsal === "1"/);
   assert.match(hitCollect, /_rehearsalHit/);
+  assert.match(hitCollect, /unionOpenPlanRect/);
   const openBot = mainSrc.slice(mainSrc.indexOf("function openBotPanel"), mainSrc.indexOf("function closeBotPanel"));
   assert.match(openBot, /abortPlanRehearsal\(shell\)/);
   assert.match(mainSrc, /reuse side=/);
@@ -422,6 +423,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /function coverBottomFooter/);
   const announce = mainSrc.slice(mainSrc.indexOf("function announcePanelHits"), mainSrc.indexOf("function announceOrbHits"));
   assert.match(announce, /coverBottomFooter\(rect, shell\)/);
+  assert.match(announce, /unionOpenPlanRect/);
   assert.doesNotMatch(announce, /pushCloseHit\(keep, shell/);
   assert.match(announce, /close=omitted/);
   assert.match(announce, /when=later/);
@@ -737,7 +739,9 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.bubble\.user \{[^}]*background:\s*var\(--bot-10\)/s);
   assert.match(css, /\.bubble\.user \{[^}]*border:\s*1px solid #0000f2/s);
   assert.match(css, /\.bubble\.user \{[^}]*color:\s*#14142b/s);
-  assert.doesNotMatch(css, /(?:^|[^\w-])color:\s*var\(--bot\)/);
+  const panelCss = css.replace(/\.orb-glyph \{[^}]*\}/s, "");
+  assert.doesNotMatch(panelCss, /(?:^|[^\w-])color:\s*var\(--bot\)/);
+  assert.match(css, /\.orb-glyph \{[^}]*color:\s*var\(--bot\)/s);
   assert.doesNotMatch(css, /(?:^|[^\w-])background:\s*var\(--bot\)/);
   assert.doesNotMatch(css, /(?:^|[^\w-])background-color:\s*var\(--bot\)/);
   assert.match(css, /\.bubble\.bot pre \{[^}]*background:\s*#000/s);
@@ -763,6 +767,8 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.plan-window \{[^}]*border-radius:\s*var\(--r-panel\)/s);
   assert.match(css, /\.plan-window \{[^}]*rgba\(248,\s*248,\s*252,\s*\.92\)/s);
   assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-morphing\):not\(\.is-collapsing\) \{[^}]*overflow:\s*visible/s);
+  assert.match(css, /\.morph\.is-collapsing \.center-panel,\s*\n\.morph\.is-collapsing \.content,\s*\n\.morph\.is-collapsing \.morph-body \{[^}]*overflow:\s*hidden/s);
+  assert.match(css, /\[data-plan-open="1"\]:not\(\.is-collapsing\) \.plan-window:not\(\[hidden\]\):not\(\.is-plan-parked\) \* \{[^}]*pointer-events:\s*auto !important/s);
   assert.doesNotMatch(css, /clip-path:\s*none !important/);
   assert.match(css, /\.morph \.plan-window \{[^}]*left:\s*100%/s);
   assert.match(css, /\.morph \.plan-window \{[^}]*margin-left:\s*0/s);
@@ -791,6 +797,9 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /0 0 10px 2px rgba\(0,\s*0,\s*242,\s*\.25\)/);
   assert.match(css, /\.bot-btn\.orb--cron\.is-failed::after \{[^}]*#e5484d/s);
   assert.doesNotMatch(css, /\.is-failed \.orb-core/);
+  assert.match(css, /\.bot-btn\.orb--cron \.orb-core \{[^}]*rgb\(var\(--bot-rgb\) \/ \.55\)/s);
+  assert.match(css, /\.bot-btn\.orb--cron\.is-idle::after \{[^}]*opacity:\s*0/s);
+  assert.doesNotMatch(css, /\.is-cron-fail\[data-hit-id\]/);
   assert.match(css, /\.cron-readout \{[^}]*background:\s*rgba\(248,\s*248,\s*252,\s*\.82\)/s);
   assert.match(css, /\.orb--cron \.bot-label \{[^}]*background:\s*rgba\(248,\s*248,\s*252,\s*\.82\)/s);
   assert.match(html, /id="cron-panel"[\s\S]{0,500}class="hud-corner br"/);
@@ -799,6 +808,9 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(html, /id="cron-panel"/);
   assert.match(html, /只供查看。開關留喺 Hermes。/);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  assert.match(main, /id: "content-collapse"/);
+  assert.match(main, /tag: "session-switch"/);
+  assert.match(main, /classes\.push\("is-idle"\)/);
   assert.match(main, /kanbanChangeLine/);
   assert.match(main, /showToast\("kanban"/);
   assert.match(main, /list_cron_jobs/);
