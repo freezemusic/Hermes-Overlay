@@ -56,8 +56,8 @@ import {
   seamWidthPx,
   cronShellHeight,
   chatTailAction,
-  seatOpenPlan,
-  unseatOpenPlan,
+  hostOpenPlan,
+  restoreHostedPlan,
   separateStackedPanels,
   screenEdge,
   slotPoint,
@@ -483,7 +483,7 @@ test("panel collapse starts while the plan clip is still closing", () => {
   assert.ok(at(180).right > mid.right);
 });
 
-test("open plan controls are the hit target inside the shell border box", () => {
+test("open plan controls are the hit target outside the shell clip", () => {
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   const dom = new JSDOM(`<!doctype html><html class="overlay-passthrough"><head><style>${css}</style></head><body>
     <div class="overlay-root">
@@ -507,6 +507,8 @@ test("open plan controls are the hit target inside the shell border box", () => 
   const preview = plan.querySelector("[data-role='plan-preview-mode']");
   const source = plan.querySelector("[data-role='plan-source-mode']");
   const close = plan.querySelector("[data-role='plan-close']");
+  const openClip = "inset(-4px -428px -4px -4px round 3px)";
+  const closedClip = "inset(-4px 0px -4px -4px round 3px)";
   shell.style.left = "100px";
   shell.style.top = "40px";
   shell.style.width = "420px";
@@ -514,45 +516,85 @@ test("open plan controls are the hit target inside the shell border box", () => 
   shell.dataset.ax = "22";
   shell.dataset.ay = "22";
   shell.dataset.planWidth = "420";
-  shell.style.clipPath = "inset(-4px -428px -4px -4px round 3px)";
+  shell.style.clipPath = openClip;
   plan.style.width = "420px";
   plan._seamPhase = "grown";
-  for (const control of [preview, source, close]) {
-    assert.equal(getComputedStyle(control).pointerEvents, "auto", control.dataset.role);
-  }
-  const layout = () => {
-    const shellLeft = Number.parseFloat(shell.style.left) || 0;
-    const shellTop = Number.parseFloat(shell.style.top) || 0;
-    const shellW = Number.parseFloat(shell.style.width) || 0;
-    const shellH = Number.parseFloat(shell.style.height) || 0;
-    const planW = Number.parseFloat(plan.style.width) || 420;
-    const inlineLeft = plan.style.left;
-    let planLeft = shellLeft + shellW;
-    if (inlineLeft.endsWith("px")) planLeft = shellLeft + Number.parseFloat(inlineLeft);
-    else if (shell.dataset.planSide === "left") planLeft = shellLeft - planW;
-    const planBox = { x: planLeft, y: shellTop, w: planW, h: shellH };
-    const closeBox = { x: planBox.x + planBox.w - 30, y: planBox.y + 8, w: 22, h: 22 };
-    const sourceBox = { x: closeBox.x - 48, y: planBox.y + 8, w: 40, h: 22 };
-    const previewBox = { x: sourceBox.x - 40, y: planBox.y + 8, w: 40, h: 22 };
-    return {
-      shell: { x: shellLeft, y: shellTop, w: shellW, h: shellH },
-      plan: planBox,
-      [preview.dataset.role]: previewBox,
-      [source.dataset.role]: sourceBox,
-      [close.dataset.role]: closeBox,
-    };
+  const anim = {
+    playState: "finished",
+    currentTime: 280,
+    effect: {
+      getKeyframes: () => [{ clipPath: closedClip }, { clipPath: openClip }],
+      getTiming: () => ({ duration: 280, easing: "cubic-bezier(.3,.6,.2,1)", fill: "both" }),
+    },
   };
-  const contains = (box, x, y) => !!box && x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h;
-  const rectFor = (el) => {
-    const boxes = layout();
-    if (el === shell) return boxes.shell;
-    if (el === plan) return boxes.plan;
-    if (el?.dataset?.role && boxes[el.dataset.role]) return boxes[el.dataset.role];
+  shell.getAnimations = () => [anim];
+  const num = (value) => Number.parseFloat(value) || 0;
+  const boxOf = (el) => {
+    if (!el) return null;
+    if (el === shell) {
+      return { x: num(shell.style.left), y: num(shell.style.top), w: num(shell.style.width), h: num(shell.style.height) };
+    }
+    if (el.classList?.contains("plan-hit-host")) {
+      return { x: num(el.style.left), y: num(el.style.top), w: num(el.style.width), h: num(el.style.height) };
+    }
+    if (el === plan || el.classList?.contains("plan-window")) {
+      const host = plan.parentElement?.classList?.contains("plan-hit-host") ? plan.parentElement : null;
+      if (host) return boxOf(host);
+      const shellBox = boxOf(shell);
+      const planW = num(plan.style.width) || 420;
+      const x = shell.dataset.planSide === "left" ? shellBox.x - planW : shellBox.x + shellBox.w;
+      return { x, y: shellBox.y, w: planW, h: shellBox.h };
+    }
+    if (el.dataset?.role) {
+      const planBox = boxOf(plan);
+      const closeBox = { x: planBox.x + planBox.w - 30, y: planBox.y + 8, w: 22, h: 22 };
+      const sourceBox = { x: closeBox.x - 48, y: planBox.y + 8, w: 40, h: 22 };
+      const previewBox = { x: sourceBox.x - 40, y: planBox.y + 8, w: 40, h: 22 };
+      if (el === close) return closeBox;
+      if (el === source) return sourceBox;
+      if (el === preview) return previewBox;
+    }
     return null;
   };
-  // jsdom has no elementFromPoint. This walker skips pointer-events:none and,
-  // like WebKitGTK after a fill:both clip, only hits children inside the
-  // morph border box.
+  const contains = (box, x, y) => !!box && x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h;
+  const parseInset = (value) => {
+    const match = String(value || "").match(/inset\(\s*([-\d.]+)px\s+([-\d.]+)px\s+([-\d.]+)px\s+([-\d.]+)px/i);
+    if (!match) return null;
+    return { top: Number(match[1]), right: Number(match[2]), bottom: Number(match[3]), left: Number(match[4]) };
+  };
+  // WebKitGTK honours clip-path, and the hit region is the clip intersected
+  // with the border box. A fill:both negative inset paints the plan but does
+  // not make that outside area a hit target.
+  const usedClip = (el) => {
+    const anims = el.getAnimations?.() || [];
+    for (const item of anims) {
+      if (!item || item.playState === "idle") continue;
+      const frames = item.effect?.getKeyframes?.() || [];
+      const clips = frames.map((frame) => frame?.clipPath).filter(Boolean);
+      if (!clips.length) continue;
+      const duration = Number(item.effect?.getTiming?.().duration) || 0;
+      const now = Number(item.currentTime) || 0;
+      if (item.playState === "finished" || (duration > 0 && now >= duration - 16)) return parseInset(clips.at(-1));
+      return parseInset(clips[0]);
+    }
+    return parseInset(el.style?.clipPath || "");
+  };
+  const clippedOut = (el, x, y) => {
+    let node = el;
+    while (node && node !== document.body) {
+      const clip = usedClip(node);
+      const box = boxOf(node);
+      if (clip && box) {
+        const left = box.x + Math.max(0, clip.left);
+        const top = box.y + Math.max(0, clip.top);
+        const right = box.x + box.w - Math.max(0, clip.right);
+        const bottom = box.y + box.h - Math.max(0, clip.bottom);
+        if (x < left || y < top || x > right || y > bottom) return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  };
   document.elementFromPoint = (x, y) => {
     let found = null;
     const visit = (el) => {
@@ -561,46 +603,55 @@ test("open plan controls are the hit target inside the shell border box", () => 
         if (found) return;
       }
       if (getComputedStyle(el).pointerEvents === "none") return;
-      const box = rectFor(el);
+      const box = boxOf(el);
       if (!contains(box, x, y)) return;
-      const morph = el.closest(".morph");
-      if (morph && !contains(rectFor(morph), x, y)) return;
+      if (clippedOut(el, x, y)) return;
       found = el;
     };
     visit(document.body);
     return found || document.body;
   };
   const center = (el) => {
-    const box = rectFor(el);
+    const box = boxOf(el);
     return { x: box.x + box.w / 2, y: box.y + box.h / 2 };
   };
-  const closeAt = center(close);
-  assert.equal(document.elementFromPoint(closeAt.x, closeAt.y).tagName, "BODY");
-  const before = layout().plan;
-  assert.equal(seatOpenPlan(shell), true);
-  const after = layout().plan;
+  for (const control of [preview, source, close]) {
+    assert.equal(getComputedStyle(control).pointerEvents, "auto", control.dataset.role);
+  }
+  assert.equal(usedClip(shell).right, -428);
+  assert.equal(document.elementFromPoint(center(close).x, center(close).y).tagName, "BODY");
+  const before = boxOf(plan);
+  const shellLeft = shell.style.left;
+  const shellWidth = shell.style.width;
+  const shellClip = shell.style.clipPath;
+  assert.equal(hostOpenPlan(shell), true);
+  assert.equal(plan.parentElement.className, "plan-hit-host");
+  assert.equal(shell.style.left, shellLeft);
+  assert.equal(shell.style.width, shellWidth);
+  assert.equal(shell.style.clipPath, shellClip);
+  assert.equal(shell.querySelector(".center-panel").style.width, "");
+  assert.equal(anim.effect.getKeyframes()[1].clipPath, openClip);
+  const after = boxOf(plan);
   assert.equal(after.x, before.x);
   assert.equal(after.y, before.y);
-  assert.equal(shell.style.width, "840px");
-  assert.equal(plan.style.left, "420px");
-  assert.match(shell.style.clipPath, /inset\(-4px -8px -4px -4px round 3px\)/);
+  assert.equal(after.w, before.w);
+  assert.equal(after.h, before.h);
   for (const control of [preview, source, close]) {
-    const at = center(control);
-    const shellBox = layout().shell;
-    assert.ok(at.x >= shellBox.x && at.x <= shellBox.x + shellBox.w, control.dataset.role);
-    assert.equal(document.elementFromPoint(at.x, at.y), control, control.dataset.role);
+    assert.equal(getComputedStyle(control).pointerEvents, "auto", control.dataset.role);
+    assert.equal(document.elementFromPoint(center(control).x, center(control).y), control, control.dataset.role);
+    assert.equal(control.closest(".morph"), null, control.dataset.role);
   }
-  assert.equal(seatOpenPlan(shell), true);
-  assert.equal(shell.style.width, "840px");
-  shell.style.width = shell.dataset.planSeatW;
-  shell.style.left = shell.dataset.planSeatLeft;
-  assert.equal(seatOpenPlan(shell), true);
-  assert.equal(shell.style.width, "840px");
-  assert.match(shell.style.clipPath, /inset\(-4px -8px -4px -4px round 3px\)/);
-  assert.equal(unseatOpenPlan(shell), true);
+  shell.style.left = "140px";
+  assert.equal(hostOpenPlan(shell), true);
   assert.equal(shell.style.width, "420px");
-  assert.equal(plan.style.left, "");
-  assert.match(shell.style.clipPath, /inset\(-4px -428px -4px -4px round 3px\)/);
+  assert.equal(shell.style.clipPath, openClip);
+  assert.equal(boxOf(plan).x, 140 + 420);
+  assert.equal(document.elementFromPoint(center(close).x, center(close).y), close);
+  assert.equal(restoreHostedPlan(shell), true);
+  assert.equal(plan.parentElement, shell);
+  assert.equal(shell.style.left, "140px");
+  assert.equal(shell.style.width, "420px");
+  assert.equal(shell.style.clipPath, openClip);
   assert.equal(document.elementFromPoint(center(close).x, center(close).y).tagName, "BODY");
 
   shell.style.left = "500px";
@@ -610,17 +661,15 @@ test("open plan controls are the hit target inside the shell border box", () => 
   shell.style.clipPath = "inset(-4px -4px -4px -428px round 3px)";
   plan.hidden = false;
   plan._seamPhase = "grown";
-  const leftBefore = layout().plan.x;
-  assert.equal(seatOpenPlan(shell), true);
-  assert.equal(layout().plan.x, leftBefore);
-  assert.equal(shell.style.left, "80px");
-  assert.equal(shell.style.width, "840px");
-  assert.equal(plan.style.left, "0px");
-  assert.equal(shell.dataset.ax, String(22 + 420));
-  const leftClose = center(close);
-  assert.equal(document.elementFromPoint(leftClose.x, leftClose.y), close);
-  assert.equal(unseatOpenPlan(shell), true);
-  assert.equal(shell.style.width, "420px");
+  const leftBefore = boxOf(plan).x;
+  assert.equal(hostOpenPlan(shell), true);
+  assert.equal(boxOf(plan).x, leftBefore);
   assert.equal(shell.style.left, "500px");
+  assert.equal(shell.style.width, "420px");
   assert.equal(shell.dataset.ax, "22");
+  assert.equal(document.elementFromPoint(center(close).x, center(close).y), close);
+  assert.equal(restoreHostedPlan(shell), true);
+  assert.equal(shell.style.left, "500px");
+  assert.equal(shell.style.width, "420px");
+  assert.equal(plan.parentElement, shell);
 });

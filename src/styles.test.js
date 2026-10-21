@@ -210,7 +210,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   const hold = mainSrc.slice(mainSrc.indexOf("function holdSeamVisual"), mainSrc.indexOf("function seamLocked"));
   assert.doesNotMatch(hold, /SEAM_MIN|scaleX\(0\.001\)/);
   const opened = mainSrc.slice(mainSrc.indexOf("async function runShellMorph"), mainSrc.indexOf("function raisePanel"));
-  assert.ok(opened.indexOf("unseatOpenPlan") > 0 && opened.indexOf("unseatOpenPlan") < opened.indexOf("getAnimations?.().forEach"));
+  assert.ok(opened.indexOf("restoreHostedPlan") > 0 && opened.indexOf("restoreHostedPlan") < opened.indexOf("getAnimations?.().forEach"));
   const planCloseAt = opened.indexOf("await collapsePlanSeam(shell, token)");
   const phaseAt = opened.indexOf("for (const step of phaseList");
   const contentOutAt = opened.indexOf("beginPanelCollapseContent(shell)");
@@ -619,7 +619,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   const heldPaint = mainSrc.slice(mainSrc.indexOf("function paintLayerOpacity"), mainSrc.indexOf("function applyFrames"));
   assert.match(heldPaint, /data-state="panel"/);
   assert.match(heldPaint, /style\.opacity/);
-  assert.match(heldPaint, /plan-window/);
+  assert.match(heldPaint, /planNode\(shell\)/);
+  assert.match(heldPaint, /paintLayerOpacity\(plan, "1"\)/);
+  assert.match(mainSrc, /function planNode\(shell\)[\s\S]*?\.plan-window/);
   assert.doesNotMatch(heldPaint, /requestAnimationFrame/);
   assert.doesNotMatch(heldPaint, /setProperty\("--hit-opacity"/);
   assert.doesNotMatch(heldPaint, /renderBots|flushHits|publishHits|refreshBotChats|rehearse/);
@@ -769,7 +771,8 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.plan-window \{[^}]*rgba\(248,\s*248,\s*252,\s*\.92\)/s);
   assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-morphing\):not\(\.is-collapsing\) \{[^}]*overflow:\s*visible/s);
   assert.match(css, /\.morph\.is-collapsing \.center-panel,\s*\n\.morph\.is-collapsing \.content,\s*\n\.morph\.is-collapsing \.morph-body \{[^}]*overflow:\s*hidden/s);
-  assert.match(css, /\[data-plan-open="1"\]:not\(\.is-collapsing\) \.plan-window:not\(\[hidden\]\):not\(\.is-plan-parked\) \* \{[^}]*pointer-events:\s*auto !important/s);
+  assert.match(css, /\[data-plan-open="1"\]:not\(\.is-collapsing\) \.plan-window:not\(\[hidden\]\):not\(\.is-plan-parked\) \*,[\s\S]*?pointer-events:\s*auto !important/);
+  assert.match(css, /\.plan-hit-host > \.plan-window:not\(\[hidden\]\):not\(\.is-plan-parked\) \* \{[^}]*pointer-events:\s*auto !important/s);
   assert.doesNotMatch(css, /clip-path:\s*none !important/);
   assert.match(css, /\.morph \.plan-window \{[^}]*left:\s*100%/s);
   assert.match(css, /\.morph \.plan-window \{[^}]*margin-left:\s*0/s);
@@ -830,8 +833,9 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(main, /CRON_ORB_BLEED/);
   assert.match(main, /is-cron-live/);
   assert.match(main, /is-cron-fail/);
-  assert.match(main, /seatOpenPlan\(shell\)/);
-  assert.match(main, /unseatOpenPlan\(shell\)/);
+  assert.match(main, /hostOpenPlan\(shell\)/);
+  assert.match(main, /restoreHostedPlan\(shell\)/);
+  assert.doesNotMatch(main, /seatOpenPlan|unseatOpenPlan|planSeat/);
   const idleOpacity = main.slice(main.indexOf("function idleOrbOpacity"), main.indexOf("function planWidthPx"));
   assert.doesNotMatch(idleOpacity, /0\.55/);
   assert.match(idleOpacity, /minOpacity/);
@@ -1003,4 +1007,45 @@ test("idle cron orb matches another idle orb", () => {
   cron.classList.add("is-cron-live");
   assert.equal(getComputedStyle(cron).opacity, "1");
   assert.notEqual(getComputedStyle(other).opacity, "1");
+});
+
+test("failed cron ring and done ripple are outside the idle opacity", () => {
+  assert.match(css, /\.cron-status\.is-failed::after \{[^}]*opacity:\s*1/s);
+  assert.match(css, /\.cron-status\.is-failed::after \{[^}]*#e5484d/s);
+  assert.match(css, /\.cron-status\.is-done::after \{[^}]*animation:\s*cron-ring 400ms/s);
+  assert.match(css, /\.bot-btn\.orb--cron\.is-failed::after,\s*\n\.bot-btn\.orb--cron\.is-done::after \{[^}]*content:\s*none/s);
+  assert.doesNotMatch(css, /\.is-cron-fail\[data-hit-id\]/);
+  const dom = new JSDOM(`<!doctype html><style>${css}</style><body>
+    <div class="bot-rail">
+      <div class="morph" data-bot-id="cron" data-state="orb" data-hit-id="bot:cron" style="--hit-opacity:0.18">
+        <button class="bot-btn morph-orb orb--cron is-failed">
+          <span class="orb-core"></span>
+          <span class="orb-glyph">時</span>
+        </button>
+      </div>
+      <span class="cron-status is-failed" style="--p:1"></span>
+      <div class="morph" data-bot-id="planner" data-state="orb" data-hit-id="bot:planner" style="--hit-opacity:0.18">
+        <button class="bot-btn morph-orb is-idle">
+          <span class="orb-core"></span>
+        </button>
+      </div>
+    </div>
+  </body>`);
+  const { document, getComputedStyle } = dom.window;
+  const cron = document.querySelector("[data-bot-id='cron']");
+  const other = document.querySelector("[data-bot-id='planner']");
+  const ring = document.querySelector(".cron-status");
+  assert.equal(getComputedStyle(cron).opacity, getComputedStyle(other).opacity);
+  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 0.18)");
+  assert.equal(ring.parentElement, cron.parentElement);
+  assert.equal(ring.closest("[data-hit-id]"), null);
+  assert.equal(
+    getComputedStyle(cron.querySelector(".orb-core")).backgroundImage,
+    getComputedStyle(other.querySelector(".orb-core")).backgroundImage,
+  );
+  cron.classList.add("is-cron-done");
+  ring.classList.remove("is-failed");
+  ring.classList.add("is-done");
+  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 0.18)");
+  assert.notEqual(getComputedStyle(cron.querySelector(".orb-core")).opacity, "0");
 });

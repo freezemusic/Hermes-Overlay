@@ -381,6 +381,50 @@ html, body {
   background: conic-gradient(#e5484d calc(var(--p, 1) * 1turn), rgba(229, 72, 77, .18) 0);
 }
 
+/* The shell opacity fades every descendant. These two states draw on a
+   sibling so the red ring and the done ripple stay at full strength. */
+.bot-btn.orb--cron.is-failed::after,
+.bot-btn.orb--cron.is-done::after {
+  content: none;
+  opacity: 0;
+  animation: none;
+}
+
+.cron-status {
+  position: absolute;
+  z-index: 0;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.cron-status[hidden] { display: none; }
+
+.cron-status::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.cron-status.is-failed::after {
+  opacity: 1;
+  background: conic-gradient(#e5484d calc(var(--p, 1) * 1turn), rgba(229, 72, 77, .18) 0);
+  -webkit-mask: radial-gradient(circle closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  mask: radial-gradient(circle closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+}
+
+.cron-status.is-done::after {
+  opacity: 1;
+  inset: -2px;
+  background: none;
+  border: 2px solid #0000f2;
+  -webkit-mask: none;
+  mask: none;
+  animation: cron-ring 400ms linear 1 forwards;
+}
+
 .bot-btn.orb--cron.is-done::after {
   opacity: 1;
   inset: -2px;
@@ -1845,8 +1889,9 @@ html, body {
   background: var(--nous-blue);
   color: var(--text);
   overflow: hidden;
-  /* The shell is the full panel box. Only the clipped shape may take a hit;
-     WebKitGTK hit-tests the border box once a clip animation fills forwards. */
+  /* The shell is the full panel box. WebKitGTK hit-testing honours
+     clip-path and does not hit a descendant outside this border box, even
+     when a negative inset paints it. An open plan is hosted beside the shell. */
   pointer-events: none;
   will-change: auto;
   clip-path: inset(0px 0px 0px 0px round 3px);
@@ -1935,7 +1980,8 @@ html, body {
   transition-delay: 0s !important;
 }
 
-.morph[data-state="panel"] .plan-window {
+.morph[data-state="panel"] .plan-window,
+.plan-hit-host > .plan-window {
   will-change: transform, opacity;
   transition-property: opacity !important;
   transition-duration: 0s !important;
@@ -2521,8 +2567,94 @@ html.overlay-passthrough .morph[data-state="panel"] :is(input, textarea):focus {
 /* Plan controls stay clickable once the pane is open. The seam rule above
    only arms the chat, so 預覽, 原文 and × were hitting the page body. */
 html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"][data-plan-open="1"]:not(.is-collapsing) .plan-window:not([hidden]):not(.is-plan-parked),
-html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"][data-plan-open="1"]:not(.is-collapsing) .plan-window:not([hidden]):not(.is-plan-parked) * {
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"][data-plan-open="1"]:not(.is-collapsing) .plan-window:not([hidden]):not(.is-plan-parked) *,
+html.overlay-passthrough:not([data-pass="1"]) .plan-hit-host > .plan-window:not([hidden]):not(.is-plan-parked),
+html.overlay-passthrough:not([data-pass="1"]) .plan-hit-host > .plan-window:not([hidden]):not(.is-plan-parked) * {
   pointer-events: auto !important;
+}
+
+/* Open plan, same pixels as left:100% / right:100%, but not a descendant of
+   the shell clip. WebKitGTK will not hit that descendant. */
+.plan-hit-host {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+  background: transparent;
+}
+
+.plan-hit-host > .plan-window {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: auto;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: visible;
+  border-left: none;
+  border-radius: 0 var(--r-panel) var(--r-panel) 0;
+  box-shadow: none;
+}
+
+.plan-hit-host[data-plan-side="left"] > .plan-window {
+  border-left: 1px solid var(--nous-blue);
+  border-right: none;
+  border-radius: var(--r-panel) 0 0 var(--r-panel);
+}
+
+.plan-hit-host > .plan-window > .hud-corner { z-index: 8; }
+
+.plan-hit-host:not([data-plan-side="left"]) > .plan-window > .hud-corner.tl,
+.plan-hit-host:not([data-plan-side="left"]) > .plan-window > .hud-corner.bl,
+.plan-hit-host[data-plan-side="left"] > .plan-window > .hud-corner.tr,
+.plan-hit-host[data-plan-side="left"] > .plan-window > .hud-corner.br {
+  display: none;
+}
+
+/* Same paint as the in-shell seam. Leaving .morph must not drop padding 0
+   or move the paper off .plan-fit. */
+.plan-hit-host > .plan-window.is-seam-grow {
+  display: flex;
+  overflow: hidden !important;
+  align-items: flex-start;
+  box-sizing: border-box;
+  padding: 0;
+  background: transparent;
+}
+
+.plan-hit-host > .plan-window.is-seam-grow > .plan-fit {
+  flex: none;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  background:
+    linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    rgba(248, 248, 252, .92);
+}
+
+.plan-hit-host[data-plan-side="left"] > .plan-window,
+.plan-hit-host[data-plan-side="left"] > .plan-window .plan-fit {
+  transform-origin: right center;
+}
+
+.plan-hit-host[data-plan-side="left"] > .plan-window.is-seam-grow > .plan-fit {
+  align-self: flex-end;
+}
+
+.plan-hit-host > .plan-window .plan-head {
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 0;
+  padding-right: 0;
+  box-sizing: border-box;
+}
+
+.plan-hit-host > .plan-window .plan-head .panel-actions {
+  flex: none;
 }
 
 @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } }
@@ -2559,7 +2691,8 @@ html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"][data-pl
   /* Later and more specific than the 120ms opacity transition above.
      That duration is the press dim and the release lag on a settled panel. */
   .morph[data-state="panel"],
-  .morph[data-state="panel"] .plan-window {
+  .morph[data-state="panel"] .plan-window,
+  .plan-hit-host > .plan-window {
     transition-property: opacity !important;
     transition-duration: 0s !important;
     transition-delay: 0s !important;
