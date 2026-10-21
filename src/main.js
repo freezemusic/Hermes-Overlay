@@ -3032,8 +3032,11 @@ function revealContent(shell) {
 async function growAfterPaint(shell, token) {
   await nextFrame();
   if (!shell?.isConnected) return;
-  if (token && shell.dataset.morphToken !== token) return;
-  if (visualQuiet(shell)) {
+  // 睇計劃 sets planRepublish. The settle quiet and a stale morph token
+  // used to return here, so the chip click never hosted the plan again.
+  const republish = shell.dataset.planRepublish === "1";
+  if (token && shell.dataset.morphToken !== token && !republish) return;
+  if (visualQuiet(shell) && !republish) {
     shell.dataset.planDirty = "1";
     armQuietFlush(shell);
     return;
