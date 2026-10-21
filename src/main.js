@@ -4562,7 +4562,9 @@ function paintPlan(id, options = {}) {
     return;
   }
   const morphing = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
-  if (morphing) {
+  // The open morph leaves is-morphing on while the collapse gate is held,
+  // so a later 睇計劃 used to warm the plan and return without hosting it.
+  if (morphing && shell.dataset.planRepublish !== "1") {
     if (open) {
       if (!shell.dataset.planSide) shell.dataset.planSide = sideFromStyle(shell);
       warmPlanLayer(shell);
