@@ -1339,6 +1339,10 @@ function lockPlanRevealed(plan) {
   }
   setSeamPhase(plan, "grown");
   hostOpenPlan(shell);
+  // The sliver lock is the path that actually hosts the plan. The clip
+  // finish also logs, but this run often never reaches that frame.
+  logPlanHitBox(shell);
+  requestAnimationFrame(() => logPlanHitBox(shell));
   seamLog("lock", "width=final kept");
 }
 
