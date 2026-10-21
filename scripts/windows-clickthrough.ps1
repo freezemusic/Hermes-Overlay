@@ -191,6 +191,15 @@ public static class ClickProbe {
     input.u.ki.dwFlags = down ? 0u : KEYEVENTF_KEYUP;
     SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT)));
   }
+  public static void Tap(ushort vk) {
+    var down = new INPUT { type = INPUT_KEYBOARD };
+    down.u.ki.wVk = vk;
+    var up = new INPUT { type = INPUT_KEYBOARD };
+    up.u.ki.wVk = vk;
+    up.u.ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(1, new[] { down }, Marshal.SizeOf(typeof(INPUT)));
+    SendInput(1, new[] { up }, Marshal.SizeOf(typeof(INPUT)));
+  }
   public static void Dump(string path) {
     var lines = new StringBuilder();
     EnumProc cb = null;
@@ -218,15 +227,50 @@ $pad = 42
 $orb = 44
 $settings = @{ x = [int]($w - $pad - 152 - $orb / 2); y = [int]($h - $pad - $orb / 2) }
 $cron = @{ x = [int]($w - $pad - $orb / 2); y = [int][Math]::Round($h * 0.38) }
-# reveal+2s Ctrl+clicks the settings orb, which opens a panel of
-# min(680, 92vw) by min(86vh, 760) anchored on that orb. On a 1024x768
-# runner that panel covers (200, h/2), so the +32s blank sample was hitting
-# the WebView. The blank point stays beside the panel (R-CT-01).
+# One field bot sits on the top edge (distributeEdges weight, t=0.21).
+# Its open panel is 420x560 anchored on that orb. Settings is
+# min(680, 92vw) by min(86vh, 760), anchored on the settings orb.
+# The blank point has to miss both of those rects. On 1024x768,
+# (200, h/2) is inside settings, so it is not a pass-through sample.
+$field = @{ x = [int][Math]::Round($w * 0.08 + $w * 0.84 * 0.21); y = [int]($pad + $orb / 2) }
 $settingsW = [Math]::Min(680.0, $w * 0.92)
 $settingsH = [Math]::Min($h * 0.86, 760.0)
 $orbR = $orb / 2.0
-$panelLeft = $settings.x - ($settingsW - $orbR)
-$panelTop = $settings.y - ($settingsH - $orbR)
+function Screen-Edge([double]$x, [double]$y) {
+  $best = "bottom"; $bestD = [double]$h
+  foreach ($pair in @(
+    @{ n = "left"; d = $x },
+    @{ n = "right"; d = ($w - $x) },
+    @{ n = "top"; d = $y },
+    @{ n = "bottom"; d = ($h - $y) }
+  )) {
+    if ($pair.d -lt $bestD -or ($pair.d -eq $bestD -and $pair.n -lt $best)) {
+      $best = $pair.n; $bestD = $pair.d
+    }
+  }
+  return $best
+}
+function Place-Panel($ox, $oy, $bw, $bh) {
+  $edge = Screen-Edge $ox $oy
+  $ax = $(if ($ox -gt ($w / 2.0)) { $bw - $orbR } else { $orbR })
+  $header = "top"
+  if ($edge -eq "bottom") { $header = "bottom" }
+  elseif ($edge -ne "top") {
+    $downTop = $oy - $orbR
+    $upTop = $oy + $orbR - $bh
+    $downOver = [Math]::Max(0, -$downTop) + [Math]::Max(0, ($downTop + $bh) - $h)
+    $upOver = [Math]::Max(0, -$upTop) + [Math]::Max(0, ($upTop + $bh) - $h)
+    if ($downOver -le 0.5) { $header = "top" }
+    elseif ($upOver -lt ($downOver - 0.5)) { $header = "bottom" }
+  }
+  $ay = $(if ($header -eq "bottom") { $bh - $orbR } else { $orbR })
+  return @{ left = $ox - $ax; top = $oy - $ay; w = $bw; h = $bh }
+}
+$settingsPanel = Place-Panel $settings.x $settings.y $settingsW $settingsH
+$fieldPanel = Place-Panel $field.x $field.y 420 560
+function Hits-Box($cand, $box) {
+  return $cand.x -ge ($box.left - 16) -and $cand.x -lt ($box.left + $box.w + 16) -and $cand.y -ge ($box.top - 16) -and $cand.y -lt ($box.top + $box.h + 16)
+}
 $emptyCands = @(
   @{ x = 16; y = [int]($h / 2) },
   @{ x = 16; y = 16 },
@@ -234,12 +278,16 @@ $emptyCands = @(
 )
 $empty = $null
 foreach ($cand in $emptyCands) {
-  $onPanel = $cand.x -ge ($panelLeft - 16) -and $cand.x -lt ($panelLeft + $settingsW + 16) -and $cand.y -ge ($panelTop - 16) -and $cand.y -lt ($panelTop + $settingsH + 16)
   $onScreen = $cand.x -gt 0 -and $cand.y -gt 0 -and $cand.x -lt $w -and $cand.y -lt ($h - 48)
-  if (-not $onPanel -and $onScreen) { $empty = $cand; break }
+  if ($onScreen -and -not (Hits-Box $cand $settingsPanel) -and -not (Hits-Box $cand $fieldPanel)) {
+    $empty = $cand
+    break
+  }
 }
-if (-not $empty) { throw "no blank point beside the settings panel" }
-Write-Host "blank point $($empty.x),$($empty.y) beside settings $([int]$panelLeft),$([int]$panelTop) $([int]$settingsW)x$([int]$settingsH)"
+if (-not $empty) { throw "no blank point outside the settings and field panels" }
+Write-Host "blank point $($empty.x),$($empty.y) outside settings $([int]$settingsPanel.left),$([int]$settingsPanel.top) $([int]$settingsPanel.w)x$([int]$settingsPanel.h) and field $([int]$fieldPanel.left),$([int]$fieldPanel.top) $([int]$fieldPanel.w)x$([int]$fieldPanel.h) field-orb $($field.x),$($field.y)"
+
+$script:sampleNotes = New-Object System.Collections.Generic.List[string]
 
 function Dump-Tree {
   try { [ClickProbe]::Dump($tree) } catch { "dump failed: $_" | Set-Content $tree }
@@ -247,7 +295,21 @@ function Dump-Tree {
 
 function Click-Count { if (Test-Path $clickLog) { @(Get-Content $clickLog).Count } else { 0 } }
 
-function Assert-Sample([string]$label, $orbPoint) {
+function Note-Ok([string]$label, [string]$extra) {
+  $line = if ($extra) { "$label ok $extra" } else { "$label ok" }
+  $script:sampleNotes.Add($line)
+  Write-Host $line
+  [Console]::Out.Flush()
+}
+
+function Note-Fail([string]$label, [string]$detail) {
+  $line = "$label FAIL $detail"
+  $script:sampleNotes.Add($line)
+  Write-Host $line
+  [Console]::Out.Flush()
+}
+
+function Assert-Empty([string]$label) {
   [ClickProbe]::Ctrl($false)
   [ClickProbe]::SetCursorPos($empty.x, $empty.y) | Out-Null
   Start-Sleep -Milliseconds 250
@@ -257,7 +319,8 @@ function Assert-Sample([string]$label, $orbPoint) {
   $title = [ClickProbe]::Title($hit)
   if ($cls.StartsWith("Chrome_") -or ($root -ne $behindHwnd -and $hit -ne $behindHwnd)) {
     Dump-Tree
-    throw "$label WindowFromPoint class=$cls title=$title hwnd=$hit root=$root expected Behind $behindHwnd"
+    Note-Fail $label "WindowFromPoint class=$cls title=$title hwnd=$hit root=$root expected Behind $behindHwnd"
+    return
   }
   $before = Click-Count
   [ClickProbe]::Click()
@@ -268,8 +331,13 @@ function Assert-Sample([string]$label, $orbPoint) {
   } while ((Get-Date) -lt $limit)
   if ((Click-Count) -le $before) {
     Dump-Tree
-    throw "$label SendInput at empty point did not reach Behind within 500ms"
+    Note-Fail $label "SendInput at empty point did not reach Behind within 500ms class=$cls"
+    return
   }
+  Note-Ok $label "class=$cls"
+}
+
+function Assert-Orb([string]$label, $orbPoint) {
   [ClickProbe]::SetCursorPos($orbPoint.x, $orbPoint.y) | Out-Null
   [ClickProbe]::Ctrl($true)
   Start-Sleep -Milliseconds 250
@@ -279,10 +347,10 @@ function Assert-Sample([string]$label, $orbPoint) {
   [ClickProbe]::Ctrl($false)
   if ((Click-Count) -gt $beforeOrb) {
     Dump-Tree
-    throw "$label Ctrl+click on orb rect reached Behind"
+    Note-Fail $label "Ctrl+click on orb rect reached Behind"
+    return
   }
-  Write-Host "$label ok class=$cls"
-  [Console]::Out.Flush()
+  Note-Ok $label ""
 }
 
 $overlay = $null
@@ -304,12 +372,33 @@ try {
     Dump-Tree
     throw "overlay did not reveal within 90s"
   }
+  $revealedAt = Get-Date
   Start-Sleep -Seconds 2
-  Assert-Sample "reveal+2s" $settings
-  Start-Sleep -Seconds 30
-  Assert-Sample "reveal+32s" $cron
+  # Settings is still closed. Empty space passes through, then Ctrl+click opens it.
+  Assert-Empty "reveal+2s"
+  Assert-Orb "reveal+2s-settings" $settings
+  # Settings is open. The blank point is outside that card.
+  Assert-Empty "settings-open"
+  # Open the field bot panel and sample the same blank point again.
+  Assert-Orb "bot-open" $field
+  Assert-Empty "bot-panel-open"
+  [ClickProbe]::Ctrl($false)
+  [ClickProbe]::Tap(0x1B)
+  Start-Sleep -Milliseconds 400
+  Assert-Empty "after-escape"
+  $remain = 32 - ((Get-Date) - $revealedAt).TotalSeconds
+  if ($remain -gt 0) { Start-Sleep -Seconds $remain }
+  Assert-Empty "reveal+32s"
+  Assert-Orb "reveal+32s-cron" $cron
   if ((Test-Path $gwLog) -and (Select-String -Path $gwLog -Pattern "POST /api/sessions" -Quiet)) {
-    throw "startup created a session: $(Get-Content $gwLog -Raw)"
+    Note-Fail "gateway" "startup created a session"
+  }
+  Write-Host "---- click-through samples ----"
+  foreach ($line in $script:sampleNotes) { Write-Host $line }
+  [Console]::Out.Flush()
+  $failed = @($script:sampleNotes | Where-Object { $_ -match " FAIL " })
+  if ($failed.Count -gt 0) {
+    throw ($failed -join " || ")
   }
   Write-Host "click-through ok"
   [Console]::Out.Flush()

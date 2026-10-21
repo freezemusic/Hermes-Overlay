@@ -316,8 +316,10 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /collapseQuietUntil = performance\.now\(\) \+ 1100/);
   assert.match(mainSrc, /collapse-release/);
   assert.match(mainSrc, /orb-restyle/);
-  assert.match(mainSrc, /orb\.style\.removeProperty\("will-change"\)/);
-  assert.match(mainSrc, /shell\.style\.removeProperty\("will-change"\)/);
+  assert.match(mainSrc, /for \(const el of \[shell, fill, orb, glow, stroke\]\)/);
+  assert.match(mainSrc, /el\.style\.removeProperty\("will-change"\)/);
+  assert.match(mainSrc, /function restingTransform/);
+  assert.match(mainSrc, /shell\._idleDim = null/);
   assert.match(mainSrc, /class=active-off/);
   assert.match(mainSrc, /glyph\.textContent !== shortText/);
   assert.match(mainSrc, /nameLabel\.textContent !== bot\.name/);

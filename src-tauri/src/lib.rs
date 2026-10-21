@@ -1055,13 +1055,19 @@ async fn open_bot(
     app: AppHandle,
     state: State<'_, AppState>,
     profile: String,
+    quiet: Option<bool>,
 ) -> Result<OpenedChat, String> {
+    // A 4s poll passes quiet. Emitting 載入對話… flashes 停止 and dims 傳送
+    // for a frame even when the transcript did not change (R-PN-08).
+    let quiet = quiet.unwrap_or(false);
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?;
     let key = profile_key(&profile)?;
     let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-    emit_status(&app, &profile, "busy", "載入對話…");
+    if !quiet {
+        emit_status(&app, &profile, "busy", "載入對話…");
+    }
     let pin = load_pin(&app, &state, &profile);
     let result = async {
         let sessions = hermes::list_sessions(&state.http, &root, &key).await?;
@@ -1089,7 +1095,9 @@ async fn open_bot(
                     },
                 );
             }
-            emit_status(&app, &profile, "idle", "閒置");
+            if !quiet {
+                emit_status(&app, &profile, "idle", "閒置");
+            }
             Ok(OpenedChat {
                 sessions: session_choices(&sessions, &session_id),
                 profile,
@@ -1101,7 +1109,9 @@ async fn open_bot(
         }
         Err(err) => {
             let message = explain(&err);
-            emit_status(&app, &profile, "error", &message);
+            if !quiet {
+                emit_status(&app, &profile, "error", &message);
+            }
             Err(message)
         }
     }

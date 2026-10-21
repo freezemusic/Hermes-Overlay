@@ -41,7 +41,9 @@ import {
   includePlan,
   hostOpenPlan,
   placePlanHost,
+  planControlUnder,
   restoreHostedPlan,
+  sameChatSnapshot,
   slotPoint,
   FRAME_BLEED,
   HAIRLINE,
@@ -491,6 +493,7 @@ function separateOpenShells(shells, extra) {
       left: Number.parseFloat(shell.style.left) || 0,
       width: Number.parseFloat(shell.style.width) || 0,
       edge: shell.dataset.edge || "",
+      pin: shell.dataset.header === "bottom" ? "end" : "start",
     };
     const plan = planNode(shell);
     const planOpen = plan && shell.dataset.planOpen === "1";
@@ -504,6 +507,7 @@ function separateOpenShells(shells, extra) {
       width: dockedWidth,
     });
     dock.shell = shell;
+    dock.pin = box.pin;
     return dock;
   });
   const after = separateStackedPanels(before, vh, STACK_GAP + 2 * FRAME_BLEED);
@@ -962,19 +966,49 @@ function commitClosedShell(shell) {
     plan.style.visibility = "hidden";
   }
   const orb = shell.querySelector(".morph-orb");
-  // Header docking leaves an inline will-change. A resting orb does not
-  // have one, and keeping it retitles the orb a different colour after close.
-  shell.style.removeProperty("will-change");
-  if (orb) orb.style.removeProperty("will-change");
+  const fill = shell.querySelector(".morph-fill");
+  const glow = shell.querySelector(".morph-glow");
+  // Header docking and the collapse layer leave will-change / translateZ.
+  // That retitles the idle disc: the 1px blue rim goes light after one
+  // open/close (R-OB-01). A fresh orb has none of these inline hints.
+  const stroke = shell.querySelector(".morph-stroke");
+  for (const el of [shell, fill, orb, glow, stroke]) {
+    if (!el) continue;
+    el.style.removeProperty("will-change");
+    el.style.removeProperty("filter");
+    if (restingTransform(el.style.transform)) el.style.removeProperty("transform");
+    el.style.removeProperty("transition");
+  }
+  const idle = insetsFor("orb", shellGeom(shell));
+  writeClip(shell, idle);
   const floor = String(idleOrbOpacity(shell));
   if (shell.style.getPropertyValue("--hit-opacity") !== floor) {
     shell.style.setProperty("--hit-opacity", floor);
+  }
+  // The collapse dim is fill:forwards. Once the orb rule owns opacity, that
+  // animation keeps a promoted layer and the idle rim washes out (R-OB-01).
+  const dim = shell._idleDim;
+  if (dim && (dim.playState === "finished" || dim.playState === "idle")) {
+    try { dim.cancel(); } catch { /* the stylesheet opacity is the floor */ }
+    shell._idleDim = null;
   }
   if (orb?.classList.contains("active") && !state.openIds.includes(shell.dataset.botId)) {
     orb.classList.remove("active");
   }
   debugLog("orb-restyle", `when=collapse-end class=active-off opacity=${floor}`);
   logCollapseSpan(shell);
+}
+
+/** scale(1) and translateZ(0) are collapse leftovers, not an idle disc. */
+function restingTransform(value) {
+  const text = String(value || "").trim();
+  if (!text || text === "none") return true;
+  return text.split(/\s+/).every((part) => (
+    part === "none"
+    || part === "scale(1)"
+    || /^translateZ\(0(px)?\)$/.test(part)
+    || /^translate3d\(0(px)?,\s*0(px)?,\s*0(px)?\)$/.test(part)
+  ));
 }
 
 function idleOrbOpacity(shell) {
@@ -3244,8 +3278,13 @@ async function runShellMorph(shell, target) {
   const alive = () => shell.dataset.morphToken === token && shell.isConnected;
   const from = shell.dataset.visual || shell.dataset.state || "orb";
   window.clearTimeout(shell._pillTimer);
-  if (target === "orb") shell.dataset.intent = "close";
-  if (target === "orb" && dropParkedAnchor(state.anchors, shell.dataset.botId)) layoutShell(shell);
+  if (target === "orb") {
+    shell.dataset.intent = "close";
+    dropParkedAnchor(state.anchors, shell.dataset.botId);
+    // Stacking must not have moved the orb. Put the box back on the edge
+    // anchor before the clip runs, so the idle disc is the launch position.
+    placeShellElement(shell);
+  }
   shell.style.willChange = "clip-path, transform, opacity";
   shell.classList.add("is-morphing");
   shell._motion = target === "orb" ? "collapse" : "open";
@@ -4693,14 +4732,29 @@ function cancelReconnect() {
   state.reconnectTimer = 0;
 }
 
-function applyOpened(id, opened) {
+function applyOpened(id, opened, { quiet = false } = {}) {
   const thread = threadFor(id);
-  thread.messages = (opened.messages || []).map(presentMessage);
+  const messages = (opened.messages || []).map(presentMessage);
+  const sessions = opened.sessions || [];
+  if (quiet && sameChatSnapshot({
+    sessionId: thread.sessionId,
+    sessionExplicit: thread.sessionExplicit,
+    messages: thread.messages,
+    sessions: thread.sessions,
+  }, {
+    sessionId: opened.session_id || "",
+    sessionExplicit: !!opened.session_explicit,
+    messages,
+    sessions,
+  }) && thread.statusState !== "busy") {
+    return;
+  }
+  thread.messages = messages;
   thread.loaded = true;
   thread.sessionId = opened.session_id || "";
   thread.sessionExplicit = !!opened.session_explicit;
   thread.sessionAnchor = Number(opened.session_anchor) || 0;
-  thread.sessions = opened.sessions || [];
+  thread.sessions = sessions;
   thread.loading = false;
   rememberPlan(thread, thread.messages);
   clearConnectionBanner();
@@ -4798,9 +4852,9 @@ function refreshBotChats() {
     const token = state.reconnectToken;
     const panelOpen = shell?.dataset.state === "panel" && !shell.classList.contains("is-collapsing");
     const reload = panelOpen && thread.sessionExplicit && thread.sessionId
-      ? reloadOpenSession(bot.id, token)
-      : loadBotHistory(bot.id, token);
-    const job = reload.finally(() => {
+      ? reloadOpenSession(bot.id, token, { quiet: true })
+      : loadBotHistory(bot.id, token, { quiet: true });
+    const job = reload.catch(() => false).finally(() => {
       if (thread.historyPromise === job) thread.historyPromise = null;
     });
     thread.historyPromise = job;
@@ -4814,24 +4868,24 @@ function armChatRefresh() {
 
 const pendingHistory = new Map();
 
-async function reloadOpenSession(id, token) {
+async function reloadOpenSession(id, token, { quiet = false } = {}) {
   const thread = threadFor(id);
   const sessionId = thread.sessionId;
-  if (!sessionId) return loadBotHistory(id, token);
+  if (!sessionId) return loadBotHistory(id, token, { quiet });
   const { invoke } = await import("@tauri-apps/api/core");
   try {
     const opened = await invoke("select_session", { profile: id, sessionId });
     if (token !== state.reconnectToken || state.mode !== "hermes") return false;
-    applyOpened(id, opened);
+    applyOpened(id, opened, { quiet });
     return true;
   } catch {
-    return loadBotHistory(id, token);
+    return loadBotHistory(id, token, { quiet });
   }
 }
 
-async function loadBotHistory(id, token) {
+async function loadBotHistory(id, token, { quiet = false } = {}) {
   const { invoke } = await import("@tauri-apps/api/core");
-  const opened = await invoke("open_bot", { profile: id });
+  const opened = await invoke("open_bot", { profile: id, quiet });
   if (token !== state.reconnectToken || state.mode !== "hermes") return false;
   if (backgroundBlocked()) {
     pendingHistory.set(id, { opened, token });
@@ -4839,7 +4893,7 @@ async function loadBotHistory(id, token) {
     debugLog("history-defer", `id=${id}`);
     return false;
   }
-  applyOpened(id, opened);
+  applyOpened(id, opened, { quiet });
   return true;
 }
 
@@ -6368,6 +6422,25 @@ function setupComposer() {
     if (isTextField(event.target)) rememberComposer();
   });
   document.addEventListener("pointerdown", (event) => {
+    if (event.button === 0 && !event.ctrlKey && !engagedModifier()) {
+      const direct = event.target?.closest?.("[data-role='plan-preview-mode'], [data-role='plan-source-mode'], [data-role='plan-close']");
+      const control = direct || planControlUnder(document, event.clientX, event.clientY);
+      if (control && !direct) {
+        // WebKitGTK hit-tests the clipped plan as BODY. The layout box is
+        // still the button, so the first plain click has to reach it.
+        control.dispatchEvent(new PointerEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        }));
+        if (control.dataset.role !== "plan-close") control.click();
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+    }
     const control = event.target?.closest?.("button, select, a, textarea, .panel-header, .settings-head");
     const shell = event.target?.closest?.(".morph");
     if (control) {
@@ -7350,6 +7423,8 @@ function acceptModifier(payload) {
     state.modifierHeld = false;
   } else if (payload?.held === true) state.modifierHeld = true;
   else if (payload?.held === false) state.modifierHeld = false;
+  if (state.modifierHeld === true) document.documentElement.dataset.pass = "1";
+  else delete document.documentElement.dataset.pass;
   return true;
 }
 

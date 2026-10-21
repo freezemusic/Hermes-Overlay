@@ -325,54 +325,84 @@ export function includePlan(box, plan) {
  * boxes. Neither panel is closed. A top anchor stays on the top edge of its
  * box; a bottom anchor stays on the bottom edge.
  */
+function panelPin(box) {
+  if (box.pin === "end" || box.edge === "bottom") return "end";
+  return "start";
+}
+
+/**
+ * Keep every open panel fully on screen and pinned to its own orb.
+ * A top header stays on `top`; a bottom header stays on `top + height`.
+ * Overlap is resolved by shortening the free edge. Nothing is pushed
+ * past the screen.
+ */
 export function separateStackedPanels(boxes, screenH, gap = STACK_GAP) {
-  const next = (boxes || []).map((box) => ({
-    top: box.top,
-    height: box.height,
-    left: box.left,
-    width: box.width,
-    edge: box.edge || "",
-  }));
-  const order = next.map((_, index) => index).sort((i, j) => next[i].top - next[j].top || i - j);
-  const minH = 160;
-  for (let pass = 0; pass < next.length; pass += 1) {
-    for (let n = 0; n < order.length - 1; n += 1) {
-      const a = next[order[n]];
-      const b = next[order[n + 1]];
-      if (!rangesOverlap(a.left, a.left + a.width, b.left, b.left + b.width)) continue;
-      const space = b.top - (a.top + a.height);
-      if (space >= gap) continue;
-      let deficit = gap - space;
-      const up = Math.min(Math.max(0, a.top), deficit);
-      a.top -= up;
-      deficit -= up;
-      const down = Math.min(Math.max(0, screenH - (b.top + b.height)), deficit);
-      b.top += down;
-      deficit -= down;
-      if (deficit <= 0) continue;
-      const aShrink = Math.min(Math.max(0, a.height - minH), deficit);
-      a.height -= aShrink;
-      deficit -= aShrink;
-      const bShrink = Math.min(Math.max(0, b.height - minH), deficit);
-      b.top += bShrink;
-      b.height -= bShrink;
+  const view = screenH > 0 ? screenH : 0;
+  const next = (boxes || []).map((box) => {
+    const pin = panelPin(box);
+    const anchor = pin === "end" ? box.top + box.height : box.top;
+    return {
+      top: box.top,
+      height: box.height,
+      left: box.left,
+      width: box.width,
+      edge: box.edge || "",
+      pin,
+      anchor,
+    };
+  });
+  const fit = (box) => {
+    const anchor = Math.min(view, Math.max(0, box.anchor));
+    let height = Math.max(0, box.height);
+    if (box.pin === "end") {
+      const bottom = anchor;
+      let top = bottom - height;
+      if (top < 0) {
+        top = 0;
+        height = bottom;
+      }
+      if (top + height > view) height = Math.max(0, view - top);
+      box.top = top;
+      box.height = height;
+      return;
     }
-  }
-  // Adjacent passes miss a plan that bridges two non-neighbours. Every
-  // horizontally overlapping pair keeps the gap, pushing the lower one down.
-  for (let pass = 0; pass < next.length; pass += 1) {
+    const top = anchor;
+    if (top + height > view) height = Math.max(0, view - top);
+    box.top = top;
+    box.height = height;
+  };
+  next.forEach(fit);
+  const overlapsX = (a, b) => rangesOverlap(a.left, a.left + a.width, b.left, b.left + b.width);
+  for (let pass = 0; pass < next.length + 1; pass += 1) {
+    let changed = false;
     for (let i = 0; i < next.length; i += 1) {
       for (let j = i + 1; j < next.length; j += 1) {
         const upper = next[i].top <= next[j].top ? next[i] : next[j];
         const lower = upper === next[i] ? next[j] : next[i];
-        if (!rangesOverlap(upper.left, upper.left + upper.width, lower.left, lower.left + lower.width)) continue;
+        if (!overlapsX(upper, lower)) continue;
         const space = lower.top - (upper.top + upper.height);
         if (space >= gap) continue;
-        lower.top += gap - space;
+        let deficit = gap - space;
+        if (upper.pin !== "end" && upper.height > 0 && deficit > 0) {
+          const shrink = Math.min(upper.height, deficit);
+          upper.height -= shrink;
+          deficit -= shrink;
+          changed = true;
+        }
+        if (lower.pin === "end" && lower.height > 0 && deficit > 0) {
+          const shrink = Math.min(lower.height, deficit);
+          lower.height -= shrink;
+          lower.top += shrink;
+          deficit -= shrink;
+          changed = true;
+        }
+        next.forEach(fit);
       }
     }
+    if (!changed) break;
   }
-  return next;
+  next.forEach(fit);
+  return next.map(({ top, height, left, width, edge }) => ({ top, height, left, width, edge }));
 }
 
 export function phaseList(edge, from, to) {
@@ -743,6 +773,45 @@ export function placePlanHost(shell) {
  * clip stay exactly as the reveal left them. Collapse moves the plan back
  * first, so that clip still reads the original geometry.
  */
+const PLAN_CONTROL_ROLES = ["plan-preview-mode", "plan-source-mode", "plan-close"];
+
+/** Button whose layout box contains the point. Hit-testing can still
+ *  report BODY when a clip-path ancestor excludes the control. */
+export function planControlUnder(root, x, y) {
+  if (!root?.querySelectorAll) return null;
+  const nodes = root.querySelectorAll("[data-role]");
+  for (const control of nodes) {
+    if (!PLAN_CONTROL_ROLES.includes(control.dataset?.role)) continue;
+    if (control.closest?.("[hidden]")) continue;
+    const box = control.getBoundingClientRect?.();
+    if (!box || box.width < 1 || box.height < 1) continue;
+    if (x >= box.left && x < box.right && y >= box.top && y < box.bottom) return control;
+  }
+  return null;
+}
+
+/** Poll refresh. True when the open chat would look the same. */
+export function sameChatSnapshot(current, opened) {
+  const prev = current?.messages || [];
+  const messages = opened?.messages || [];
+  if ((current?.sessionId || "") !== (opened?.sessionId || "")) return false;
+  if (!!current?.sessionExplicit !== !!opened?.sessionExplicit) return false;
+  if (prev.length !== messages.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    if ((prev[i]?.role || "") !== (messages[i]?.role || "")) return false;
+    if ((prev[i]?.text || "") !== (messages[i]?.text || "")) return false;
+    if (!!prev[i]?.live !== !!messages[i]?.live) return false;
+  }
+  const had = current?.sessions || [];
+  const sessions = opened?.sessions || [];
+  if (had.length !== sessions.length) return false;
+  for (let i = 0; i < had.length; i += 1) {
+    if ((had[i]?.id || "") !== (sessions[i]?.id || "")) return false;
+    if ((had[i]?.title || "") !== (sessions[i]?.title || "")) return false;
+  }
+  return true;
+}
+
 export function hostOpenPlan(shell) {
   if (!shell || shell.dataset.planOpen !== "1") return false;
   if (shell.dataset.state !== "panel" && shell.dataset.visual !== "panel") return false;
@@ -772,7 +841,8 @@ export function hostOpenPlan(shell) {
   // clip is), and it drops 預覽/原文/× out of the hit region. Clear it only
   // after the plan has left the shell, so the shell clip still paints.
   plan.classList.remove("is-plan-parked");
-  if (plan.style.pointerEvents === "none") plan.style.removeProperty("pointer-events");
+  host.style.setProperty("pointer-events", "auto", "important");
+  plan.style.setProperty("pointer-events", "auto", "important");
   plan.getAnimations?.().forEach((anim) => {
     let frames = [];
     try { frames = anim.effect?.getKeyframes?.() || []; } catch { frames = []; }

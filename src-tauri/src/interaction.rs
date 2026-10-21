@@ -2368,6 +2368,58 @@ pub fn shape_combine_action(hold: bool, adds_hit: bool, unchanged: bool) -> Shap
     ShapeCombine::Apply
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn view_css_size(window: &tauri::WebviewWindow) -> (f64, f64) {
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+    match window.inner_size() {
+        Ok(size) => (
+            f64::from(size.width) / scale,
+            f64::from(size.height) / scale,
+        ),
+        Err(_) => (0.0, 0.0),
+    }
+}
+
+/// A drag publishes one rect the size of the view. A settings card of
+/// 680×660 on a 1024×768 screen is large and is not this.
+pub fn rect_covers_view(rect: &HitRect, view_w: f64, view_h: f64) -> bool {
+    if view_w < 1.0 || view_h < 1.0 {
+        return false;
+    }
+    rect.x <= 1.0 && rect.y <= 1.0 && rect.w >= view_w - 2.0 && rect.h >= view_h - 2.0
+}
+
+/// Windows and macOS click-through is the whole window (`set_ignore_cursor_events`).
+/// Pass the cursor through unless it is inside a rect this frame is capturing.
+/// A sticky `capture` flag does not keep the window after the cursor leaves
+/// that rect. A full-window rect captures only while the pointer is down,
+/// which is a drag. An open panel does not.
+pub fn windows_cursor_ignored(
+    cursor: Option<(f64, f64)>,
+    frames: &[ElementFrame],
+    rects: &[HitRect],
+    view_w: f64,
+    view_h: f64,
+    pointer_down: bool,
+) -> bool {
+    let Some((x, y)) = cursor else {
+        return true;
+    };
+    let hot = frames.iter().any(|frame| {
+        if !frame.capture {
+            return false;
+        }
+        let Some(rect) = rects.iter().find(|item| item.id == frame.id) else {
+            return false;
+        };
+        if rect_covers_view(rect, view_w, view_h) && !pointer_down {
+            return false;
+        }
+        distance_to_hit(x, y, rect) <= HIT_MARGIN_PX
+    });
+    !hot
+}
+
 fn sync_os_hit_region(
     app: &AppHandle,
     window: &tauri::WebviewWindow,
@@ -2439,15 +2491,13 @@ fn sync_os_hit_region(
             app,
             held,
             key_down,
-            pointer_down,
-            cursor,
-            rects,
             previous_rects,
             last_painted,
             region_signature,
             defer_shrink,
         );
-        let ignore = !frames.iter().any(|item| item.capture);
+        let (view_w, view_h) = view_css_size(window);
+        let ignore = windows_cursor_ignored(cursor, frames, rects, view_w, view_h, pointer_down);
         let shape_n = frames.iter().filter(|item| item.capture).count();
         if *ignoring != Some(ignore) && apply_ignore_cursor(window, ignore, shape_n) {
             *ignoring = Some(ignore);
@@ -2609,7 +2659,9 @@ pub fn reapply_live_input_shape(app: &AppHandle, hub: &InteractionHub) {
     SHAPE_GEN.fetch_add(1, Ordering::Relaxed);
     #[cfg(not(target_os = "linux"))]
     {
-        let ignore = !frames.iter().any(|item| item.capture);
+        let (view_w, view_h) = view_css_size(&window);
+        let ignore =
+            windows_cursor_ignored(cursor, &frames, &rects, view_w, view_h, pointer_down);
         let shape_n = frames.iter().filter(|item| item.capture).count();
         let _ = apply_ignore_cursor(&window, ignore, shape_n);
     }
@@ -3091,6 +3143,77 @@ mod tests {
             shape_combine_action(false, true, false),
             ShapeCombine::Apply
         );
+    }
+
+    #[test]
+    fn windows_click_through_follows_the_cursor_not_an_open_panel() {
+        let panel = HitRect {
+            id: "settings".into(),
+            x: 150.0,
+            y: 66.0,
+            w: 680.0,
+            h: 660.0,
+            z: 1,
+            round: false,
+        };
+        let sticky = vec![ElementFrame {
+            id: "settings".into(),
+            opacity: 1.0,
+            capture: true,
+        }];
+        // (200, 384) is inside the 1024×768 settings card. That point captures.
+        assert!(!windows_cursor_ignored(
+            Some((200.0, 384.0)),
+            &sticky,
+            &[panel.clone()],
+            1024.0,
+            768.0,
+            false,
+        ));
+        // (16, 384) is beside it. A sticky capture flag must not take the window.
+        assert!(windows_cursor_ignored(
+            Some((16.0, 384.0)),
+            &sticky,
+            &[panel.clone()],
+            1024.0,
+            768.0,
+            false,
+        ));
+        assert!(windows_cursor_ignored(
+            None,
+            &sticky,
+            &[panel.clone()],
+            1024.0,
+            768.0,
+            false,
+        ));
+        let full = HitRect {
+            id: "settings".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 1024.0,
+            h: 768.0,
+            z: 1,
+            round: false,
+        };
+        assert!(rect_covers_view(&full, 1024.0, 768.0));
+        assert!(!rect_covers_view(&panel, 1024.0, 768.0));
+        assert!(windows_cursor_ignored(
+            Some((16.0, 384.0)),
+            &sticky,
+            &[full.clone()],
+            1024.0,
+            768.0,
+            false,
+        ));
+        assert!(!windows_cursor_ignored(
+            Some((16.0, 384.0)),
+            &sticky,
+            &[full],
+            1024.0,
+            768.0,
+            true,
+        ));
     }
 
     #[test]

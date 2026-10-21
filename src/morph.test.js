@@ -57,7 +57,9 @@ import {
   cronShellHeight,
   chatTailAction,
   hostOpenPlan,
+  planControlUnder,
   restoreHostedPlan,
+  sameChatSnapshot,
   separateStackedPanels,
   screenEdge,
   slotPoint,
@@ -336,8 +338,11 @@ test("open top and bottom panels keep a 12px gap", () => {
   const upper = separated[0];
   const lower = separated[1];
   assert.ok(lower.top - (upper.top + upper.height) >= 12);
-  assert.equal(upper.top, 0);
-  assert.equal(lower.top + lower.height, 900);
+  // The top header stays on its orb. The old push moved it to y=0.
+  assert.equal(upper.top, 42);
+  assert.equal(lower.top + lower.height, 298 + 560);
+  assert.ok(upper.top + upper.height <= screenH);
+  assert.ok(lower.top >= 0);
   const clear = separateStackedPanels([
     { top: 40, height: 200, left: 10, width: 100, edge: "top" },
     { top: 400, height: 200, left: 10, width: 100, edge: "bottom" },
@@ -380,7 +385,95 @@ test("open top and bottom panels keep a 12px gap", () => {
     for (let j = i + 1; j < four.length; j += 1) {
       assert.equal(overlaps(four[i], four[j]), false, `${i}:${j}`);
     }
+    assert.ok(four[i].top >= -0.5, `top ${i}`);
+    assert.ok(four[i].top + four[i].height <= 1200.5, `bottom ${i}`);
   }
+});
+
+test("a crowded stack stays on screen and keeps each orb anchor", () => {
+  const screenH = 1200;
+  const boxes = [
+    { top: 42, height: 560, left: 80, width: 420, edge: "top" },
+    { top: 180, height: 560, left: 200, width: 420, edge: "right" },
+    { top: 360, height: 560, left: 40, width: 420, edge: "left" },
+    { top: 640, height: 560, left: 160, width: 420, edge: "bottom" },
+    { top: 80, height: 560, left: 500, width: 420, edge: "top" },
+    { top: 500, height: 560, left: 480, width: 420, edge: "bottom" },
+  ];
+  const out = separateStackedPanels(boxes, screenH, 18);
+  assert.equal(out.length, 6);
+  for (const box of out) {
+    assert.ok(box.top >= -0.5);
+    assert.ok(box.top + box.height <= screenH + 0.5);
+    assert.ok(box.height > 0);
+  }
+  assert.equal(out[0].top, 42);
+  assert.equal(out[1].top, 180);
+  assert.equal(out[2].top, 360);
+  assert.equal(out[4].top, 80);
+  assert.equal(out[3].top + out[3].height, 640 + 560);
+  assert.equal(out[5].top + out[5].height, 500 + 560);
+  const overlaps = (a, b) => {
+    const x = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
+    const y = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
+    return x > 0 && y > 0;
+  };
+  for (let i = 0; i < out.length; i += 1) {
+    for (let j = i + 1; j < out.length; j += 1) {
+      assert.equal(overlaps(out[i], out[j]), false, `${i}:${j}`);
+    }
+  }
+});
+
+test("planControlUnder uses the button box when the hit target is the body", () => {
+  const dom = new JSDOM(`<!doctype html><body>
+    <button type="button" data-role="plan-preview-mode">預覽</button>
+    <button type="button" data-role="plan-source-mode">原文</button>
+    <button type="button" data-role="plan-close">×</button>
+  </body>`);
+  const { document } = dom.window;
+  const preview = document.querySelector("[data-role='plan-preview-mode']");
+  const source = document.querySelector("[data-role='plan-source-mode']");
+  const close = document.querySelector("[data-role='plan-close']");
+  const stub = (el, left) => {
+    el.getBoundingClientRect = () => ({ left, top: 20, right: left + 40, bottom: 42, width: 40, height: 22 });
+  };
+  stub(preview, 10);
+  stub(source, 60);
+  stub(close, 110);
+  assert.equal(planControlUnder(document, 20, 30), preview);
+  assert.equal(planControlUnder(document, 70, 30), source);
+  assert.equal(planControlUnder(document, 120, 30), close);
+  assert.equal(planControlUnder(document, 0, 0), null);
+  close.hidden = true;
+  assert.equal(planControlUnder(document, 120, 30), null);
+});
+
+test("sameChatSnapshot ignores an unchanged poll", () => {
+  const current = {
+    sessionId: "bot-chat",
+    sessionExplicit: false,
+    messages: [{ role: "user", text: "你好", live: false }],
+    sessions: [{ id: "bot-chat", title: "Bot Chat" }],
+  };
+  assert.equal(sameChatSnapshot(current, {
+    sessionId: "bot-chat",
+    sessionExplicit: false,
+    messages: [{ role: "user", text: "你好", live: false }],
+    sessions: [{ id: "bot-chat", title: "Bot Chat" }],
+  }), true);
+  assert.equal(sameChatSnapshot(current, {
+    sessionId: "bot-chat",
+    sessionExplicit: false,
+    messages: [{ role: "user", text: "你好", live: true }],
+    sessions: [{ id: "bot-chat", title: "Bot Chat" }],
+  }), false);
+  assert.equal(sameChatSnapshot(current, {
+    sessionId: "other",
+    sessionExplicit: false,
+    messages: current.messages,
+    sessions: current.sessions,
+  }), false);
 });
 
 test("clip-path is inset() round and the hairline sits one pixel inside", () => {
