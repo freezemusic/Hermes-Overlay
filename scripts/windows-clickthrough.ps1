@@ -66,10 +66,13 @@ $gwScript = {
       $method = $ctx.Request.HttpMethod
       Add-Content $gwLog "$method $path"
       $body = '{"ok":true}'
-      if ($path -like "/api/sessions/*/messages*") {
+      # Named profiles call /p/<profile>/api/sessions/..., not /api/sessions/...
+      if ($path -like "*/messages*") {
         $body = '{"data":[{"role":"user","content":"/plan ship"},{"role":"assistant","content":"# Ship Implementation Plan\n\n**Goal:** keep click-through honest.\n\n- leave the plan rect\n- reopen from the chip\n\nFile: `.hermes/plans/ship.md`"}]}'
-      } elseif ($path -like "/api/sessions*") {
+      } elseif ($path -like "*/api/sessions*") {
         $body = '{"data":[{"id":"bot-chat","title":"Bot Chat","source":"api_server","last_active":40},{"id":"saved-field","title":"notes","source":"api_server","last_active":10},{"id":"newest","title":"System Architect","source":"api_server","last_active":900}]}'
+      } elseif ($path -like "*/health") {
+        $body = '{"status":"ok"}'
       }
       $bytes = [Text.Encoding]::UTF8.GetBytes($body)
       $ctx.Response.StatusCode = 200
@@ -341,15 +344,31 @@ function Wait-Log([string]$pattern, [int]$seconds = 10) {
   return $false
 }
 
-function Wait-PanelRect([string]$id, [int]$minH = 200) {
-  $deadline = (Get-Date).AddSeconds(12)
+function Count-Log([string]$pattern) {
+  if (-not (Test-Path $log)) { return 0 }
+  return @(Select-String -Path $log -Pattern $pattern).Count
+}
+
+function Wait-Count([string]$pattern, [int]$before, [int]$seconds = 8) {
+  $deadline = (Get-Date).AddSeconds($seconds)
   while ((Get-Date) -lt $deadline) {
-    $rects = @(Read-HitRects)
-    $hit = $rects | Where-Object { $_.id -eq $id -and $_.h -ge $minH -and $_.w -ge 40 } | Select-Object -First 1
-    if ($hit) { return $hit }
+    if ((Count-Log $pattern) -gt $before) { return $true }
     Start-Sleep -Milliseconds 200
   }
-  return $null
+  return $false
+}
+
+function Wait-PanelRect([string]$id, [int]$minH = 200, [int]$maxH = 4000) {
+  $deadline = (Get-Date).AddSeconds(12)
+  $last = $null
+  while ((Get-Date) -lt $deadline) {
+    $rects = @(Read-HitRects)
+    $hit = $rects | Where-Object { $_.id -eq $id -and $_.w -ge 40 } | Select-Object -First 1
+    if ($hit) { $last = $hit }
+    if ($hit -and $hit.h -ge $minH -and $hit.h -le $maxH) { return $hit }
+    Start-Sleep -Milliseconds 200
+  }
+  return $last
 }
 
 function Point-Inside($p, $rect) {
@@ -446,6 +465,15 @@ function Read-PlanClose([string]$bot) {
   return @{ x = [int]$m.Groups['x'].Value; y = [int]$m.Groups['y'].Value }
 }
 
+function Read-PlanChip([string]$bot) {
+  if (-not (Test-Path $log)) { return $null }
+  $hits = Select-String -Path $log -Pattern "plan-chip-at bot=$bot " | Select-Object -Last 1
+  if (-not $hits) { return $null }
+  $m = [regex]::Match($hits.Line, 'x=(?<x>-?\d+) y=(?<y>-?\d+)')
+  if (-not $m.Success) { return $null }
+  return @{ x = [int]$m.Groups['x'].Value; y = [int]$m.Groups['y'].Value }
+}
+
 function Assert-Orb([string]$label, $orbPoint) {
   [ClickProbe]::SetCursorPos($orbPoint.x, $orbPoint.y) | Out-Null
   [ClickProbe]::Ctrl($true)
@@ -486,9 +514,11 @@ try {
   # Settings is still closed. Empty space passes through, then Ctrl+click opens it.
   Assert-Empty "reveal+2s"
   Assert-Orb "reveal+2s-settings" $settings
-  $settingsRect = Wait-PanelRect "settings" 200
+  $settingsRect = Wait-PanelRect "settings" 200 900
   if (-not $settingsRect) {
     Note-Fail "settings-opened" "hit-rects never published settings with height >= 200"
+  } elseif ($settingsRect.h -gt 900) {
+    Note-Fail "settings-opened" "hit rect $($settingsRect.x),$($settingsRect.y) $($settingsRect.w)x$($settingsRect.h) is taller than the card"
   } else {
     Note-Ok "settings-opened" "$($settingsRect.x),$($settingsRect.y) $($settingsRect.w)x$($settingsRect.h)"
     Assert-Outside "settings-edge" $settingsRect
@@ -500,14 +530,16 @@ try {
   if (-not (Wait-Log "hit-announce bot=field mode=panel" 12)) {
     Note-Fail "bot-opened" "debug log has no hit-announce bot=field mode=panel"
   }
-  $fieldRect = Wait-PanelRect "panel:field" 200
+  $fieldRect = Wait-PanelRect "panel:field" 200 800
   if (-not $fieldRect) {
     Note-Fail "bot-opened" "hit-rects never published panel:field with height >= 200"
+  } elseif ($fieldRect.h -gt 800) {
+    Note-Fail "bot-opened" "hit rect $($fieldRect.x),$($fieldRect.y) $($fieldRect.w)x$($fieldRect.h) is taller than the card"
   } else {
     Note-Ok "bot-opened" "$($fieldRect.x),$($fieldRect.y) $($fieldRect.w)x$($fieldRect.h)"
     Assert-Outside "bot-edge" $fieldRect
   }
-  if (-not (Wait-Log "plan-close-at bot=field " 12)) {
+  if (-not (Wait-Count "plan-close-at bot=field " 0 12)) {
     Note-Fail "plan-opened" "debug log has no plan-close-at for field"
   } else {
     $plan = Read-PlanRect "field"
@@ -516,8 +548,9 @@ try {
       Note-Fail "plan-opened" "plan rect or close point missing"
     } else {
       Note-Ok "plan-opened" "$($plan.x),$($plan.y) $($plan.w)x$($plan.h) close $($closer.x),$($closer.y)"
+      $drops = Count-Log "plan-hit-drop bot=field "
       Assert-Captured "plan-close" $closer.x $closer.y
-      if (-not (Wait-Log "plan-hit-drop bot=field " 8)) {
+      if (-not (Wait-Count "plan-hit-drop bot=field " $drops 8)) {
         Note-Fail "plan-closed" "x did not drop the plan hit rect"
       } else {
         $cx = [int]($plan.x + $plan.w / 2)
@@ -525,17 +558,46 @@ try {
         Assert-Through "plan-former" $cx $cy
         Start-Sleep -Seconds 1
         Assert-Through "plan-former+1s" $cx $cy
+        if (-not (Wait-Count "plan-chip-at bot=field " 0 8)) {
+          Note-Fail "plan-reopen" "debug log has no plan-chip-at for field"
+        } else {
+          $chip = Read-PlanChip "field"
+          $hosted = Count-Log "plan-close-at bot=field "
+          if (-not $chip) {
+            Note-Fail "plan-reopen" "plan chip point missing"
+          } else {
+            Assert-Captured "plan-reopen" $chip.x $chip.y
+            if (-not (Wait-Count "plan-close-at bot=field " $hosted 10)) {
+              Note-Fail "plan-reopen" "睇計劃 did not host the plan again"
+            } else {
+              Note-Ok "plan-reopen" "$($chip.x),$($chip.y)"
+            }
+          }
+        }
       }
     }
   }
   Assert-Empty "bot-panel-open"
+  $focus = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" -or $_.id -eq "settings" } | Select-Object -First 1)
+  if ($focus) {
+    $fx = [int]($focus.x + 48)
+    $fy = [int]($focus.y + [Math]::Min(120, [Math]::Max(24, $focus.h / 2)))
+    Assert-Captured "escape-focus" $fx $fy
+  }
   $beforeEscape = @(Read-HitRects | Where-Object { $_.id -notlike "close:*" -and $_.id -notlike "slash:*" -and $_.id -notlike "bot:*" -and $_.id -notlike "pill:*" -and $_.h -ge 80 })
   [ClickProbe]::Ctrl($false)
   [ClickProbe]::Tap(0x1B)
   $gone = $null
+  $escapeAt = Get-Date
+  $tappedAgain = $false
   $deadline = (Get-Date).AddSeconds(6)
   while ((Get-Date) -lt $deadline -and -not $gone) {
     Start-Sleep -Milliseconds 200
+    if (-not $tappedAgain -and ((Get-Date) - $escapeAt).TotalSeconds -gt 1.2) {
+      # A focused field eats the first Escape. The second closes the panel.
+      [ClickProbe]::Tap(0x1B)
+      $tappedAgain = $true
+    }
     $nowIds = @((Read-HitRects) | ForEach-Object { $_.id })
     foreach ($was in $beforeEscape) {
       if ($nowIds -notcontains $was.id) { $gone = $was; break }

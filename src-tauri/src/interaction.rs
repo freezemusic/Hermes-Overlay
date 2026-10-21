@@ -2415,7 +2415,15 @@ pub fn windows_cursor_ignored(
         if rect_covers_view(rect, view_w, view_h) && !pointer_down {
             return false;
         }
-        distance_to_hit(x, y, rect) <= HIT_MARGIN_PX
+        // Orbs keep the 12px pad so Ctrl+hover still finds the disc.
+        // A panel captures its rect only: 10px outside must reach the
+        // window behind (R-CT-01). Linux GDK already uses the raw rect.
+        let pad = if is_panel_hit(rect) {
+            0.0
+        } else {
+            HIT_MARGIN_PX
+        };
+        distance_to_hit(x, y, rect) <= pad
     });
     !hot
 }
@@ -3175,6 +3183,38 @@ mod tests {
             Some((16.0, 384.0)),
             &sticky,
             &[panel.clone()],
+            1024.0,
+            768.0,
+            false,
+        ));
+        // 10px outside the panel edge. The 12px pad does not apply to panels.
+        assert!(windows_cursor_ignored(
+            Some((140.0, 384.0)),
+            &sticky,
+            &[panel.clone()],
+            1024.0,
+            768.0,
+            false,
+        ));
+        let orb = HitRect {
+            id: "bot:field".into(),
+            x: 100.0,
+            y: 100.0,
+            w: 44.0,
+            h: 44.0,
+            z: 0,
+            round: true,
+        };
+        let orb_frame = vec![ElementFrame {
+            id: "bot:field".into(),
+            opacity: 1.0,
+            capture: true,
+        }];
+        // 10px outside the disc is still inside the orb pad.
+        assert!(!windows_cursor_ignored(
+            Some((122.0, 90.0)),
+            &orb_frame,
+            &[orb],
             1024.0,
             768.0,
             false,

@@ -4379,6 +4379,20 @@ function renderChat(id = state.activeId, options = {}) {
   if (send) send.disabled = locked || (state.mode === "hermes" && state.busy.has(bot.id));
   if (!quietChrome) syncActivityChrome(id);
   if (!shell || !visualQuiet(shell)) scheduleHitSync();
+  requestAnimationFrame(() => logPlanChip(id));
+}
+
+function logPlanChip(id) {
+  const chip = panelFor(id)?.querySelector(".plan-chip");
+  if (!chip) return;
+  const box = chip.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return;
+  const x = Math.round(box.x + box.width / 2);
+  const y = Math.round(box.y + box.height / 2);
+  const key = `${id}:${x},${y}`;
+  if (logPlanChip.last === key) return;
+  logPlanChip.last = key;
+  debugLog("plan-chip-at", `bot=${id} x=${x} y=${y}`);
 }
 
 function planWindow(id) {
@@ -4464,8 +4478,9 @@ function paintPlan(id, options = {}) {
     debugLog("plan-rect", `bot=${id} open=0`);
     // hitSilence kept the union that announcePanelHits published. A deferred
     // flush never runs while the panel stays open, so the empty plan rect
-    // was still capturing 15s later (R-CT-01).
-    retractPlanHit(shell);
+    // was still capturing 15s later (R-CT-01). An empty first paint is not
+    // a close: retracting then logs a drop before the plan ever hosted.
+    if (wasOpen) retractPlanHit(shell);
     return;
   }
   const heldFrame = section.dataset.sizeLock === "1"
@@ -6717,12 +6732,16 @@ function bottomHitFloor(shell) {
       : host.bottom;
   const upper = centerY < host.y + host.height * 0.5;
   const measured = Math.max(host.bottom, footOk ? foot.bottom : 0, buttonOk ? button.bottom : 0);
+  // The settings form used to lay the header out ~500px below the shell.
+  // Treating that as the footer stretched the hit to 1236px (R-CT-01).
+  const runaway = measured > host.bottom + BOTTOM_HIT_SLACK + 48;
   return {
     host,
     foot: footOk ? foot : null,
     button: buttonOk ? button : null,
     upper,
-    bottom: (upper ? host.bottom : measured) + BOTTOM_HIT_SLACK,
+    runaway,
+    bottom: (upper || runaway) ? host.bottom + BOTTOM_HIT_SLACK : measured + BOTTOM_HIT_SLACK,
   };
 }
 
@@ -6744,7 +6763,7 @@ function pushCloseHit(rects, shell, level) {
   let h = box.height;
   if (shell.dataset.header === "bottom") {
     const slot = bottomHitFloor(shell);
-    if (slot?.upper) {
+    if (slot?.upper || slot?.runaway) {
       const row = 44;
       y = slot.host.bottom - row + Math.max(0, (row - box.height) / 2);
     }
