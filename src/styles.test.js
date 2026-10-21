@@ -210,6 +210,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   const hold = mainSrc.slice(mainSrc.indexOf("function holdSeamVisual"), mainSrc.indexOf("function seamLocked"));
   assert.doesNotMatch(hold, /SEAM_MIN|scaleX\(0\.001\)/);
   const opened = mainSrc.slice(mainSrc.indexOf("async function runShellMorph"), mainSrc.indexOf("function raisePanel"));
+  assert.ok(opened.indexOf("unseatOpenPlan") > 0 && opened.indexOf("unseatOpenPlan") < opened.indexOf("getAnimations?.().forEach"));
   const planCloseAt = opened.indexOf("await collapsePlanSeam(shell, token)");
   const phaseAt = opened.indexOf("for (const step of phaseList");
   const contentOutAt = opened.indexOf("beginPanelCollapseContent(shell)");
@@ -780,8 +781,10 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.morph\[data-plan-open="1"\]:not\(\[data-plan-side="left"\]\) > \.center-panel > \.hud-corner\.tr/);
   assert.match(css, /\.morph\[data-plan-open="1"\]\[data-plan-side="left"\] > \.plan-window > \.hud-corner\.br/);
   assert.match(css, /\.orb--cron \{[^}]*--bot-rgb:\s*97 97 145/s);
-  assert.match(css, /\.bot-btn\.orb--cron::before,[\s\S]*?opacity:\s*0 !important/);
-  assert.match(css, /\.morph\.is-morphing \.bot-btn\.orb--cron::before,[\s\S]*?background:\s*none/);
+  assert.doesNotMatch(css, /\.bot-btn\.orb--cron::before,[\s\S]*?opacity:\s*0 !important/);
+  assert.doesNotMatch(css, /\.morph\.is-morphing \.bot-btn\.orb--cron::before/);
+  assert.match(css, /\.bot-btn\.orb--cron::before \{[^}]*clip-path:\s*inset\(var\(--orb-glow-radius\) round 999px\)/s);
+  assert.doesNotMatch(css, /max\(var\(--hit-opacity,\s*0\.55\)/);
   assert.match(css, /\.cron-panel \{[^}]*width:\s*min\(320px, 86vw\)/s);
   assert.doesNotMatch(css, /transparent calc\(100% - 3px\)/);
   assert.match(css, /radial-gradient\(circle closest-side,\s*transparent calc\(100% - 2px\)/);
@@ -797,7 +800,7 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /0 0 10px 2px rgba\(0,\s*0,\s*242,\s*\.25\)/);
   assert.match(css, /\.bot-btn\.orb--cron\.is-failed::after \{[^}]*#e5484d/s);
   assert.doesNotMatch(css, /\.is-failed \.orb-core/);
-  assert.match(css, /\.bot-btn\.orb--cron \.orb-core \{[^}]*rgb\(var\(--bot-rgb\) \/ \.55\)/s);
+  assert.doesNotMatch(css, /\.bot-btn\.orb--cron \.orb-core \{[^}]*rgb\(var\(--bot-rgb\) \/ \.55\)/s);
   assert.match(css, /\.bot-btn\.orb--cron\.is-idle::after \{[^}]*opacity:\s*0/s);
   assert.doesNotMatch(css, /\.is-cron-fail\[data-hit-id\]/);
   assert.match(css, /\.cron-readout \{[^}]*background:\s*rgba\(248,\s*248,\s*252,\s*\.82\)/s);
@@ -825,6 +828,13 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(main, /action === "send"/);
   assert.match(main, /event\.target !== composerField/);
   assert.match(main, /CRON_ORB_BLEED/);
+  assert.match(main, /is-cron-live/);
+  assert.match(main, /is-cron-fail/);
+  assert.match(main, /seatOpenPlan\(shell\)/);
+  assert.match(main, /unseatOpenPlan\(shell\)/);
+  const idleOpacity = main.slice(main.indexOf("function idleOrbOpacity"), main.indexOf("function planWidthPx"));
+  assert.doesNotMatch(idleOpacity, /0\.55/);
+  assert.match(idleOpacity, /minOpacity/);
   assert.match(main, /上次 /);
   assert.doesNotMatch(main.slice(main.indexOf("function closeKanban"), main.indexOf("function startKanbanPoll")), /stopKanbanPoll/);
   const hermes = readFileSync(new URL("../src-tauri/src/hermes.rs", import.meta.url), "utf8");
@@ -933,4 +943,64 @@ test("plan reveal computed clip-path reaches fully open", () => {
   assert.notEqual(getComputedStyle(bare).transitionProperty, "clip-path");
   assert.equal(getComputedStyle(bare).clipPath, open);
   assert.equal(seamClipStillClosed(getComputedStyle(bare).clipPath, open), false);
+});
+
+test("idle cron orb matches another idle orb", () => {
+  const dom = new JSDOM(`<!doctype html><style>${css}</style><body>
+    <div class="morph" data-bot-id="cron" data-state="orb" data-hit-id="bot:cron" style="--hit-opacity:0.18">
+      <button class="bot-btn morph-orb orb--cron is-idle">
+        <span class="orb-core"></span>
+        <span class="orb-glyph">時</span>
+      </button>
+    </div>
+    <div class="morph" data-bot-id="planner" data-state="orb" data-hit-id="bot:planner" style="--hit-opacity:0.18; --bot:#616191; --bot-rgb:97 97 145">
+      <button class="bot-btn morph-orb is-idle" style="--bot:#616191; --bot-rgb:97 97 145">
+        <span class="orb-core"></span>
+        <span class="orb-glyph">策</span>
+      </button>
+    </div>
+  </body>`);
+  const { document, getComputedStyle } = dom.window;
+  const cron = document.querySelector("[data-bot-id='cron']");
+  const other = document.querySelector("[data-bot-id='planner']");
+  const cronBtn = cron.querySelector(".bot-btn");
+  const otherBtn = other.querySelector(".bot-btn");
+  const same = (a, b, prop) => assert.equal(getComputedStyle(a).getPropertyValue(prop), getComputedStyle(b).getPropertyValue(prop), prop);
+  same(cron, other, "opacity");
+  assert.notEqual(getComputedStyle(cron).opacity, "0.55");
+  same(cronBtn.querySelector(".orb-core"), otherBtn.querySelector(".orb-core"), "background-image");
+  same(cronBtn.querySelector(".orb-core"), otherBtn.querySelector(".orb-core"), "box-shadow");
+  same(cronBtn.querySelector(".orb-glyph"), otherBtn.querySelector(".orb-glyph"), "color");
+  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 0.18)");
+  assert.equal(cron.style.getPropertyValue("--hit-opacity"), "0.18");
+  // jsdom does not resolve ::before. Compare the declarations that apply to
+  // each button; idle cron may add a disc clip and nothing else.
+  const wash = (el, prop) => {
+    let value = "";
+    for (const sheet of document.styleSheets) {
+      for (const rule of sheet.cssRules) {
+        const text = rule.selectorText || "";
+        if (!text.includes("::before") || !rule.style) continue;
+        const hit = text.split(",").some((part) => {
+          if (!part.includes("::before")) return false;
+          const selector = part.replace(/::before/g, "").trim();
+          if (!selector) return false;
+          try { return el.matches(selector); } catch { return false; }
+        });
+        if (!hit) continue;
+        const next = rule.style.getPropertyValue(prop);
+        if (next) value = next;
+      }
+    }
+    return value;
+  };
+  assert.equal(wash(cronBtn, "opacity"), wash(otherBtn, "opacity"));
+  assert.equal(wash(cronBtn, "background"), wash(otherBtn, "background"));
+  assert.match(wash(cronBtn, "background"), /rgb\(var\(--bot-rgb\) \/ \.55\)/);
+  assert.equal(wash(cronBtn, "opacity"), "0.85");
+  assert.equal(wash(otherBtn, "clip-path"), "");
+  assert.equal(wash(cronBtn, "clip-path"), "inset(var(--orb-glow-radius) round 999px)");
+  cron.classList.add("is-cron-live");
+  assert.equal(getComputedStyle(cron).opacity, "1");
+  assert.notEqual(getComputedStyle(other).opacity, "1");
 });

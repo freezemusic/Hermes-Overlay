@@ -334,15 +334,10 @@ html, body {
 
 .orb--cron { --bot: var(--nous-neutral); --bot-rgb: 97 97 145; }
 
-/* The shared ::before wash uses this grey --bot-rgb. Other orbs clip it
-   inside the disc. Cron stays overflow:visible for the status ring, so the
-   wash would read as a dark halo at idle. Status paint is ::after and the
-   running shadow, not this wash. */
-.bot-btn.orb--cron::before,
-.morph.is-morphing .bot-btn.orb--cron::before,
-.morph.is-morphing .bot-btn.orb--cron:hover::before {
-  opacity: 0 !important;
-  background: none;
+/* Status rings sit on ::after and the shell stays overflow:visible. Clip the
+   shared wash to the disc so an idle cron orb matches the other orbs. */
+.bot-btn.orb--cron::before {
+  clip-path: inset(var(--orb-glow-radius) round 999px);
 }
 
 .bot-btn.orb--cron {
@@ -368,12 +363,6 @@ html, body {
 .bot-btn.orb--cron.is-failed::after {
   opacity: 1;
   animation: none;
-}
-
-/* Idle and failed share this .55 grey disc. A white core means the job is working. */
-.bot-btn.orb--cron .orb-core {
-  background: radial-gradient(circle, rgb(var(--bot-rgb) / .55) 0%, rgb(var(--bot-rgb) / .22) 42%, transparent 72%);
-  box-shadow: none;
 }
 
 .bot-btn.orb--cron.is-progress .orb-core,
@@ -1929,10 +1918,6 @@ html, body {
 .morph[data-bot-id="cron"][data-state="orb"] {
   background: transparent;
   overflow: visible;
-}
-
-.morph[data-bot-id="cron"][data-state="orb"][data-hit-id] {
-  opacity: max(var(--hit-opacity, 0.55), 0.55);
 }
 
 .morph[data-bot-id="cron"][data-state="orb"].is-cron-live[data-hit-id] {

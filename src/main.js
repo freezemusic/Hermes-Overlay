@@ -39,6 +39,8 @@ import {
   revealClip,
   separateStackedPanels,
   includePlan,
+  seatOpenPlan,
+  unseatOpenPlan,
   slotPoint,
   FRAME_BLEED,
   HAIRLINE,
@@ -292,12 +294,14 @@ function anchorPoint(id) {
   return slotPoint(slot.edge, slot.t, vw, vh, pad, ORB);
 }
 
-/** Room outside the cron orb for the tick ring and the 14px+4px running glow. */
+/** Room outside a live or failed cron orb for the status ring and the running glow. */
 const CRON_ORB_BLEED = 32;
 
 function paintClip(shell, insets, visual = shell.dataset.visual || shell.dataset.state || "orb") {
-  const cronOrb = shell.dataset.botId === "cron" && visual === "orb";
-  const outer = cronOrb
+  const cronBleed = shell.dataset.botId === "cron"
+    && visual === "orb"
+    && (shell.classList.contains("is-cron-live") || shell.classList.contains("is-cron-fail"));
+  const outer = cronBleed
     ? {
       top: insets.top - CRON_ORB_BLEED,
       right: insets.right - CRON_ORB_BLEED,
@@ -314,7 +318,8 @@ function paintClip(shell, insets, visual = shell.dataset.visual || shell.dataset
     const next = outer ? clipPath(outer) : revealClip(visual, shellGeom(shell));
     const px = clipPath(insets);
     const held = shell.style.clipPath;
-    // Cron still writes: its outer bleed is wider than the orb disc.
+    // A live or failed cron orb still writes: its bleed is wider than the disc.
+    // Idle cron keeps the same disc clip as the other orbs.
     // An identical px or calc clip must stay. Swapping the collapse's px
     // clip for revealClip's calc rebuilds the orb about a second later.
     if (!outer && held && (held === next || held === px)) {
@@ -440,6 +445,9 @@ function layoutShell(shell) {
     ax: placed.anchor.x,
     ay: placed.anchor.y,
   }), visual);
+  if (shell.dataset.planOpen === "1" && (visual === "panel" || shell.dataset.state === "panel")) {
+    seatOpenPlan(shell);
+  }
 }
 
 /** Final top/height before a clip, so the open does not slide the box at the end. */
@@ -470,7 +478,7 @@ function separateOpenShells(shells, extra) {
     };
     const plan = shell.querySelector(".plan-window");
     const planOpen = plan && shell.dataset.planOpen === "1";
-    if (!planOpen) return box;
+    if (!planOpen || shell.dataset.planSeat === "1") return box;
     const dockedWidth = plan.offsetWidth || plan.getBoundingClientRect().width
       || Math.min(420, (window.innerWidth || 1280) * 0.42);
     const dock = includePlan(box, {
@@ -951,7 +959,7 @@ function commitClosedShell(shell) {
 }
 
 function idleOrbOpacity(shell) {
-  if (shell?.dataset.botId === "cron") return 0.55;
+  void shell;
   const value = Number(state.interaction?.minOpacity);
   return Number.isFinite(value) ? value : 0.18;
 }
@@ -1121,6 +1129,7 @@ function hideUnwarmedPlan(shell) {
     forgetPlanWarm(plan);
   }
   if (shell) {
+    unseatOpenPlan(shell);
     delete shell.dataset.planOpen;
     shell.classList.remove("is-plan-seam", "is-plan-arming");
   }
@@ -1258,6 +1267,7 @@ function lockPlanRevealed(plan) {
     if (fit) fit.style.removeProperty("will-change");
   }
   setSeamPhase(plan, "grown");
+  seatOpenPlan(shell);
   seamLog("lock", "width=final kept");
 }
 
@@ -2594,6 +2604,7 @@ function growPlan(shell, token) {
     holdFreeze(shell, FREEZE_AFTER_GROW_MS);
     holdPlanContent(shell, FREEZE_AFTER_GROW_MS);
     setSeamPhase(plan, "grown", { dom: false });
+    seatOpenPlan(shell);
     armQuietFlush(shell);
     return true;
   })();
@@ -2793,6 +2804,7 @@ function applyQueuedShell(shell, tag) {
   delete shell.dataset.planDirty;
   renderChat(shell.dataset.botId, { inplace: true, tag, resting: true });
   restorePlanGeometry(shell.querySelector(".plan-window") || plan, snap);
+  seatOpenPlan(shell);
   pinRestingNodes(shell);
   requestAnimationFrame(() => {
     if (!shell.isConnected || seamRevealLive(shell) || freezeCooling(shell) || collapseBusy() || collapseQuiet()) {
@@ -2802,6 +2814,7 @@ function applyQueuedShell(shell, tag) {
     const live = shell.querySelector(".plan-window");
     releasePlanBox(live);
     restorePlanGeometry(live, snap);
+    seatOpenPlan(shell);
     releaseHitSilence(tag);
     if (renderBots.pending) renderBots(tag);
   });
@@ -3178,6 +3191,7 @@ function armPanelCollapse(shell) {
 async function runShellMorph(shell, target) {
   if (!shell) return false;
   abortPlanRehearsal(shell);
+  if (target === "orb") unseatOpenPlan(shell);
   if (target !== "orb" && shell.dataset.intent === "close") return false;
   let closingScale = 1;
   if (target === "orb") {
@@ -4208,8 +4222,14 @@ function syncPlanSide(shell) {
   const plan = shell?.querySelector?.(".plan-window");
   if (!shell || !plan) return;
   const box = shell.getBoundingClientRect();
+  let right = box.right;
+  if (shell.dataset.planSeat === "1" && shell.dataset.planSide !== "left") {
+    const extra = Number(shell.dataset.planSeatExtra) || 0;
+    const baseW = Number.parseFloat(shell.dataset.planSeatW) || 0;
+    if (extra > 0 && box.width > baseW + 1) right -= extra;
+  }
   const width = Math.min(420, (window.innerWidth || 1280) * 0.42);
-  const roomRight = (window.innerWidth || 1280) - box.right;
+  const roomRight = (window.innerWidth || 1280) - right;
   shell.dataset.planSide = roomRight >= width ? "right" : "left";
 }
 
@@ -4260,6 +4280,7 @@ function paintPlan(id, options = {}) {
   if (open) shell.dataset.planOpen = "1";
   else delete shell.dataset.planOpen;
   if (!open) {
+    unseatOpenPlan(shell);
     setSeamPhase(section, "");
     delete section.dataset.sizeLock;
     clearPlanMotion(section);
@@ -6572,7 +6593,7 @@ function collectHits() {
         && shell.dataset.planOpen === "1"
         && shell.dataset.state === "panel"
         && (seam || (!shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")));
-      if (planVisible) {
+      if (planVisible && shell.dataset.planSeat !== "1") {
         // scaleX changes the border box. The hit rect is the layout width,
         // published once before the seam so GDK does not reshape every frame.
         const cached = Number(shell.dataset.planWidth);
@@ -6904,7 +6925,7 @@ function announcePanelHits(shell) {
     z: 1,
     round: false,
   };
-  if (shell.dataset.planOpen === "1" && host.width >= 1) {
+  if (shell.dataset.planOpen === "1" && shell.dataset.planSeat !== "1" && host.width >= 1) {
     const width = Number(shell.dataset.planWidth) || planWidthPx();
     const paneX = shell.dataset.planSide === "left" ? host.x - width : host.right;
     const union = unionOpenPlanRect(rect, {

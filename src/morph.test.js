@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { JSDOM } from "jsdom";
 import {
   COLLAPSE_EASE,
   COLLAPSE_MS,
@@ -54,6 +56,8 @@ import {
   seamWidthPx,
   cronShellHeight,
   chatTailAction,
+  seatOpenPlan,
+  unseatOpenPlan,
   separateStackedPanels,
   screenEdge,
   slotPoint,
@@ -477,4 +481,146 @@ test("panel collapse starts while the plan clip is still closing", () => {
   assert.ok(Math.abs(done.right - panelTo.right) < 1e-4);
   assert.ok(Math.abs(done.top - panelTo.top) < 1e-4);
   assert.ok(at(180).right > mid.right);
+});
+
+test("open plan controls are the hit target inside the shell border box", () => {
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const dom = new JSDOM(`<!doctype html><html class="overlay-passthrough"><head><style>${css}</style></head><body>
+    <div class="overlay-root">
+      <div class="morph" data-state="panel" data-plan-open="1" data-plan-side="right" data-visual="panel">
+        <div class="center-panel"></div>
+        <aside class="plan-window" data-role="plan">
+          <div class="plan-fit">
+            <header class="plan-head">
+              <button type="button" data-role="plan-preview-mode">預覽</button>
+              <button type="button" data-role="plan-source-mode">原文</button>
+              <button type="button" data-role="plan-close" aria-label="關閉計劃視窗">✕</button>
+            </header>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </body></html>`);
+  const { document, getComputedStyle } = dom.window;
+  const shell = document.querySelector(".morph");
+  const plan = shell.querySelector(".plan-window");
+  const preview = plan.querySelector("[data-role='plan-preview-mode']");
+  const source = plan.querySelector("[data-role='plan-source-mode']");
+  const close = plan.querySelector("[data-role='plan-close']");
+  shell.style.left = "100px";
+  shell.style.top = "40px";
+  shell.style.width = "420px";
+  shell.style.height = "560px";
+  shell.dataset.ax = "22";
+  shell.dataset.ay = "22";
+  shell.dataset.planWidth = "420";
+  shell.style.clipPath = "inset(-4px -428px -4px -4px round 3px)";
+  plan.style.width = "420px";
+  plan._seamPhase = "grown";
+  for (const control of [preview, source, close]) {
+    assert.equal(getComputedStyle(control).pointerEvents, "auto", control.dataset.role);
+  }
+  const layout = () => {
+    const shellLeft = Number.parseFloat(shell.style.left) || 0;
+    const shellTop = Number.parseFloat(shell.style.top) || 0;
+    const shellW = Number.parseFloat(shell.style.width) || 0;
+    const shellH = Number.parseFloat(shell.style.height) || 0;
+    const planW = Number.parseFloat(plan.style.width) || 420;
+    const inlineLeft = plan.style.left;
+    let planLeft = shellLeft + shellW;
+    if (inlineLeft.endsWith("px")) planLeft = shellLeft + Number.parseFloat(inlineLeft);
+    else if (shell.dataset.planSide === "left") planLeft = shellLeft - planW;
+    const planBox = { x: planLeft, y: shellTop, w: planW, h: shellH };
+    const closeBox = { x: planBox.x + planBox.w - 30, y: planBox.y + 8, w: 22, h: 22 };
+    const sourceBox = { x: closeBox.x - 48, y: planBox.y + 8, w: 40, h: 22 };
+    const previewBox = { x: sourceBox.x - 40, y: planBox.y + 8, w: 40, h: 22 };
+    return {
+      shell: { x: shellLeft, y: shellTop, w: shellW, h: shellH },
+      plan: planBox,
+      [preview.dataset.role]: previewBox,
+      [source.dataset.role]: sourceBox,
+      [close.dataset.role]: closeBox,
+    };
+  };
+  const contains = (box, x, y) => !!box && x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h;
+  const rectFor = (el) => {
+    const boxes = layout();
+    if (el === shell) return boxes.shell;
+    if (el === plan) return boxes.plan;
+    if (el?.dataset?.role && boxes[el.dataset.role]) return boxes[el.dataset.role];
+    return null;
+  };
+  // jsdom has no elementFromPoint. This walker skips pointer-events:none and,
+  // like WebKitGTK after a fill:both clip, only hits children inside the
+  // morph border box.
+  document.elementFromPoint = (x, y) => {
+    let found = null;
+    const visit = (el) => {
+      for (const child of el.children) {
+        visit(child);
+        if (found) return;
+      }
+      if (getComputedStyle(el).pointerEvents === "none") return;
+      const box = rectFor(el);
+      if (!contains(box, x, y)) return;
+      const morph = el.closest(".morph");
+      if (morph && !contains(rectFor(morph), x, y)) return;
+      found = el;
+    };
+    visit(document.body);
+    return found || document.body;
+  };
+  const center = (el) => {
+    const box = rectFor(el);
+    return { x: box.x + box.w / 2, y: box.y + box.h / 2 };
+  };
+  const closeAt = center(close);
+  assert.equal(document.elementFromPoint(closeAt.x, closeAt.y).tagName, "BODY");
+  const before = layout().plan;
+  assert.equal(seatOpenPlan(shell), true);
+  const after = layout().plan;
+  assert.equal(after.x, before.x);
+  assert.equal(after.y, before.y);
+  assert.equal(shell.style.width, "840px");
+  assert.equal(plan.style.left, "420px");
+  assert.match(shell.style.clipPath, /inset\(-4px -8px -4px -4px round 3px\)/);
+  for (const control of [preview, source, close]) {
+    const at = center(control);
+    const shellBox = layout().shell;
+    assert.ok(at.x >= shellBox.x && at.x <= shellBox.x + shellBox.w, control.dataset.role);
+    assert.equal(document.elementFromPoint(at.x, at.y), control, control.dataset.role);
+  }
+  assert.equal(seatOpenPlan(shell), true);
+  assert.equal(shell.style.width, "840px");
+  shell.style.width = shell.dataset.planSeatW;
+  shell.style.left = shell.dataset.planSeatLeft;
+  assert.equal(seatOpenPlan(shell), true);
+  assert.equal(shell.style.width, "840px");
+  assert.match(shell.style.clipPath, /inset\(-4px -8px -4px -4px round 3px\)/);
+  assert.equal(unseatOpenPlan(shell), true);
+  assert.equal(shell.style.width, "420px");
+  assert.equal(plan.style.left, "");
+  assert.match(shell.style.clipPath, /inset\(-4px -428px -4px -4px round 3px\)/);
+  assert.equal(document.elementFromPoint(center(close).x, center(close).y).tagName, "BODY");
+
+  shell.style.left = "500px";
+  shell.style.width = "420px";
+  shell.dataset.planSide = "left";
+  shell.dataset.planOpen = "1";
+  shell.style.clipPath = "inset(-4px -4px -4px -428px round 3px)";
+  plan.hidden = false;
+  plan._seamPhase = "grown";
+  const leftBefore = layout().plan.x;
+  assert.equal(seatOpenPlan(shell), true);
+  assert.equal(layout().plan.x, leftBefore);
+  assert.equal(shell.style.left, "80px");
+  assert.equal(shell.style.width, "840px");
+  assert.equal(plan.style.left, "0px");
+  assert.equal(shell.dataset.ax, String(22 + 420));
+  const leftClose = center(close);
+  assert.equal(document.elementFromPoint(leftClose.x, leftClose.y), close);
+  assert.equal(unseatOpenPlan(shell), true);
+  assert.equal(shell.style.width, "420px");
+  assert.equal(shell.style.left, "500px");
+  assert.equal(shell.dataset.ax, "22");
 });

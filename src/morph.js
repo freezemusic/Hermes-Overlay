@@ -681,3 +681,204 @@ export function previewBlocked({
   if (state === "panel") return true;
   return visual === "panel" || visual === "wide" || visual === "tall";
 }
+
+function clipInsetsOf(shell) {
+  const raw = String(shell?.style?.clipPath || "");
+  const match = raw.match(/inset\(\s*([-\d.]+)px\s+([-\d.]+)px\s+([-\d.]+)px\s+([-\d.]+)px(?:\s+round\s+([-\d.]+)px)?/i);
+  if (match) {
+    return {
+      top: Number(match[1]),
+      right: Number(match[2]),
+      bottom: Number(match[3]),
+      left: Number(match[4]),
+      radius: match[5] != null ? Number(match[5]) : (Number(shell.dataset?.clipRadius) || 0),
+    };
+  }
+  return {
+    top: Number(shell?.dataset?.clipTop) || 0,
+    right: Number(shell?.dataset?.clipRight) || 0,
+    bottom: Number(shell?.dataset?.clipBottom) || 0,
+    left: Number(shell?.dataset?.clipLeft) || 0,
+    radius: Number(shell?.dataset?.clipRadius) || 0,
+  };
+}
+
+function writeSeatedClip(shell, insets) {
+  const value = clipPath(insets);
+  shell.dataset.clipTop = String(insets.top);
+  shell.dataset.clipRight = String(insets.right);
+  shell.dataset.clipBottom = String(insets.bottom);
+  shell.dataset.clipLeft = String(insets.left);
+  shell.dataset.clipRadius = String(insets.radius);
+  const anims = shell.getAnimations?.() || [];
+  for (const anim of anims) {
+    const effect = anim?.effect;
+    if (!effect?.getKeyframes || !effect.setKeyframes) continue;
+    let state = "";
+    try { state = anim.playState || ""; } catch { state = ""; }
+    let frames = [];
+    try { frames = effect.getKeyframes(); } catch { frames = []; }
+    if (state === "running" || state === "pending") {
+      const duration = Number(effect.getTiming?.().duration) || 0;
+      const now = Number(anim.currentTime) || 0;
+      const clips = frames.map((frame) => frame?.clipPath).filter(Boolean);
+      const held = clips.length >= 2 && clips.every((clip) => clip === clips[0]);
+      if (!held && !(duration > 0 && now >= duration - 16)) continue;
+    }
+    if (!frames.some((frame) => frame?.clipPath)) continue;
+    try {
+      effect.setKeyframes(frames.map((frame) => (
+        frame?.clipPath ? { ...frame, clipPath: value } : frame
+      )));
+    } catch { /* the inline clip still carries the open edge */ }
+  }
+  shell.style.clipPath = value;
+  return value;
+}
+
+function revealClipStillRunning(shell) {
+  const anims = shell.getAnimations?.() || [];
+  for (const anim of anims) {
+    let state = "";
+    try { state = anim.playState || ""; } catch { state = ""; }
+    if (state !== "running" && state !== "pending") continue;
+    let frames = [];
+    try { frames = anim.effect?.getKeyframes?.() || []; } catch { frames = []; }
+    const clips = frames.map((frame) => frame?.clipPath).filter(Boolean);
+    if (clips.length >= 2 && clips.every((clip) => clip === clips[0])) continue;
+    const duration = Number(anim.effect?.getTiming?.().duration) || 0;
+    const now = Number(anim.currentTime) || 0;
+    if (!(duration > 0 && now >= duration - 16)) return true;
+  }
+  return false;
+}
+
+/**
+ * WebKitGTK hit-tests the border box once a fill:both clip finishes. The
+ * plan is painted with left:100% / right:100%, outside that box, so the
+ * click falls through to the page. Pull the plan inside the border box
+ * without moving its screen pixels. Collapse still reads the original box:
+ * unseat before that clip is removed.
+ */
+export function seatOpenPlan(shell) {
+  if (!shell || shell.dataset.planOpen !== "1") return false;
+  if (shell.dataset.state !== "panel" && shell.dataset.visual !== "panel") return false;
+  if (shell.classList.contains("is-collapsing")) return false;
+  const plan = shell.querySelector(".plan-window");
+  if (!plan || plan.hidden) return false;
+  const phase = plan._seamPhase || plan.dataset.seam || "";
+  if (phase !== "grown" && shell.dataset.planSeat !== "1") return false;
+  if (shell.dataset.planSeat !== "1" && revealClipStillRunning(shell)) return false;
+  const seated = shell.dataset.planSeat === "1";
+  const extra = Math.round(
+    Number(seated ? shell.dataset.planSeatExtra : 0)
+    || Number(shell.dataset.planWidth)
+    || Number.parseFloat(plan.style.width)
+    || 0,
+  );
+  if (!(extra > 0)) return false;
+  const side = shell.dataset.planSide === "left" ? "left" : "right";
+  let baseW = Number.parseFloat(seated ? shell.dataset.planSeatW : shell.style.width);
+  let baseLeft = Number.parseFloat(seated ? shell.dataset.planSeatLeft : shell.style.left);
+  let baseAx = Number(seated ? shell.dataset.planSeatAx : shell.dataset.ax);
+  if (!Number.isFinite(baseW) || !(baseW > 0) || !Number.isFinite(baseLeft)) return false;
+  if (!Number.isFinite(baseAx)) baseAx = 0;
+  if (!seated) {
+    const clip = clipInsetsOf(shell);
+    shell.dataset.planSeat = "1";
+    shell.dataset.planSeatW = shell.style.width;
+    shell.dataset.planSeatLeft = shell.style.left;
+    shell.dataset.planSeatAx = shell.dataset.ax || String(baseAx);
+    shell.dataset.planSeatExtra = String(extra);
+    shell.dataset.planSeatSide = side;
+    shell.dataset.planSeatClipTop = String(clip.top);
+    shell.dataset.planSeatClipRight = String(clip.right);
+    shell.dataset.planSeatClipBottom = String(clip.bottom);
+    shell.dataset.planSeatClipLeft = String(clip.left);
+    shell.dataset.planSeatClipRadius = String(clip.radius);
+  } else if (Math.abs(Number.parseFloat(shell.style.width) - baseW) < 1) {
+    // placeShell wrote the original box back. Keep the stored clip and
+    // follow the new left / anchor, then add the plan width once.
+    shell.dataset.planSeatLeft = shell.style.left;
+    if (shell.dataset.ax) shell.dataset.planSeatAx = shell.dataset.ax;
+    baseLeft = Number.parseFloat(shell.dataset.planSeatLeft);
+    baseAx = Number(shell.dataset.planSeatAx) || 0;
+  }
+  const useSide = shell.dataset.planSeatSide === "left" ? "left" : "right";
+  const useExtra = Number(shell.dataset.planSeatExtra) || extra;
+  shell.dataset.planSide = useSide;
+  shell.style.width = `${baseW + useExtra}px`;
+  const ax = useSide === "left" ? baseAx + useExtra : baseAx;
+  shell.style.left = `${useSide === "left" ? baseLeft - useExtra : baseLeft}px`;
+  shell.dataset.ax = String(ax);
+  shell.style.setProperty("--ax", `${ax}px`);
+  const ay = Number(shell.dataset.ay) || 0;
+  shell.style.transformOrigin = `${ax}px ${ay}px`;
+  if (useSide === "left") {
+    plan.style.left = "0px";
+    plan.style.right = "auto";
+  } else {
+    plan.style.left = `${baseW}px`;
+    plan.style.right = "auto";
+  }
+  const center = shell.querySelector(".center-panel");
+  if (center) {
+    center.style.right = "auto";
+    center.style.width = `${baseW}px`;
+    center.style.left = useSide === "left" ? `${useExtra}px` : "0px";
+  }
+  const clip = {
+    top: Number(shell.dataset.planSeatClipTop) || 0,
+    right: Number(shell.dataset.planSeatClipRight) || 0,
+    bottom: Number(shell.dataset.planSeatClipBottom) || 0,
+    left: Number(shell.dataset.planSeatClipLeft) || 0,
+    radius: Number(shell.dataset.planSeatClipRadius) || 0,
+  };
+  if (useSide === "left") clip.left += useExtra;
+  else clip.right += useExtra;
+  writeSeatedClip(shell, clip);
+  return true;
+}
+
+/** Restore the pre-plan box before a collapse clip reads it. */
+export function unseatOpenPlan(shell) {
+  if (!shell || shell.dataset.planSeat !== "1") return false;
+  const plan = shell.querySelector(".plan-window");
+  const center = shell.querySelector(".center-panel");
+  if (shell.dataset.planSeatW) shell.style.width = shell.dataset.planSeatW;
+  if (shell.dataset.planSeatLeft) shell.style.left = shell.dataset.planSeatLeft;
+  if (shell.dataset.planSeatAx) {
+    shell.dataset.ax = shell.dataset.planSeatAx;
+    shell.style.setProperty("--ax", `${shell.dataset.planSeatAx}px`);
+    const ay = Number(shell.dataset.ay) || 0;
+    shell.style.transformOrigin = `${shell.dataset.planSeatAx}px ${ay}px`;
+  }
+  writeSeatedClip(shell, {
+    top: Number(shell.dataset.planSeatClipTop) || 0,
+    right: Number(shell.dataset.planSeatClipRight) || 0,
+    bottom: Number(shell.dataset.planSeatClipBottom) || 0,
+    left: Number(shell.dataset.planSeatClipLeft) || 0,
+    radius: Number(shell.dataset.planSeatClipRadius) || 0,
+  });
+  if (plan) {
+    plan.style.removeProperty("left");
+    plan.style.removeProperty("right");
+  }
+  if (center) {
+    center.style.removeProperty("left");
+    center.style.removeProperty("width");
+    center.style.removeProperty("right");
+  }
+  delete shell.dataset.planSeat;
+  delete shell.dataset.planSeatW;
+  delete shell.dataset.planSeatLeft;
+  delete shell.dataset.planSeatAx;
+  delete shell.dataset.planSeatExtra;
+  delete shell.dataset.planSeatSide;
+  delete shell.dataset.planSeatClipTop;
+  delete shell.dataset.planSeatClipRight;
+  delete shell.dataset.planSeatClipBottom;
+  delete shell.dataset.planSeatClipLeft;
+  delete shell.dataset.planSeatClipRadius;
+  return true;
+}
