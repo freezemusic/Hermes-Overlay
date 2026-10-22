@@ -547,6 +547,16 @@ function Wait-IdGone([string]$id, [int]$seconds = 8) {
   return $false
 }
 
+function Wait-HitId([string]$id, [int]$seconds = 8) {
+  $deadline = (Get-Date).AddSeconds($seconds)
+  while ((Get-Date) -lt $deadline) {
+    $found = @(Read-HitRects | Where-Object { $_.id -eq $id -and $_.w -ge 1 -and $_.h -ge 1 } | Select-Object -First 1)
+    if ($found.Count -ge 1) { return $found[0] }
+    Start-Sleep -Milliseconds 200
+  }
+  return $null
+}
+
 function Assert-Orb([string]$label, $orbPoint) {
   [ClickProbe]::SetCursorPos($orbPoint.x, $orbPoint.y) | Out-Null
   [ClickProbe]::Ctrl($true)
@@ -648,21 +658,30 @@ try {
       }
       # Kanban's orb sits under the field panel on a 1024px runner.
       # Ctrl+click must reach that orb (R-CT-02), not the window behind.
+      # The field orb button still holds focus, so Escape closes field and
+      # takes the plan with it. Kanban's own close button is the layer to drop.
       Assert-Orb "ctrl-orb-under-panel" $kanban
       if (-not (Wait-Log "hit-announce bot=kanban mode=panel" 8)) {
         Note-Fail "ctrl-orb-under-panel-opened" "kanban did not open under the field panel"
       } else {
         Note-Ok "ctrl-orb-under-panel-opened" ""
         [ClickProbe]::Ctrl($false)
-        [ClickProbe]::Tap(0x1B)
-        $kanbanGone = Wait-IdGone "kanban" 8
-        $fieldStill = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" })
-        if (-not $kanbanGone) {
-          Note-Fail "ctrl-orb-under-panel-closed" "kanban rect stayed after Escape"
-        } elseif ($fieldStill.Count -lt 1) {
-          Note-Fail "ctrl-orb-under-panel-closed" "Escape closed the field panel"
+        $kanbanClose = Wait-HitId "close:kanban" 8
+        if (-not $kanbanClose) {
+          Note-Fail "ctrl-orb-under-panel-closed" "kanban close button was not published"
         } else {
-          Note-Ok "ctrl-orb-under-panel-closed" ""
+          $kx = [int]($kanbanClose.x + $kanbanClose.w / 2)
+          $ky = [int]($kanbanClose.y + $kanbanClose.h / 2)
+          Assert-Captured "ctrl-orb-under-panel-close" $kx $ky
+          $kanbanGone = Wait-IdGone "kanban" 8
+          $fieldStill = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" })
+          if (-not $kanbanGone) {
+            Note-Fail "ctrl-orb-under-panel-closed" "kanban rect stayed after its close button"
+          } elseif ($fieldStill.Count -lt 1) {
+            Note-Fail "ctrl-orb-under-panel-closed" "closing kanban dropped the field panel"
+          } else {
+            Note-Ok "ctrl-orb-under-panel-closed" ""
+          }
         }
       }
       $drops = Count-Log "plan-hit-drop bot=field "
