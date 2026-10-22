@@ -88,17 +88,21 @@ import {
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 import { SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
 import {
+  RECONNECT_STATUS,
+  createProbeGate,
+  createReconnect,
+  gatewayDown,
+} from "./reconnect.js";
+import {
   PREVIEW_COMMANDS,
   completionText,
   filterCommands,
-  gatewayDown,
   groupByCategory,
   inlineArgsHint,
   modelFields,
   moveSlashIndex,
   orderSlashCommands,
   parseSlashMarker,
-  reconnectDelayMs,
   resolveClient,
   sendBlockedWhileBusy,
   shouldRefreshCatalog,
@@ -3730,6 +3734,7 @@ const state = {
   slashArgsHint: "",
   reconnectToken: 0,
   reconnectTimer: 0,
+  gatewayClock: 0,
   openIds: [],
   anchors: {},
   panelPos: {},
@@ -3754,6 +3759,17 @@ const state = {
   cronPrimed: false,
   toastSeq: 0,
 };
+
+const probeGate = createProbeGate();
+const gateway = createReconnect({
+  onWait() {
+    paintGatewayWait();
+  },
+  onClear() {
+    clearGatewayWait();
+  },
+});
+gateway.bind("gateway", () => recoverGateway());
 
 function threadFor(id) {
   if (!state.threads.has(id)) {
@@ -3810,7 +3826,7 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
     return;
   }
   banner.textContent = text;
-  if ((kind === "ok" || kind === "info") && sticky !== "keyring") {
+  if ((kind === "ok" || kind === "info") && sticky !== "keyring" && sticky !== "gateway") {
     bannerTimer = window.setTimeout(() => {
       bannerTimer = 0;
       if (banner.dataset.sticky === "keyring") return;
@@ -3821,7 +3837,7 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
 
 function clearConnectionBanner() {
   const banner = $("#conn-banner");
-  if (banner.dataset.sticky === "keyring") return;
+  if (banner.dataset.sticky === "keyring" || banner.dataset.sticky === "gateway") return;
   setBanner("");
 }
 
@@ -4198,11 +4214,19 @@ function renderKanbanOrb() {
   const next = ["bot-btn", "morph-orb", "orb--kanban", state.kanbanOpen ? "active" : "", state.kanban.unread ? "has-unread" : ""]
     .filter(Boolean)
     .join(" ");
-  if (btn.className === next && shell.style.width) return;
+  const waiting = gateway.isDown("gateway");
+  const label = waiting ? (gateway.status("gateway") || RECONNECT_STATUS) : "看板";
+  if (btn.className === next && shell.style.width) {
+    if (btn.title !== label) {
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+    }
+    return;
+  }
   btn.className = next;
   paintIdleChromeColor(shell, btn, NOUS.neutral);
-  btn.setAttribute("aria-label", "看板");
-  btn.title = "看板";
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
   layoutShell(shell);
 }
 
@@ -4996,6 +5020,8 @@ function cancelReconnect() {
   state.reconnectToken += 1;
   window.clearTimeout(state.reconnectTimer);
   state.reconnectTimer = 0;
+  gateway.reset();
+  clearGatewayWait();
 }
 
 function applyOpened(id, opened, { quiet = false } = {}) {
@@ -5050,11 +5076,13 @@ function applyOpened(id, opened, { quiet = false } = {}) {
 
 function beginBotHistory(id) {
   if (state.mode !== "hermes" || !inTauri()) return null;
+  if (gateway.isDown("gateway")) {
+    gateway.kick("gateway");
+    return null;
+  }
   const thread = threadFor(id);
   if (thread.loaded) return null;
   if (thread.historyPromise) return thread.historyPromise;
-  window.clearTimeout(state.reconnectTimer);
-  state.reconnectTimer = 0;
   const token = state.reconnectToken;
   thread.loading = true;
   thread.historyPromise = loadBotHistory(id, token).finally(() => {
@@ -5074,7 +5102,9 @@ function prefetchBotChats() {
   }
   for (const bot of state.bots) {
     if (bot.hasKey === false) continue;
-    beginBotHistory(bot.id)?.catch(() => {});
+    beginBotHistory(bot.id)?.catch((err) => {
+      if (gatewayDown(String(err))) noteGatewayDown();
+    });
   }
 }
 
@@ -5095,6 +5125,7 @@ function prefetchOrbUnderCursor() {
 }
 
 function refreshBotChats() {
+  if (gateway.isDown("gateway") || probeGate.has("kanban")) return;
   if (collapseBusy() || collapseQuiet()) {
     state.refreshDeferred = true;
     debugLog("refresh-tick-defer", "frozen=1");
@@ -5116,7 +5147,9 @@ function refreshBotChats() {
     const thread = threadFor(bot.id);
     if (thread.historyPromise) continue;
     if (!thread.loaded) {
-      beginBotHistory(bot.id)?.catch(() => {});
+      beginBotHistory(bot.id)?.catch((err) => {
+        if (gatewayDown(String(err))) noteGatewayDown();
+      });
       continue;
     }
     const token = state.reconnectToken;
@@ -5124,7 +5157,10 @@ function refreshBotChats() {
     const reload = panelOpen && thread.sessionExplicit && thread.sessionId
       ? reloadOpenSession(bot.id, token, { quiet: true })
       : loadBotHistory(bot.id, token, { quiet: true });
-    const job = reload.catch(() => false).finally(() => {
+    const job = reload.catch((err) => {
+      if (gatewayDown(String(err))) noteGatewayDown();
+      return false;
+    }).finally(() => {
       if (thread.historyPromise === job) thread.historyPromise = null;
     });
     thread.historyPromise = job;
@@ -5237,38 +5273,196 @@ async function pickSession(id, sessionId) {
   }
 }
 
-function armReconnect(id, attempt, token) {
-  window.clearTimeout(state.reconnectTimer);
-  state.reconnectTimer = window.setTimeout(() => {
-    if (token !== state.reconnectToken) return;
-    retryHistory(id, attempt, token);
-  }, reconnectDelayMs(attempt));
-}
-
-async function retryHistory(id, attempt, token) {
-  if (token !== state.reconnectToken || state.mode !== "hermes") return;
-  try {
-    await loadBotHistory(id, token);
-  } catch (err) {
-    if (token !== state.reconnectToken) return;
-    if (gatewayDown(String(err))) armReconnect(id, attempt + 1, token);
-  }
-}
-
 function noteHistoryError(id, err) {
   const thread = threadFor(id);
   thread.loaded = false;
   const message = String(err);
   debugLog("history-error", `id=${id} ${message}`);
   if (gatewayDown(message)) {
-    setBotStatus(id, "連線錯誤", "error");
-    setBanner(message, "error");
-    armReconnect(id, 0, state.reconnectToken);
+    setBotStatus(id, "自動重試", "idle");
+    noteGatewayDown();
     return;
   }
   appendMessage(id, { role: "commentary", text: message });
   setBotStatus(id, "連線錯誤", "error");
   setBanner(message, "error");
+}
+
+function noteGatewayDown() {
+  if (state.mode !== "hermes") return;
+  gateway.fail("gateway");
+}
+
+function paintGatewayWait() {
+  if (!gateway.isDown("gateway")) return;
+  const text = gateway.status("gateway") || RECONNECT_STATUS;
+  const empty = $("#kanban-empty");
+  const root = $("#kanban-board");
+  if (empty && root) {
+    empty.hidden = false;
+    if (!empty.classList.contains("is-retry")) root.replaceChildren();
+    empty.classList.add("is-retry");
+    empty.textContent = text;
+    if (!state.kanban.board?.retry) {
+      state.kanban.board = {
+        board: KANBAN_BOARD,
+        columns: [],
+        unavailable: true,
+        retry: true,
+        message: text,
+      };
+      state.kanban.fingerprint = boardFingerprint(state.kanban.board);
+    }
+  }
+  const cronEmpty = $("#cron-empty");
+  const cronList = $("#cron-list");
+  if (cronEmpty) {
+    if (!cronEmpty.classList.contains("is-retry")) cronList?.replaceChildren();
+    cronEmpty.hidden = false;
+    cronEmpty.classList.add("is-retry");
+    cronEmpty.textContent = text;
+  }
+  const btn = shellFor("kanban")?.querySelector(".orb--kanban");
+  if (btn) {
+    btn.title = text;
+    btn.setAttribute("aria-label", text);
+  }
+  const banner = $("#conn-banner");
+  if (banner && (banner.dataset.sticky !== "gateway" || banner.textContent !== text)) {
+    setBanner(text, "info", "gateway");
+  }
+  if (!state.gatewayClock) {
+    state.gatewayClock = window.setInterval(() => {
+      if (!gateway.isDown("gateway")) {
+        window.clearInterval(state.gatewayClock);
+        state.gatewayClock = 0;
+        return;
+      }
+      if (gateway.inflight("gateway")) return;
+      paintGatewayWait();
+    }, 1000);
+  }
+}
+
+function clearGatewayWait() {
+  window.clearInterval(state.gatewayClock);
+  state.gatewayClock = 0;
+  $("#kanban-empty")?.classList.remove("is-retry");
+  $("#cron-empty")?.classList.remove("is-retry");
+  const btn = shellFor("kanban")?.querySelector(".orb--kanban");
+  if (btn && gateway.isDown("gateway") === false) {
+    btn.title = "看板";
+    btn.setAttribute("aria-label", "看板");
+  }
+  const banner = $("#conn-banner");
+  if (banner?.dataset.sticky === "gateway") setBanner("");
+}
+
+async function claimProfiles(ids, fn) {
+  const keys = ids.length ? ids : ["cron"];
+  if (keys.some((id) => probeGate.has(id))) return "busy";
+  for (const id of keys) probeGate.tryBegin(id);
+  try {
+    return await fn();
+  } finally {
+    for (const id of keys) probeGate.end(id);
+  }
+}
+
+/** One read of each consumer. Never calls create_session or create_bot_chat. */
+async function recoverGateway() {
+  if (state.mode !== "hermes" || !inTauri()) return true;
+  const { invoke } = await import("@tauri-apps/api/core");
+  if (!probeGate.tryBegin("kanban")) return "busy";
+  let board;
+  try {
+    board = await invoke("get_kanban_board", { board: KANBAN_BOARD });
+  } catch (err) {
+    if (gatewayDown(String(err))) return false;
+    commitKanban(normalizeBoard({ unavailable: true, message: String(err) }));
+    return true;
+  } finally {
+    probeGate.end("kanban");
+  }
+  commitKanban(normalizeBoard(board));
+  const roster = await claimProfiles(["roster"], async () => {
+    try {
+      const synced = await invoke("sync_profiles");
+      applyRoster(synced);
+      return true;
+    } catch (err) {
+      return gatewayDown(String(err)) ? false : true;
+    }
+  });
+  if (roster === false || roster === "busy") return roster;
+  const ids = state.bots.map((bot) => bot.id);
+  const cron = await claimProfiles(ids, async () => {
+    try {
+      const rows = await invoke("list_cron_jobs");
+      const next = (rows || []).map((row) => normalizeCronGroup(row));
+      if (next.length && next.every((group) => group.unavailable && gatewayDown(group.message))) return false;
+      state.cronSig = JSON.stringify(next);
+      state.cronGroups = next;
+      renderCronOrb();
+      if (state.cronOpen) paintCron();
+      return true;
+    } catch (err) {
+      return gatewayDown(String(err)) ? false : true;
+    }
+  });
+  if (cron === false || cron === "busy") return cron;
+  for (const bot of state.bots) {
+    if (bot.hasKey === false) continue;
+    const step = await claimProfiles([bot.id], () => refreshBotQuiet(bot.id));
+    if (step === false || step === "busy") return step;
+  }
+  return true;
+}
+
+function applyRoster(synced) {
+  const next = botsFromSettings(synced);
+  state.settings = synced;
+  const prev = state.bots.map((bot) => bot.id).join("\n");
+  const ids = next.map((bot) => bot.id).join("\n");
+  if (prev === ids) {
+    state.bots = next.map((bot) => {
+      const old = state.bots.find((item) => item.id === bot.id);
+      return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, hasKey: bot.hasKey } : bot;
+    });
+  } else {
+    state.bots = next;
+  }
+  renderBots();
+}
+
+async function refreshBotQuiet(id) {
+  const token = state.reconnectToken;
+  const thread = threadFor(id);
+  if (thread.historyPromise) {
+    try {
+      await thread.historyPromise;
+      return true;
+    } catch (err) {
+      return gatewayDown(String(err)) ? false : true;
+    }
+  }
+  const shell = shellFor(id);
+  const panelOpen = shell?.dataset.state === "panel" && !shell.classList.contains("is-collapsing");
+  try {
+    if (panelOpen && thread.sessionExplicit && thread.sessionId) {
+      await reloadOpenSession(id, token, { quiet: true });
+    } else {
+      await loadBotHistory(id, token, { quiet: true });
+    }
+    return true;
+  } catch (err) {
+    return gatewayDown(String(err)) ? false : true;
+  }
+}
+
+function kickGateway() {
+  if (state.mode !== "hermes" || !gateway.isDown("gateway")) return;
+  gateway.kick("gateway");
 }
 
 function armHistoryAfterQuiet(id) {
@@ -5344,6 +5538,7 @@ function openBotPanel(id) {
   void runShellMorph(shell, "panel");
   void loadSoul(id);
   scheduleHitSync();
+  if (gateway.isDown("gateway")) gateway.kick("gateway");
   return shell.querySelector(".bot-panel");
 }
 
@@ -5961,7 +6156,8 @@ async function connectHermes(settings) {
     }
   } catch (err) {
     useHermes(settings);
-    setBanner(String(err), "error");
+    if (gatewayDown(String(err))) noteGatewayDown();
+    else setBanner(String(err), "error");
   }
 }
 
@@ -8385,7 +8581,12 @@ function openKanban() {
     });
   }
   renderBots();
-  refreshKanban();
+  if (gateway.isDown("gateway")) {
+    paintGatewayWait();
+    gateway.kick("gateway");
+  } else {
+    refreshKanban();
+  }
   startKanbanPoll();
 }
 
@@ -8435,6 +8636,7 @@ async function refreshKanban() {
     return;
   }
   if (state.kanban.saving || state.kanban.dragging) return;
+  if (gateway.isDown("gateway") || probeGate.has("kanban")) return;
   let payload;
   if (state.mode !== "hermes" || !inTauri()) {
     payload = state.kanban.board || mockKanban();
@@ -8443,6 +8645,10 @@ async function refreshKanban() {
       const { invoke } = await import("@tauri-apps/api/core");
       payload = await invoke("get_kanban_board", { board: KANBAN_BOARD });
     } catch (err) {
+      if (gatewayDown(String(err))) {
+        noteGatewayDown();
+        return;
+      }
       payload = { unavailable: true, message: String(err) };
     }
   }
@@ -8495,6 +8701,15 @@ function paintKanban(board) {
   const title = $("#kanban-title");
   if (title) title.textContent = board.board || "Board";
   if (!root || !empty) return;
+  if (board.retry || (gateway.isDown("gateway") && board.unavailable && gatewayDown(board.message))) {
+    empty.hidden = false;
+    empty.classList.add("is-retry");
+    empty.textContent = gateway.status("gateway") || RECONNECT_STATUS;
+    root.replaceChildren();
+    scheduleHitSync();
+    return;
+  }
+  empty.classList.remove("is-retry");
   if (board.unavailable) {
     empty.hidden = false;
     empty.textContent = board.message || KANBAN_EMPTY;
@@ -8756,7 +8971,12 @@ function openCron() {
     syncCronBox();
   }
   renderBots();
-  refreshCron();
+  if (gateway.isDown("gateway")) {
+    paintGatewayWait();
+    gateway.kick("gateway");
+  } else {
+    refreshCron();
+  }
 }
 
 function closeCron() {
@@ -8864,6 +9084,17 @@ function paintCron() {
   const empty = $("#cron-empty");
   const list = $("#cron-list");
   if (!empty || !list) return;
+  if (gateway.isDown("gateway")) {
+    empty.hidden = false;
+    empty.classList.add("is-retry");
+    empty.textContent = gateway.status("gateway") || RECONNECT_STATUS;
+    list.replaceChildren();
+    renderCronOrb();
+    syncCronBox();
+    scheduleHitSync();
+    return;
+  }
+  empty.classList.remove("is-retry");
   list.replaceChildren();
   const blocks = state.cronGroups || [];
   if (!blocks.length) {
@@ -8933,6 +9164,7 @@ async function refreshCron() {
     armPresentationFlush();
     return;
   }
+  if (gateway.isDown("gateway")) return;
   let next;
   if (!inTauri() || state.mode !== "hermes") {
     next = mockCronGroups();
@@ -8942,12 +9174,25 @@ async function refreshCron() {
       const rows = await invoke("list_cron_jobs");
       next = (rows || []).map((row) => normalizeCronGroup(row));
     } catch (err) {
+      if (gatewayDown(String(err))) {
+        noteGatewayDown();
+        return;
+      }
       next = [normalizeCronGroup({
         unavailable: true,
         name: "排程",
         message: String(err),
       })];
     }
+  }
+  if (
+    inTauri()
+    && state.mode === "hermes"
+    && next.length
+    && next.every((group) => group.unavailable && gatewayDown(group.message))
+  ) {
+    noteGatewayDown();
+    return;
   }
   if (backgroundBlocked()) {
     state.cronDeferred = true;
@@ -9431,10 +9676,16 @@ async function boot() {
       stopCronPoll();
       return;
     }
+    kickGateway();
     refreshKanban();
     startKanbanPoll();
     refreshCron();
     startCronPoll();
+  });
+  window.addEventListener("online", kickGateway);
+  document.addEventListener("resume", kickGateway);
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) kickGateway();
   });
   window.addEventListener("resize", layoutShells);
   applyInteraction(state.interaction);

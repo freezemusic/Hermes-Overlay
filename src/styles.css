@@ -1842,6 +1842,11 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   color: var(--nous-blue);
 }
 
+/* R-SY-08: calm retry ink on the glass. Static text, no animation. */
+.kanban-empty.is-retry {
+  color: #14142b;
+}
+
 .kanban-error {
   margin: 0 var(--sp-3) var(--sp-2);
   padding: 6px 8px;

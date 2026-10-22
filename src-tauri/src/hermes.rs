@@ -2897,6 +2897,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_down_then_up_refreshes_reads_without_creating_a_session() {
+        let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        drop(reserved);
+        let base = format!("http://127.0.0.1:{port}");
+        let http = Client::builder()
+            .connect_timeout(Duration::from_millis(400))
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let down = list_sessions(&http, &base, "k").await.unwrap_err();
+        let explained = explain(&down);
+        assert!(
+            explained.contains("連唔到") || explained.contains("中斷") || explained.contains("逾時"),
+            "{explained}"
+        );
+
+        let listener = (0..20).find_map(|_| TcpListener::bind(("127.0.0.1", port)).ok());
+        let listener = listener.expect("fake gateway port");
+        let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let gets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let posts2 = posts.clone();
+        let gets2 = gets.clone();
+        thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut sock, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 8192];
+                let n = sock.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]);
+                let line = head.lines().next().unwrap_or("");
+                if line.starts_with("POST") {
+                    posts2.fetch_add(1, Ordering::SeqCst);
+                } else if line.starts_with("GET") {
+                    gets2.fetch_add(1, Ordering::SeqCst);
+                }
+                let body = if line.contains("/v1/overlay/kanban/board") {
+                    r#"{"board":"default","columns":[{"name":"todo","tasks":[{"id":"t1","title":"回來","status":"todo"}]}]}"#
+                } else {
+                    r#"{"object":"list","data":[{"id":"20261001_013827_25b1eb","title":"Bot Chat","source":"tui","last_active":1}]}"#
+                };
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(header.as_bytes());
+                let _ = sock.write_all(body.as_bytes());
+            }
+        });
+
+        let sessions = list_sessions(&http, &base, "k").await.unwrap();
+        assert_eq!(sessions[0].id, "20261001_013827_25b1eb");
+        assert_eq!(sessions[0].title, "Bot Chat");
+        let board = fetch_kanban_board(&http, &base, "k", "default").await.unwrap();
+        assert!(!board.unavailable);
+        let title = board
+            .columns
+            .iter()
+            .flat_map(|column| column.tasks.iter())
+            .find(|task| task.id == "t1")
+            .map(|task| task.title.as_str());
+        assert_eq!(title, Some("回來"));
+        assert_eq!(posts.load(Ordering::SeqCst), 0);
+        assert!(gets.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[tokio::test]
     async fn streams_sse_turn() {
         let body = "\
 event: assistant.delta\n\

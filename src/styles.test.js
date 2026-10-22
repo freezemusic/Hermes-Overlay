@@ -468,6 +468,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph\[data-state="orb"\] \.center-panel\.settings-panel[^{]*\{[^}]*display:\s*none/s);
   assert.match(css, /\.alt-warning \{[^}]*color:\s*#14142b/s);
   assert.doesNotMatch(css, /\.alt-warning \{[^}]*color:\s*var\(--nous-orange\)/s);
+  assert.match(css, /\.kanban-empty\.is-retry \{[^}]*color:\s*#14142b/s);
+  assert.doesNotMatch(css, /\.kanban-empty\.is-retry \{[^}]*(animation|@keyframes)/s);
   assert.match(css, /\.kanban-error \{[^}]*color:\s*#14142b/s);
   assert.doesNotMatch(css, /\.kanban-error \{[^}]*color:\s*var\(--nous-red\)/s);
   assert.match(css, /\.kanban-error \{[^}]*border-left:[^;]*var\(--nous-red\)/s);

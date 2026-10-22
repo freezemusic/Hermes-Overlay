@@ -109,19 +109,7 @@ const CLIENT_MAPS = {
   stop: "overlay stop",
 };
 
-export function reconnectDelayMs(attempt) {
-  const step = Math.max(0, attempt | 0);
-  return Math.min(30_000, 1000 * 2 ** step);
-}
-
-export function gatewayDown(message) {
-  const text = String(message || "");
-  return (
-    text.includes("連唔到 Hermes gateway") ||
-    text.includes("Hermes gateway 逾時") ||
-    text.includes("同 Hermes gateway 嘅連線中斷")
-  );
-}
+export { gatewayDown, reconnectDelayMs } from "./reconnect.js";
 
 export function slashFilterQuery(value) {
   const text = String(value ?? "");
