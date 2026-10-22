@@ -1875,7 +1875,7 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 }
 
 .bot-btn[data-hit-id] {
-  opacity: var(--hit-opacity, 0.18);
+  opacity: var(--hit-opacity, 1);
 }
 
 .field {
@@ -1993,7 +1993,8 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 }
 
 .morph[data-state="orb"][data-hit-id] {
-  opacity: var(--hit-opacity, 0.18);
+  opacity: var(--hit-opacity, 1);
+  transition: opacity 180ms linear;
 }
 
 /* The 12px hit pad and the ::before glow sit outside the disc. A resting
@@ -2803,6 +2804,9 @@ html[data-pass="1"] .plan-hit-host * {
     transition-property: opacity !important;
     transition-duration: 0s !important;
     transition-delay: 0s !important;
+  }
+  .morph[data-state="orb"] {
+    transition: opacity 1ms linear !important;
   }
   .is-thinking .spinner,
   .bot-btn.orb--cron.is-running::after {

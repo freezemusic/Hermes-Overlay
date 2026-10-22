@@ -145,6 +145,28 @@ function fitShellOnScreen(anchorX, anchorY, anchor, boxW, boxH, screenW, screenH
   };
 }
 
+/**
+ * A dragged panel stays where it was released (R-PN-03).
+ * Re-running placeShell from the orb centre flips the header slot once that
+ * centre crosses the screen midpoint, and a 680px settings card jumps right
+ * by width − orb (636px). Clamp the box that is already on screen instead.
+ */
+export function clampDroppedBox(left, top, width, height, screenW, screenH) {
+  let x = Number.isFinite(left) ? left : 0;
+  let y = Number.isFinite(top) ? top : 0;
+  const w = Number.isFinite(width) ? width : 0;
+  const h = Number.isFinite(height) ? height : 0;
+  if (screenW > 0) {
+    if (w >= screenW) x = 0;
+    else x = Math.min(Math.max(0, x), screenW - w);
+  }
+  if (screenH > 0) {
+    if (h >= screenH) y = 0;
+    else y = Math.min(Math.max(0, y), screenH - h);
+  }
+  return { left: x, top: y, width: w, height: h };
+}
+
 export function placeShell(anchorX, anchorY, boxW, boxH, screenW, screenH) {
   const edge = screenEdge(anchorX, anchorY, screenW, screenH);
   const anchor = anchorInBox({

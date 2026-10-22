@@ -79,6 +79,36 @@ export function isOrbHit(rect) {
 /** CSS pixels around a hit rect that still count as under the cursor. */
 export const HIT_MARGIN_PX = 12;
 
+/**
+ * Fade starts this far outside the orb's hit circle (R-OB-05).
+ * 72px is the glow/hit radius plus a margin, inside the 60–80px range.
+ * Click capture stays at HIT_MARGIN_PX. This radius is visual only.
+ */
+export const ORB_PROXIMITY_PX = 72;
+
+/** Opacity transition while an orb enters or leaves ORB_PROXIMITY_PX. */
+export const ORB_FADE_MS = 180;
+
+/** Near-orb opacity never exceeds this, so the default 18% floor stays ≤30%. */
+export const ORB_NEAR_OPACITY_CAP = 0.3;
+
+/** Floor used when the cursor is inside ORB_PROXIMITY_PX and the modifier is up. */
+export function orbNearOpacity(minOpacity = 0.18) {
+  const floor = Number.isFinite(minOpacity) ? minOpacity : 0.18;
+  return Math.min(ORB_NEAR_OPACITY_CAP, Math.max(0.05, floor));
+}
+
+/**
+ * Far from the orb, and while the modifier is held inside the fade radius,
+ * the orb is opaque. Inside the radius with the modifier up it is the near floor.
+ * An unknown distance stays opaque so a missing cursor sample does not flash.
+ */
+export function orbProximityOpacity(distance, { held = false, minOpacity = 0.18 } = {}) {
+  if (!(distance >= 0) || distance > ORB_PROXIMITY_PX) return 1;
+  if (held) return 1;
+  return orbNearOpacity(minOpacity);
+}
+
 /** Orb DOM writes and the plan rehearsal wait this long after pointerdown. */
 export const POINTER_QUIET_MS = 300;
 
@@ -271,13 +301,15 @@ function preferHit(candidate, current) {
 /**
  * Panels stay opaque and capture the cursor. Holding the modifier washes every
  * panel out and captures none of them.
- * Orbs stay faded and click-through. Only the orb under or near the cursor
- * turns solid and clickable while the modifier is held. An orb or pill within
- * HIT_MARGIN_PX wins over a panel that also contains that point (R-CT-02).
- * A message-preview pill stays visually solid. It captures only while the
- * modifier is held over it. A close button captures only while the modifier
- * is up. While the modifier is held it passes through with the panel. Toasts stay
- * visually solid and are clickable only when the modifier is up.
+ * Orbs are opaque and click-through until the cursor is within ORB_PROXIMITY_PX
+ * of that orb's hit circle, which fades only that orb (R-OB-05). Holding the
+ * modifier inside that radius makes the orb opaque again. It is clickable only
+ * while the modifier is held and the cursor is within HIT_MARGIN_PX. An orb or
+ * pill within HIT_MARGIN_PX wins over a panel that also contains that point
+ * (R-CT-02). A message-preview pill stays visually solid. It captures only
+ * while the modifier is held over it. A close button captures only while the
+ * modifier is up. While the modifier is held it passes through with the panel.
+ * Toasts stay visually solid and are clickable only when the modifier is up.
  */
 export function elementStates({
   held = false,
@@ -299,8 +331,13 @@ export function elementStates({
       return { id: rect.id, opacity: 1, capture: here && held };
     }
     if (isOrbHit(rect)) {
+      const distance = cursor ? distanceToHit(cursor.x, cursor.y, rect) : Infinity;
       const awake = here && held;
-      return { id: rect.id, opacity: awake ? 1 : floor, capture: awake };
+      return {
+        id: rect.id,
+        opacity: orbProximityOpacity(distance, { held, minOpacity: floor }),
+        capture: awake,
+      };
     }
     if (isPanelHit(rect)) {
       return {

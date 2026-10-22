@@ -612,6 +612,16 @@ try {
   Start-Sleep -Seconds 2
   # Settings is still closed. Empty space passes through, then Ctrl+click opens it.
   Assert-Empty "reveal+2s"
+  # R-OB-05: 48px left of the settings disc is inside the 72px fade and
+  # outside the 12px hit pad. Ctrl stays up, so the click reaches Behind.
+  $settingsOrb = @(Read-HitRects | Where-Object { $_.id -eq "bot:settings" } | Select-Object -First 1)
+  if (-not $settingsOrb) {
+    Note-Fail "orb-proximity" "bot:settings missing from hit-rects"
+  } else {
+    $px = [int]($settingsOrb.x + $settingsOrb.w / 2 - 48)
+    $py = [int]($settingsOrb.y + $settingsOrb.h / 2)
+    Assert-Through "orb-proximity" $px $py
+  }
   Assert-Orb "reveal+2s-settings" $settings
   $settingsRect = Wait-PanelRect "settings" 200 900
   if (-not $settingsRect) {

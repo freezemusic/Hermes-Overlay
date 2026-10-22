@@ -180,6 +180,29 @@ pub fn opacity_for_distance(
 /// Extra CSS pixels around a hit rect that still count as "under the cursor".
 pub const HIT_MARGIN_PX: f64 = 12.0;
 
+/// Fade starts this far outside the orb hit circle (R-OB-05). Visual only.
+pub const ORB_PROXIMITY_PX: f64 = 72.0;
+
+/// Near-orb opacity. The settings floor defaults to 0.18 and never exceeds 0.30.
+pub fn orb_near_opacity(min_opacity: f64) -> f64 {
+    let floor = if min_opacity.is_finite() {
+        min_opacity
+    } else {
+        0.18
+    };
+    floor.clamp(0.05, 0.30)
+}
+
+fn orb_visual_opacity(distance: f64, held: bool, min_opacity: f64) -> f64 {
+    if distance > ORB_PROXIMITY_PX {
+        return 1.0;
+    }
+    if held {
+        return 1.0;
+    }
+    orb_near_opacity(min_opacity)
+}
+
 /// The single element whose rect (plus margin) contains the cursor.
 /// A point inside a rect beats a neighbour that is only within the margin.
 /// When distances tie, a latched panel wins, then the higher z-order, then the smaller rect.
@@ -916,12 +939,15 @@ pub fn is_orb_hit(rect: &HitRect) -> bool {
 
 /// Per-element frame.
 /// Panels are opaque and captured until the modifier is held, then they wash out
-/// and capture nothing. Orbs stay at `min_opacity` and click-through until the
-/// modifier is held over that orb, which turns it solid and clickable.
-/// A message-preview pill stays visually solid and captures only while the
-/// modifier is held over it. A close button captures only while the modifier
-/// is up; while it is held the button passes through with the panel. Toasts stay
-/// visually solid. A missing cursor does not capture.
+/// and capture nothing. Orbs are opaque and click-through. The orb whose hit
+/// circle is within `ORB_PROXIMITY_PX` fades to `orb_near_opacity` (R-OB-05).
+/// Holding the modifier inside that radius makes that orb opaque again. It
+/// captures only while the modifier is held and the cursor is within
+/// `HIT_MARGIN_PX`. A message-preview pill stays visually solid and captures
+/// only while the modifier is held over it. A close button captures only while
+/// the modifier is up; while it is held the button passes through with the
+/// panel. Toasts stay visually solid. A missing cursor does not capture and
+/// leaves orbs opaque.
 pub fn interaction_frame(
     held: bool,
     latched_ids: &[String],
@@ -950,8 +976,12 @@ pub fn interaction_frame(
             } else if is_pill_hit(rect) {
                 (1.0, here && held)
             } else if is_orb_hit(rect) {
+                let distance = match cursor {
+                    Some((x, y)) => distance_to_hit(x, y, rect),
+                    None => ORB_PROXIMITY_PX + 1.0,
+                };
                 let awake = here && held;
-                (if awake { 1.0 } else { cfg.min_opacity }, awake)
+                (orb_visual_opacity(distance, held, cfg.min_opacity), awake)
             } else if is_panel_hit(rect) {
                 let opacity = if cursor.is_some() && held {
                     cfg.min_opacity
@@ -2602,17 +2632,11 @@ fn remember_screen_cursor(window: &tauri::WebviewWindow, mouse_x: f64, mouse_y: 
 }
 
 fn screen_point(window: &tauri::WebviewWindow, mouse_x: f64, mouse_y: f64) -> Option<(f64, f64)> {
-    #[cfg(target_os = "linux")]
-    {
-        let _ = window;
-        Some((mouse_x, mouse_y))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (mouse_x, mouse_y);
-        let cursor = window.cursor_position().ok()?;
-        Some((cursor.x, cursor.y))
-    }
+    // Polled global cursor, not a DOM mouse event. Those do not fire while
+    // the window is click-through. Windows coords are GetCursorPos via
+    // device_query. Linux coords are XQueryPointer on the root window.
+    let _ = window;
+    Some((mouse_x, mouse_y))
 }
 
 pub fn css_cursor(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
@@ -2719,16 +2743,9 @@ fn cursor_in_view(window: &tauri::WebviewWindow, mouse_x: f64, mouse_y: f64) -> 
         return None;
     }
     // GTK's seat position stays on the last grabbed point after a pointer-capture
-    // drag, so a rejected kanban drop leaves the board faded until the next
-    // modifier hover. XQueryPointer on our own display follows the pointer.
-    #[cfg(target_os = "linux")]
+    // drag. The poll already read the global cursor: XQueryPointer on Linux,
+    // GetCursorPos on Windows. Both keep moving while the window is click-through.
     let (x, y) = (mouse_x, mouse_y);
-    #[cfg(not(target_os = "linux"))]
-    let (x, y) = {
-        let _ = (mouse_x, mouse_y);
-        let cursor = window.cursor_position().ok()?;
-        (cursor.x, cursor.y)
-    };
     Some(css_point_from_screen(
         x,
         y,
@@ -3351,6 +3368,70 @@ mod tests {
     }
 
     #[test]
+    fn orb_fades_inside_the_proximity_radius_and_stays_opaque_outside() {
+        assert_eq!(ORB_PROXIMITY_PX, 72.0);
+        assert!((orb_near_opacity(0.18) - 0.18).abs() < 0.001);
+        assert!((orb_near_opacity(0.5) - 0.30).abs() < 0.001);
+        let cfg = fade_cfg();
+        let orb = HitRect {
+            id: "bot:a".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 44.0,
+            h: 44.0,
+            z: 0,
+            round: true,
+        };
+        let far = interaction_frame(
+            false,
+            &[],
+            Some((400.0, 400.0)),
+            &[orb.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!((far[0].opacity - 1.0).abs() < 0.001 && !far[0].capture);
+        let near = interaction_frame(
+            false,
+            &[],
+            Some((22.0, 22.0)),
+            &[orb.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(near[0].opacity <= 0.30 && !near[0].capture);
+        let held = interaction_frame(
+            true,
+            &[],
+            Some((22.0, 22.0)),
+            &[orb.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(held[0].capture && held[0].opacity == 1.0);
+        let aim = interaction_frame(
+            true,
+            &[],
+            Some((84.0, 22.0)),
+            &[orb.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(!aim[0].capture && aim[0].opacity == 1.0);
+        let aim_up = interaction_frame(
+            false,
+            &[],
+            Some((84.0, 22.0)),
+            &[orb.clone()],
+            HIT_MARGIN_PX,
+            &cfg,
+        );
+        assert!(aim_up[0].opacity <= 0.30 && !aim_up[0].capture);
+        let quiet = interaction_frame(false, &[], None, &[orb], HIT_MARGIN_PX, &cfg);
+        assert!((quiet[0].opacity - 1.0).abs() < 0.001 && !quiet[0].capture);
+    }
+
+    #[test]
     fn screen_pointer_maps_into_css_pixels() {
         assert_eq!(
             css_point_from_screen(10.0, 20.0, 0.0, 0.0, 1.0),
@@ -3383,9 +3464,9 @@ mod tests {
         let idle = interaction_frame(false, &[], far, &rects, HIT_MARGIN_PX, &cfg);
         assert!(held.iter().all(|item| !item.capture));
         assert!(idle.iter().all(|item| !item.capture));
-        assert!((frame_of(&held, "a").opacity - 0.18).abs() < 0.001);
+        assert!((frame_of(&held, "a").opacity - 1.0).abs() < 0.001);
         assert!((frame_of(&held, "center").opacity - 0.18).abs() < 0.001);
-        assert!((frame_of(&idle, "a").opacity - 0.18).abs() < 0.001);
+        assert!((frame_of(&idle, "a").opacity - 1.0).abs() < 0.001);
         assert!((frame_of(&idle, "center").opacity - 1.0).abs() < 0.001);
 
         let outside_margin = Some((70.0, 20.0));
@@ -3402,7 +3483,7 @@ mod tests {
         let over_a = interaction_frame(false, &[], Some((20.0, 20.0)), &rects, HIT_MARGIN_PX, &cfg);
         assert!((frame_of(&over_a, "a").opacity - 0.18).abs() < 0.001);
         assert!(!frame_of(&over_a, "a").capture);
-        assert!((frame_of(&over_a, "b").opacity - 0.18).abs() < 0.001);
+        assert!((frame_of(&over_a, "b").opacity - 1.0).abs() < 0.001);
         assert!(!frame_of(&over_a, "b").capture);
         assert_eq!(frame_of(&over_a, "center").opacity, 1.0);
         assert!(!frame_of(&over_a, "center").capture);
@@ -3412,7 +3493,7 @@ mod tests {
         assert!(frame_of(&held, "a").capture);
         assert_eq!(frame_of(&held, "a").opacity, 1.0);
         assert!(!frame_of(&held, "b").capture);
-        assert!((frame_of(&held, "b").opacity - 0.18).abs() < 0.001);
+        assert!((frame_of(&held, "b").opacity - 1.0).abs() < 0.001);
         assert!(!frame_of(&held, "center").capture);
         assert!((frame_of(&held, "center").opacity - 0.18).abs() < 0.001);
 
@@ -3666,7 +3747,9 @@ mod tests {
         assert!(frame_of(&held, "bot:settings").capture);
         assert_eq!(frame_of(&held, "bot:settings").opacity, 1.0);
         assert!(!frame_of(&held, "bot:kanban").capture);
-        assert!((frame_of(&held, "bot:kanban").opacity - 0.18).abs() < 0.001);
+        // 60px outside the kanban disc is still inside the 72px fade, so Ctrl
+        // returns it to opaque without capturing it.
+        assert!((frame_of(&held, "bot:kanban").opacity - 1.0).abs() < 0.001);
     }
 
     #[test]

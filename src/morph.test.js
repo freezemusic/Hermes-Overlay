@@ -45,6 +45,7 @@ import {
   headerSide,
   iconShift,
   placeShell,
+  clampDroppedBox,
   fitPlanBox,
   previewBlocked,
   FRAME_BLEED,
@@ -292,6 +293,29 @@ test("kanban open wins while the startup pill is retracting", () => {
     state: "pill",
     collapsing: false,
   }), "open");
+});
+
+test("a settings drop inside the left 300px stays where it was released", () => {
+  const width = 680;
+  const height = 760;
+  const screenW = 1920;
+  const screenH = 1080;
+  const left = 200;
+  const top = 200;
+  const ax = width - ORB / 2;
+  const orbX = left + ax;
+  const orbY = top + height - ORB / 2;
+  const flipped = placeShell(orbX, orbY, width, height, screenW, screenH);
+  assert.equal(flipped.left, 836);
+  const kept = clampDroppedBox(left, top, width, height, screenW, screenH);
+  assert.equal(kept.left, 200);
+  assert.equal(kept.top, 200);
+  const off = clampDroppedBox(-40, -10, width, height, screenW, screenH);
+  assert.equal(off.left, 0);
+  assert.equal(off.top, 0);
+  const hung = clampDroppedBox(1800, 900, width, height, screenW, screenH);
+  assert.equal(hung.left, screenW - width);
+  assert.equal(hung.top, screenH - height);
 });
 
 test("kanban close moves clear of the plan action row at 1024px", () => {

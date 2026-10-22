@@ -819,8 +819,11 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.kanban-col-head \{[^}]*color:\s*var\(--nous-blue\)/s);
   assert.match(css, /\.orb-core \{[^}]*#fff 0 36%/s);
   assert.doesNotMatch(css, /\.orb-core \{[^}]*var\(--bot-20\) 55%/s);
-  assert.match(css, /\.bot-btn\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity,\s*0\.18\)/s);
-  assert.match(html, /光球（包括設定、看板同排程）預設半透明/);
+  assert.match(css, /\.bot-btn\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity,\s*1\)/s);
+  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity,\s*1\)/s);
+  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*opacity 180ms linear/s);
+  assert.match(css, /\.morph\[data-state="orb"\] \{\s*transition:\s*opacity 1ms linear !important/s);
+  assert.match(html, /光球（包括設定、看板同排程）預設實色/);
   assert.match(css, /\.bot-btn::before,[\s\S]*?rgb\(var\(--bot-rgb\) \/ \.55\)/);
   assert.match(css, /\.plan-window \{[^}]*border:\s*1px solid var\(--nous-blue\)/s);
   assert.match(css, /\.plan-window \{[^}]*border-radius:\s*var\(--r-panel\)/s);
@@ -894,7 +897,7 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.doesNotMatch(main, /seatOpenPlan|unseatOpenPlan|planSeat/);
   const idleOpacity = main.slice(main.indexOf("function idleOrbOpacity"), main.indexOf("function planWidthPx"));
   assert.doesNotMatch(idleOpacity, /0\.55/);
-  assert.match(idleOpacity, /minOpacity/);
+  assert.match(idleOpacity, /return 1/);
   assert.match(main, /上次 /);
   assert.doesNotMatch(main.slice(main.indexOf("function closeKanban"), main.indexOf("function startKanbanPoll")), /stopKanbanPoll/);
   const hermes = readFileSync(new URL("../src-tauri/src/hermes.rs", import.meta.url), "utf8");
@@ -1031,7 +1034,7 @@ test("idle cron orb matches another idle orb", () => {
   same(cronBtn.querySelector(".orb-core"), otherBtn.querySelector(".orb-core"), "background-image");
   same(cronBtn.querySelector(".orb-core"), otherBtn.querySelector(".orb-core"), "box-shadow");
   same(cronBtn.querySelector(".orb-glyph"), otherBtn.querySelector(".orb-glyph"), "color");
-  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 0.18)");
+  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 1)");
   assert.equal(cron.style.getPropertyValue("--hit-opacity"), "0.18");
   // jsdom does not resolve ::before. Compare the declarations that apply to
   // each button; idle cron may add a disc clip and nothing else.
@@ -1092,7 +1095,7 @@ test("failed cron ring and done ripple are outside the idle opacity", () => {
   const other = document.querySelector("[data-bot-id='planner']");
   const ring = document.querySelector(".cron-status");
   assert.equal(getComputedStyle(cron).opacity, getComputedStyle(other).opacity);
-  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 0.18)");
+  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 1)");
   assert.equal(ring.parentElement, cron.parentElement);
   assert.equal(ring.closest("[data-hit-id]"), null);
   assert.equal(
@@ -1102,7 +1105,7 @@ test("failed cron ring and done ripple are outside the idle opacity", () => {
   cron.classList.add("is-cron-done");
   ring.classList.remove("is-failed");
   ring.classList.add("is-done");
-  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 0.18)");
+  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 1)");
   assert.notEqual(getComputedStyle(cron.querySelector(".orb-core")).opacity, "0");
 });
 
@@ -1120,6 +1123,9 @@ test("muted text is #14142b and the idle orb keeps the f8cb046 rim wash", () => 
   assert.match(drag, /panelDragHost\(panel\)/);
   assert.doesNotMatch(drag, /\|\| panel/);
   assert.match(drag, /Math\.abs\(dx\) < 1 && Math\.abs\(dy\) < 1/);
+  assert.match(drag, /dataset\.dragged = "1"/);
+  assert.match(main, /dataset\?\.dragged === "1"/);
+  assert.match(main, /clampDroppedBox/);
   const paint = main.slice(main.indexOf("function paintClip"), main.indexOf("function planNode"));
   assert.doesNotMatch(paint, /removeProperty\("clip-path"\)/);
   assert.match(main, /state\.modifierHeld === true/);

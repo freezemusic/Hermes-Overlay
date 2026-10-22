@@ -34,6 +34,7 @@ import {
   phaseList,
   collapseMs,
   dropParkedAnchor,
+  clampDroppedBox,
   placeShell,
   fitPlanBox,
   panelDragHost,
@@ -253,7 +254,7 @@ function chatOf(id) {
 function hintText() {
   const name = modifierLabel(state.interaction.modifier);
   return state.interaction.supported
-    ? `光球預設半透明同穿透。按住 ${name}，游標下嗰粒先變實色、可以點同右鍵隱藏。新訊息會由光球橫向展開成膠囊 5 秒，唔使按 ${name} 都睇到，但要按住先至點得。面板預設實色，可以拖同點；按住 ${name} 就變透明並穿透。`
+    ? `光球預設實色同穿透。游標行近先淡出；按住 ${name}，游標下嗰粒返實色、可以點同右鍵隱藏。新訊息會由光球橫向展開成膠囊 5 秒，唔使按 ${name} 都睇到，但要按住先至點得。面板預設實色，可以拖同點；按住 ${name} 就變透明並穿透。`
     : "呢個環境讀唔到全域游標或修飾鍵，所以保持可點擊，唔會穿透。";
 }
 
@@ -410,7 +411,44 @@ function rememberAnchor(shell) {
   state.anchors[id] = { x: box.left + ax, y: box.top + ay, placed: true };
 }
 
+function clampDraggedShell(shell) {
+  const width = Number.parseFloat(shell.style.width) || 0;
+  const height = Number.parseFloat(shell.style.height) || 0;
+  const left = Number.parseFloat(shell.style.left) || 0;
+  const top = Number.parseFloat(shell.style.top) || 0;
+  const vw = window.innerWidth || 1280;
+  const vh = window.innerHeight || 800;
+  const clamped = clampDroppedBox(left, top, width, height, vw, vh);
+  const ax = Number(shell.dataset.ax) || 0;
+  const ay = Number(shell.dataset.ay) || 0;
+  const same = shell.style.left === `${clamped.left}px`
+    && shell.style.top === `${clamped.top}px`
+    && shell.style.width === `${clamped.width}px`
+    && shell.style.height === `${clamped.height}px`;
+  shell._geomHeld = same ? 1 : 0;
+  if (!same) {
+    shell.style.left = `${clamped.left}px`;
+    shell.style.top = `${clamped.top}px`;
+    shell.style.width = `${clamped.width}px`;
+    shell.style.height = `${clamped.height}px`;
+    shell.style.right = "auto";
+    shell.style.bottom = "auto";
+  }
+  rememberAnchor(shell);
+  const header = shell.dataset.header === "bottom" ? "bottom" : "top";
+  return {
+    edge: shell.dataset.edge || "bottom",
+    header,
+    anchor: { x: ax, y: ay, header },
+    left: clamped.left,
+    top: clamped.top,
+    width: clamped.width,
+    height: clamped.height,
+  };
+}
+
 function placeShellElement(shell) {
+  if (shell?.dataset?.dragged === "1") return clampDraggedShell(shell);
   const id = shell.dataset.botId;
   const size = boxSize(id);
   const point = anchorPoint(id);
@@ -1078,8 +1116,9 @@ function restingTransform(value) {
 
 function idleOrbOpacity(shell) {
   void shell;
-  const value = Number(state.interaction?.minOpacity);
-  return Number.isFinite(value) ? value : 0.18;
+  // Resting orbs are opaque (R-OB-05). The near fade is the proximity poll,
+  // not this collapse floor. A missing cursor must not leave the disc dim.
+  return 1;
 }
 
 function planWidthPx() {
@@ -3413,6 +3452,7 @@ async function runShellMorph(shell, target) {
   window.clearTimeout(shell._pillTimer);
   if (target === "orb") {
     shell.dataset.intent = "close";
+    delete shell.dataset.dragged;
     dropParkedAnchor(state.anchors, shell.dataset.botId);
     // Stacking must not have moved the orb. Put the box back on the edge
     // anchor before the clip runs, so the idle disc is the launch position.
@@ -3626,6 +3666,7 @@ function bindPanelDrag(panel) {
       header.removeEventListener("pointerup", up);
       header.removeEventListener("pointercancel", up);
       if (!dragged) return;
+      shell.dataset.dragged = "1";
       state.dragHitId = "";
       clearInnerPanelBox(panel, shell);
       rememberAnchor(shell);
@@ -7838,6 +7879,12 @@ function applyFrames(frames, interactiveAll = false) {
     if (!panelShell && el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
       el.style.setProperty("--hit-opacity", nextOpacity);
     }
+    // Inline opacity is what the 180ms transition interpolates. A custom
+    // property change does not. A live cron disc keeps the stylesheet's 1.
+    const orbShell = el.classList?.contains("morph")
+      && (el.dataset.state === "orb" || el.dataset.visual === "orb")
+      && !el.classList.contains("is-cron-live");
+    if (orbShell && el.style.opacity !== nextOpacity) el.style.opacity = nextOpacity;
     if (interactiveAll || known?.capture) el.dataset.hitCapture = "1";
     else delete el.dataset.hitCapture;
   });

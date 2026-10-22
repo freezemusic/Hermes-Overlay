@@ -6,6 +6,11 @@ import {
   distanceToRect,
   elementOpacity,
   elementStates,
+  ORB_PROXIMITY_PX,
+  ORB_FADE_MS,
+  orbNearOpacity,
+  orbProximityOpacity,
+  modifierEngages,
   isCloseHit,
   isOrbHit,
   isPanelHit,
@@ -20,7 +25,6 @@ import {
   escapeTarget,
   ownComposerKey,
   modifierMatches,
-  modifierEngages,
   guardPublishedHits,
   unionOpenPlanRect,
   inputRegionCovers,
@@ -73,8 +77,8 @@ test("cursor near a panel does not fade it", () => {
   const idle = elementStates({ held: false, cursor, rects: sampleBots, ...fadeOpts });
   assert.ok(held.every((item) => !item.capture));
   assert.ok(idle.every((item) => !item.capture));
-  assert.equal(byId(held, "bot:a").opacity, 0.18);
-  assert.equal(byId(idle, "bot:a").opacity, 0.18);
+  assert.equal(byId(held, "bot:a").opacity, 1);
+  assert.equal(byId(idle, "bot:a").opacity, 1);
   assert.equal(byId(idle, "center").opacity, 1);
   assert.equal(byId(held, "center").opacity, 0.18);
 
@@ -90,7 +94,7 @@ test("orbs stay faded and click-through until the modifier is held over one", ()
   const overA = elementStates({ held: false, cursor: { x: 20, y: 20 }, rects: sampleBots, ...fadeOpts });
   assert.equal(byId(overA, "bot:a").opacity, 0.18);
   assert.equal(byId(overA, "bot:a").capture, false);
-  assert.equal(byId(overA, "bot:b").opacity, 0.18);
+  assert.equal(byId(overA, "bot:b").opacity, 1);
   assert.equal(byId(overA, "bot:b").capture, false);
   assert.equal(byId(overA, "center").opacity, 1);
   assert.equal(byId(overA, "center").capture, false);
@@ -99,7 +103,7 @@ test("orbs stay faded and click-through until the modifier is held over one", ()
   const held = elementStates({ held: true, cursor: { x: 20, y: 20 }, rects: sampleBots, ...fadeOpts });
   assert.equal(byId(held, "bot:a").opacity, 1);
   assert.equal(byId(held, "bot:a").capture, true);
-  assert.equal(byId(held, "bot:b").opacity, 0.18);
+  assert.equal(byId(held, "bot:b").opacity, 1);
   assert.equal(byId(held, "bot:b").capture, false);
   assert.equal(byId(held, "toast:1").opacity, 1);
   assert.equal(byId(held, "toast:1").capture, false);
@@ -118,6 +122,51 @@ test("orbs stay faded and click-through until the modifier is held over one", ()
   assert.equal(byId(overCenter, "center").opacity, 1);
   assert.equal(byId(overCenter, "center").capture, true);
   assert.equal(byId(overCenter, "bot:a").capture, false);
+});
+
+test("an orb fades only while the cursor is inside the proximity radius", () => {
+  assert.equal(ORB_PROXIMITY_PX, 72);
+  assert.ok(ORB_FADE_MS >= 150 && ORB_FADE_MS <= 200);
+  assert.equal(orbNearOpacity(0.18), 0.18);
+  assert.equal(orbNearOpacity(0.5), 0.3);
+  assert.equal(orbProximityOpacity(80, { held: false, minOpacity: 0.18 }), 1);
+  assert.ok(orbProximityOpacity(0, { held: false, minOpacity: 0.18 }) <= 0.3);
+  const orb = { id: "bot:a", x: 0, y: 0, w: 44, h: 44, round: true };
+  const other = { id: "bot:b", x: 400, y: 0, w: 44, h: 44, round: true };
+  const panel = { id: "settings", x: 0, y: 200, w: 680, h: 400 };
+  const rects = [orb, other, panel];
+  const far = elementStates({ held: false, cursor: { x: 900, y: 900 }, rects, ...fadeOpts });
+  assert.equal(byId(far, "bot:a").opacity, 1);
+  assert.equal(byId(far, "bot:a").capture, false);
+  assert.equal(byId(far, "settings").opacity, 1);
+  const near = elementStates({ held: false, cursor: { x: 22, y: 22 }, rects, ...fadeOpts });
+  assert.ok(byId(near, "bot:a").opacity <= 0.3);
+  assert.equal(byId(near, "bot:b").opacity, 1);
+  assert.equal(byId(near, "settings").opacity, 1);
+  assert.equal(byId(near, "bot:a").capture, false);
+  const back = elementStates({ held: false, cursor: { x: 900, y: 900 }, rects, ...fadeOpts });
+  assert.equal(byId(back, "bot:a").opacity, 1);
+  const heldNear = elementStates({ held: true, cursor: { x: 22, y: 22 }, rects, ...fadeOpts });
+  assert.equal(byId(heldNear, "bot:a").opacity, 1);
+  assert.equal(byId(heldNear, "bot:a").capture, true);
+  assert.equal(byId(heldNear, "settings").opacity, 0.18);
+  assert.equal(byId(heldNear, "settings").capture, false);
+  const aim = elementStates({ held: true, cursor: { x: 84, y: 22 }, rects, ...fadeOpts });
+  assert.equal(byId(aim, "bot:a").opacity, 1);
+  assert.equal(byId(aim, "bot:a").capture, false);
+  const chord = modifierEngages({
+    modifier: "ctrl",
+    keys: ["Control", "c"],
+    now: 1000,
+    armedAt: 500,
+    suppressed: false,
+  });
+  assert.equal(chord.held, false);
+  const pasted = elementStates({ held: chord.held, cursor: { x: 22, y: 22 }, rects, ...fadeOpts });
+  assert.ok(byId(pasted, "bot:a").opacity <= 0.3);
+  assert.equal(byId(pasted, "settings").opacity, 1);
+  const quiet = elementStates({ held: false, cursor: null, rects, ...fadeOpts });
+  assert.equal(byId(quiet, "bot:a").opacity, 1);
 });
 
 test("distance is zero inside a rect", () => {
@@ -234,12 +283,12 @@ test("a message preview pill stays solid and click-through until the modifier is
   const idle = elementStates({ held: false, cursor: { x: 40, y: 20 }, rects, ...fadeOpts });
   assert.equal(byId(idle, "pill:a").opacity, 1);
   assert.equal(byId(idle, "pill:a").capture, false);
-  assert.equal(byId(idle, "bot:b").opacity, 0.18);
+  assert.equal(byId(idle, "bot:b").opacity, 1);
   assert.equal(byId(idle, "panel:a").opacity, 1);
   const held = elementStates({ held: true, cursor: { x: 40, y: 20 }, rects, ...fadeOpts });
   assert.equal(byId(held, "pill:a").opacity, 1);
   assert.equal(byId(held, "pill:a").capture, true);
-  assert.equal(byId(held, "bot:b").opacity, 0.18);
+  assert.equal(byId(held, "bot:b").opacity, 1);
   assert.equal(byId(held, "bot:b").capture, false);
   assert.equal(byId(held, "panel:a").opacity, 0.18);
   assert.equal(byId(held, "panel:a").capture, false);
