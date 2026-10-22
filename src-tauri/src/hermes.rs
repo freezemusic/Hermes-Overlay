@@ -52,6 +52,10 @@ pub struct SessionSummary {
     pub message_count: Option<u64>,
     /// The list named this row as the delivery lease, home channel, or canonical Bot Chat.
     pub delivery: bool,
+    /// Compression parent. Empty when this row is not a continuation.
+    pub parent_session_id: String,
+    /// Archived rows stay out of the titled Bot Chat pick.
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -175,36 +179,6 @@ pub fn tui_read_only_reason() -> &'static str {
     "呢個 Bot Chat 來源係 tui。API 唔接受寫入 tui session（permission_denied），只可以睇。"
 }
 
-pub fn has_chat_history(session: &SessionSummary) -> bool {
-    session.message_count.unwrap_or(0) > 0 || !session.preview.trim().is_empty()
-}
-
-/// Smaller `started_at`, then smaller `last_active`, then smaller id.
-fn older_session(a: &SessionSummary, b: &SessionSummary) -> std::cmp::Ordering {
-    let start = |session: &SessionSummary| {
-        if session.started_at.is_finite() && session.started_at > 0.0 {
-            session.started_at
-        } else {
-            f64::MAX
-        }
-    };
-    match start(a)
-        .partial_cmp(&start(b))
-        .unwrap_or(std::cmp::Ordering::Equal)
-    {
-        std::cmp::Ordering::Equal => {}
-        other => return other,
-    }
-    match a
-        .last_active
-        .partial_cmp(&b.last_active)
-        .unwrap_or(std::cmp::Ordering::Equal)
-    {
-        std::cmp::Ordering::Equal => a.id.cmp(&b.id),
-        other => other,
-    }
-}
-
 fn finish_resolved(session: &SessionSummary, explicit: bool, anchor: f64) -> ResolvedSession {
     let read_only = is_tui_source(&session.source);
     ResolvedSession {
@@ -230,42 +204,18 @@ pub fn most_recent_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSumma
         .max_by(|a, b| session_rank(a, b))
 }
 
-fn is_api_minted(id: &str) -> bool {
-    id.starts_with("api_")
+fn is_hidden_chat(session: &SessionSummary) -> bool {
+    session.hidden == Some(true)
 }
 
-fn message_total(session: &SessionSummary) -> u64 {
-    session.message_count.unwrap_or(0)
+/// A retired Bot Chat: the title was cleared, and the row stayed archived and hidden.
+fn retired_bot_chat(session: &SessionSummary) -> bool {
+    session.title.trim().is_empty() && session.archived && is_hidden_chat(session)
 }
 
-/// More messages, then more recent activity, then the smaller id.
-fn busier_session(a: &SessionSummary, b: &SessionSummary) -> std::cmp::Ordering {
-    match message_total(a).cmp(&message_total(b)) {
-        std::cmp::Ordering::Equal => session_rank(a, b),
-        other => other,
-    }
-}
-
-/// Desktop or tui before an `api_` mint, then the older row.
-fn empty_chat_rank(a: &SessionSummary, b: &SessionSummary) -> std::cmp::Ordering {
-    let minted = |session: &SessionSummary| u8::from(is_api_minted(&session.id));
-    match minted(a).cmp(&minted(b)) {
-        std::cmp::Ordering::Equal => older_session(a, b),
-        other => other,
-    }
-}
-
-/// The Bot Chat Hermes Desktop and the gateway deliver into.
-///
-/// Desktop registers that chat by the exact title `Bot Chat`
-/// (`profiles.list` field `canonical_session`; session-id pins were removed
-/// in hermes-agent PR 92129). REST `GET /api/sessions` does not include the
-/// lease. When a row is marked, that lease wins if it has messages, or if
-/// every titled row is empty. Otherwise the titled Bot Chat with the most
-/// messages wins (then the most recently active). A 0-message row never
-/// beats one with history. When every titled row is empty, the oldest
-/// Desktop or tui row wins over an `api_`-minted duplicate.
-pub fn canonical_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+/// The profile's `Bot Chat` row. Hidden wins when one is hidden. Archived
+/// titled rows lose to a live one. Message count and source do not matter.
+fn desktop_bot_chat_root(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
     let titled: Vec<&SessionSummary> = sessions
         .iter()
         .filter(|session| is_bot_chat_title(&session.title))
@@ -273,19 +223,55 @@ pub fn canonical_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary
     if titled.is_empty() {
         return None;
     }
-    let history = titled.iter().any(|session| has_chat_history(session));
-    if let Some(delivery) = titled.iter().copied().find(|session| session.delivery) {
-        if !history || has_chat_history(delivery) {
-            return Some(delivery);
+    let hidden: Vec<&SessionSummary> = titled
+        .iter()
+        .copied()
+        .filter(|session| is_hidden_chat(session))
+        .collect();
+    let pool = if hidden.is_empty() { titled } else { hidden };
+    let live: Vec<&SessionSummary> = pool
+        .iter()
+        .copied()
+        .filter(|session| !session.archived)
+        .collect();
+    let pool = if live.is_empty() { pool } else { live };
+    pool.into_iter().min_by(|a, b| a.id.cmp(&b.id))
+}
+
+/// Latest child of `root` along `parent_session_id`. A row with no child is the tip.
+fn compression_tip<'a>(
+    root: &'a SessionSummary,
+    sessions: &'a [SessionSummary],
+) -> &'a SessionSummary {
+    let mut current = root;
+    let mut seen = Vec::new();
+    seen.push(current.id.as_str());
+    for _ in 0..=sessions.len() {
+        let next = sessions
+            .iter()
+            .filter(|session| {
+                !session.parent_session_id.is_empty() && session.parent_session_id == current.id
+            })
+            .max_by(|a, b| session_rank(a, b));
+        let Some(next) = next else {
+            return current;
+        };
+        if seen.iter().any(|id| *id == next.id) {
+            return current;
         }
+        seen.push(next.id.as_str());
+        current = next;
     }
-    if history {
-        return titled
-            .into_iter()
-            .filter(|session| has_chat_history(session))
-            .max_by(|a, b| busier_session(a, b));
-    }
-    titled.into_iter().min_by(|a, b| empty_chat_rank(a, b))
+    current
+}
+
+/// The Bot Chat Hermes Desktop opens.
+///
+/// Identity is the exact title `Bot Chat` (usually `hidden=1`; the title
+/// index allows one). Then the compression tip via `parent_session_id`.
+/// Source and message count do not matter. An empty row is valid.
+pub fn canonical_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+    desktop_bot_chat_root(sessions).map(|root| compression_tip(root, sessions))
 }
 
 /// Latest session that is not a Bot Chat from another surface.
@@ -307,8 +293,9 @@ pub fn session_menu_order(sessions: &[SessionSummary]) -> Vec<&SessionSummary> {
     rows
 }
 
-/// Same choice as startup. An id that still exists stays, and an explicit
-/// flag stays set. No Bot Chat does not fall through to some other session.
+/// Same choice as startup. An explicit id that still exists stays.
+/// Otherwise Desktop's Bot Chat wins. No Bot Chat does not fall through
+/// to the latest other session.
 pub fn resolve_session(
     sessions: &[SessionSummary],
     remembered: &str,
@@ -363,25 +350,14 @@ pub fn session_file_update(
     Some((id.to_string(), explicit, anchor))
 }
 
-/// A stored row is empty and some other Bot Chat actually has messages.
-fn empty_with_better(saved: &SessionSummary, sessions: &[SessionSummary]) -> bool {
-    if has_chat_history(saved) {
-        return false;
-    }
-    canonical_bot_chat(sessions)
-        .is_some_and(|best| best.id != saved.id && has_chat_history(best))
-}
-
-/// Startup, panel open, and gateway reconnect.
+/// Startup, panel open, and gateway reconnect. No I/O.
 ///
-/// A configured id that still exists is kept, hidden or archived included.
-/// The explicit flag is kept too. The saved anchor is not moved. An empty
-/// stored row that is not explicit yields to a Bot Chat with messages, but
-/// the caller must not write that other id back over a config id that is
-/// already set (`stored_pin_after_resolve`). A missing id falls through to
-/// `canonical_bot_chat`. No Bot Chat and no stored row means nothing to
-/// open: do not take the latest other session, and do not create one.
-/// This function performs no I/O.
+/// 1. An explicit id that is still in the list wins, and keeps its anchor.
+/// 2. Otherwise Desktop's Bot Chat wins, even when config holds a different
+///    non-explicit id. The caller must not write that id back
+///    (`stored_pin_after_resolve`).
+/// 3. With no Bot Chat, a stored row that is not a retired untitled archived
+///    chat stays. Never take the latest other session, and never create one.
 pub fn session_for_startup(
     sessions: &[SessionSummary],
     remembered: &str,
@@ -390,12 +366,22 @@ pub fn session_for_startup(
 ) -> Option<ResolvedSession> {
     let remembered = remembered.trim();
     let anchor = if anchor.is_finite() { anchor } else { 0.0 };
-    if let Some(saved) = sessions.iter().find(|session| session.id == remembered) {
-        if explicit || !empty_with_better(saved, sessions) {
-            return Some(finish_resolved(saved, explicit, anchor));
+    let saved = sessions.iter().find(|session| session.id == remembered);
+    if explicit {
+        if let Some(saved) = saved {
+            return Some(finish_resolved(saved, true, anchor));
         }
     }
-    canonical_bot_chat(sessions).map(|chat| finish_resolved(chat, false, chat.last_active))
+    if let Some(chat) = canonical_bot_chat(sessions) {
+        let used = if chat.id == remembered { anchor } else { chat.last_active };
+        return Some(finish_resolved(chat, false, used));
+    }
+    if let Some(saved) = saved {
+        if !retired_bot_chat(saved) {
+            return Some(finish_resolved(saved, false, anchor));
+        }
+    }
+    None
 }
 
 /// Config already names a session: leave `session_id`, the explicit flag,
@@ -435,6 +421,20 @@ pub fn fresh_messages<'a>(seen: &[UiMessage], next: &'a [UiMessage]) -> Option<&
         return None;
     }
     Some(&next[seen.len()..])
+}
+
+fn json_flag(item: &Value, key: &str) -> Option<bool> {
+    let value = item.get(key)?;
+    if let Some(flag) = value.as_bool() {
+        return Some(flag);
+    }
+    if let Some(n) = value.as_i64() {
+        return Some(n != 0);
+    }
+    if let Some(n) = value.as_u64() {
+        return Some(n != 0);
+    }
+    None
 }
 
 fn json_f64(item: &Value, key: &str) -> f64 {
@@ -544,7 +544,16 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let hidden = item.get("hidden").and_then(Value::as_bool);
+            let hidden = json_flag(item, "hidden");
+            let archived = json_flag(item, "archived").unwrap_or(false)
+                || json_flag(item, "is_archived").unwrap_or(false);
+            let parent_session_id = item
+                .get("parent_session_id")
+                .or_else(|| item.get("parentSessionId"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let started_at = json_f64(item, "started_at");
             let last_active = item
                 .get("last_active")
@@ -571,6 +580,8 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 started_at,
                 message_count: message_count_of(item),
                 delivery: row_marks_delivery(item),
+                parent_session_id,
+                archived,
             })
         })
         .collect();
@@ -608,6 +619,15 @@ pub fn merge_sessions(
             }
             if found.last_active <= 0.0 {
                 found.last_active = session.last_active;
+            }
+            if found.parent_session_id.is_empty() {
+                found.parent_session_id = session.parent_session_id;
+            }
+            if found.hidden.is_none() {
+                found.hidden = session.hidden;
+            }
+            if session.archived {
+                found.archived = true;
             }
         } else {
             base.push(session);
@@ -800,7 +820,7 @@ pub async fn list_sessions(
     list_sessions_url(http, key, url).await
 }
 
-/// Exact-title lookup the API uses for the canonical Bot Chat, including hidden rows.
+/// Exact-title lookup for the canonical Bot Chat, including hidden and archived rows.
 /// `include_hidden` is honored only together with `title` on current Hermes.
 pub async fn list_titled_bot_chats(
     http: &Client,
@@ -808,7 +828,9 @@ pub async fn list_titled_bot_chats(
     key: &str,
 ) -> Result<Vec<SessionSummary>, HermesError> {
     let title = query_escape(BOT_CHAT_TITLE);
-    let url = format!("{root}/api/sessions?limit=200&title={title}&include_hidden=true");
+    let url = format!(
+        "{root}/api/sessions?limit=200&title={title}&include_hidden=true&include_archived=true"
+    );
     list_sessions_url(http, key, url).await
 }
 
@@ -825,21 +847,21 @@ pub async fn list_sessions_for_bot_chat(
     }
 }
 
-/// A 400 that names an `api_server` or `desktop` Bot Chat returns that id.
-/// Another source holding the title (a `tui` Bot Chat) is not adopted.
-/// An id missing from this listing keeps the previous hidden-occupant behaviour.
+/// A 400 that names a session titled `Bot Chat` returns that id.
+/// Source does not matter. An id missing from this listing keeps the
+/// previous hidden-occupant behaviour.
 fn adopt_title_conflict(sessions: &[SessionSummary], body: &str) -> Option<String> {
     let id = conflict_session_id(body)?;
     match sessions.iter().find(|session| session.id == id) {
-        Some(session) if is_overlay_bot_chat(session) => Some(id),
+        Some(session) if is_bot_chat_title(&session.title) => Some(id),
         Some(_) => None,
         None => Some(id),
     }
 }
 
 /// `POST /api/sessions` with `{title: "Bot Chat", source: "api_server"}`.
-/// Startup, open, and send must not call this. A 400 adopts the occupant only
-/// when that session is an overlay or desktop Bot Chat.
+/// Startup, open, and send must not call this. A 400 adopts the occupant
+/// when that session is titled `Bot Chat`, whatever its source.
 #[allow(dead_code)]
 pub async fn create_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
     match create_session(http, root, key, Some(BOT_CHAT_TITLE)).await {
@@ -2328,6 +2350,8 @@ mod tests {
             started_at: 0.0,
             message_count: None,
             delivery: false,
+            parent_session_id: String::new(),
+            archived: false,
         }
     }
 
@@ -2349,6 +2373,8 @@ mod tests {
             started_at,
             message_count: Some(message_count),
             delivery: false,
+            parent_session_id: String::new(),
+            archived: false,
         }
     }
 
@@ -2543,23 +2569,23 @@ mod tests {
         ];
         assert_eq!(most_recent_session(&sessions).unwrap().id, "desktop");
         assert_eq!(most_recent_bot_chat(&sessions).unwrap().id, "newer");
-        assert_eq!(canonical_bot_chat(&sessions).unwrap().id, "older");
+        assert_eq!(canonical_bot_chat(&sessions).unwrap().id, "newer");
         let opened = resolve_session(&sessions, "split", false, 10.0).unwrap();
-        assert_eq!(opened.id, "split");
+        assert_eq!(opened.id, "newer");
         assert!(!opened.explicit);
-        assert_eq!(opened.anchor, 10.0);
+        assert_eq!(opened.anchor, 80.0);
         let pinned = resolve_session(&sessions, "split", true, 10.0).unwrap();
         assert_eq!(pinned.id, "split");
         assert!(pinned.explicit);
         assert_eq!(pinned.anchor, 10.0);
         let missing = resolve_session(&sessions, "gone", true, 1.0).unwrap();
-        assert_eq!(missing.id, "older");
+        assert_eq!(missing.id, "newer");
         assert!(!missing.explicit);
         assert!(resolve_session(&[], "split", true, 1.0).is_none());
         let kept = session_for_startup(&sessions, "split", false, 10.0).unwrap();
-        assert_eq!(kept.id, "split");
+        assert_eq!(kept.id, "newer");
         assert!(!kept.explicit);
-        assert_eq!(kept.anchor, 10.0);
+        assert_eq!(kept.anchor, 80.0);
         assert_eq!(
             merge_session_anchor("split", 1792566430.7, "split", 0.0, 99.0),
             1792566430.7
@@ -2583,13 +2609,13 @@ mod tests {
         assert_eq!(explicit.anchor, 3.0);
         assert_eq!(
             session_for_startup(&sessions, "", false, 0.0).unwrap().id,
-            "older"
+            "newer"
         );
         assert_eq!(
             session_for_startup(&sessions, "missing", false, 1.0)
                 .unwrap()
                 .id,
-            "older"
+            "newer"
         );
         assert!(session_for_startup(&[], "split", true, 1.0).is_none());
         let tied = vec![summary("b", "Bot Chat", 5.0), summary("a", "Bot Chat", 5.0)];
@@ -2649,7 +2675,7 @@ mod tests {
             vec!["tui-chat", "desk-chat", "notes"]
         );
         let conflict = "Title 'Bot Chat' is already in use by session tui-chat";
-        assert_eq!(adopt_title_conflict(&mixed, conflict), None);
+        assert_eq!(adopt_title_conflict(&mixed, conflict).as_deref(), Some("tui-chat"));
         let ours = "Title 'Bot Chat' is already in use by session desk-chat";
         assert_eq!(
             adopt_title_conflict(&mixed, ours).as_deref(),
@@ -2701,14 +2727,14 @@ mod tests {
         for (id, explicit, anchor) in saved {
             let opened = session_for_startup(&sessions, id, explicit, anchor)
                 .unwrap_or_else(|| panic!("open {id}"));
-            if id.is_empty() || id == "missing-id" {
+            if explicit && id != "missing-id" {
+                assert_eq!(opened.id, id, "{id}");
+                assert_eq!(opened.explicit, true, "{id}");
+                assert_eq!(opened.anchor, anchor, "{id}");
+            } else {
                 assert_eq!(opened.id, "bot-chat", "{id}");
                 assert!(!opened.explicit, "{id}");
                 assert_eq!(opened.anchor, 40.0, "{id}");
-            } else {
-                assert_eq!(opened.id, id, "{id}");
-                assert_eq!(opened.explicit, explicit, "{id}");
-                assert_eq!(opened.anchor, anchor, "{id}");
             }
         }
         let plain = vec![
@@ -2837,77 +2863,74 @@ mod tests {
         assert!(!is_tui_source("desktop"));
 
         for (profile, empty_id) in [
-            ("mt-coder", "api_1792573589_mtcoder"),
-            ("mt-tester", "api_1792573589_mttester"),
+            ("mt-coder", "api_1792573589_f1c99a3b"),
+            ("mt-tester", "api_1792573589_257658b2"),
         ] {
-            let real_id = format!("{profile}-bot-chat");
+            let mut chat = devon_chat(empty_id, "api_server", 1792573589.0, 1792573600.0, 0, "");
+            chat.hidden = Some(true);
+            let mut retired = summary(&format!("{profile}-retired"), "", 1.0);
+            retired.archived = true;
+            retired.hidden = Some(true);
             let sessions = vec![
-                devon_chat(
-                    &real_id,
-                    "desktop",
-                    1758000000.0,
-                    1792400000.0,
-                    42,
-                    "cron output",
-                ),
-                devon_chat(empty_id, "api_server", 1792573589.0, 1792573600.0, 0, ""),
+                retired,
+                chat,
                 summary("notes", "Notes", 1792579999.0),
             ];
-            let opened = session_for_startup(&sessions, empty_id, false, 1792573600.0).unwrap();
-            assert_eq!(opened.id, real_id, "{profile}");
+            let opened = session_for_startup(&sessions, &format!("{profile}-retired"), false, 1.0)
+                .unwrap();
+            assert_eq!(opened.id, empty_id, "{profile}");
             assert!(!opened.read_only, "{profile}");
             assert!(!opened.explicit, "{profile}");
-            let explicit_empty =
-                session_for_startup(&sessions, empty_id, true, 1792573600.0).unwrap();
+            let explicit_empty = session_for_startup(&sessions, empty_id, true, 1792573600.0).unwrap();
             assert_eq!(explicit_empty.id, empty_id, "{profile}");
             assert!(explicit_empty.explicit, "{profile}");
             assert!(stored_pin_after_resolve(
+                &format!("{profile}-retired"),
+                false,
+                1.0,
                 empty_id,
-                true,
-                1792573600.0,
-                &real_id,
                 false,
                 1.0
             )
             .is_none());
-            assert_eq!(canonical_bot_chat(&sessions).unwrap().id, real_id);
+            assert_eq!(canonical_bot_chat(&sessions).unwrap().id, empty_id);
         }
 
-        let ff_daily = vec![
-            devon_chat(
-                "20261013_180130_88f994",
-                "desktop",
-                1791914490.0,
-                1792500000.0,
-                12,
-                "ff daily",
-            ),
-            devon_chat(
-                "api_1792573589_0c14ed12",
-                "api_server",
-                1792573589.0,
-                1792573600.0,
-                0,
-                "",
-            ),
-        ];
+        let mut ff_other = devon_chat(
+            "20261013_180130_88f994",
+            "desktop",
+            1791914490.0,
+            1792500000.0,
+            373,
+            "判斷截圖顯示嘅問題",
+        );
+        ff_other.title = "判斷截圖顯示嘅問題".into();
+        let mut ff_chat = devon_chat(
+            "api_1792573589_0c14ed12",
+            "api_server",
+            1792573589.0,
+            1792573600.0,
+            387,
+            "ff",
+        );
+        ff_chat.hidden = Some(true);
+        let ff_daily = vec![ff_other, ff_chat];
         let ff_opened =
-            session_for_startup(&ff_daily, "api_1792573589_0c14ed12", false, 1792573600.0)
-                .unwrap();
-        assert_eq!(ff_opened.id, "20261013_180130_88f994");
+            session_for_startup(&ff_daily, "20261013_180130_88f994", false, 1791914490.0).unwrap();
+        assert_eq!(ff_opened.id, "api_1792573589_0c14ed12");
         assert!(!ff_opened.read_only);
         assert!(stored_pin_after_resolve(
-            "api_1792573589_0c14ed12",
-            false,
-            1792573600.0,
             "20261013_180130_88f994",
             false,
-            1792500000.0
+            1791914490.0,
+            "api_1792573589_0c14ed12",
+            false,
+            1792573600.0
         )
         .is_none());
         assert_eq!(
             canonical_bot_chat(&ff_daily).unwrap().id,
-            "20261013_180130_88f994"
+            "api_1792573589_0c14ed12"
         );
 
         let mut leased = devon_chat(
@@ -2919,6 +2942,7 @@ mod tests {
             "leased",
         );
         leased.delivery = true;
+        leased.hidden = Some(true);
         let with_lease = vec![
             devon_chat(
                 "api_1792573589_empty",
@@ -2941,6 +2965,7 @@ mod tests {
             "",
         );
         empty_lease.delivery = true;
+        empty_lease.hidden = Some(true);
         let ignore_empty_lease = vec![
             empty_lease,
             devon_chat(
@@ -2954,7 +2979,7 @@ mod tests {
         ];
         assert_eq!(
             canonical_bot_chat(&ignore_empty_lease).unwrap().id,
-            "desk-real"
+            "api_1792573589_lease"
         );
 
         let parsed = parse_session_list(&json!({
@@ -3002,6 +3027,8 @@ mod tests {
         let send = &lib[send_start..send_end];
         assert!(!send.contains("create_bot_chat"));
         assert!(!send.contains("create_session"));
+        let send_head = &send[..send.find("status: 404").expect("404")];
+        assert!(!send_head.contains("persist_pin"));
         let client_start = lib
             .find("async fn session_for_client")
             .expect("session_for_client");
@@ -3098,10 +3125,10 @@ mod tests {
         );
         let ff_open =
             session_for_startup(&ff_daily, "20261013_180130_88f994", false, 1791914490.0).unwrap();
-        assert_eq!(ff_open.id, "20261013_180130_88f994");
+        assert_eq!(ff_open.id, "api_1792573589_0c14ed12");
         assert!(!ff_open.explicit);
         assert!(!ff_open.read_only);
-        assert_eq!(ff_open.anchor, 1791914490.0);
+        assert_eq!(ff_open.anchor, 1792573600.0);
         assert!(stored_pin_after_resolve(
             "20261013_180130_88f994",
             false,
@@ -3112,7 +3139,7 @@ mod tests {
         )
         .is_none());
 
-        let coder_real = devon_chat(
+        let mut coder_real = devon_chat(
             "20261012_mtcoder",
             "desktop",
             1758000000.0,
@@ -3120,22 +3147,22 @@ mod tests {
             42,
             "coder",
         );
-        let coder = vec![
-            coder_real,
-            devon_chat(
-                "api_1792573589_f1c99a3b",
-                "api_server",
-                1792573589.0,
-                1792573600.0,
-                0,
-                "",
-            ),
-        ];
+        coder_real.title = "Coder notes".into();
+        let mut coder_chat = devon_chat(
+            "api_1792573589_f1c99a3b",
+            "api_server",
+            1792573589.0,
+            1792573600.0,
+            0,
+            "",
+        );
+        coder_chat.hidden = Some(true);
+        let coder = vec![coder_real, coder_chat];
         assert_eq!(
             session_for_startup(&coder, "api_1792573589_f1c99a3b", false, 1792573600.0)
                 .unwrap()
                 .id,
-            "20261012_mtcoder"
+            "api_1792573589_f1c99a3b"
         );
         assert!(stored_pin_after_resolve(
             "api_1792573589_f1c99a3b",
@@ -3162,7 +3189,7 @@ mod tests {
             "api_1792573589_b1b8ccc5"
         );
 
-        let tester_empty = devon_chat(
+        let mut tester_empty = devon_chat(
             "api_1792573589_257658b2",
             "api_server",
             1792574000.0,
@@ -3170,7 +3197,8 @@ mod tests {
             0,
             "",
         );
-        let tester_desktop = devon_chat(
+        tester_empty.hidden = Some(true);
+        let mut tester_desktop = devon_chat(
             "20260901_mttester",
             "desktop",
             1750000000.0,
@@ -3178,11 +3206,15 @@ mod tests {
             0,
             "",
         );
+        tester_desktop.title = "Tester notes".into();
         let tester = vec![tester_empty.clone(), tester_desktop];
-        assert_eq!(canonical_bot_chat(&tester).unwrap().id, "20260901_mttester");
+        assert_eq!(
+            canonical_bot_chat(&tester).unwrap().id,
+            "api_1792573589_257658b2"
+        );
         assert_eq!(
             session_for_startup(&tester, "", false, 0.0).unwrap().id,
-            "20260901_mttester"
+            "api_1792573589_257658b2"
         );
         let filled = stored_pin_after_resolve("", false, 0.0, "20260901_mttester", false, 1750001000.0)
             .unwrap();
@@ -3194,10 +3226,13 @@ mod tests {
         assert!(kept_anchor.1);
         assert_eq!(kept_anchor.2, 42.0);
 
-        let busier = vec![
-            devon_chat("few", "desktop", 1.0, 500.0, 2, "a"),
-            devon_chat("many", "tui", 1.0, 100.0, 80, "b"),
-        ];
+        let mut few = devon_chat("few", "desktop", 1.0, 500.0, 2, "a");
+        few.hidden = Some(false);
+        let mut many = devon_chat("many", "tui", 1.0, 100.0, 80, "b");
+        many.hidden = Some(true);
+        many.message_count = Some(0);
+        many.preview.clear();
+        let busier = vec![few, many];
         assert_eq!(canonical_bot_chat(&busier).unwrap().id, "many");
 
         let counted = parse_session_list(&json!({
@@ -3224,6 +3259,162 @@ mod tests {
         assert_eq!(counted[0].message_count, Some(4));
         assert_eq!(counted[1].message_count, Some(2));
         assert_eq!(counted[2].message_count, Some(3));
+    }
+
+    /// Devon 2026-10-22. Desktop's Bot Chat is the hidden exact-title row,
+    /// then its compression tip. Explicit wins. Config is not rewritten.
+    #[test]
+    fn desktop_bot_chat_follows_the_titled_row_and_its_tip() {
+        let mut forex = devon_chat(
+            "20261001_013827_25b1eb",
+            "tui",
+            1759279107.0,
+            1792500000.0,
+            2312,
+            "forex",
+        );
+        forex.hidden = Some(true);
+        let forest = session_for_startup(&[forex], "", false, 0.0).unwrap();
+        assert_eq!(forest.id, "20261001_013827_25b1eb");
+        assert!(forest.read_only);
+
+        let mut ff_chat = devon_chat(
+            "api_1792573589_0c14ed12",
+            "api_server",
+            1792573589.0,
+            1792574000.0,
+            387,
+            "daily",
+        );
+        ff_chat.hidden = Some(true);
+        let mut ff_saved = summary("20261013_180130_88f994", "判斷截圖顯示嘅問題", 1792500000.0);
+        ff_saved.source = "desktop".into();
+        ff_saved.message_count = Some(373);
+        let ff = vec![ff_saved, ff_chat, summary("newest-ff", "Describe uploaded image", 1792600000.0)];
+        let ff_open = session_for_startup(&ff, "20261013_180130_88f994", false, 1791914490.0).unwrap();
+        assert_eq!(ff_open.id, "api_1792573589_0c14ed12");
+        assert!(!ff_open.explicit);
+        assert!(stored_pin_after_resolve(
+            "20261013_180130_88f994",
+            false,
+            1791914490.0,
+            "api_1792573589_0c14ed12",
+            false,
+            1792574000.0
+        )
+        .is_none());
+
+        let mut orch_chat = devon_chat(
+            "20261020_231552_1372e7",
+            "tui",
+            1792500000.0,
+            1792550000.0,
+            1406,
+            "orch",
+        );
+        orch_chat.hidden = Some(true);
+        let orch_pick = summary("20261015_011713_2242f9", "Continue previous plan work #3", 1792000000.0);
+        let orch = vec![
+            orch_chat,
+            orch_pick,
+            summary("20261022_011600_f8fb1b", "devon-time0-fix", 1792700000.0),
+        ];
+        let orch_open =
+            session_for_startup(&orch, "20261015_011713_2242f9", true, 1791910000.0).unwrap();
+        assert_eq!(orch_open.id, "20261015_011713_2242f9");
+        assert!(orch_open.explicit);
+        assert_eq!(orch_open.anchor, 1791910000.0);
+        assert!(stored_pin_after_resolve(
+            "20261015_011713_2242f9",
+            true,
+            1791910000.0,
+            "20261020_231552_1372e7",
+            false,
+            1792550000.0
+        )
+        .is_none());
+
+        for (profile, retired_id, chat_id) in [
+            (
+                "mt-coder",
+                "20261001_013821_3e5864",
+                "api_1792573589_f1c99a3b",
+            ),
+            (
+                "mt-tester",
+                "20261013_002746_0531c3",
+                "api_1792573589_257658b2",
+            ),
+            (
+                "mt-reviewer",
+                "api_1792086916_ab37ceff",
+                "api_1792573589_b1b8ccc5",
+            ),
+        ] {
+            let mut retired = summary(retired_id, "", 10.0);
+            retired.archived = true;
+            retired.hidden = Some(true);
+            retired.source = "tui".into();
+            let mut chat = devon_chat(chat_id, "api_server", 1792573589.0, 1792573600.0, 0, "");
+            chat.hidden = Some(true);
+            let sessions = vec![
+                retired,
+                chat,
+                summary("kanban-latest", "Bingo", 1792999999.0),
+            ];
+            let opened = session_for_startup(&sessions, retired_id, false, 10.0).unwrap();
+            assert_eq!(opened.id, chat_id, "{profile}");
+            assert!(!opened.explicit, "{profile}");
+            assert_ne!(opened.id, "kanban-latest", "{profile}");
+            assert!(stored_pin_after_resolve(retired_id, false, 10.0, chat_id, false, 1.0).is_none());
+        }
+
+        let mut root = devon_chat("bot-root", "tui", 1.0, 10.0, 4, "root");
+        root.hidden = Some(true);
+        let mut mid = summary("bot-mid", "continued", 20.0);
+        mid.parent_session_id = "bot-root".into();
+        let mut stale_child = summary("bot-old", "old branch", 15.0);
+        stale_child.parent_session_id = "bot-root".into();
+        let mut tip = summary("bot-tip", "tip", 40.0);
+        tip.parent_session_id = "bot-mid".into();
+        let chain = vec![root, stale_child, mid, tip];
+        assert_eq!(canonical_bot_chat(&chain).unwrap().id, "bot-tip");
+        let chained = session_for_startup(&chain, "stale-config", false, 1.0).unwrap();
+        assert_eq!(chained.id, "bot-tip");
+        assert!(session_for_startup(
+            &[summary("only-latest", "System Architect", 99.0)],
+            "only-latest",
+            false,
+            1.0
+        )
+        .unwrap()
+        .id
+            == "only-latest");
+        let mut retired_only = summary("retired-only", "", 5.0);
+        retired_only.archived = true;
+        retired_only.hidden = Some(true);
+        assert!(session_for_startup(&[retired_only], "retired-only", false, 1.0).is_none());
+
+        let parsed = parse_session_list(&json!({
+            "data": [{
+                "id": "api_1792573589_f1c99a3b",
+                "title": "Bot Chat",
+                "hidden": 1,
+                "archived": 0,
+                "source": "api_server",
+                "message_count": 0,
+                "parent_session_id": null
+            }, {
+                "id": "child",
+                "title": "continued",
+                "parent_session_id": "api_1792573589_f1c99a3b",
+                "last_active": 50
+            }]
+        }));
+        assert_eq!(parsed[0].hidden, Some(true));
+        assert!(!parsed[0].archived);
+        assert_eq!(parsed[1].parent_session_id, "api_1792573589_f1c99a3b");
+        assert_eq!(canonical_bot_chat(&parsed).unwrap().id, "child");
     }
 
     #[test]

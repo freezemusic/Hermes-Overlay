@@ -1303,24 +1303,12 @@ async fn send_chat(
         }
         pin.id
     } else {
-        let pick = hermes::canonical_bot_chat(&sessions)
-            .map(hermes::BotChatPick::from_session)
+        let resolved = hermes::session_for_startup(&sessions, &pin.id, false, pin.anchor)
             .ok_or_else(|| "未有 Bot Chat".to_string())?;
-        if pick.read_only {
-            return Err(pick.read_only_reason);
+        if resolved.read_only {
+            return Err(resolved.read_only_reason);
         }
-        persist_pin(
-            &app,
-            &session_cache,
-            &config_write,
-            &profile,
-            SessionPin {
-                id: pick.id.clone(),
-                explicit: false,
-                anchor: 0.0,
-            },
-        );
-        pick.id
+        resolved.id
     };
     emit_status(&app, &profile, "busy", "思考中…");
 

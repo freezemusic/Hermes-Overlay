@@ -206,23 +206,23 @@
 ## 7. Session（R-SS）
 
 > 2026-10-21 Devon 裁決（C-01）：本節取代 repo `SPEC.md` §5.2、§5.5、§5.7，同埋同本節撞嘅 §5.4、§5.6。
-> 2026-10-21 曾經寫「啟動唔跟已儲存 session id，一律開標題 Bot Chat」。**已取代**（Devon 2026-10-22 手提，11a150e）：config 或者 explicit 已經有嘅 session 要保留，見下面 R-SS-01／02／04。
+> 2026-10-21 曾經寫「啟動唔跟已儲存 session id，一律開標題 Bot Chat」。2026-10-22 手提一度改成「config 或者 explicit 已經有嘅 session 要保留」。**已取代**（Devon 2026-10-22，SESSIONS-desktop）：主面板預設等於 Hermes Desktop 喺嗰個 profile 開嘅 Bot Chat。只有人手 explicit 先可以蓋過。見下面 R-SS-01／02／04。
 
-**R-SS-01** 每個 bot 嘅**主光球面板**開 config 已經記住嘅 session。嗰條 id 喺伺服器存在就用佢，隱藏同 archived 都算存在。啟動、打開或關閉面板、同 gateway 重連（R-SY-08）之後，config.json 位元組保持不變：唔改 session id、explicit 旗、anchor。explicit 旗唔可以自動清走。活動 watermark 可以留喺記憶，唔寫入 config.json。只有設定畫面改動，或者人手揀 session，先可以寫檔。「config 未有 session id，先至可以寫入一次」**已取代**（v92：打開面板把 researcher／writer／broken 嘅 anchor 改成最新訊息時間）。
+**R-SS-01** 每個 bot 嘅**主光球面板**預設開 Hermes Desktop 喺嗰個 profile 開嘅 Bot Chat。Desktop 嘅 Bot Chat 係標題剛好係 `Bot Chat` 嗰一條（通常 `hidden=1`；title 唯一索引保證只有一條）。然後沿 `parent_session_id` 壓縮譜系去到最新嘅 child。`source`（`tui`／`api_server`／`desktop`）同訊息數都唔計。空嘅 Bot Chat 都有效。清單要搵到隱藏嘅 Bot Chat：用精確標題查，包含 hidden 同 archived。
 
-已儲存嘅 id 係空、已經唔喺清單、或者條列係空而且有更好的 Bot Chat（而且唔係 explicit），先至跟 Hermes Desktop 嘅次序揀真正嘅 Bot Chat：
-- (a) API 有露出 Desktop delivery lease 或者 `canonical_session` 就用嗰條；空 lease 唔可以壓過有訊息嘅 Bot Chat。
-- (b) 否則用真正有訊息嘅 Bot Chat：訊息最多，打和就最近活動。
-- (c) 有非空候選時，永遠唔開 0 訊息重複。
-- (d) 全部都空，用最舊嗰條；`api_` 開出來嘅重複唔可以壓過 Desktop 或者 `tui`。
+次序：
+1. Devon 人手揀過、而且 explicit 旗仲喺、嗰條 id 仍然喺清單（例如 mt-orch `20261015_011713_2242f9`）就用嗰條。
+2. 否則用 Desktop 嘅 Bot Chat，就算 config.json 記住另一條而且唔係 explicit。例如 ff-daily config 係 `20261013_180130_88f994`，都要開 `api_1792573589_0c14ed12`。
+3. 永遠唔自動轉去最新 session，亦唔新建 session。冇 Bot Chat 時，先至可以留喺一條仍然存在、而且唔係「標題已清、archived、hidden」嘅舊列。
+4. 啟動、打開或關閉面板、同 gateway 重連之後，config.json 位元組保持不變。喺記憶解析，唔好把過時嘅 sessionId 寫返檔。explicit 旗唔可以自動清走。anchor 唔跟最新訊息時間改寫。只有設定畫面改動，或者人手揀 session，先可以寫檔。
 
-`POST /api/sessions/{id}/chat` 寫入 `tui` 會 `permission_denied`，所以 `tui` 照打開、顯示只讀，並講明 API 唔接受寫入。啟動同打開都**唔新建** session。2026-10-21「忽略已儲存 id、淨係跟標題 `Bot Chat`、有歷史就取最舊」**已取代**。
+`POST /api/sessions/{id}/chat` 寫入 `tui` 會 `permission_denied`，所以 `tui` 照打開、顯示只讀，並講明 API 唔接受寫入。啟動同打開都**唔新建** session。「永遠唔開 0 訊息 `api_` 重複」**已取代**：mt-coder、mt-tester、mt-reviewer 嘅 `api_1792573589_*` 而家就係 Desktop 嘅 Bot Chat。
 
-- 來源：Devon（2026-10-22 手提，11a150e 開錯 session 同改寫 config；0 次建立）。Desktop 點揀（查 NousResearch/hermes-agent PR #92129）：`profiles.list` 嘅 `canonical_session` 按**名字**登記 Bot Chat，session id 釘已拿掉；`session.list` 用精確標題 `Bot Chat` 加 `include_hidden`。隱藏列會解析；tool／kanban source 同 archived 唔算入標題登記；壓縮譜系用 `get_compression_tip` 去到 live tip，唔係見個 child 就跟。現行 Hermes REST `GET /api/sessions` 嘅 `_session_response` **冇** lease 欄。Overlay 仍然讀 envelope 嘅 `canonical_session`、`canonical_session_id`、`delivery_session`、`delivery_session_id`、`home_channel_session`、`home_channel`、`lease_session`、`delivery_lease`，同列上嘅 `canonical`／`is_canonical`／`delivery`／`home_channel`／`is_home_channel`。重複開 session 可以把真正對話嘅標題改走，所以 config 記住嘅 id 就算標題唔係 `Bot Chat` 都保留（ff-daily `20261013_180130_88f994`，標題「判斷截圖顯示嘅問題」，373 訊息）。
-- 驗收（兩邊）：ff-daily 開 `20261013_180130_88f994`（config）。mt-orch 開 explicit `20261015_011713_2242f9`，旗保留。forex-forest 留 `20261001_013827_25b1eb`（tui，2312 訊息，只讀）。mt-coder、mt-reviewer、mt-tester：清單入面有非空 Bot Chat 就開嗰條；而家手提錄到嘅列係空的 `api_1792573589_f1c99a3b`、`api_1792573589_b1b8ccc5`、`api_1792573589_257658b2`（e3db750 的「Bot Chat」重複），冇第二條就停喺嗰條，唔再因為標題跳去空重複而改 config。gateway 返嚟之後 session 欄同重連之前一樣。只有 `tui` 時輸入同傳送停用。單元測試用呢組形狀。
-- 狀態：❓ / ❌(Win，11a150e：0 次建立，但開錯 session 同改寫 config)。單元測試已鎖新規則；手提未再驗。
+- 來源：Devon（2026-10-22，SESSIONS-desktop）。Desktop：`CANONICAL_CHAT_TITLE`、`hidden=1`、`idx_sessions_title_unique`、`parent_session_id` 去到 compression tip。清單係 `GET /api/sessions?limit=200&title=Bot%20Chat&include_hidden=true&include_archived=true`，再同一般清單合併。
+- 驗收（兩邊）：forex-forest 開 `20261001_013827_25b1eb`（tui，只讀）。ff-daily 開 `api_1792573589_0c14ed12`（config 係 `20261013_180130_88f994`，唔係 explicit，唔寫返檔）。mt-orch 開 explicit `20261015_011713_2242f9`，旗保留。mt-coder 開 `api_1792573589_f1c99a3b`。mt-tester 開 `api_1792573589_257658b2`。mt-reviewer 開 `api_1792573589_b1b8ccc5`。單元測試覆蓋：過時 archived config id、非 explicit 而且唔等於 Bot Chat 嘅 config id、explicit 贏、壓縮譜系、空 Bot Chat。gateway 返嚟之後 config 位元組同重連之前一樣。只有 `tui` 時輸入同傳送停用。
+- 狀態：❓ / ❌(Win，11a150e：0 次建立，但開錯 session 同改寫 config）。單元測試已鎖呢條 Desktop 規則；手提未再驗。
 
-**R-SS-02** 自動路徑**唔改**已記住嘅 session：啟動、打開或關閉面板、cron 更新 `last_active`、有新 session、gateway 重連，config.json 位元組都保持不變，包括 session id、explicit 旗、anchor。explicit 唔會被清走。手動 picker（R-SS-04）先可以改 id 同寫上 explicit；anchor 數字唔跟最新訊息時間改寫。2026-10-21「主光球永遠唔可以離開標題 Bot Chat」**已取代**：已記住而且仍然存在嘅 session 就停喺度；空而且唔係 explicit 的儲存列，畫面可以跟有訊息嘅 Bot Chat，但唔寫返 config。「只有 config 未有 id 先寫入一次」**已取代**（v92 打開面板改寫 anchor）。
+**R-SS-02** 自動路徑**唔改** config.json：啟動、打開或關閉面板、cron 更新 `last_active`、有新 session、gateway 重連，位元組都保持不變，包括 session id、explicit 旗、anchor。畫面喺記憶跟 R-SS-01 解析，所以一條非 explicit 嘅舊 id 可以顯示 Desktop 嘅 Bot Chat，但唔寫返檔。explicit 唔會被清走。手動 picker（R-SS-04）先可以改 id 同寫上 explicit；anchor 數字唔跟最新訊息時間改寫。「只有 config 未有 id 先寫入一次」**已取代**（v92 打開面板改寫 anchor）。
 - 來源：Devon（2026-10-22）。11a150e 喺 gateway 返嚟時改咗 ff-daily、mt-coder、mt-tester、mt-orch 嘅 session id，清走 mt-orch 嘅 explicit，又改咗 anchor。
 - 驗收（**Windows 必做**＋盒）：Devon 手提上，ff-daily、mt-orch、forex-forest 啟動後、等 60s、逐個開關面板、gateway 重連、再重啟一次，session id、explicit、anchor 同開波之前一樣。盒：單元測試 `stored_pin_after_resolve` 喺已有 id 時返回唔寫。
 - 狀態：❓ / ❌(Win，11a150e 改寫 config)。盒未再驗。
@@ -232,7 +232,7 @@
 - 驗收（兩邊）：開 debug log 或者喺 gateway 記錄請求，啟動＋打開全部面板，`POST /api/sessions` = 0 次；前後 `GET /api/sessions` 數目一樣。
 - 狀態：❓ / ✅(盒)；Win ❓。11a150e 手提亦係 0 次建立。
 
-**R-SS-04** 面板內嘅 session picker 保留，可以手動揀任何 session（Bot Chat 釘頂）；轉 session 即刻重畫（≤1 幀；要等 fetch 時 ≤333ms）。手動揀先寫 explicit。下一次打開主光球面板停喺呢個 explicit／已記住嘅 session。2026-10-21「關咗再開返標題 Bot Chat」**已取代**。
+**R-SS-04** 面板內嘅 session picker 保留，可以手動揀任何 session（Bot Chat 釘頂）；轉 session 即刻重畫（≤1 幀；要等 fetch 時 ≤333ms）。手動揀先寫 explicit。下一次打開主光球面板停喺呢個 explicit session。冇 explicit 就開 Desktop 嘅 Bot Chat（R-SS-01）。
 - 來源：Devon；SPEC §5.3；2026-10-22 手提（mt-orch 的 explicit `20261015_011713_2242f9` 要留低）。驗收（兩邊）：揀另一條 → 即刻顯示，config 寫上 explicit；關咗再開 → 同一條，旗仲喺。
 - 狀態：❓ / ⚠️(盒：重畫 67ms／333ms ✅；「再開留喺 explicit」未驗)。
 
@@ -358,7 +358,7 @@ PR #3 過咗先開新 branch，跟 `SUBORB-SPEC.md` v1（美術監督）。
 
 ## 14. 衝突同未清楚（要 Devon／美術監督裁決）
 
-- **C-01 Session 規則（✅ 已解決，Devon 2026-10-21；2026-10-22 收窄）**：啟動同打開都唔新建 session；picker 保留；其他 session 做 sub-orb。見 R-SS-01–04、R-SS-07。**本檔取代 repo `SPEC.md` §5.2（冇 Bot Chat 就 POST 新建）、§5.5（非明確揀嘅 id 改跟最新 Bot Chat）、§5.7（送出時 404 就新建）**；§5.4、§5.6「明確選擇記住」同 R-SS-04 撞嘅部分亦以本檔為準。2026-10-21「一律忽略已儲存 id、淨係開標題 Bot Chat」**已取代**（Devon 2026-10-22 手提）：config 或者 explicit 已經有嘅 session 要保留，見 R-SS-01／02／04。原本推斷 §5.5 係 b919b7f 改咗 4 個 bot 嘅原因，未證實。仲有兩點未講（見 C-15）。
+- **C-01 Session 規則（✅ 已解決，Devon 2026-10-21；2026-10-22 收窄）**：啟動同打開都唔新建 session；picker 保留；其他 session 做 sub-orb。見 R-SS-01–04、R-SS-07。**本檔取代 repo `SPEC.md` §5.2（冇 Bot Chat 就 POST 新建）、§5.5（非明確揀嘅 id 改跟最新 Bot Chat）、§5.7（送出時 404 就新建）**；§5.4、§5.6「明確選擇記住」同 R-SS-04 撞嘅部分亦以本檔為準。2026-10-21「一律忽略已儲存 id、淨係開標題 Bot Chat」同 2026-10-22 手提「config 或者 explicit 已經有嘅 session 要保留」**已取代**（Devon 2026-10-22，SESSIONS-desktop）：只有人手 explicit 先蓋過；否則開 Desktop 標題剛好係 `Bot Chat` 嗰條（通常 hidden），再沿 `parent_session_id`。見 R-SS-01／02／04。原本推斷 §5.5 係 b919b7f 改咗 4 個 bot 嘅原因，未證實。仲有兩點未講（見 C-15）。
 - **C-02 光球參考版本（✅ 已解決，Devon 2026-10-21）**：參考 build 係 **f8cb046**。R-OB-01、R-CR-02 都同 f8cb046 並排量度。
 - **C-03 排程失敗狀態「.55 核心」**：交帶嘅 Devon 要求寫「failed idle .55 core」，但 Devon 同時要求閒置同 f8cb046 一模一樣（f8cb046 排程光球閒置係 .18，v84 就係因為 .55 地板唔夾）。現行 SPEC §12.2／d8fd9b0：核心跟閒置（.18），只有紅環係實色。本檔跟後者，要確認。
 - **C-04 repo SPEC 自己撞**：§2.8 仲有舊嘅「計劃 240ms `cubic-bezier(.2,.8,.2,1)` scaleX」，§6.8 係 280ms `(.3,.6,.2,1)`；§12.1 寫排程 glyph `#616191` 字重 600，§12.2 寫 glyph `var(--bot)`、冇 `#616191` override。要清走舊條文。

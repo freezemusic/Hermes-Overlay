@@ -23,16 +23,16 @@ const sessions = [
 
 test("Bot Chat is the default even when another session is newer", () => {
   assert.equal(mostRecentSession(sessions).id, "desktop");
-  assert.equal(mostRecentBotChat(sessions).id, "older");
-  assert.equal(canonicalBotChat(sessions).id, "older");
+  assert.equal(mostRecentBotChat(sessions).id, "newer");
+  assert.equal(canonicalBotChat(sessions).id, "newer");
   const opened = resolveSession(sessions, { id: "split", explicit: false, anchor: 10 });
-  assert.equal(opened.id, "split");
+  assert.equal(opened.id, "newer");
   assert.equal(opened.explicit, false);
-  assert.equal(opened.anchor, 10);
+  assert.equal(opened.anchor, 80);
   const pinned = resolveSession(sessions, { id: "split", explicit: true, anchor: 10 });
   assert.equal(pinned.id, "split");
   assert.equal(pinned.explicit, true);
-  assert.equal(resolveSession(sessions, { id: "missing", explicit: true, anchor: 1 }).id, "older");
+  assert.equal(resolveSession(sessions, { id: "missing", explicit: true, anchor: 1 }).id, "newer");
   assert.equal(resolveSession([], { id: "split", explicit: true, anchor: 1 }), null);
   assert.equal(sessionLabel(sessions[2]), "_splitLot（隱藏）");
   const tied = [
@@ -57,7 +57,7 @@ test("Bot Chat is the default even when another session is newer", () => {
   assert.deepEqual(orderSessions(mixed).map((session) => session.id), ["tui-chat", "desk-chat", "notes"]);
 });
 
-test("Devon Bot Chats: tui-only, and history beats a newer empty duplicate", () => {
+test("Devon Bot Chats: the hidden titled row wins, including an empty one", () => {
   const forex = [{
     id: "20261001_013827_25b1eb",
     title: "Bot Chat",
@@ -73,59 +73,54 @@ test("Devon Bot Chats: tui-only, and history beats a newer empty duplicate", () 
   assert.equal(TUI_READ_ONLY_REASON.includes("permission_denied"), true);
 
   for (const [profile, emptyId] of [
-    ["mt-coder", "api_1792573589_mtcoder"],
-    ["mt-tester", "api_1792573589_mttester"],
+    ["mt-coder", "api_1792573589_f1c99a3b"],
+    ["mt-tester", "api_1792573589_257658b2"],
   ]) {
-    const realId = `${profile}-bot-chat`;
+    const retiredId = `${profile}-retired`;
     const rows = [
-      {
-        id: realId,
-        title: "Bot Chat",
-        source: "desktop",
-        started_at: 1758000000,
-        last_active: 1792400000,
-        message_count: 42,
-        preview: "cron output",
-      },
+      { id: retiredId, title: "", archived: true, hidden: true, source: "tui", last_active: 1 },
       {
         id: emptyId,
         title: "Bot Chat",
         source: "api_server",
+        hidden: true,
         started_at: 1792573589,
         last_active: 1792573600,
         message_count: 0,
         preview: "",
       },
+      { id: "notes", title: "Notes", last_active: 1792579999 },
     ];
-    assert.equal(canonicalBotChat(rows).id, realId);
-    const opened = resolveSession(rows, { id: emptyId, explicit: false, anchor: 1792573600 });
-    assert.equal(opened.id, realId);
+    assert.equal(canonicalBotChat(rows).id, emptyId);
+    const opened = resolveSession(rows, { id: retiredId, explicit: false, anchor: 1 });
+    assert.equal(opened.id, emptyId);
     assert.equal(opened.readOnly, false);
   }
 
   const ffDaily = [
     {
       id: "20261013_180130_88f994",
-      title: "Bot Chat",
+      title: "判斷截圖顯示嘅問題",
       source: "desktop",
       started_at: 1791914490,
       last_active: 1792500000,
-      message_count: 12,
+      message_count: 373,
       preview: "ff daily",
     },
     {
       id: "api_1792573589_0c14ed12",
       title: "Bot Chat",
       source: "api_server",
+      hidden: true,
       started_at: 1792573589,
       last_active: 1792573600,
-      message_count: 0,
-      preview: "",
+      message_count: 387,
+      preview: "ff",
     },
   ];
-  assert.equal(canonicalBotChat(ffDaily).id, "20261013_180130_88f994");
-  const ffOpened = resolveSession(ffDaily, { id: "api_1792573589_0c14ed12", explicit: false, anchor: 1792573600 });
-  assert.equal(ffOpened.id, "20261013_180130_88f994");
+  assert.equal(canonicalBotChat(ffDaily).id, "api_1792573589_0c14ed12");
+  const ffOpened = resolveSession(ffDaily, { id: "20261013_180130_88f994", explicit: false, anchor: 1791914490 });
+  assert.equal(ffOpened.id, "api_1792573589_0c14ed12");
   assert.equal(ffOpened.readOnly, false);
 });
 
@@ -194,7 +189,7 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
     },
   ];
   const ffOpened = resolveSession(ffDaily, { id: "20261013_180130_88f994", explicit: false, anchor: 1791914490 });
-  assert.equal(ffOpened.id, "20261013_180130_88f994");
+  assert.equal(ffOpened.id, "api_1792573589_0c14ed12");
   assert.equal(ffOpened.explicit, false);
   assert.equal(storedPinAfterResolve(
     { id: "20261013_180130_88f994", explicit: false, anchor: 1791914490 },
@@ -204,7 +199,7 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
   const coder = [
     {
       id: "20261012_mtcoder",
-      title: "Bot Chat",
+      title: "Coder notes",
       source: "desktop",
       message_count: 42,
       last_active: 1792400000,
@@ -214,6 +209,7 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
       id: "api_1792573589_f1c99a3b",
       title: "Bot Chat",
       source: "api_server",
+      hidden: true,
       started_at: 1792573589,
       last_active: 1792573600,
       message_count: 0,
@@ -222,7 +218,7 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
   ];
   assert.equal(
     resolveSession(coder, { id: "api_1792573589_f1c99a3b", explicit: false, anchor: 1792573600 }).id,
-    "20261012_mtcoder",
+    "api_1792573589_f1c99a3b",
   );
   assert.equal(storedPinAfterResolve(
     { id: "api_1792573589_f1c99a3b", explicit: false, anchor: 1792573600 },
@@ -246,21 +242,22 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
       id: "api_1792573589_257658b2",
       title: "Bot Chat",
       source: "api_server",
+      hidden: true,
       started_at: 1792574000,
       last_active: 1792574100,
       message_count: 0,
     },
     {
       id: "20260901_mttester",
-      title: "Bot Chat",
+      title: "Tester notes",
       source: "desktop",
       started_at: 1750000000,
       last_active: 1750001000,
       message_count: 0,
     },
   ];
-  assert.equal(canonicalBotChat(tester).id, "20260901_mttester");
-  assert.equal(resolveSession(tester, {}).id, "20260901_mttester");
+  assert.equal(canonicalBotChat(tester).id, "api_1792573589_257658b2");
+  assert.equal(resolveSession(tester, {}).id, "api_1792573589_257658b2");
   const filled = storedPinAfterResolve(
     { id: "", explicit: false, anchor: 0 },
     { id: "20260901_mttester", explicit: false, anchor: 1750001000 },
@@ -273,6 +270,43 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
   );
   assert.equal(kept.explicit, true);
   assert.equal(kept.anchor, 42);
+});
+
+test("desktop Bot Chat follows the title, an explicit pick, and the compression tip", () => {
+  const chain = [
+    { id: "bot-root", title: "Bot Chat", hidden: true, source: "tui", last_active: 10, message_count: 4 },
+    { id: "bot-old", title: "old branch", parent_session_id: "bot-root", last_active: 15 },
+    { id: "bot-mid", title: "continued", parent_session_id: "bot-root", last_active: 20 },
+    { id: "bot-tip", title: "tip", parent_session_id: "bot-mid", last_active: 40 },
+  ];
+  assert.equal(canonicalBotChat(chain).id, "bot-tip");
+  assert.equal(resolveSession(chain, { id: "stale-config", explicit: false, anchor: 1 }).id, "bot-tip");
+
+  const archived = [
+    { id: "20261001_013821_3e5864", title: "", archived: true, hidden: true, source: "tui" },
+    { id: "api_1792573589_f1c99a3b", title: "Bot Chat", hidden: true, source: "api_server", message_count: 0 },
+    { id: "kanban-latest", title: "Bingo", last_active: 999 },
+  ];
+  assert.equal(
+    resolveSession(archived, { id: "20261001_013821_3e5864", explicit: false, anchor: 1 }).id,
+    "api_1792573589_f1c99a3b",
+  );
+  const explicit = [
+    { id: "20261020_231552_1372e7", title: "Bot Chat", hidden: true, source: "tui", message_count: 1406 },
+    { id: "20261015_011713_2242f9", title: "Continue previous plan work #3", source: "desktop" },
+  ];
+  const picked = resolveSession(explicit, { id: "20261015_011713_2242f9", explicit: true, anchor: 3 });
+  assert.equal(picked.id, "20261015_011713_2242f9");
+  assert.equal(picked.explicit, true);
+  assert.equal(picked.anchor, 3);
+  assert.equal(resolveSession(
+    [{ id: "only-latest", title: "System Architect", last_active: 9 }],
+    { id: "only-latest", explicit: false, anchor: 1 },
+  ).id, "only-latest");
+  assert.equal(resolveSession(
+    [{ id: "retired-only", title: "", archived: true, hidden: true }],
+    { id: "retired-only", explicit: false, anchor: 1 },
+  ), null);
 });
 
 test("cron messages already on screen are not appended again", () => {

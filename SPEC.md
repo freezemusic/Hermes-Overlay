@@ -60,14 +60,14 @@
 
 ## 5. 對話
 
-本節跟 REQUIREMENTS.md 的 R-SS-01 至 R-SS-04。主光球喺啟動同每次由收合打開時都開已存在的 overlay Bot Chat。已存 id、explicit、anchor 0、更新的其他 session，都不得成為下次打開的預設，亦不得自動轉去最新 session。啟動同打開不得建立 session。
+本節跟 REQUIREMENTS.md 的 R-SS-01 至 R-SS-04。主光球喺啟動同每次由收合打開時都開該 profile 同 Hermes Desktop 一樣的 Bot Chat。人手 explicit 先可以蓋過。不得自動轉去最新 session。啟動同打開不得建立 session，亦不得把過時 sessionId 寫返 config.json。
 
-1. Hermes 把 cron 輸出寫入每個 profile 標題剛好是 `Bot Chat` 的 session。主光球喺啟動同每次由收合打開面板時，都開該 profile 已存在、最近活躍、而且 `source` 為 `api_server` 或 `desktop` 的 `Bot Chat`。已存 session id 指向邊度、`session_explicit` 係咪 true、anchor 係咪 0、列表有冇更新的其他 session，都不得把主光球帶去該 id，亦不得帶去「最新」session。`tui` 或其他 source 的同名 session 不得當成預設（佢冇 desktop 工具）。有多條符合的 Bot Chat 時 `last_active` 較大者勝；仍相同則 id 較小者勝。隱藏的符合 session 一樣計算，但不因為隱藏而優先。列表為 `{root}/api/sessions?limit=200&include_hidden=true`。其他 session 之後會以子光球表示，唔係呢次。
-2. 啟動同打開主光球都不得建立 session，亦不得改開最近活躍的其他 session。完全沒有符合的 `Bot Chat` 時，主光球保持未有對話。只有使用者送出訊息、而當時沒有可用的 Bot Chat，先可以按 Hermes Desktop 的方式建立：`POST {root}/api/sessions`，內容為 `{ "title": "Bot Chat", "source": "api_server" }`。若 400 寫明標題已被某 session 佔用，只有該 session 的 `source` 係 `api_server` 或 `desktop` 先用該 id；其他 source 唔採用。列表搵唔到該 id 時仍用該 id（隱藏佔用者）。建立不可行時保持未有對話，不得改開最新或其他 session。
-3. 面板必須保留 session 選擇器，其他 session 仍可手動選。標題為 `Bot Chat` 的列必須排在最頂，其餘再按最近活躍排序。手動選擇只維持而家開住嘅面板；輪詢唔好把佢彈返 Bot Chat。收合之後再打開主光球回到 Bot Chat。
-4. 手動選擇喺呢次打開期間保持，直到使用者再改，或該 id 已不在列表／回 404。Bot Chat 因 cron 更新 `last_active`，不得把開住嘅手動選擇搶走。下次啟動或再打開主光球仍然回到 Bot Chat，唔好用呢個選擇當主光球的預設。
-5. 已存 id 無論 explicit 定唔係，啟動同打開主光球都解析到該 Bot 已存在的 Bot Chat。不得改跟最新 session，亦不得因為 anchor 係 0 而改去別的對話。
-6. `/new` 與 `/branch` 喺而家開住嘅面板記成手動選擇，呢個回合不得立刻被 Bot Chat 蓋掉。收合再打開主光球回到 Bot Chat。
+1. Hermes Desktop 的 Bot Chat 是該 profile 標題剛好是 `Bot Chat` 的那一條（通常 hidden），再沿 `parent_session_id` 去到最新 child。`source` 同訊息數都不計，空的 Bot Chat 都有效。主光球在啟動同每次由收合打開面板時開這條，除非 config 的 explicit 旗指向清單裡仍在的另一條。非 explicit 的已存 id，即使仍在清單，都讓給這條 Bot Chat，而且不寫回 config。隱藏列用精確標題查，`include_hidden=true` 同 `include_archived=true`。不得改跟最新 session。其他 session 之後會以子光球表示，唔係呢次。
+2. 啟動同打開主光球都不得建立 session，亦不得改開最近活躍的其他 session。完全沒有符合的 `Bot Chat` 時，主光球保持未有對話。只有使用者送出訊息、而當時沒有可用的 Bot Chat，先可以按 Hermes Desktop 的方式建立：`POST {root}/api/sessions`，內容為 `{ "title": "Bot Chat", "source": "api_server" }`。若 400 寫明標題已被某 session 佔用，用該 id，`source` 唔計。列表搵唔到該 id 時仍用該 id（隱藏佔用者）。建立不可行時保持未有對話，不得改開最新或其他 session。
+3. 面板必須保留 session 選擇器，其他 session 仍可手動選。標題為 `Bot Chat` 的列必須排在最頂，其餘再按最近活躍排序。手動選擇寫上 explicit，輪詢唔好把開住嘅面板彈走。收合之後再打開：有 explicit 就留喺嗰條，否則開 Desktop 的 Bot Chat。
+4. 手動選擇寫上 explicit，直到使用者再改，或該 id 已不在列表／回 404。Bot Chat 因 cron 更新 `last_active`，不得把開住嘅手動選擇搶走。下次啟動或再打開主光球停喺呢個 explicit session。冇 explicit 就開 Desktop 的 Bot Chat。
+5. 非 explicit 的已存 id，啟動同打開主光球都解析到該 Bot 已存在的 Desktop Bot Chat，而且不寫回 config。explicit 旗指向清單裡仍在的 session 時停在那一條。不得改跟最新 session，亦不得因為 anchor 係 0 而改去別的對話。
+6. `/new` 與 `/branch` 寫上 explicit。呢個回合不得立刻被 Bot Chat 蓋掉。收合再打開留喺呢個 explicit session。
 7. 送出時用而家面板開住嘅 session。該 id 回 404 時清掉，再解析已存在的 Bot Chat。沒有 Bot Chat 先至建立；呢個係送出，唔係打開或啟動。建立不可行就保持未有對話，不得改開最新或其他 session。啟動同 `open_bot` 不得呼叫建立。
 8. Overlay 必須輪詢每個已顯示且有金鑰的 profile 的 Bot Chat。新訊息到達後：面板若正開着該 session，訊息必須即時出現在對話，而且不得把面板收成膠囊；光球收起時必須展開預覽膠囊（24 小時 `HH:MM`，約 5 秒）。面板若開着其他 session，新訊息只記在 Bot Chat，不得打亂目前畫面，也不得把面板收成膠囊。
 

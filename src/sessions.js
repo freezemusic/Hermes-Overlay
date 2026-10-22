@@ -1,4 +1,4 @@
-/** Bot Chat is the default. An explicit pick sticks until that session disappears. */
+/** Desktop's Bot Chat is the default. An explicit pick sticks while that session is listed. */
 
 export const BOT_CHAT_TITLE = "Bot Chat";
 
@@ -23,74 +23,47 @@ export function isTuiSource(source) {
 
 export const TUI_READ_ONLY_REASON = "呢個 Bot Chat 來源係 tui。API 唔接受寫入 tui session（permission_denied），只可以睇。";
 
-export function hasChatHistory(session) {
-  const count = Number(session?.message_count);
-  if (Number.isFinite(count) && count > 0) return true;
-  return String(session?.preview || "").trim().length > 0;
-}
-
-function startedAt(session) {
-  const value = Number(session?.started_at);
-  return Number.isFinite(value) && value > 0 ? value : Number.POSITIVE_INFINITY;
-}
-
-/** Smaller started_at, then smaller last_active, then smaller id. */
-function olderThan(a, b) {
-  const start = startedAt(a) - startedAt(b);
-  if (start) return start;
-  const active = (Number(a.last_active) || 0) - (Number(b.last_active) || 0);
-  if (active) return active;
-  if (a.id < b.id) return -1;
-  if (a.id > b.id) return 1;
-  return 0;
-}
-
-function isApiMinted(id) {
-  return String(id || "").startsWith("api_");
-}
-
-/** More messages, then more recent activity, then the smaller id. */
-function busierThan(a, b) {
-  const count = (Number(a.message_count) || 0) - (Number(b.message_count) || 0);
-  if (count) return count;
-  const active = (Number(a.last_active) || 0) - (Number(b.last_active) || 0);
-  if (active) return active;
-  if (a.id < b.id) return 1;
-  if (a.id > b.id) return -1;
-  return 0;
-}
-
-/** Desktop or tui before an api_ mint, then the older row. */
-function emptyRank(a, b) {
-  const minted = (isApiMinted(a.id) ? 1 : 0) - (isApiMinted(b.id) ? 1 : 0);
-  if (minted) return minted;
-  return olderThan(a, b);
+function retiredBotChat(session) {
+  const title = String(session?.title || "").trim();
+  return !title && session?.archived === true && session?.hidden === true;
 }
 
 /**
- * Desktop's Bot Chat is the row titled exactly "Bot Chat"
- * (profiles.list canonical_session; hermes-agent PR 92129).
- * A marked delivery lease wins when it has messages, or when every titled
- * row is empty. Otherwise the titled row with the most messages wins.
- * A 0-message row never beats one with history. When every titled row is
- * empty, the oldest Desktop or tui row wins over an api_ duplicate.
+ * Desktop's Bot Chat is the one row titled exactly "Bot Chat"
+ * (usually hidden). Then the latest child along parent_session_id.
+ * Source and message count do not matter. An empty row is valid.
  */
 export function canonicalBotChat(sessions) {
-  const titled = (sessions || []).filter((session) => session && session.id && isBotChat(session));
+  const list = sessions || [];
+  const titled = list.filter((session) => session && session.id && isBotChat(session));
   if (!titled.length) return null;
-  const history = titled.some(hasChatHistory);
-  const delivery = titled.find((session) => session.delivery === true);
-  if (delivery && (!history || hasChatHistory(delivery))) return delivery;
-  if (history) {
-    return titled.filter(hasChatHistory).reduce((best, item) => (busierThan(item, best) > 0 ? item : best));
-  }
-  return titled.reduce((best, item) => (emptyRank(item, best) < 0 ? item : best));
+  const hidden = titled.filter((session) => session.hidden === true);
+  let pool = hidden.length ? hidden : titled;
+  const live = pool.filter((session) => session.archived !== true);
+  if (live.length) pool = live;
+  pool.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return compressionTip(pool[0], list);
 }
 
-function emptyWithBetter(saved, sessions) {
-  if (hasChatHistory(saved)) return false;
-  const best = canonicalBotChat(sessions);
-  return Boolean(best && best.id !== saved.id && hasChatHistory(best));
+function compressionTip(root, sessions) {
+  let current = root;
+  const seen = new Set([current.id]);
+  for (let guard = 0; guard <= sessions.length; guard += 1) {
+    const children = sessions.filter((session) => session && session.parent_session_id === current.id);
+    if (!children.length) return current;
+    children.sort((a, b) => {
+      const active = (Number(b.last_active) || 0) - (Number(a.last_active) || 0);
+      if (active) return active;
+      if (a.id < b.id) return -1;
+      if (a.id > b.id) return 1;
+      return 0;
+    });
+    const next = children[0];
+    if (seen.has(next.id)) return current;
+    seen.add(next.id);
+    current = next;
+  }
+  return current;
 }
 
 /**
@@ -154,24 +127,35 @@ export function resolveSession(sessions, pin = {}) {
   const saved = remembered
     ? (sessions || []).find((session) => session && session.id === remembered)
     : null;
-  if (saved && (explicit || !emptyWithBetter(saved, sessions))) {
+  if (saved && explicit) {
     return {
       id: saved.id,
-      explicit,
+      explicit: true,
       anchor,
       source: saved.source || "",
       readOnly: isTuiSource(saved.source),
     };
   }
   const preferred = canonicalBotChat(sessions);
-  if (!preferred) return null;
-  return {
-    id: preferred.id,
-    explicit: false,
-    anchor: Number(preferred.last_active) || 0,
-    source: preferred.source || "",
-    readOnly: isTuiSource(preferred.source),
-  };
+  if (preferred) {
+    return {
+      id: preferred.id,
+      explicit: false,
+      anchor: preferred.id === remembered ? anchor : (Number(preferred.last_active) || 0),
+      source: preferred.source || "",
+      readOnly: isTuiSource(preferred.source),
+    };
+  }
+  if (saved && !retiredBotChat(saved)) {
+    return {
+      id: saved.id,
+      explicit: false,
+      anchor,
+      source: saved.source || "",
+      readOnly: isTuiSource(saved.source),
+    };
+  }
+  return null;
 }
 
 export function sessionLabel(session) {
