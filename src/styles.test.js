@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 import { seamClipStillClosed } from "./morph.js";
-import { paintOrbOpacity } from "./proximity.js";
+import { applyOrbFadeFrame, opacityFramesMonotonic, opacityFramesToward } from "./proximity.js";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -655,9 +655,11 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(presentLog, /after-paint/);
   assert.match(presentLog, /release_opacity_shape_next_frame/);
   assert.ok(presentLog.indexOf("source == \"after-paint\"") < presentLog.indexOf("clear_opacity_shape_hold"));
-  const pageFlags = interactionRs.slice(interactionRs.indexOf("let (page_held, page_key)"), interactionRs.indexOf("if signature == last_signature"));
+  const pageFlags = interactionRs.slice(interactionRs.indexOf("let (page_held, page_key)"), interactionRs.indexOf("fade_hold = next_hold"));
   assert.match(pageFlags, /page_modifier/);
   assert.match(pageFlags, /page_held == held/);
+  assert.match(interactionRs, /ORB_FADE_EMIT: Duration = Duration::from_millis\(168\)/);
+  assert.match(interactionRs, /fn proximity_emit_hold/);
   assert.match(mainSrc, /osModifierDown/);
   assert.match(mainSrc, /modifier_down/);
   assert.match(mainSrc, /payload\.key_edge === true/);
@@ -825,11 +827,11 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.orb-core \{[^}]*#fff 0 36%/s);
   assert.doesNotMatch(css, /\.orb-core \{[^}]*var\(--bot-20\) 55%/s);
   assert.match(css, /\.bot-btn\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity,\s*1\)/s);
-  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*opacity 120ms cubic-bezier\(0, 0, \.2, 1\)/s);
-  assert.doesNotMatch(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*opacity:\s*1\s*!important/s);
-  assert.doesNotMatch(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*none/s);
+  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*none !important/s);
+  assert.doesNotMatch(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*opacity:\s*1/s);
+  assert.doesNotMatch(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*opacity/s);
   assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*will-change:\s*opacity/s);
-  assert.match(css, /\.morph\[data-state="orb"\] \{\s*transition:\s*opacity 1ms linear !important/s);
+  assert.match(css, /\.morph\[data-state="orb"\] \{\s*transition:\s*none !important/s);
   assert.match(html, /光球（包括設定、看板同排程）預設實色/);
   assert.match(css, /\.bot-btn::before,[\s\S]*?rgb\(var\(--bot-rgb\) \/ \.55\)/);
   assert.match(css, /\.plan-window \{[^}]*border:\s*1px solid var\(--nous-blue\)/s);
@@ -1015,27 +1017,77 @@ test("plan reveal computed clip-path reaches fully open", () => {
   assert.equal(seamClipStillClosed(getComputedStyle(bare).clipPath, open), false);
 });
 
+function orbFadeSampleTimes(duration = 120, dt = 1000 / 30) {
+  const times = [];
+  for (let t = 0; t <= duration + dt + 1e-9; t += dt) times.push(t);
+  if (!times.some((t) => Math.abs(t - duration) < 1e-6)) times.push(duration);
+  times.sort((a, b) => a - b);
+  if (times[times.length - 1] <= duration + 1e-6) times.push(duration + dt);
+  return times;
+}
+
+function sampleComputedOrbFade(shell, getComputedStyle, target, painted, duration = 120) {
+  let clock = null;
+  const frames = [];
+  const times = orbFadeSampleTimes(duration);
+  for (const t of times) {
+    const stepped = applyOrbFadeFrame(shell, clock, t, target, duration, painted);
+    clock = stepped.clock;
+    painted = Number.parseFloat(getComputedStyle(shell).opacity);
+    frames.push(painted);
+  }
+  const before = shell.style.opacity;
+  const extra = applyOrbFadeFrame(shell, clock, times[times.length - 1] + 16, target, duration, painted);
+  frames.push(Number.parseFloat(getComputedStyle(shell).opacity));
+  return { frames, extra, styleChanged: shell.style.opacity !== before };
+}
+
 test("a near orb's computed opacity drops below 0.3", () => {
   const dom = new JSDOM(`<!doctype html><style>${css}</style><body>
     <div class="morph" data-state="orb" data-hit-id="bot:default" style="--hit-opacity:1"></div>
   </body>`);
   const { document, getComputedStyle } = dom.window;
   const shell = document.querySelector(".morph");
-  const near = paintOrbOpacity(shell, 0.18);
-  assert.equal(near.wrote, true);
-  assert.equal(near.opacity, "0.18");
-  assert.equal(shell.style.opacity, "0.18");
+  const faded = sampleComputedOrbFade(shell, getComputedStyle, 0.18, 1);
+  assert.ok(faded.frames[0] > 0.9, `first frame ${faded.frames[0]}`);
   assert.equal(shell.style.getPropertyValue("--hit-opacity"), "");
-  const shown = Number.parseFloat(getComputedStyle(shell).opacity);
+  const shown = faded.frames[faded.frames.length - 1];
   assert.ok(shown < 0.3, `near opacity ${shown}`);
-  const again = paintOrbOpacity(shell, 0.18);
-  assert.equal(again.wrote, false);
-  assert.equal(shell.style.opacity, "0.18");
-  const held = paintOrbOpacity(shell, 1);
-  assert.equal(held.wrote, true);
-  assert.equal(held.opacity, "1.00");
-  const solid = Number.parseFloat(getComputedStyle(shell).opacity);
-  assert.ok(solid > 0.99, `held opacity ${solid}`);
+  assert.equal(faded.extra.wrote, false);
+  assert.equal(faded.styleChanged, false);
+});
+
+test("computed orb opacity stays monotonic through the last frame", () => {
+  const dom = new JSDOM(`<!doctype html><style>${css}</style><body>
+    <div class="morph" data-state="orb" data-hit-id="bot:default"></div>
+  </body>`);
+  const { document, getComputedStyle } = dom.window;
+  const shell = document.querySelector(".morph");
+  const fadeOut = sampleComputedOrbFade(shell, getComputedStyle, 0.18, 1);
+  assert.equal(opacityFramesMonotonic(fadeOut.frames), true, JSON.stringify(fadeOut.frames));
+  assert.equal(opacityFramesToward(fadeOut.frames, 0.18), true, JSON.stringify(fadeOut.frames));
+  assert.ok(fadeOut.frames[0] > 0.9);
+  assert.ok(Math.abs(fadeOut.frames[fadeOut.frames.length - 1] - 0.18) < 0.001, JSON.stringify(fadeOut.frames));
+  const arrived = fadeOut.frames.findIndex((value) => Math.abs(value - 0.18) < 0.001);
+  assert.ok(arrived > 0);
+  for (let i = arrived; i < fadeOut.frames.length; i += 1) {
+    assert.ok(Math.abs(fadeOut.frames[i] - 0.18) < 0.001, JSON.stringify(fadeOut.frames));
+  }
+  assert.equal(fadeOut.extra.wrote, false);
+  assert.equal(fadeOut.styleChanged, false);
+
+  const fadeIn = sampleComputedOrbFade(shell, getComputedStyle, 1, fadeOut.frames[fadeOut.frames.length - 1]);
+  assert.equal(opacityFramesMonotonic(fadeIn.frames), true, JSON.stringify(fadeIn.frames));
+  assert.equal(opacityFramesToward(fadeIn.frames, 1), true, JSON.stringify(fadeIn.frames));
+  assert.ok(fadeIn.frames[0] < 0.3, JSON.stringify(fadeIn.frames));
+  assert.ok(Math.abs(fadeIn.frames[fadeIn.frames.length - 1] - 1) < 0.001, JSON.stringify(fadeIn.frames));
+  const solid = fadeIn.frames.findIndex((value) => Math.abs(value - 1) < 0.001);
+  assert.ok(solid > 0);
+  for (let i = solid; i < fadeIn.frames.length; i += 1) {
+    assert.ok(Math.abs(fadeIn.frames[i] - 1) < 0.001, JSON.stringify(fadeIn.frames));
+  }
+  assert.equal(fadeIn.extra.wrote, false);
+  assert.equal(fadeIn.styleChanged, false);
 });
 
 test("idle cron orb matches another idle orb", () => {

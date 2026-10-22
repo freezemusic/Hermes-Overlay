@@ -144,7 +144,8 @@ import {
   BLUR_RELEASE_MS,
   onOrbOpacityTransitionEnd,
   orbDiscHit,
-  paintOrbOpacity,
+  applyOrbFadeFrame,
+  ORB_FADE_MS,
 } from "./proximity.js";
 
 const MOCK_BOTS = [
@@ -8073,6 +8074,9 @@ function acceptModifier(payload) {
   return true;
 }
 
+const orbFadeClocks = new WeakMap();
+let orbFadeFrame = 0;
+
 function applyFrames(frames, interactiveAll = false) {
   const map = new Map((frames || []).map((item) => [item.id, item]));
   document.querySelectorAll("[data-hit-id]").forEach((el) => {
@@ -8098,14 +8102,27 @@ function applyFrames(frames, interactiveAll = false) {
       // A running disc stays at the stylesheet's 1. Drop the fade number
       // so it cannot keep a near-cursor sample on screen.
       delete el.dataset.orbFade;
+      orbFadeClocks.delete(el);
       if (el.style.opacity) el.style.removeProperty("opacity");
       if (el.style.getPropertyValue("--hit-opacity")) el.style.removeProperty("--hit-opacity");
     } else if (orbShell) {
-      // Destination once. The CSS transition fades there. A script clock
-      // never advances: the poll emits this target only when it changes.
-      paintOrbOpacity(el, value);
+      // One sample of the scripted fade. Repeated polls of the same target
+      // keep this clock. A settled target does not write again.
+      const stepped = applyOrbFadeFrame(
+        el,
+        orbFadeClocks.get(el) || null,
+        performance.now(),
+        value,
+        reducedMotion() ? 1 : ORB_FADE_MS,
+        readOrbOpacity(el),
+      );
+      orbFadeClocks.set(el, stepped.clock);
+      if (stepped.running) scheduleOrbFade();
     } else if (!panelShell && el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
+      orbFadeClocks.delete(el);
       el.style.setProperty("--hit-opacity", nextOpacity);
+    } else {
+      orbFadeClocks.delete(el);
     }
     if (interactiveAll || known?.capture) el.dataset.hitCapture = "1";
     else delete el.dataset.hitCapture;
@@ -8152,6 +8169,36 @@ function paintOrbLabel() {
   left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
   label.style.left = `${Math.round(left)}px`;
   label.style.top = `${Math.round(top)}px`;
+}
+
+function readOrbOpacity(el) {
+  const inline = Number.parseFloat(el?.style?.opacity);
+  if (Number.isFinite(inline)) return inline;
+  const computed = Number.parseFloat(getComputedStyle(el).opacity);
+  return Number.isFinite(computed) ? computed : 1;
+}
+
+function tickOrbFades() {
+  orbFadeFrame = 0;
+  const now = performance.now();
+  const duration = reducedMotion() ? 1 : ORB_FADE_MS;
+  let running = false;
+  document.querySelectorAll('.morph[data-state="orb"][data-hit-id]').forEach((el) => {
+    if (el.classList.contains("is-cron-live")) return;
+    const clock = orbFadeClocks.get(el);
+    if (!clock || clock.settled) return;
+    const stepped = applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el));
+    orbFadeClocks.set(el, stepped.clock);
+    if (stepped.running) running = true;
+  });
+  if (running) scheduleOrbFade();
+}
+
+function scheduleOrbFade() {
+  if (orbFadeFrame) return;
+  orbFadeFrame = requestAnimationFrame(() => {
+    tickOrbFades();
+  });
 }
 
 const cursorPoint = { x: -10000, y: -10000 };

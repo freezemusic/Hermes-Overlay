@@ -88,9 +88,9 @@ export const ORB_PROXIMITY_PX = 72;
 
 /**
  * Opacity ramp while an orb enters or leaves ORB_PROXIMITY_PX.
- * 120ms ease-out reaches the ≤30% floor inside 250ms, including one poll.
- * The compositor runs this from one inline opacity write. A script timer
- * does not: the proximity poll sends a target once, then stays quiet.
+ * 120ms ease-out reaches the ≤30% floor inside 250ms.
+ * The page writes one inline sample per frame. A CSS transition paints a
+ * reversed frame when it finishes, so the shell sets transition to none.
  */
 export const ORB_FADE_MS = 120;
 export const ORB_FADE_EASE = "cubic-bezier(0, 0, .2, 1)";
@@ -168,10 +168,8 @@ export function orbOpacityText(value) {
 }
 
 /**
- * One inline opacity on the shell. The destination is written once per
- * target so the 120ms CSS transition can run. `--hit-opacity` is cleared:
- * a second opacity source snaps a frame at the end of the fade.
- * The same target does not write again.
+ * One inline opacity on the shell. `--hit-opacity` is cleared so it cannot
+ * paint a second value. The same displayed number does not write again.
  */
 export function paintOrbOpacity(el, target) {
   if (!el?.style) return { wrote: false, opacity: "1.00" };
@@ -184,6 +182,41 @@ export function paintOrbOpacity(el, target) {
   if (el.dataset) el.dataset.orbFade = shown;
   el.style.opacity = shown;
   return { wrote: true, opacity: shown };
+}
+
+/**
+ * One displayed sample of an orb fade.
+ * The first sample starts at `painted` (the opacity on screen) and moves
+ * toward `target`. The same target keeps the clock. A repeated poll does
+ * not jump back to 1, and a settled target does not write style again.
+ */
+export function applyOrbFadeFrame(el, clock, now, target, duration = ORB_FADE_MS, painted) {
+  const commit = commitOrbOpacity(
+    clock ? { target: clock.target, generation: clock.generation || 1 } : null,
+    target,
+  );
+  if (clock && !commit.wrote && clock.settled) {
+    return { clock, opacity: orbOpacityText(clock.target), running: false, wrote: false };
+  }
+  const onScreen = Number.isFinite(Number(painted)) ? Number(painted) : 1;
+  const stepped = stepOrbFade(clock, now, commit.target, onScreen, duration);
+  const nextClock = {
+    from: stepped.clock.from,
+    to: stepped.clock.to,
+    started: stepped.clock.started,
+    target: stepped.clock.target,
+    generation: commit.generation,
+    settled: !stepped.running,
+  };
+  const paintedNow = el
+    ? paintOrbOpacity(el, stepped.opacity)
+    : { wrote: false, opacity: orbOpacityText(stepped.opacity) };
+  return {
+    clock: nextClock,
+    opacity: paintedNow.opacity,
+    running: stepped.running,
+    wrote: paintedNow.wrote,
+  };
 }
 
 /**

@@ -183,6 +183,29 @@ pub const HIT_MARGIN_PX: f64 = 12.0;
 /// Fade starts this far outside the orb hit circle (R-OB-05). Visual only.
 pub const ORB_PROXIMITY_PX: f64 = 72.0;
 
+/// How long a proximity publish keeps repeating after the target changes.
+/// The fade is 120ms. The page samples inline opacity from these publishes,
+/// so one edge is not enough and a paused animation frame must not stall it.
+pub const ORB_FADE_EMIT: Duration = Duration::from_millis(168);
+
+/// `true` when this poll should reach the page.
+/// A new signature starts the hold. Repeats inside the hold keep the fade
+/// moving. After the hold, an unchanged signature stays quiet.
+pub fn proximity_emit_hold(
+    changed: bool,
+    now: Instant,
+    hold_until: Option<Instant>,
+    hold: Duration,
+) -> (bool, Option<Instant>) {
+    if changed {
+        return (true, Some(now + hold));
+    }
+    match hold_until {
+        Some(until) if now < until => (true, hold_until),
+        _ => (false, None),
+    }
+}
+
 /// Near-orb opacity. The settings floor defaults to 0.18 and never exceeds 0.30.
 pub fn orb_near_opacity(min_opacity: f64) -> f64 {
     let floor = if min_opacity.is_finite() {
@@ -2165,6 +2188,7 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
             return;
         };
         let mut last_signature = String::new();
+        let mut fade_hold: Option<Instant> = None;
         let mut last_edge: Option<(bool, bool)> = None;
         let mut logged_held: Option<bool> = None;
         let mut ignoring: Option<bool> = None;
@@ -2364,10 +2388,16 @@ pub fn spawn_poll(app: AppHandle, hub: Arc<InteractionHub>) {
                 u8::from(page_key),
                 u8::from(frozen_press),
             );
-            if signature == last_signature {
+            let changed = signature != last_signature;
+            let (emit, next_hold) =
+                proximity_emit_hold(changed, Instant::now(), fade_hold, ORB_FADE_EMIT);
+            fade_hold = next_hold;
+            if !emit {
                 continue;
             }
-            last_signature = signature;
+            if changed {
+                last_signature = signature;
+            }
             let _ = app.emit(
                 "overlay-interaction",
                 serde_json::json!({
@@ -3386,6 +3416,19 @@ mod tests {
     #[test]
     fn orb_fades_inside_the_proximity_radius_and_stays_opaque_outside() {
         assert_eq!(ORB_PROXIMITY_PX, 72.0);
+        let start = Instant::now();
+        let (emit, hold) = proximity_emit_hold(true, start, None, ORB_FADE_EMIT);
+        assert!(emit);
+        let again = proximity_emit_hold(false, start + Duration::from_millis(32), hold, ORB_FADE_EMIT);
+        assert!(again.0);
+        let done = proximity_emit_hold(
+            false,
+            start + Duration::from_millis(200),
+            again.1,
+            ORB_FADE_EMIT,
+        );
+        assert!(!done.0);
+        assert!(done.1.is_none());
         assert!((orb_near_opacity(0.18) - 0.18).abs() < 0.001);
         assert!((orb_near_opacity(0.5) - 0.30).abs() < 0.001);
         let cfg = fade_cfg();

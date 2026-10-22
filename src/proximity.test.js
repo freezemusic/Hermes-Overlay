@@ -19,6 +19,7 @@ import {
   orbOpacityText,
   onOrbOpacityTransitionEnd,
   paintOrbOpacity,
+  applyOrbFadeFrame,
   stepOrbFade,
   sampleOrbFadeSegments,
   opacityFramesToward,
@@ -228,18 +229,31 @@ test("orb fade frames stay monotonic and reach the floor inside 250ms", () => {
   assert.ok(distanceToHit(32, 20, dropped) > 12);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const apply = main.slice(main.indexOf("function applyFrames"), main.indexOf("function paintOrbLabel"));
-  assert.match(apply, /paintOrbOpacity/);
+  assert.match(apply, /applyOrbFadeFrame/);
+  assert.match(apply, /performance\.now\(\)/);
+  assert.match(apply, /readOrbOpacity\(el\)/);
   assert.doesNotMatch(apply, /style\.transition/);
   assert.doesNotMatch(apply, /requestAnimationFrame/);
-  assert.doesNotMatch(apply, /stepOrbFade|readOrbOpacity|tickOrbFades/);
+  assert.doesNotMatch(apply, /paintOrbOpacity\(el, value\)/);
   const orbWrite = apply.slice(apply.indexOf("else if (orbShell)"), apply.indexOf("else if (!panelShell"));
-  assert.match(orbWrite, /paintOrbOpacity\(el, value\)/);
+  assert.match(orbWrite, /applyOrbFadeFrame\(/);
   assert.doesNotMatch(orbWrite, /setProperty\("--hit-opacity"/);
   const painter = paintOrbOpacity.toString();
   assert.match(painter, /orbOpacityText/);
   assert.match(painter, /style\.opacity = shown/);
   assert.match(painter, /removeProperty\("--hit-opacity"\)/);
   assert.doesNotMatch(painter, /setProperty\("--hit-opacity"|requestAnimationFrame/);
+  const frameFn = applyOrbFadeFrame.toString();
+  assert.match(frameFn, /stepOrbFade/);
+  assert.match(frameFn, /paintOrbOpacity/);
+  assert.match(frameFn, /clock\.settled/);
+  const tick = main.slice(main.indexOf("function tickOrbFades"), main.indexOf("function scheduleOrbFade"));
+  assert.ok(main.indexOf("function tickOrbFades") > main.indexOf("function paintOrbLabel"));
+  assert.match(tick, /function tickOrbFades\(\)/);
+  assert.match(tick, /performance\.now\(\)/);
+  assert.doesNotMatch(tick, /requestAnimationFrame\(/);
+  const schedule = main.slice(main.indexOf("function scheduleOrbFade"), main.indexOf("const cursorPoint"));
+  assert.match(schedule, /requestAnimationFrame\(\(\) => \{\s*tickOrbFades\(\)/);
   assert.equal(orbOpacityText(1), "1.00");
   assert.equal(orbOpacityText(0.18), "0.18");
   const shellNode = {
