@@ -753,8 +753,14 @@ try {
   }
   $focus = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" -or $_.id -eq "settings" } | Select-Object -First 1)
   if ($focus) {
+    # 120px under a top field panel is the session <select>. pointerdown opens
+    # the native menu, and both Escape taps are spent closing that menu, so
+    # the panel stays on the hit list. The transcript is below that row and
+    # above the composer. 睇計劃 on this runner sits near y=414, clear of 240px.
     $fx = [int]($focus.x + 48)
-    $fy = [int]($focus.y + [Math]::Min(120, [Math]::Max(24, $focus.h / 2)))
+    $fromTop = 120
+    if ($focus.id -eq "panel:field" -and $focus.h -ge 320) { $fromTop = 240 }
+    $fy = [int]($focus.y + [Math]::Min($fromTop, [Math]::Max(24, $focus.h - 80)))
     Assert-Captured "escape-focus" $fx $fy
   }
   $beforeEscape = @(Read-HitRects | Where-Object { $_.id -notlike "close:*" -and $_.id -notlike "slash:*" -and $_.id -notlike "bot:*" -and $_.id -notlike "pill:*" -and $_.h -ge 80 })
