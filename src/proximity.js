@@ -89,8 +89,8 @@ export const ORB_PROXIMITY_PX = 72;
 /**
  * Opacity ramp while an orb enters or leaves ORB_PROXIMITY_PX.
  * 120ms ease-out reaches the ≤30% floor inside 250ms, including one poll.
- * The script paints this. A CSS opacity transition ends by tearing the
- * layer down, and that last frame jumps backward (R-OB-05).
+ * The compositor runs this from one inline opacity write. A script timer
+ * does not: the proximity poll sends a target once, then stays quiet.
  */
 export const ORB_FADE_MS = 120;
 export const ORB_FADE_EASE = "cubic-bezier(0, 0, .2, 1)";
@@ -165,6 +165,25 @@ function roundOrbOpacity(value) {
 /** Always an explicit number. `1` stays `"1.00"`, never an empty property. */
 export function orbOpacityText(value) {
   return roundOrbOpacity(value).toFixed(2);
+}
+
+/**
+ * One inline opacity on the shell. The destination is written once per
+ * target so the 120ms CSS transition can run. `--hit-opacity` is cleared:
+ * a second opacity source snaps a frame at the end of the fade.
+ * The same target does not write again.
+ */
+export function paintOrbOpacity(el, target) {
+  if (!el?.style) return { wrote: false, opacity: "1.00" };
+  const shown = orbOpacityText(target);
+  if (typeof el.style.getPropertyValue === "function" && el.style.getPropertyValue("--hit-opacity")) {
+    el.style.removeProperty("--hit-opacity");
+  }
+  const previous = el.dataset?.orbFade ?? "";
+  if (previous === shown) return { wrote: false, opacity: shown };
+  if (el.dataset) el.dataset.orbFade = shown;
+  el.style.opacity = shown;
+  return { wrote: true, opacity: shown };
 }
 
 /**

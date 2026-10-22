@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 import { seamClipStillClosed } from "./morph.js";
+import { paintOrbOpacity } from "./proximity.js";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -824,11 +825,11 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.orb-core \{[^}]*#fff 0 36%/s);
   assert.doesNotMatch(css, /\.orb-core \{[^}]*var\(--bot-20\) 55%/s);
   assert.match(css, /\.bot-btn\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity,\s*1\)/s);
-  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*opacity:\s*1;/s);
-  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*none !important/s);
-  assert.doesNotMatch(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity/s);
+  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*opacity 120ms cubic-bezier\(0, 0, \.2, 1\)/s);
+  assert.doesNotMatch(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*opacity:\s*1\s*!important/s);
+  assert.doesNotMatch(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*none/s);
   assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*will-change:\s*opacity/s);
-  assert.match(css, /\.morph\[data-state="orb"\] \{\s*transition:\s*none !important/s);
+  assert.match(css, /\.morph\[data-state="orb"\] \{\s*transition:\s*opacity 1ms linear !important/s);
   assert.match(html, /光球（包括設定、看板同排程）預設實色/);
   assert.match(css, /\.bot-btn::before,[\s\S]*?rgb\(var\(--bot-rgb\) \/ \.55\)/);
   assert.match(css, /\.plan-window \{[^}]*border:\s*1px solid var\(--nous-blue\)/s);
@@ -1012,6 +1013,29 @@ test("plan reveal computed clip-path reaches fully open", () => {
   assert.notEqual(getComputedStyle(bare).transitionProperty, "clip-path");
   assert.equal(getComputedStyle(bare).clipPath, open);
   assert.equal(seamClipStillClosed(getComputedStyle(bare).clipPath, open), false);
+});
+
+test("a near orb's computed opacity drops below 0.3", () => {
+  const dom = new JSDOM(`<!doctype html><style>${css}</style><body>
+    <div class="morph" data-state="orb" data-hit-id="bot:default" style="--hit-opacity:1"></div>
+  </body>`);
+  const { document, getComputedStyle } = dom.window;
+  const shell = document.querySelector(".morph");
+  const near = paintOrbOpacity(shell, 0.18);
+  assert.equal(near.wrote, true);
+  assert.equal(near.opacity, "0.18");
+  assert.equal(shell.style.opacity, "0.18");
+  assert.equal(shell.style.getPropertyValue("--hit-opacity"), "");
+  const shown = Number.parseFloat(getComputedStyle(shell).opacity);
+  assert.ok(shown < 0.3, `near opacity ${shown}`);
+  const again = paintOrbOpacity(shell, 0.18);
+  assert.equal(again.wrote, false);
+  assert.equal(shell.style.opacity, "0.18");
+  const held = paintOrbOpacity(shell, 1);
+  assert.equal(held.wrote, true);
+  assert.equal(held.opacity, "1.00");
+  const solid = Number.parseFloat(getComputedStyle(shell).opacity);
+  assert.ok(solid > 0.99, `held opacity ${solid}`);
 });
 
 test("idle cron orb matches another idle orb", () => {

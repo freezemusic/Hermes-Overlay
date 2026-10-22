@@ -18,6 +18,7 @@ import {
   commitOrbOpacity,
   orbOpacityText,
   onOrbOpacityTransitionEnd,
+  paintOrbOpacity,
   stepOrbFade,
   sampleOrbFadeSegments,
   opacityFramesToward,
@@ -227,21 +228,18 @@ test("orb fade frames stay monotonic and reach the floor inside 250ms", () => {
   assert.ok(distanceToHit(32, 20, dropped) > 12);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const apply = main.slice(main.indexOf("function applyFrames"), main.indexOf("function paintOrbLabel"));
-  assert.match(apply, /commitOrbOpacity/);
-  assert.match(apply, /dataset\.orbFade/);
-  assert.match(apply, /orbOpacityText/);
-  assert.match(apply, /stepOrbFade/);
-  assert.match(apply, /readOrbOpacity/);
+  assert.match(apply, /paintOrbOpacity/);
   assert.doesNotMatch(apply, /style\.transition/);
+  assert.doesNotMatch(apply, /requestAnimationFrame/);
+  assert.doesNotMatch(apply, /stepOrbFade|readOrbOpacity|tickOrbFades/);
   const orbWrite = apply.slice(apply.indexOf("else if (orbShell)"), apply.indexOf("else if (!panelShell"));
-  assert.match(orbWrite, /removeProperty\("--hit-opacity"\)/);
+  assert.match(orbWrite, /paintOrbOpacity\(el, value\)/);
   assert.doesNotMatch(orbWrite, /setProperty\("--hit-opacity"/);
-  assert.match(orbWrite, /style\.opacity = shown/);
-  const tick = main.slice(main.indexOf("function tickOrbFades"), main.indexOf("function paintLocalProximity"));
-  assert.match(tick, /requestAnimationFrame\(tickOrbFades\)/);
-  assert.match(tick, /stepOrbFade/);
-  assert.match(tick, /style\.opacity = shown/);
-  assert.doesNotMatch(tick, /setProperty\("--hit-opacity"|classList\.(add|remove)|style\.transition/);
+  const painter = paintOrbOpacity.toString();
+  assert.match(painter, /orbOpacityText/);
+  assert.match(painter, /style\.opacity = shown/);
+  assert.match(painter, /removeProperty\("--hit-opacity"\)/);
+  assert.doesNotMatch(painter, /setProperty\("--hit-opacity"|requestAnimationFrame/);
   assert.equal(orbOpacityText(1), "1.00");
   assert.equal(orbOpacityText(0.18), "0.18");
   const shellNode = {

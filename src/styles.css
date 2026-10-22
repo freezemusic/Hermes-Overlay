@@ -2003,10 +2003,11 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 }
 
 .morph[data-state="orb"][data-hit-id] {
-  /* The script writes inline opacity. A CSS transition on this property
-     snaps one frame backward when the layer is torn down at the end. */
-  opacity: 1;
-  transition: none !important;
+  /* Inline opacity is the only animated value. Pinning opacity: 1,
+     especially with !important, keeps the disc solid. The 120ms
+     transition runs in the compositor after one poll. will-change
+     stays so the layer is not torn down on the last frame. */
+  transition: opacity 120ms cubic-bezier(0, 0, .2, 1);
   will-change: opacity;
 }
 
@@ -2819,7 +2820,7 @@ html[data-pass="1"] .plan-hit-host * {
     transition-delay: 0s !important;
   }
   .morph[data-state="orb"] {
-    transition: none !important;
+    transition: opacity 1ms linear !important;
   }
   .is-thinking .spinner,
   .bot-btn.orb--cron.is-running::after {
