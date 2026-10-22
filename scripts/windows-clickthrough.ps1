@@ -673,7 +673,7 @@ try {
   while ((Get-Date) -lt $deadline -and -not $gone) {
     Start-Sleep -Milliseconds 200
     if (-not $tappedAgain -and ((Get-Date) - $escapeAt).TotalSeconds -gt 1.2) {
-      # A focused field eats the first Escape. The second closes the panel.
+      # The first Escape closes the focused or topmost panel. A second tap is a no-op once that panel is gone.
       [ClickProbe]::Tap(0x1B)
       $tappedAgain = $true
     }

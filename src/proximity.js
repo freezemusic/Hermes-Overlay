@@ -200,6 +200,47 @@ export function guardPublishedHits({
   return { rects: next, kept: false };
 }
 
+/**
+ * One Escape closes one layer.
+ * An open orb menu, session dropdown, or slash popup goes first.
+ * Otherwise the panel that holds focus, then the highest open panel.
+ * A focused field does not spend the key on blur alone.
+ */
+export function escapeTarget({
+  menuOpen = false,
+  dropdownOpen = false,
+  slashOpen = false,
+  focusedPanelId = "",
+  topPanelId = "",
+} = {}) {
+  if (menuOpen) return { kind: "menu", id: "" };
+  if (dropdownOpen) return { kind: "dropdown", id: "" };
+  if (slashOpen) return { kind: "slash", id: "" };
+  const id = String(focusedPanelId || topPanelId || "");
+  if (!id) return { kind: "none", id: "" };
+  return { kind: "panel", id };
+}
+
+/** Orb or preview pill within HIT_MARGIN_PX. Panels are ignored. */
+function orbOrPillUnder(cursor, rects) {
+  if (!cursor) return null;
+  let best = null;
+  for (const rect of rects) {
+    if (!(isOrbHit(rect) || isPillHit(rect)) || !(rect.w >= 1) || !(rect.h >= 1)) continue;
+    const distance = distanceToHit(cursor.x, cursor.y, rect);
+    if (distance > HIT_MARGIN_PX) continue;
+    const next = {
+      id: rect.id,
+      distance,
+      area: rect.w * rect.h,
+      latched: false,
+      z: rect.z || 0,
+    };
+    if (!best || preferHit(next, best)) best = next;
+  }
+  return best ? best.id : null;
+}
+
 /** One element under the cursor. Inside a rect beats margin-only neighbours. */
 export function elementUnderCursor(cursor, rects, margin = HIT_MARGIN_PX, latchedIds = []) {
   if (!cursor) return null;
@@ -231,7 +272,8 @@ function preferHit(candidate, current) {
  * Panels stay opaque and capture the cursor. Holding the modifier washes every
  * panel out and captures none of them.
  * Orbs stay faded and click-through. Only the orb under or near the cursor
- * turns solid and clickable while the modifier is held.
+ * turns solid and clickable while the modifier is held. An orb or pill within
+ * HIT_MARGIN_PX wins over a panel that also contains that point (R-CT-02).
  * A message-preview pill stays visually solid. It captures only while the
  * modifier is held over it. A close button captures only while the modifier
  * is up. While the modifier is held it passes through with the panel. Toasts stay
@@ -245,7 +287,8 @@ export function elementStates({
   margin = HIT_MARGIN_PX,
   minOpacity = 0.18,
 } = {}) {
-  const under = elementUnderCursor(cursor, rects, margin, latchedIds);
+  const under = (held && orbOrPillUnder(cursor, rects))
+    || elementUnderCursor(cursor, rects, margin, latchedIds);
   const floor = Number.isFinite(minOpacity) ? minOpacity : 0.18;
   return rects.map((rect) => {
     const here = !!cursor && under === rect.id;

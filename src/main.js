@@ -124,6 +124,7 @@ import {
   botIdFromHit,
   POINTER_QUIET_MS,
   composerKeyAction,
+  escapeTarget,
   ownComposerKey,
   MODIFIER_ARM_MS,
   nextDropdownOpen,
@@ -6402,12 +6403,26 @@ async function refreshSlash() {
   renderSlashPopup();
 }
 
-function topOpenPanel() {
+function topOpenPanelId() {
   const shells = [...document.querySelectorAll(".morph")].filter(
     (shell) => shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing"),
   );
   shells.sort((a, b) => (Number(b.style.zIndex) || 0) - (Number(a.style.zIndex) || 0));
-  return shells[0]?.querySelector(".center-panel") || null;
+  return shells[0]?.dataset.botId || "";
+}
+
+function focusedOpenPanelId() {
+  const shell = document.activeElement?.closest?.(".morph");
+  if (!shell || shell.classList.contains("is-collapsing")) return "";
+  if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel") return "";
+  return shell.dataset.botId || "";
+}
+
+function closeOpenPanel(id) {
+  if (id === "settings") closeSettings();
+  else if (id === "kanban") closeKanban();
+  else if (id === "cron") closeCron();
+  else if (id) closeBotPanel(id);
 }
 
 let composerField = null;
@@ -6588,32 +6603,35 @@ function setupComposer() {
     if (composerField && !composerField.contains(event.target)) composerField = null;
   }, true);
   window.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
+    if (event.key !== "Escape" || event.repeat) return;
     const menu = $("#orb-menu");
-    if (menu && !menu.hidden) {
+    const action = escapeTarget({
+      menuOpen: !!(menu && !menu.hidden),
+      dropdownOpen: !!state.dropdownOpen,
+      slashOpen: slashPopupOpen(),
+      focusedPanelId: focusedOpenPanelId(),
+      topPanelId: topOpenPanelId(),
+    });
+    if (action.kind === "none") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (action.kind === "menu") {
       closeOrbMenu();
       return;
     }
-    if (state.dropdownOpen) {
+    if (action.kind === "dropdown") {
       state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "escape");
       return;
     }
-    if (slashPopupOpen()) {
+    if (action.kind === "slash") {
       closeSlash();
       return;
     }
-    if (isTextField(document.activeElement)) {
-      document.activeElement.blur();
-      syncLatch();
-      return;
-    }
-    const top = topOpenPanel();
-    if (!top) return;
-    if (top.id === "settings") closeSettings();
-    else if (top.id === "kanban-panel") closeKanban();
-    else if (top.id === "cron-panel") closeCron();
-    else if (top.dataset.botId) closeBotPanel(top.dataset.botId);
-  });
+    const active = document.activeElement;
+    if (active && active !== document.body && typeof active.blur === "function") active.blur();
+    closeOpenPanel(action.id);
+    syncLatch();
+  }, true);
   $("#conn-banner")?.addEventListener("click", (event) => {
     if (event.target.closest?.("[data-action='settings']")) openSettings();
   });

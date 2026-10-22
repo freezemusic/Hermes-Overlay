@@ -98,6 +98,53 @@ export function anchorInBox({
   return { x: ax, y: ay, header };
 }
 
+/**
+ * A box that hangs off the viewport shrinks on the free edge and stays
+ * pinned to the orb. Bottom headers keep the orb on the bottom of the card.
+ * The card never grows, and it never leaves the screen (R-PN-01).
+ */
+function fitShellOnScreen(anchorX, anchorY, anchor, boxW, boxH, screenW, screenH) {
+  const r = ORB / 2;
+  let width = boxW;
+  let height = boxH;
+  let left = anchorX - anchor.x;
+  let top = anchorY - anchor.y;
+  const overflows = left < -0.5
+    || top < -0.5
+    || (screenW > 0 && (width > screenW + 0.5 || left + width > screenW + 0.5))
+    || (screenH > 0 && (height > screenH + 0.5 || top + height > screenH + 0.5));
+  if (!overflows) {
+    return { left, top, width, height, ax: anchor.x, ay: anchor.y };
+  }
+  if (screenW > 0) width = Math.min(width, screenW);
+  if (screenH > 0) height = Math.min(height, screenH);
+  const pinEndX = anchor.x > boxW / 2;
+  const pinEndY = anchor.header === "bottom";
+  left = pinEndX ? anchorX - (width - r) : anchorX - r;
+  top = pinEndY ? anchorY - (height - r) : anchorY - r;
+  if (pinEndY && top < 0) {
+    height = Math.min(height, Math.max(r * 2, anchorY + r));
+    if (screenH > 0) height = Math.min(height, screenH);
+    top = anchorY - (height - r);
+  }
+  if (!pinEndY && screenH > 0 && top + height > screenH) {
+    height = Math.min(height, Math.max(r * 2, screenH - anchorY + r));
+    top = anchorY - r;
+  }
+  if (left < 0) left = 0;
+  if (top < 0) top = 0;
+  if (screenW > 0 && left + width > screenW) left = Math.max(0, screenW - width);
+  if (screenH > 0 && top + height > screenH) top = Math.max(0, screenH - height);
+  return {
+    left,
+    top,
+    width,
+    height,
+    ax: Math.min(width, Math.max(0, anchorX - left)),
+    ay: Math.min(height, Math.max(0, anchorY - top)),
+  };
+}
+
 export function placeShell(anchorX, anchorY, boxW, boxH, screenW, screenH) {
   const edge = screenEdge(anchorX, anchorY, screenW, screenH);
   const anchor = anchorInBox({
@@ -109,14 +156,15 @@ export function placeShell(anchorX, anchorY, boxW, boxH, screenW, screenH) {
     screenW,
     screenH,
   });
+  const fitted = fitShellOnScreen(anchorX, anchorY, anchor, boxW, boxH, screenW, screenH);
   return {
     edge,
     header: anchor.header,
-    anchor,
-    left: anchorX - anchor.x,
-    top: anchorY - anchor.y,
-    width: boxW,
-    height: boxH,
+    anchor: { x: fitted.ax, y: fitted.ay, header: anchor.header },
+    left: fitted.left,
+    top: fitted.top,
+    width: fitted.width,
+    height: fitted.height,
   };
 }
 

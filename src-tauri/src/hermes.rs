@@ -2672,6 +2672,33 @@ mod tests {
             assert_eq!(canonical_bot_chat(&sessions).unwrap().id, real_id);
         }
 
+        let ff_daily = vec![
+            devon_chat(
+                "20261013_180130_88f994",
+                "desktop",
+                1791914490.0,
+                1792500000.0,
+                12,
+                "ff daily",
+            ),
+            devon_chat(
+                "api_1792573589_0c14ed12",
+                "api_server",
+                1792573589.0,
+                1792573600.0,
+                0,
+                "",
+            ),
+        ];
+        let ff_opened =
+            session_for_startup(&ff_daily, "api_1792573589_0c14ed12", true, 1792573600.0).unwrap();
+        assert_eq!(ff_opened.id, "20261013_180130_88f994");
+        assert!(!ff_opened.read_only);
+        assert_eq!(
+            canonical_bot_chat(&ff_daily).unwrap().id,
+            "20261013_180130_88f994"
+        );
+
         let mut leased = devon_chat(
             "desk-real",
             "desktop",

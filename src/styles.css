@@ -1261,29 +1261,34 @@ html, body {
 
 .chat-messages,
 .slash-popup,
-.settings-card {
+.settings-card,
+.settings-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--bot-20) transparent;
 }
 
 .chat-messages::-webkit-scrollbar,
 .slash-popup::-webkit-scrollbar,
-.settings-card::-webkit-scrollbar { width: 6px; }
+.settings-card::-webkit-scrollbar,
+.settings-scroll::-webkit-scrollbar { width: 6px; }
 
 .chat-messages::-webkit-scrollbar-track,
 .slash-popup::-webkit-scrollbar-track,
-.settings-card::-webkit-scrollbar-track { background: transparent; }
+.settings-card::-webkit-scrollbar-track,
+.settings-scroll::-webkit-scrollbar-track { background: transparent; }
 
 .chat-messages::-webkit-scrollbar-thumb,
 .slash-popup::-webkit-scrollbar-thumb,
-.settings-card::-webkit-scrollbar-thumb {
+.settings-card::-webkit-scrollbar-thumb,
+.settings-scroll::-webkit-scrollbar-thumb {
   background: var(--bot-20);
   border-radius: 3px;
 }
 
 .chat-messages::-webkit-scrollbar-thumb:hover,
 .slash-popup::-webkit-scrollbar-thumb:hover,
-.settings-card::-webkit-scrollbar-thumb:hover { background: var(--bot-40); }
+.settings-card::-webkit-scrollbar-thumb:hover,
+.settings-scroll::-webkit-scrollbar-thumb:hover { background: var(--bot-40); }
 
 .chat-messages {
   flex: 1 1 96px;
@@ -1886,10 +1891,19 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 #settings-form {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 1 1 auto;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--sp-4);
+}
+
+.settings-scroll {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: var(--sp-4);
+  overscroll-behavior: contain;
 }
 
 .morph {
@@ -2299,7 +2313,7 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   bottom: 0;
   width: auto;
   /* Fill the shell. height:auto let the settings form grow to its content
-     (~1200px) and the bottom header laid out below the card. */
+     (~2256px on a 1080px screen) and the close button laid out off-screen. */
   height: 100%;
   max-height: 100%;
   min-height: 0;
@@ -2308,6 +2322,16 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   background: transparent;
   box-shadow: none;
   overflow: visible;
+}
+
+.morph .center-panel.settings-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.morph .center-panel.cron-panel {
+  overflow: auto;
 }
 
 .morph .active-avatar { display: none; }
@@ -2345,6 +2369,7 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 .morph[data-header="bottom"] .center-panel > .panel-header,
 .morph[data-header="bottom"] .settings-head {
   order: 8;
+  flex: 0 0 auto;
   min-height: 44px;
   align-items: center;
 }
@@ -2355,14 +2380,15 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   max-height: 100%;
   min-height: 0;
   padding-bottom: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 
+/* The header stays in the visible card. Sticky-inside-the-form put 關閉
+   at the bottom of the ~2256px content (y≈2430 on a 1080px screen). */
 .morph[data-header="bottom"] .settings-head {
-  position: sticky;
-  bottom: 0;
+  position: static;
   z-index: 3;
-  margin-top: auto;
+  margin-top: 0;
   background: #f8f8fc;
 }
 

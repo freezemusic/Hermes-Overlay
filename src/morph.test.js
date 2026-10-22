@@ -559,6 +559,28 @@ test("the header slot is the orb centre and the orb does not fly", () => {
   assert.equal(headerSide({ edge: "right", orbY: 700, boxH: PANEL_H, screenH: screen.h }), "bottom");
 });
 
+test("a 2256px settings card on 1920×1080 stays on screen and keeps the orb", () => {
+  const fitted = placeShell(1704, 1016, 680, 760, 1920, 1080);
+  assert.equal(fitted.height, 760);
+  assert.equal(fitted.top, 1016 - (760 - ORB / 2));
+  assert.equal(fitted.top + fitted.anchor.y, 1016);
+  assert.ok(fitted.top >= 0 && fitted.top + fitted.height <= 1080);
+
+  const placed = placeShell(1704, 1016, 680, 2256, 1920, 1080);
+  assert.equal(placed.header, "bottom");
+  assert.equal(placed.top, 0);
+  assert.equal(placed.height, 1016 + ORB / 2);
+  assert.ok(placed.height <= 1080);
+  assert.ok(placed.height >= 240);
+  assert.ok(placed.left >= 0);
+  assert.ok(placed.left + placed.width <= 1920);
+  assert.ok(placed.top + placed.height <= 1080);
+  assert.equal(placed.left + placed.anchor.x, 1704);
+  assert.equal(placed.top + placed.anchor.y, 1016);
+  const closeTop = placed.top + placed.height - 44;
+  assert.ok(closeTop >= 0 && closeTop + 44 <= 1080);
+});
+
 test("a preview cannot cancel a close or replace an open panel", () => {
   assert.equal(previewBlocked({ intent: "close" }), true);
   assert.equal(previewBlocked({ collapsing: true, state: "panel" }), true);

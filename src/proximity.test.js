@@ -17,6 +17,7 @@ import {
   latchedElementIds,
   linuxAltWarning,
   composerKeyAction,
+  escapeTarget,
   ownComposerKey,
   modifierMatches,
   modifierEngages,
@@ -176,6 +177,30 @@ test("round avatar ignores bounding-box corners", () => {
   assert.equal(isPillHit({ id: "pill:a" }), true);
   assert.equal(isOrbHit({ id: "pill:a", round: true }), false);
   assert.equal(isPanelHit({ id: "pill:a" }), false);
+});
+
+test("Escape closes the focused panel, otherwise the topmost", () => {
+  assert.deepEqual(escapeTarget({ menuOpen: true, focusedPanelId: "settings", topPanelId: "mt-reviewer" }), { kind: "menu", id: "" });
+  assert.deepEqual(escapeTarget({ dropdownOpen: true, focusedPanelId: "settings" }), { kind: "dropdown", id: "" });
+  assert.deepEqual(escapeTarget({ slashOpen: true, topPanelId: "mt-reviewer" }), { kind: "slash", id: "" });
+  assert.deepEqual(escapeTarget({ focusedPanelId: "settings", topPanelId: "mt-reviewer" }), { kind: "panel", id: "settings" });
+  assert.deepEqual(escapeTarget({ focusedPanelId: "", topPanelId: "mt-reviewer" }), { kind: "panel", id: "mt-reviewer" });
+  assert.deepEqual(escapeTarget({}), { kind: "none", id: "" });
+});
+
+test("a held orb wins the hit test over a panel that covers it", () => {
+  const rects = [
+    { id: "bot:mt-reviewer", x: 100, y: 900, w: 44, h: 44, z: 1, round: true },
+    { id: "settings", x: 0, y: 0, w: 680, h: 2256, z: 30 },
+  ];
+  const cursor = { x: 120, y: 920 };
+  const held = elementStates({ held: true, cursor, rects, ...fadeOpts });
+  assert.equal(byId(held, "bot:mt-reviewer").capture, true);
+  assert.equal(byId(held, "bot:mt-reviewer").opacity, 1);
+  assert.equal(byId(held, "settings").capture, false);
+  const idle = elementStates({ held: false, cursor, rects, ...fadeOpts });
+  assert.equal(byId(idle, "bot:mt-reviewer").capture, false);
+  assert.equal(byId(idle, "settings").capture, true);
 });
 
 test("the close button passes through while the modifier is held", () => {

@@ -22,13 +22,13 @@
 
 ## 1. 穿透同 Ctrl 規則（R-CT）
 
-**R-CT-01** overlay 除咗按 Ctrl 規則可以互動嘅光球／面板之外，**絕對唔可以擋住後面程式嘅點擊、hover 同滾動**。面板命中區係矩形本身，矩形外 10px 要穿透；光球仍然用 12px。頁腳量度跌出殼外時，命中區只包住殼，唔好拉成成版高。
+**R-CT-01** overlay 除咗按 Ctrl 規則可以互動嘅光球／面板之外，**絕對唔可以擋住後面程式嘅點擊、hover 同滾動**。光球同面板嘅命中區可以伸出矩形外最多 12px（`HIT_MARGIN_PX`，`interaction.rs`）。再外嘅點一定要穿透。頁腳量度跌出殼外時，命中區只包住殼，唔好拉成成版高。
 - 來源：Devon（多次；2026-10-21「根本按不到後面任何東西」）；SPEC §1、§2 開首。
 - 驗收（Windows，必做）：T-WIN-CLICK 全部點數到；T-WIN-HOVER 有反應；喺後面程式捲動得到。啟動後 0.5s、30s、5 分鐘各做一次（因為 e3db750 起啟動後 0.2s 已經食點擊）。
 - 驗收（盒）：同一套點用 xev／測試窗收到點擊。
 - 狀態：✅(Win) / ❌(Win，全部食咗)。盒：f8 ✅ / b919 ✅（盒測驗唔到呢個 Windows bug）。
 
-**R-CT-02** 光球（Bot、設定、看板、排程）預設半透明（靜止透明度，預設 18%，可設 5–60%）而且穿透：唔收 click、hover、右撳。
+**R-CT-02** 光球（Bot、設定、看板、排程）預設半透明（靜止透明度，預設 18%，可設 5–60%）而且穿透：唔收 click、hover、右撳。按住修飾鍵時，游標下面（或 12px 內）嗰粒光球嘅命中永遠贏過蓋住佢嘅面板，Ctrl+click 要去到嗰粒光球。
 - 來源：Devon Ctrl 規則；SPEC §1.1。
 - 驗收（兩邊）：唔撳 Ctrl 喺光球正中左撳、右撳、hover → 後面視窗收到，光球唔變、唔開 menu、唔出名稱標籤。
 - 狀態：✅(Win) / ❌(Win，因 R-CT-01)。
@@ -75,7 +75,7 @@
 
 ## 2. 面板開關同動畫（R-PN）
 
-**R-PN-01** 每粒光球只開／關自己個面板；開 A 唔會收 B、設定、看板或排程；幾個面板可以同時開，各自獨立。撳已開嘅光球就攞嗰塊去最前。同時開嘅面板唔可以矮過可用下限（一般 240px；排程欄用自己嘅 140px）。畫面放唔晒就重疊邊緣堆疊，唔好壓成一條線，而且每塊都要完整留喺畫面入面。
+**R-PN-01** 每粒光球只開／關自己個面板；開 A 唔會收 B、設定、看板或排程；幾個面板可以同時開，各自獨立。撳已開嘅光球就攞嗰塊去最前。同時開嘅面板唔可以矮過可用下限（一般 240px；排程欄用自己嘅 140px）。畫面放唔晒就重疊邊緣堆疊，唔好壓成一條線，而且每塊都要完整留喺畫面入面。內容高出卡片就喺面板裡面捲，殼同關閉掣留喺可見卡片入面。Esc 關一層：圓球選單、session 下拉、slash 先收；否則關焦點所在嘅面板（輸入框唔會自己食咗呢下），冇焦點就關最上面（z 最高）嗰塊。
 - 來源：Devon；SPEC §2.1–2.3。
 - 驗收（兩邊）：順序開 3 個 bot ＋看板＋排程，全部仲開住；逐個關，其他唔郁。
 - 狀態：❓ / ❓。
@@ -200,13 +200,13 @@
 > 舊版草稿嘅「啟動唔准改已儲存 session id」已經由 R-SS-01／02 取代：主光球唔再跟儲存嘅 id，一律開 Bot Chat。
 
 **R-SS-01** 每個 bot 嘅**主光球面板**預設開 Hermes Desktop／gateway 實際用來收 Bot Chat 的 session。API 有露出 delivery lease 或 home-channel session 就用嗰條（標題要係 `Bot Chat`；空的唔可以壓過有歷史嗰條）。冇露出就用標題剛好係 `Bot Chat` 嘅**最舊** canonical session，**任何 source 都計，包括 `tui`**，只要 API 讀到。`POST /api/sessions/{id}/chat` 寫入 `tui` 會 `permission_denied`（未綁定的標題亦唔會被 Bot Chat door 續寫，displace 會另開一條），所以 `tui` 照打開、顯示只讀，並講明 API 唔接受寫入。有歷史嘅 session 永遠優先於較新的空重複。啟動同打開都**唔新建** session。
-- 來源：Devon（2026-10-21，C-01 裁決）；同日只讀手提同伺服器：forex-forest 唯一 Bot Chat 係 `tui` `20261001_013827_25b1eb`；mt-coder、mt-tester 的真正 Bot Chat 有歷史，e3db750 喺 10:06 開出的空 `api_1792573589_*` 唔用。現行 Hermes REST `_session_response` 冇 lease／home-channel 欄，所以用精確標題查詢（`title=Bot Chat&include_hidden=true`，隱藏列先會出）再按上面的規則揀。
+- 來源：Devon（2026-10-21，C-01 裁決）；同日只讀手提同伺服器：forex-forest 唯一 Bot Chat 係 `tui` `20261001_013827_25b1eb`；mt-coder、mt-tester 的真正 Bot Chat 有歷史，e3db750 喺 10:06 開出的空 `api_1792573589_*` 唔用。ff-daily 的真正 Bot Chat 係 `20261013_180130_88f994`，空的 `api_1792573589_0c14ed12` 唔用。現行 Hermes REST `_session_response` 冇 lease／home-channel 欄，所以用精確標題查詢（`title=Bot Chat&include_hidden=true`，隱藏列先會出）再按上面的規則揀。
 - 驗收（兩邊）：config 入面儲存嘅 session id 指向其他 session，而且有比 Bot Chat 更新嘅 session；啟動之後打開每個主光球面板 → picker 同訊息列表都係有歷史的 canonical Bot Chat。只有 `tui` Bot Chat 時開嗰條，輸入同傳送停用，並顯示只讀原因。閂咗再開一次，結果一樣。單元測試用上面兩組資料。
 - 狀態：❓ / ❌(Win，4 個 bot 被轉走)。單元測試已鎖規則；手提未再驗。
 
 **R-SS-02** app **永遠唔會自動將主光球轉去最新或者任何其他 session**：無論啟動、打開面板、cron 更新 `last_active`、有新 session 出現，都唔會。
 - 來源：Devon（2026-10-21）。
-- 驗收（**Windows 必做**＋盒）：Devon 手提上，forex-forest、mt-coder、mt-reviewer、mt-tester 四個 bot 啟動後、等 60s、逐個開關面板、再重啟一次，全部都仲係 Bot Chat。盒：用 Hermes 開一個新 session 同觸發一次 cron，主光球面板仍然係 Bot Chat。
+- 驗收（**Windows 必做**＋盒）：Devon 手提上，forex-forest、mt-coder、mt-reviewer、mt-tester、ff-daily 啟動後、等 60s、逐個開關面板、再重啟一次，全部都仲係 Bot Chat。盒：用 Hermes 開一個新 session 同觸發一次 cron，主光球面板仍然係 Bot Chat。
 - 狀態：❓ / ❌(Win，就係呢 4 個 bot 被轉走)。盒 b919 ✅（盒測驗唔到）。
 
 **R-SS-03** 啟動時同打開面板時**唔可以新建任何 session**（零次 `POST /api/sessions`）。

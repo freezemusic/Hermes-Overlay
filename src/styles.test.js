@@ -455,7 +455,13 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(collect, /box\.w > laid\.w \+ 1/);
   assert.match(mainSrc, /plan-chip-at/);
   assert.match(css, /\.morph \.center-panel \{[^}]*height:\s*100%/s);
-  assert.match(css, /\.morph\[data-header="bottom"\] \.settings-head \{\s*position:\s*sticky;/);
+  assert.match(css, /\.settings-scroll \{[^}]*overflow:\s*auto/s);
+  assert.match(css, /\.morph \.center-panel\.settings-panel \{[^}]*overflow:\s*hidden/s);
+  assert.match(css, /\.morph\[data-header="bottom"\] \.settings-head \{\s*position:\s*static;/);
+  assert.match(html, /<div class="settings-scroll">/);
+  const scrollAt = html.indexOf('<div class="settings-scroll">');
+  const closeAt = html.indexOf('id="btn-settings-close"');
+  assert.ok(closeAt > 0 && closeAt < scrollAt);
   assert.match(mainSrc, /hit-close/);
   const closeHit = mainSrc.slice(mainSrc.indexOf("function pushCloseHit"), mainSrc.indexOf("function collectHits"));
   assert.match(closeHit, /dataset\.header === "bottom"/);

@@ -930,8 +930,17 @@ pub fn interaction_frame(
     margin: f64,
     cfg: &InteractionConfig,
 ) -> Vec<ElementFrame> {
-    let under =
-        element_under_cursor(cursor, rects, margin, latched_ids).map(|rect| rect.id.clone());
+    // While the modifier is held, the orb or pill under the cursor wins even
+    // when a panel rect also contains that point (R-CT-02). Unheld, the panel
+    // still captures, including over its own docked title orb.
+    let orb_under = if held {
+        orb_or_pill_under_cursor(cursor, rects).map(|rect| rect.id.clone())
+    } else {
+        None
+    };
+    let under = orb_under.or_else(|| {
+        element_under_cursor(cursor, rects, margin, latched_ids).map(|rect| rect.id.clone())
+    });
     rects
         .iter()
         .map(|rect| {
@@ -2415,9 +2424,10 @@ pub fn windows_cursor_ignored(
         if rect_covers_view(rect, view_w, view_h) && !pointer_down {
             return false;
         }
-        // Orbs keep the 12px pad so Ctrl+hover still finds the disc.
-        // A panel captures its rect only: 10px outside must reach the
-        // window behind (R-CT-01). Linux GDK already uses the raw rect.
+        // R-CT-01 allows HIT_MARGIN_PX (12) around orbs and panels.
+        // Orbs use that pad so Ctrl+hover still finds the disc.
+        // Panels use 0, so 10px outside still reaches the window behind.
+        // Linux GDK already uses the raw rect.
         let pad = if is_panel_hit(rect) {
             0.0
         } else {
@@ -3740,6 +3750,47 @@ mod tests {
     }
 
     #[test]
+    fn held_orb_wins_over_a_covering_panel() {
+        let cfg = fade_cfg();
+        let rects = vec![
+            HitRect {
+                id: "bot:mt-reviewer".into(),
+                x: 100.0,
+                y: 900.0,
+                w: 44.0,
+                h: 44.0,
+                z: 1,
+                round: true,
+            },
+            HitRect {
+                id: "settings".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 680.0,
+                h: 2256.0,
+                z: 30,
+                round: false,
+            },
+        ];
+        let on_orb = Some((120.0, 920.0));
+        let held = interaction_frame(true, &[], on_orb, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&held, "bot:mt-reviewer").capture);
+        assert_eq!(frame_of(&held, "bot:mt-reviewer").opacity, 1.0);
+        assert!(!frame_of(&held, "settings").capture);
+        let shape = os_input_rects(true, &rects, &held);
+        assert!(css_point_hits(&shape, 120.0, 920.0));
+        assert!(!windows_cursor_ignored(
+            on_orb, &held, &rects, 1920.0, 1080.0, false
+        ));
+        let idle = interaction_frame(false, &[], on_orb, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(!frame_of(&idle, "bot:mt-reviewer").capture);
+        assert!(frame_of(&idle, "settings").capture);
+        assert!(!windows_cursor_ignored(
+            on_orb, &idle, &rects, 1920.0, 1080.0, false
+        ));
+    }
+
+    #[test]
     fn open_panel_is_hit_testable_before_the_cursor_arrives() {
         let cfg = fade_cfg();
         let rects = vec![
@@ -3883,11 +3934,12 @@ mod tests {
         let cursor = Some((110.0, 110.0));
         let frames = interaction_frame(true, &[], cursor, &rects, HIT_MARGIN_PX, &cfg);
         assert!(
-            !frames
+            frames
                 .iter()
                 .any(|frame| frame.id == "bot:a" && frame.capture),
-            "a covering panel wins the hit test, so capture stays off the orb"
+            "the orb under the cursor wins over the covering panel"
         );
+        assert!(!frames.iter().any(|frame| frame.id == "kanban" && frame.capture));
         let shape = shape_after_flush(true, true, false, cursor, &rects, &frames, &[], &[]);
         assert!(shape.iter().any(|rect| rect.id == "bot:a"));
         assert!(!shape.iter().any(|rect| rect.id == "kanban" || rect.id.starts_with("close:")));

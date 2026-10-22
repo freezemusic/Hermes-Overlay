@@ -100,6 +100,31 @@ test("Devon Bot Chats: tui-only, and history beats a newer empty duplicate", () 
     assert.equal(opened.id, realId);
     assert.equal(opened.readOnly, false);
   }
+
+  const ffDaily = [
+    {
+      id: "20261013_180130_88f994",
+      title: "Bot Chat",
+      source: "desktop",
+      started_at: 1791914490,
+      last_active: 1792500000,
+      message_count: 12,
+      preview: "ff daily",
+    },
+    {
+      id: "api_1792573589_0c14ed12",
+      title: "Bot Chat",
+      source: "api_server",
+      started_at: 1792573589,
+      last_active: 1792573600,
+      message_count: 0,
+      preview: "",
+    },
+  ];
+  assert.equal(canonicalBotChat(ffDaily).id, "20261013_180130_88f994");
+  const ffOpened = resolveSession(ffDaily, { id: "api_1792573589_0c14ed12", explicit: false, anchor: 1792573600 });
+  assert.equal(ffOpened.id, "20261013_180130_88f994");
+  assert.equal(ffOpened.readOnly, false);
 });
 
 test("cron messages already on screen are not appended again", () => {
