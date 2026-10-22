@@ -792,12 +792,52 @@ function planNodeOf(shell) {
   return shell.querySelector(".plan-window") || shell._planHost?.querySelector(".plan-window") || null;
 }
 
+/**
+ * Plan border box beside a panel. Prefer the right side, then the left.
+ * When neither side can hold the full width, keep that preference and clamp
+ * so the plan stays inside the viewport (a 1024px runner used to open at x=-179).
+ */
+export function fitPlanBox({
+  shellLeft = 0,
+  shellTop = 0,
+  shellW = 0,
+  shellH = 0,
+  planW = 0,
+  screenW = 0,
+  screenH = 0,
+} = {}) {
+  const rawW = Math.max(0, Math.round(Number(planW) || 0));
+  const rawH = Math.max(0, Math.round(Number(shellH) || 0));
+  let w = rawW;
+  let h = rawH;
+  if (screenW > 0 && w > screenW) w = Math.floor(screenW);
+  if (screenH > 0 && h > screenH) h = Math.floor(screenH);
+  const roomRight = screenW > 0 ? screenW - (shellLeft + shellW) : Number.POSITIVE_INFINITY;
+  const roomLeft = shellLeft;
+  let side = "right";
+  if (roomRight >= rawW) side = "right";
+  else if (roomLeft >= rawW) side = "left";
+  else side = roomRight >= roomLeft ? "right" : "left";
+  let x = side === "left" ? shellLeft - w : shellLeft + shellW;
+  let y = shellTop;
+  if (screenW > 0) {
+    const maxX = Math.max(0, screenW - w);
+    if (x < 0) x = 0;
+    if (x > maxX) x = maxX;
+  }
+  if (screenH > 0) {
+    const maxY = Math.max(0, screenH - h);
+    if (y < 0) y = 0;
+    if (y > maxY) y = maxY;
+  }
+  return { side, x, y, w, h };
+}
+
 /** Screen box of an open plan. The shell's own box is not widened. */
 export function placePlanHost(shell) {
   const host = shell?._planHost;
   const plan = host?.querySelector?.(".plan-window");
   if (!host || !plan) return false;
-  const side = shell.dataset.planSide === "left" ? "left" : "right";
   const shellLeft = Number.parseFloat(shell.style.left) || 0;
   const shellTop = Number.parseFloat(shell.style.top) || 0;
   const shellW = Number.parseFloat(shell.style.width) || 0;
@@ -808,17 +848,28 @@ export function placePlanHost(shell) {
     || 0,
   );
   if (!(shellW > 0) || !(shellH > 0) || !(planW > 0)) return false;
-  host.dataset.planSide = side;
+  const view = shell.ownerDocument?.defaultView;
+  const fitted = fitPlanBox({
+    shellLeft,
+    shellTop,
+    shellW,
+    shellH,
+    planW,
+    screenW: Number(view?.innerWidth) || 0,
+    screenH: Number(view?.innerHeight) || 0,
+  });
+  shell.dataset.planSide = fitted.side;
+  host.dataset.planSide = fitted.side;
   host.style.position = "absolute";
-  host.style.top = `${shellTop}px`;
-  host.style.width = `${planW}px`;
-  host.style.height = `${shellH}px`;
-  host.style.left = `${side === "left" ? shellLeft - planW : shellLeft + shellW}px`;
+  host.style.top = `${fitted.y}px`;
+  host.style.width = `${fitted.w}px`;
+  host.style.height = `${fitted.h}px`;
+  host.style.left = `${fitted.x}px`;
   // A stacked shell can shrink. A locked plan height would keep painting
   // over the panel below (R-PN-07).
-  plan.style.height = `${shellH}px`;
-  plan.style.maxHeight = `${shellH}px`;
-  shell.dataset.planHeight = String(shellH);
+  plan.style.height = `${fitted.h}px`;
+  plan.style.maxHeight = `${fitted.h}px`;
+  shell.dataset.planHeight = String(fitted.h);
   const z = shell.style.zIndex;
   if (z) host.style.zIndex = z;
   else host.style.removeProperty("z-index");

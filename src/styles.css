@@ -772,7 +772,19 @@ html, body {
 
 .hint { margin: 8px 0; font-size: 12px; line-height: 1.45; }
 
-.alt-warning { color: var(--nous-orange); }
+/* Body text stays #14142b (≥4.5:1). The marker is the orange swatch, not the words (R-VS-01). */
+.alt-warning { color: #14142b; }
+
+.alt-warning::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border-radius: 1px;
+  background: var(--nous-orange);
+}
 
 .panel-actions,
 .settings-actions-main {
@@ -2328,6 +2340,15 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* Author display:flex beats `.center-panel[hidden]`. After one open the
+   settings head (#f8f8fc) stays painted inside the orb clip and covers the
+   blue rim (R-OB-01). hidden and a resting orb must win. */
+.morph .center-panel.settings-panel[hidden],
+.morph[data-state="orb"] .center-panel.settings-panel,
+.morph[data-state="pill"] .center-panel.settings-panel {
+  display: none;
 }
 
 .morph .center-panel.cron-panel {

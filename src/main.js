@@ -35,6 +35,7 @@ import {
   collapseMs,
   dropParkedAnchor,
   placeShell,
+  fitPlanBox,
   previewBlocked,
   revealClip,
   separateStackedPanels,
@@ -971,10 +972,12 @@ function commitClosedShell(shell) {
   shell.querySelectorAll(".center-panel").forEach((panel) => {
     panel.hidden = true;
     panel.getAnimations?.().forEach((anim) => {
-      if (anim.id === "content-collapse") anim.cancel();
+      try { anim.cancel(); } catch { /* already idle */ }
     });
     panel.style.removeProperty("clip-path");
     panel.style.removeProperty("overflow");
+    panel.style.removeProperty("opacity");
+    panel.style.removeProperty("display");
   });
   const plan = planNode(shell);
   if (plan) {
@@ -1021,6 +1024,13 @@ function commitClosedShell(shell) {
   if (dim && (dim.playState === "finished" || dim.playState === "idle")) {
     try { dim.cancel(); } catch { /* the stylesheet opacity is the floor */ }
     shell._idleDim = null;
+  }
+  if (orb) {
+    orb.getAnimations?.().forEach((anim) => {
+      try { anim.cancel(); } catch { /* already idle */ }
+    });
+    orb.style.removeProperty("transform");
+    orb.style.removeProperty("transform-origin");
   }
   if (orb?.classList.contains("active") && !state.openIds.includes(shell.dataset.botId)) {
     orb.classList.remove("active");
@@ -1114,9 +1124,30 @@ function watchPlanGeometry(plan) {
 /** Side from the parked box. Reading layout here is what stalls the seam. */
 function sideFromStyle(shell) {
   const left = Number.parseFloat(shell.style.left) || 0;
+  const top = Number.parseFloat(shell.style.top) || 0;
   const width = Number.parseFloat(shell.style.width) || 0;
-  const roomRight = (window.innerWidth || 1280) - (left + width);
-  return roomRight >= planWidthPx() ? "right" : "left";
+  const height = Number.parseFloat(shell.style.height) || 0;
+  return fitPlanBox({
+    shellLeft: left,
+    shellTop: top,
+    shellW: width,
+    shellH: height,
+    planW: Math.max(planWidthPx(), Number(shell?.dataset?.planWidth) || 0),
+    screenW: window.innerWidth || 0,
+    screenH: window.innerHeight || 0,
+  }).side;
+}
+
+function fittedPlanPane(hostBox, width) {
+  return fitPlanBox({
+    shellLeft: hostBox?.x || 0,
+    shellTop: hostBox?.y || 0,
+    shellW: hostBox?.width ?? hostBox?.w ?? 0,
+    shellH: hostBox?.height ?? hostBox?.h ?? 0,
+    planW: width,
+    screenW: window.innerWidth || 0,
+    screenH: window.innerHeight || 0,
+  });
 }
 
 /** Shell clip that reveals `t` of the plan (0..1 through planEase).
@@ -2593,6 +2624,33 @@ async function promoteClosedSeam(shell) {
   return frames;
 }
 
+/** Final plan width, including the close control, before the 280ms clock.
+ *  A cold open that measured during the reveal sat ~10px short, held, then jumped. */
+function prelayoutOpenPlan(shell, plan) {
+  if (!plan) return Math.round(planWidthPx());
+  plan.hidden = false;
+  plan.style.setProperty("display", "flex", "important");
+  let width = commitPlanWidth(shell, plan, { measure: true });
+  const apply = (value) => {
+    const px = `${Math.round(value)}px`;
+    plan.style.width = px;
+    plan.style.minWidth = px;
+    plan.style.maxWidth = px;
+  };
+  apply(width);
+  void plan.offsetWidth;
+  void plan.offsetHeight;
+  const close = plan.querySelector("[data-role='plan-close']");
+  if (close) {
+    void close.offsetWidth;
+    void close.offsetLeft;
+  }
+  width = commitPlanWidth(shell, plan, { measure: true });
+  apply(width);
+  void plan.offsetWidth;
+  return width;
+}
+
 function growPlan(shell, token) {
   const plan = planNode(shell);
   if (!plan || shell.dataset.planOpen !== "1") return Promise.resolve();
@@ -2662,11 +2720,11 @@ function growPlan(shell, token) {
   };
   const run = (async () => {
     shell._seamFinal = 0;
+    const locked = prelayoutOpenPlan(shell, plan);
+    plan.style.width = `${Math.round(locked)}px`;
     await promoteClosedSeam(shell);
     if (!alive()) return false;
     // Geometry is final before the first reveal sample. No layout read here.
-    const locked = commitPlanWidth(shell, plan);
-    plan.style.width = `${Math.round(locked)}px`;
     const anim = beginSeamClip(shell);
     seamLog("anim-start", `flight=${flight} mode=clip same=shell raster=${plan.dataset.raster || "live"} reveal=0 motion=${shell._motion || ""} quiet=${Math.round(clockAt(shell, "quiet") - performance.now())}`);
     seamMark("plan-seam:clock");
@@ -2761,7 +2819,9 @@ function framesLater(count, fn) {
 }
 
 function pinRestingNodes(shell) {
-  shell?.querySelectorAll(".content, .morph-body, .bubble").forEach((el) => {
+  if (!shell || shell.dataset.state !== "panel") return;
+  shell.querySelectorAll(".content, .morph-body, .bubble").forEach((el) => {
+    if (el.hidden || el.closest?.("[hidden]")) return;
     el.style.opacity = "1";
     el.style.setProperty("animation", "none", "important");
     el.style.setProperty("transition", "none", "important");
@@ -4432,10 +4492,16 @@ function syncPlanSide(shell) {
   const plan = planNode(shell);
   if (!shell || !plan) return;
   const box = shell.getBoundingClientRect();
-  const right = box.right;
-  const width = Math.min(420, (window.innerWidth || 1280) * 0.42);
-  const roomRight = (window.innerWidth || 1280) - right;
-  shell.dataset.planSide = roomRight >= width ? "right" : "left";
+  const width = Math.max(planWidthPx(), Number(shell.dataset.planWidth) || 0);
+  shell.dataset.planSide = fitPlanBox({
+    shellLeft: box.x,
+    shellTop: box.y,
+    shellW: box.width,
+    shellH: box.height,
+    planW: width,
+    screenW: window.innerWidth || 0,
+    screenH: window.innerHeight || 0,
+  }).side;
 }
 
 function openPlanWindow(id, key) {
@@ -6946,11 +7012,11 @@ function collectHits() {
           : (plan.offsetWidth || cached || planWidthPx());
         const host = shell.getBoundingClientRect();
         if (width >= 1 && host.height >= 1) {
-          const paneX = shell.dataset.planSide === "left" ? host.x - width : host.right;
+          const fitted = fittedPlanPane(host, width);
           const hosted = shell._planHost?.getBoundingClientRect?.();
           const pane = hosted && hosted.width >= 1 && hosted.height >= 1
             ? { x: hosted.x, y: hosted.y, w: hosted.width, h: hosted.height }
-            : { x: paneX, y: host.y, w: width, h: host.height };
+            : { x: fitted.x, y: fitted.y, w: fitted.w, h: fitted.h };
           const union = unionOpenPlanRect(rect, { open: true, ...pane });
           rect.x = union.x;
           rect.y = union.y;
@@ -7330,13 +7396,13 @@ function announcePanelHits(shell) {
   };
   if (shell.dataset.planOpen === "1" && host.width >= 1) {
     const width = Number(shell.dataset.planWidth) || planWidthPx();
-    const paneX = shell.dataset.planSide === "left" ? host.x - width : host.right;
+    const fitted = fittedPlanPane(host, width);
     const union = unionOpenPlanRect(rect, {
       open: true,
-      x: paneX,
-      y: host.y,
-      w: width,
-      h: host.height,
+      x: fitted.x,
+      y: fitted.y,
+      w: fitted.w,
+      h: fitted.h,
     });
     rect.x = union.x;
     rect.y = union.y;

@@ -306,6 +306,12 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /\[data-role='plan-close'\]/);
   assert.match(queued, /classList\.remove\("is-morphing", "is-plan-seam", "is-plan-arming", "is-growing-panel"\)/);
   assert.match(queued, /pinRestingNodes\(shell\)/);
+  assert.match(mainSrc, /function pinRestingNodes\(shell\) \{\s*if \(!shell \|\| shell\.dataset\.state !== "panel"\) return;/);
+  assert.match(mainSrc, /function prelayoutOpenPlan/);
+  const seamRun = mainSrc.slice(mainSrc.indexOf("const run = (async () => {"), mainSrc.indexOf("seamLog(\"anim-start\""));
+  assert.match(seamRun, /prelayoutOpenPlan\(shell, plan\)/);
+  assert.ok(seamRun.indexOf("prelayoutOpenPlan") < seamRun.indexOf("beginSeamClip"));
+  assert.match(mainSrc, /PLAN_EASE/);
   assert.match(queued, /resting: true/);
   assert.match(queued, /focus=researcher|deferredParts/);
   const flush = mainSrc.slice(mainSrc.indexOf("function armQuietFlush"), mainSrc.indexOf("function flushDeferredChat"));
@@ -457,6 +463,11 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph \.center-panel \{[^}]*height:\s*100%/s);
   assert.match(css, /\.settings-scroll \{[^}]*overflow:\s*auto/s);
   assert.match(css, /\.morph \.center-panel\.settings-panel \{[^}]*overflow:\s*hidden/s);
+  assert.match(css, /\.morph \.center-panel\.settings-panel\[hidden\][^{]*\{[^}]*display:\s*none/s);
+  assert.match(css, /\.morph\[data-state="orb"\] \.center-panel\.settings-panel[^{]*\{[^}]*display:\s*none/s);
+  assert.match(css, /\.alt-warning \{[^}]*color:\s*#14142b/s);
+  assert.doesNotMatch(css, /\.alt-warning \{[^}]*color:\s*var\(--nous-orange\)/s);
+  assert.match(css, /\.alt-warning::before \{[^}]*background:\s*var\(--nous-orange\)/s);
   assert.match(css, /\.morph\[data-header="bottom"\] \.settings-head \{\s*position:\s*static;/);
   assert.match(html, /<div class="settings-scroll">/);
   const scrollAt = html.indexOf('<div class="settings-scroll">');

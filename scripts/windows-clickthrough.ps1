@@ -265,6 +265,7 @@ $h = $bounds.Height
 $pad = 42
 $orb = 44
 $settings = @{ x = [int]($w - $pad - 152 - $orb / 2); y = [int]($h - $pad - $orb / 2) }
+$kanban = @{ x = [int]($w / 2); y = [int]($pad + $orb / 2) }
 $cron = @{ x = [int]($w - $pad - $orb / 2); y = [int][Math]::Round($h * 0.38) }
 # One field bot sits on the top edge (distributeEdges weight, t=0.21).
 # Its open panel is 420x560 anchored on that orb. Settings is
@@ -435,6 +436,20 @@ function Assert-Through([string]$label, [int]$x, [int]$y) {
     return
   }
   Note-Ok $label "($x,$y) class=$cls"
+}
+
+function Assert-OnScreen([string]$label, $rect) {
+  if (-not $rect) {
+    Note-Fail $label "rect missing"
+    return
+  }
+  $right = $rect.x + $rect.w
+  $bottom = $rect.y + $rect.h
+  if ($rect.x -lt 0 -or $rect.y -lt 0 -or $right -gt $w -or $bottom -gt $h) {
+    Note-Fail $label "rect $($rect.x),$($rect.y) $($rect.w)x$($rect.h) leaves ${w}x${h}"
+    return
+  }
+  Note-Ok $label "$($rect.x),$($rect.y) $($rect.w)x$($rect.h) inside ${w}x${h}"
 }
 
 function Assert-Captured([string]$label, [int]$x, [int]$y) {
@@ -625,6 +640,31 @@ try {
       Note-Fail "plan-opened" "plan rect or close point missing"
     } else {
       Note-Ok "plan-opened" "$($plan.x),$($plan.y) $($plan.w)x$($plan.h) close $($closer.x),$($closer.y)"
+      Assert-OnScreen "plan-on-screen" $plan
+      if ($closer.x -lt 0 -or $closer.y -lt 0 -or $closer.x -ge $w -or $closer.y -ge $h) {
+        Note-Fail "plan-close-on-screen" "close $($closer.x),$($closer.y) leaves ${w}x${h}"
+      } else {
+        Note-Ok "plan-close-on-screen" "$($closer.x),$($closer.y)"
+      }
+      # Kanban's orb sits under the field panel on a 1024px runner.
+      # Ctrl+click must reach that orb (R-CT-02), not the window behind.
+      Assert-Orb "ctrl-orb-under-panel" $kanban
+      if (-not (Wait-Log "hit-announce bot=kanban mode=panel" 8)) {
+        Note-Fail "ctrl-orb-under-panel-opened" "kanban did not open under the field panel"
+      } else {
+        Note-Ok "ctrl-orb-under-panel-opened" ""
+        [ClickProbe]::Ctrl($false)
+        [ClickProbe]::Tap(0x1B)
+        $kanbanGone = Wait-IdGone "kanban" 8
+        $fieldStill = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" })
+        if (-not $kanbanGone) {
+          Note-Fail "ctrl-orb-under-panel-closed" "kanban rect stayed after Escape"
+        } elseif ($fieldStill.Count -lt 1) {
+          Note-Fail "ctrl-orb-under-panel-closed" "Escape closed the field panel"
+        } else {
+          Note-Ok "ctrl-orb-under-panel-closed" ""
+        }
+      }
       $drops = Count-Log "plan-hit-drop bot=field "
       Assert-Captured "plan-close" $closer.x $closer.y
       if (-not (Wait-Count "plan-hit-drop bot=field " $drops 8)) {
@@ -651,6 +691,8 @@ try {
               Note-Fail "plan-reopen" "睇計劃 did not host the plan again"
             } else {
               Note-Ok "plan-reopen" "$($chip.x),$($chip.y)"
+              $reopened = Read-PlanRect "field"
+              if ($reopened) { Assert-OnScreen "plan-reopen-on-screen" $reopened }
             }
           }
         }

@@ -45,6 +45,7 @@ import {
   headerSide,
   iconShift,
   placeShell,
+  fitPlanBox,
   previewBlocked,
   FRAME_BLEED,
   includePlan,
@@ -204,6 +205,47 @@ test("orb, pill, and panel sizes and timings stay fixed", () => {
   assert.equal(COLLAPSE_EASE, "cubic-bezier(.4,0,1,1)");
   assert.doesNotMatch(EASE, /spring/i);
   assert.doesNotMatch(COLLAPSE_EASE, /spring/i);
+});
+
+test("a plan stays inside a 1024px viewport", () => {
+  const narrow = fitPlanBox({
+    shellLeft: 241,
+    shellTop: 42,
+    shellW: 420,
+    shellH: 560,
+    planW: 420,
+    screenW: 1024,
+    screenH: 768,
+  });
+  assert.equal(narrow.side, "right");
+  assert.ok(narrow.x >= 0);
+  assert.ok(narrow.y >= 0);
+  assert.ok(narrow.x + narrow.w <= 1024);
+  assert.ok(narrow.y + narrow.h <= 768);
+  assert.equal(narrow.w, 420);
+  assert.equal(narrow.x, 1024 - 420);
+  const right = fitPlanBox({
+    shellLeft: 40,
+    shellTop: 40,
+    shellW: 420,
+    shellH: 560,
+    planW: 420,
+    screenW: 1920,
+    screenH: 1080,
+  });
+  assert.equal(right.side, "right");
+  assert.equal(right.x, 460);
+  const left = fitPlanBox({
+    shellLeft: 1400,
+    shellTop: 40,
+    shellW: 420,
+    shellH: 560,
+    planW: 420,
+    screenW: 1920,
+    screenH: 1080,
+  });
+  assert.equal(left.side, "left");
+  assert.equal(left.x, 980);
 });
 
 test("the anchor stays on the orb centre and the shell does not move between shapes", () => {
