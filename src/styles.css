@@ -2004,7 +2004,7 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 
 .morph[data-state="orb"][data-hit-id] {
   opacity: var(--hit-opacity, 1);
-  transition: opacity 180ms linear;
+  transition: opacity 120ms cubic-bezier(0, 0, .2, 1);
 }
 
 /* The 12px hit pad and the ::before glow sit outside the disc. A resting

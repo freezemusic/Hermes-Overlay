@@ -825,7 +825,7 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.doesNotMatch(css, /\.orb-core \{[^}]*var\(--bot-20\) 55%/s);
   assert.match(css, /\.bot-btn\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity,\s*1\)/s);
   assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity,\s*1\)/s);
-  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*opacity 180ms linear/s);
+  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*opacity 120ms cubic-bezier\(0, 0, \.2, 1\)/s);
   assert.match(css, /\.morph\[data-state="orb"\] \{\s*transition:\s*opacity 1ms linear !important/s);
   assert.match(html, /光球（包括設定、看板同排程）預設實色/);
   assert.match(css, /\.bot-btn::before,[\s\S]*?rgb\(var\(--bot-rgb\) \/ \.55\)/);

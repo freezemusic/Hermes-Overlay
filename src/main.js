@@ -142,6 +142,8 @@ import {
   nextDropdownOpen,
   selectKeyOpensDropdown,
   BLUR_RELEASE_MS,
+  commitOrbOpacity,
+  orbDiscHit,
 } from "./proximity.js";
 
 const MOCK_BOTS = [
@@ -7286,6 +7288,17 @@ function collectHits() {
         z: level,
         round: shell.dataset.state === "orb",
       };
+      if (shell.dataset.state === "orb") {
+        const button = shell.querySelector(".morph-orb")?.getBoundingClientRect();
+        const disc = button && button.width >= 1 && button.height >= 1
+          ? { x: button.x, y: button.y, w: button.width, h: button.height }
+          : null;
+        const circle = orbDiscHit(box, disc);
+        rect.x = circle.x;
+        rect.y = circle.y;
+        rect.w = circle.w;
+        rect.h = circle.h;
+      }
       const plan = planNode(shell);
       const seam = shell.classList.contains("is-plan-seam");
       const planVisible = plan
@@ -7314,7 +7327,7 @@ function collectHits() {
           rect.h = union.h;
         }
       }
-      coverBottomFooter(rect, shell);
+      if (shell.dataset.state !== "orb") coverBottomFooter(rect, shell);
       rects.push(rect);
     }
     if (shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) {
@@ -7520,6 +7533,13 @@ function orbShellAtPoint(x, y) {
     // dropped the open, and the flag then stayed true (R-KB).
     const visible = visibleBox(shell);
     let box = visible;
+    if (shell.dataset.state === "orb" && box.w >= 1 && box.h >= 1) {
+      const button = shell.querySelector(".morph-orb")?.getBoundingClientRect();
+      const disc = button && button.width >= 1 && button.height >= 1
+        ? { x: button.x, y: button.y, w: button.width, h: button.height }
+        : null;
+      box = orbDiscHit(box, disc);
+    }
     if (box.w < 1 || box.h < 1) {
       const host = shell.getBoundingClientRect();
       const ax = Number(shell.dataset.ax) || ORB / 2;
@@ -8079,15 +8099,23 @@ function applyFrames(frames, interactiveAll = false) {
       anim.cancel();
     });
     const panelShell = el.classList?.contains("morph") && el.dataset.state === "panel";
-    if (!panelShell && el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
-      el.style.setProperty("--hit-opacity", nextOpacity);
-    }
-    // Inline opacity is what the 180ms transition interpolates. A custom
-    // property change does not. A live cron disc keeps the stylesheet's 1.
     const orbShell = el.classList?.contains("morph")
       && (el.dataset.state === "orb" || el.dataset.visual === "orb")
       && !el.classList.contains("is-cron-live");
-    if (orbShell && el.style.opacity !== nextOpacity) el.style.opacity = nextOpacity;
+    if (orbShell) {
+      // One write per target. Setting it again, or touching --hit-opacity,
+      // restarts the stylesheet transition and paints one frame backward.
+      const previous = el.dataset.orbFade == null || el.dataset.orbFade === ""
+        ? null
+        : { target: Number(el.dataset.orbFade), generation: 1 };
+      const commit = commitOrbOpacity(previous, value);
+      if (commit.wrote) {
+        el.dataset.orbFade = String(commit.target);
+        el.style.opacity = String(commit.target);
+      }
+    } else if (!panelShell && el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
+      el.style.setProperty("--hit-opacity", nextOpacity);
+    }
     if (interactiveAll || known?.capture) el.dataset.hitCapture = "1";
     else delete el.dataset.hitCapture;
   });

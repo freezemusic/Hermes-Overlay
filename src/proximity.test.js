@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   colorForIndex,
@@ -8,8 +9,14 @@ import {
   elementStates,
   ORB_PROXIMITY_PX,
   ORB_FADE_MS,
+  ORB_FADE_EASE,
   orbNearOpacity,
   orbProximityOpacity,
+  orbFadeOpacity,
+  playOrbFade,
+  opacityFramesMonotonic,
+  commitOrbOpacity,
+  orbDiscHit,
   modifierEngages,
   isCloseHit,
   isOrbHit,
@@ -126,7 +133,8 @@ test("orbs stay faded and click-through until the modifier is held over one", ()
 
 test("an orb fades only while the cursor is inside the proximity radius", () => {
   assert.equal(ORB_PROXIMITY_PX, 72);
-  assert.ok(ORB_FADE_MS >= 150 && ORB_FADE_MS <= 200);
+  assert.equal(ORB_FADE_MS, 120);
+  assert.equal(ORB_FADE_EASE, "cubic-bezier(0, 0, .2, 1)");
   assert.equal(orbNearOpacity(0.18), 0.18);
   assert.equal(orbNearOpacity(0.5), 0.3);
   assert.equal(orbProximityOpacity(80, { held: false, minOpacity: 0.18 }), 1);
@@ -167,6 +175,59 @@ test("an orb fades only while the cursor is inside the proximity radius", () => 
   assert.equal(byId(pasted, "settings").opacity, 1);
   const quiet = elementStates({ held: false, cursor: null, rects, ...fadeOpts });
   assert.equal(byId(quiet, "bot:a").opacity, 1);
+});
+
+test("orb fade frames stay monotonic and reach the floor inside 250ms", () => {
+  const polls = [];
+  for (let t = 0; t <= 200; t += 16) polls.push({ t, opacity: 0.18 });
+  const fading = playOrbFade(polls);
+  assert.equal(opacityFramesMonotonic(fading), true);
+  assert.ok(fading[0] <= 1);
+  assert.ok(fading[fading.length - 1] <= 0.18 + 1e-6);
+  for (let i = 1; i < fading.length; i += 1) assert.ok(fading[i] <= fading[i - 1] + 1e-6);
+  const restarted = playOrbFade([
+    { t: 0, opacity: 0.18 },
+    { t: 100, opacity: 0.18 },
+  ], { restart: true });
+  assert.equal(opacityFramesMonotonic(restarted), false);
+
+  const returning = playOrbFade([
+    { t: 0, opacity: 0.18 },
+    { t: 160, opacity: 1 },
+    { t: 176, opacity: 1 },
+    { t: 192, opacity: 1 },
+  ]);
+  const back = returning.filter((_, index) => index * (1000 / 30) >= 160);
+  assert.equal(opacityFramesMonotonic(back), true);
+  assert.ok(back[back.length - 1] >= 0.99);
+
+  assert.ok(orbFadeOpacity(250, { delay: 16, to: 0.18 }) <= 0.3);
+  assert.ok(orbFadeOpacity(250, { delay: 80, to: 0.18 }) <= 0.3);
+  assert.ok(orbFadeOpacity(120, { delay: 0, from: 0.18, to: 1 }) >= 0.99);
+  const same = commitOrbOpacity({ target: 0.18, generation: 1 }, 0.18);
+  assert.equal(same.wrote, false);
+  assert.equal(same.generation, 1);
+  const changed = commitOrbOpacity(same, 1);
+  assert.equal(changed.wrote, true);
+  assert.equal(changed.generation, 2);
+
+  const shell = { x: 10, y: 20, w: 44, h: 76 };
+  const disc = { x: 10, y: 20, w: 44, h: 44 };
+  const hit = orbDiscHit(shell, disc);
+  assert.deepEqual(hit, { x: 10, y: 20, w: 44, h: 44 });
+  const circle = { ...hit, round: true };
+  assert.equal(distanceToHit(32, 20, circle), 0);
+  assert.equal(distanceToHit(32, 26, circle), 0);
+  const dropped = { x: 10, y: 20, w: 44, h: 76, round: true };
+  assert.ok(distanceToHit(32, 20, dropped) > 12);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const apply = main.slice(main.indexOf("function applyFrames"), main.indexOf("function paintOrbLabel"));
+  assert.match(apply, /commitOrbOpacity/);
+  assert.match(apply, /dataset\.orbFade/);
+  assert.doesNotMatch(apply, /style\.transition/);
+  const collect = main.slice(main.indexOf("function collectHits"), main.indexOf("let hitFrame"));
+  assert.match(collect, /orbDiscHit/);
+  assert.match(collect, /dataset\.state !== "orb"\) coverBottomFooter/);
 });
 
 test("distance is zero inside a rect", () => {

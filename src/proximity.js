@@ -86,8 +86,132 @@ export const HIT_MARGIN_PX = 12;
  */
 export const ORB_PROXIMITY_PX = 72;
 
-/** Opacity transition while an orb enters or leaves ORB_PROXIMITY_PX. */
-export const ORB_FADE_MS = 180;
+/**
+ * Opacity transition while an orb enters or leaves ORB_PROXIMITY_PX.
+ * 120ms ease-out reaches the ≤30% floor inside 250ms, including one poll.
+ * The same timing brings the disc back to opaque, so Ctrl does not wait
+ * on the old 180ms linear ramp. v92's 180ms linear timing is superseded.
+ */
+export const ORB_FADE_MS = 120;
+export const ORB_FADE_EASE = "cubic-bezier(0, 0, .2, 1)";
+
+function unitBezier(x1, y1, x2, y2) {
+  const cx = 3 * x1;
+  const bx = 3 * (x2 - x1) - cx;
+  const ax = 1 - cx - bx;
+  const cy = 3 * y1;
+  const by = 3 * (y2 - y1) - cy;
+  const ay = 1 - cy - by;
+  const sampleX = (t) => ((ax * t + bx) * t + cx) * t;
+  const sampleY = (t) => ((ay * t + by) * t + cy) * t;
+  const sampleDX = (t) => (3 * ax * t + 2 * bx) * t + cx;
+  return (x) => {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    let t = x;
+    for (let i = 0; i < 8; i += 1) {
+      const dx = sampleX(t) - x;
+      if (Math.abs(dx) < 1e-6) break;
+      const slope = sampleDX(t);
+      if (Math.abs(slope) < 1e-6) break;
+      t -= dx / slope;
+    }
+    t = Math.min(1, Math.max(0, t));
+    return sampleY(t);
+  };
+}
+
+const fadeEase = unitBezier(0, 0, 0.2, 1);
+
+/** CSS ease-out used by the orb opacity transition. */
+export function orbFadeEase(u) {
+  const x = Number(u);
+  if (!Number.isFinite(x)) return 0;
+  return fadeEase(Math.min(1, Math.max(0, x)));
+}
+
+/** Opacity after `elapsedMs`, once the fade has been running for `delay` ms. */
+export function orbFadeOpacity(elapsedMs, {
+  delay = 0,
+  from = 1,
+  to = 0.18,
+  duration = ORB_FADE_MS,
+} = {}) {
+  const t = Number(elapsedMs) - Number(delay);
+  if (!(t > 0)) return from;
+  const u = duration > 0 ? Math.min(1, t / duration) : 1;
+  return from + (to - from) * orbFadeEase(u);
+}
+
+/**
+ * One poll may set a target. The same target again does not start a new
+ * transition: rewriting it restarts the CSS ramp and paints one frame back
+ * toward the old value.
+ */
+export function commitOrbOpacity(previous, next) {
+  const target = Math.round(Number(next) * 100) / 100;
+  if (previous && previous.target === target) {
+    return { target, wrote: false, generation: previous.generation || 1 };
+  }
+  return { target, wrote: true, generation: (previous?.generation || 0) + 1 };
+}
+
+/**
+ * Sampled disc opacity. Repeated polls of the same target stay on one ramp.
+ * `restart` models the old poll, which began the ramp from 1 again.
+ */
+export function playOrbFade(polls, { fps = 30, duration = ORB_FADE_MS, restart = false } = {}) {
+  const step = 1000 / fps;
+  const end = (polls[polls.length - 1]?.t || 0) + duration;
+  let spec = { from: 1, to: 1, started: 0, target: 1, generation: 0 };
+  const frames = [];
+  let index = 0;
+  for (let t = 0; t <= end + 0.01; t += step) {
+    while (index < polls.length && polls[index].t <= t + 1e-6) {
+      const commit = commitOrbOpacity(spec, polls[index].opacity);
+      index += 1;
+      if (!commit.wrote && !restart) continue;
+      const computed = orbFadeOpacity(t - spec.started, { from: spec.from, to: spec.to, duration });
+      const from = restart ? 1 : computed;
+      spec = {
+        from,
+        to: commit.target,
+        started: t,
+        target: commit.target,
+        generation: commit.generation,
+      };
+    }
+    frames.push(orbFadeOpacity(t - spec.started, { from: spec.from, to: spec.to, duration }));
+  }
+  return frames;
+}
+
+/** True when every step keeps the same direction. Equal samples are allowed. */
+export function opacityFramesMonotonic(frames) {
+  let direction = 0;
+  for (let i = 1; i < frames.length; i += 1) {
+    const delta = frames[i] - frames[i - 1];
+    if (Math.abs(delta) <= 1e-6) continue;
+    const sign = delta > 0 ? 1 : -1;
+    if (!direction) direction = sign;
+    else if (sign !== direction) return false;
+  }
+  return true;
+}
+
+/**
+ * Hit circle on the visible disc. A 44×76 shell (the 44px disc plus the
+ * 32px bottom-footer slack) must not drop the circle below the disc.
+ */
+export function orbDiscHit(shell, disc) {
+  const button = disc && disc.w >= 1 && disc.h >= 1 ? disc : null;
+  const host = button || shell;
+  const size = Math.min(host.w, host.h);
+  let x = host.x + (host.w - size) / 2;
+  let y = host.y + (host.h - size) / 2;
+  if (!button && shell && shell.h > shell.w + 1) y = shell.y;
+  return { x, y, w: size, h: size };
+}
 
 /** Near-orb opacity never exceeds this, so the default 18% floor stays ≤30%. */
 export const ORB_NEAR_OPACITY_CAP = 0.3;
