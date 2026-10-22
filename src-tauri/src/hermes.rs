@@ -230,12 +230,41 @@ pub fn most_recent_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSumma
         .max_by(|a, b| session_rank(a, b))
 }
 
+fn is_api_minted(id: &str) -> bool {
+    id.starts_with("api_")
+}
+
+fn message_total(session: &SessionSummary) -> u64 {
+    session.message_count.unwrap_or(0)
+}
+
+/// More messages, then more recent activity, then the smaller id.
+fn busier_session(a: &SessionSummary, b: &SessionSummary) -> std::cmp::Ordering {
+    match message_total(a).cmp(&message_total(b)) {
+        std::cmp::Ordering::Equal => session_rank(a, b),
+        other => other,
+    }
+}
+
+/// Desktop or tui before an `api_` mint, then the older row.
+fn empty_chat_rank(a: &SessionSummary, b: &SessionSummary) -> std::cmp::Ordering {
+    let minted = |session: &SessionSummary| u8::from(is_api_minted(&session.id));
+    match minted(a).cmp(&minted(b)) {
+        std::cmp::Ordering::Equal => older_session(a, b),
+        other => other,
+    }
+}
+
 /// The Bot Chat Hermes Desktop and the gateway deliver into.
 ///
-/// An exposed delivery lease or home-channel row wins when its title is
-/// `Bot Chat` and it is not an empty duplicate of a chat that has history.
-/// Otherwise the oldest titled `Bot Chat` wins, from any source including
-/// `tui`. An empty row never beats one with history.
+/// Desktop registers that chat by the exact title `Bot Chat`
+/// (`profiles.list` field `canonical_session`; session-id pins were removed
+/// in hermes-agent PR 92129). REST `GET /api/sessions` does not include the
+/// lease. When a row is marked, that lease wins if it has messages, or if
+/// every titled row is empty. Otherwise the titled Bot Chat with the most
+/// messages wins (then the most recently active). A 0-message row never
+/// beats one with history. When every titled row is empty, the oldest
+/// Desktop or tui row wins over an `api_`-minted duplicate.
 pub fn canonical_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
     let titled: Vec<&SessionSummary> = sessions
         .iter()
@@ -250,15 +279,13 @@ pub fn canonical_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary
             return Some(delivery);
         }
     }
-    let pool: Vec<&SessionSummary> = if history {
-        titled
+    if history {
+        return titled
             .into_iter()
             .filter(|session| has_chat_history(session))
-            .collect()
-    } else {
-        titled
-    };
-    pool.into_iter().min_by(|a, b| older_session(a, b))
+            .max_by(|a, b| busier_session(a, b));
+    }
+    titled.into_iter().min_by(|a, b| empty_chat_rank(a, b))
 }
 
 /// Latest session that is not a Bot Chat from another surface.
@@ -280,28 +307,15 @@ pub fn session_menu_order(sessions: &[SessionSummary]) -> Vec<&SessionSummary> {
     rows
 }
 
-/// Bot Chat by default. An explicit pick sticks until that session disappears.
-/// Cron raising Bot Chat `last_active` must not steal the pick.
-/// No Bot Chat does not fall through to some other session.
+/// Same choice as startup. An id that still exists stays, and an explicit
+/// flag stays set. No Bot Chat does not fall through to some other session.
 pub fn resolve_session(
     sessions: &[SessionSummary],
     remembered: &str,
     explicit: bool,
     anchor: f64,
 ) -> Option<ResolvedSession> {
-    let remembered = remembered.trim();
-    let picked = if explicit && !remembered.is_empty() {
-        sessions.iter().find(|session| session.id == remembered)
-    } else {
-        None
-    };
-    if let Some(picked) = picked {
-        let newest = most_recent_session(sessions)
-            .map(|session| session.last_active)
-            .unwrap_or(picked.last_active);
-        return Some(finish_resolved(picked, true, anchor.max(newest)));
-    }
-    canonical_bot_chat(sessions).map(|chat| finish_resolved(chat, false, chat.last_active))
+    session_for_startup(sessions, remembered, explicit, anchor)
 }
 
 /// `0.0` is not a timestamp. The same session keeps a saved watermark.
@@ -328,19 +342,70 @@ pub fn merge_session_anchor(
     0.0
 }
 
-/// Startup and main-orb panel open. Always the canonical existing Bot Chat.
-/// A saved id, an explicit pick, a zero anchor, and a newer empty duplicate
-/// do not retarget the main orb. No Bot Chat means nothing to open: do not
-/// take the latest other session, and do not create one. This function
-/// performs no I/O.
+/// A stored row is empty and some other Bot Chat actually has messages.
+fn empty_with_better(saved: &SessionSummary, sessions: &[SessionSummary]) -> bool {
+    if has_chat_history(saved) {
+        return false;
+    }
+    canonical_bot_chat(sessions)
+        .is_some_and(|best| best.id != saved.id && has_chat_history(best))
+}
+
+/// Startup, panel open, and gateway reconnect.
+///
+/// A configured id that still exists is kept, hidden or archived included.
+/// The explicit flag is kept too. The saved anchor is not moved. An empty
+/// stored row that is not explicit yields to a Bot Chat with messages, but
+/// the caller must not write that other id back over a config id that is
+/// already set (`stored_pin_after_resolve`). A missing id falls through to
+/// `canonical_bot_chat`. No Bot Chat and no stored row means nothing to
+/// open: do not take the latest other session, and do not create one.
+/// This function performs no I/O.
 pub fn session_for_startup(
     sessions: &[SessionSummary],
     remembered: &str,
     explicit: bool,
     anchor: f64,
 ) -> Option<ResolvedSession> {
-    let _ = (remembered, explicit, anchor);
+    let remembered = remembered.trim();
+    let anchor = if anchor.is_finite() { anchor } else { 0.0 };
+    if let Some(saved) = sessions.iter().find(|session| session.id == remembered) {
+        if explicit || !empty_with_better(saved, sessions) {
+            return Some(finish_resolved(saved, explicit, anchor));
+        }
+    }
     canonical_bot_chat(sessions).map(|chat| finish_resolved(chat, false, chat.last_active))
+}
+
+/// Config already names a session: leave `session_id`, the explicit flag,
+/// and the anchor alone. The only automatic write is filling an empty id.
+pub fn stored_pin_after_resolve(
+    existing_id: &str,
+    existing_explicit: bool,
+    existing_anchor: f64,
+    resolved_id: &str,
+    resolved_explicit: bool,
+    resolved_anchor: f64,
+) -> Option<(String, bool, f64)> {
+    if !existing_id.trim().is_empty() {
+        return None;
+    }
+    let resolved_id = resolved_id.trim();
+    if resolved_id.is_empty() {
+        return None;
+    }
+    let anchor = if existing_anchor.is_finite() && existing_anchor > 0.0 {
+        existing_anchor
+    } else if resolved_anchor.is_finite() && resolved_anchor > 0.0 {
+        resolved_anchor
+    } else {
+        0.0
+    };
+    Some((
+        resolved_id.to_string(),
+        existing_explicit || resolved_explicit,
+        anchor,
+    ))
 }
 
 /// Suffix of `next` that was not in `seen`. `None` means the transcript diverged.
@@ -353,6 +418,20 @@ pub fn fresh_messages<'a>(seen: &[UiMessage], next: &'a [UiMessage]) -> Option<&
 
 fn json_f64(item: &Value, key: &str) -> f64 {
     item.get(key).and_then(Value::as_f64).unwrap_or(0.0)
+}
+
+fn message_count_of(item: &Value) -> Option<u64> {
+    let keyed = json_count(item, "message_count").or_else(|| json_count(item, "messageCount"));
+    let listed = item
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|rows| rows.len() as u64);
+    match (keyed, listed) {
+        (Some(count), Some(len)) if count == 0 && len > 0 => Some(len),
+        (Some(count), _) => Some(count),
+        (None, Some(len)) => Some(len),
+        (None, None) => None,
+    }
 }
 
 fn json_count(item: &Value, key: &str) -> Option<u64> {
@@ -469,7 +548,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 preview,
                 source,
                 started_at,
-                message_count: json_count(item, "message_count"),
+                message_count: message_count_of(item),
                 delivery: row_marks_delivery(item),
             })
         })
@@ -952,6 +1031,7 @@ pub async fn fetch_overlay_commands(
 }
 
 pub const KANBAN_EMPTY: &str = "未裝 overlay-slash kanban，看板唔會出現。";
+pub const KANBAN_UNAVAILABLE: &str = "呢部 Hermes 未有看板。伺服器冇提供看板功能（404）。";
 pub const KANBAN_STATUSES: [&str; 6] = ["triage", "todo", "ready", "running", "blocked", "done"];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1502,7 +1582,7 @@ pub async fn fetch_kanban_board(
             board: board.to_string(),
             columns: Vec::new(),
             unavailable: true,
-            message: KANBAN_EMPTY.to_string(),
+            message: KANBAN_UNAVAILABLE.to_string(),
         });
     }
     if !(200..300).contains(&status) {
@@ -2444,20 +2524,21 @@ mod tests {
         assert_eq!(most_recent_bot_chat(&sessions).unwrap().id, "newer");
         assert_eq!(canonical_bot_chat(&sessions).unwrap().id, "older");
         let opened = resolve_session(&sessions, "split", false, 10.0).unwrap();
-        assert_eq!(opened.id, "older");
+        assert_eq!(opened.id, "split");
         assert!(!opened.explicit);
+        assert_eq!(opened.anchor, 10.0);
         let pinned = resolve_session(&sessions, "split", true, 10.0).unwrap();
         assert_eq!(pinned.id, "split");
         assert!(pinned.explicit);
-        assert_eq!(pinned.anchor, 200.0);
+        assert_eq!(pinned.anchor, 10.0);
         let missing = resolve_session(&sessions, "gone", true, 1.0).unwrap();
         assert_eq!(missing.id, "older");
         assert!(!missing.explicit);
         assert!(resolve_session(&[], "split", true, 1.0).is_none());
         let kept = session_for_startup(&sessions, "split", false, 10.0).unwrap();
-        assert_eq!(kept.id, "older");
+        assert_eq!(kept.id, "split");
         assert!(!kept.explicit);
-        assert_eq!(kept.anchor, 50.0);
+        assert_eq!(kept.anchor, 10.0);
         assert_eq!(
             merge_session_anchor("split", 1792566430.7, "split", 0.0, 99.0),
             1792566430.7
@@ -2473,9 +2554,9 @@ mod tests {
         );
         assert_eq!(merge_session_anchor("split", 0.0, "split", 0.0, 99.0), 99.0);
         let explicit = session_for_startup(&sessions, "desktop", true, 3.0).unwrap();
-        assert_eq!(explicit.id, "older");
-        assert!(!explicit.explicit);
-        assert_eq!(explicit.anchor, 50.0);
+        assert_eq!(explicit.id, "desktop");
+        assert!(explicit.explicit);
+        assert_eq!(explicit.anchor, 3.0);
         assert_eq!(
             session_for_startup(&sessions, "", false, 0.0).unwrap().id,
             "older"
@@ -2570,8 +2651,8 @@ mod tests {
         assert!(fresh_messages(&seen, &seen).unwrap().is_empty());
     }
 
-    /// Saved ids may point anywhere, and a newer non-chat may exist. Startup
-    /// and panel open still resolve to this bot's Bot Chat and cannot create.
+    /// A saved id that still exists stays. A missing id falls through to the
+    /// canonical Bot Chat. Opening cannot create a session.
     #[test]
     fn startup_and_panel_open_resolve_to_bot_chat_without_creating() {
         let sessions = vec![
@@ -2596,15 +2677,25 @@ mod tests {
         for (id, explicit, anchor) in saved {
             let opened = session_for_startup(&sessions, id, explicit, anchor)
                 .unwrap_or_else(|| panic!("open {id}"));
-            assert_eq!(opened.id, "bot-chat", "{id}");
-            assert!(!opened.explicit, "{id}");
-            assert_eq!(opened.anchor, 40.0, "{id}");
+            if id.is_empty() || id == "missing-id" {
+                assert_eq!(opened.id, "bot-chat", "{id}");
+                assert!(!opened.explicit, "{id}");
+                assert_eq!(opened.anchor, 40.0, "{id}");
+            } else {
+                assert_eq!(opened.id, id, "{id}");
+                assert_eq!(opened.explicit, explicit, "{id}");
+                assert_eq!(opened.anchor, anchor, "{id}");
+            }
         }
         let plain = vec![
             summary("desktop", "System Architect", 99.0),
             summary_source("tui-chat", "Bot Chat", 800.0, "tui"),
         ];
-        let tui_only = session_for_startup(&plain, "desktop", true, 0.0).unwrap();
+        let kept_desktop = session_for_startup(&plain, "desktop", true, 0.0).unwrap();
+        assert_eq!(kept_desktop.id, "desktop");
+        assert!(kept_desktop.explicit);
+        assert!(!kept_desktop.read_only);
+        let tui_only = session_for_startup(&plain, "", false, 0.0).unwrap();
         assert_eq!(tui_only.id, "tui-chat");
         assert!(tui_only.read_only);
         assert!(session_for_startup(
@@ -2622,6 +2713,8 @@ mod tests {
             .expect("select_session");
         let open = &open_src[start..end];
         assert!(open.contains("session_for_startup"));
+        assert!(open.contains("remember_pin_if_absent"));
+        assert!(!open.contains("remember_pin("));
         assert!(!open.contains("ensure_bot_chat"));
         assert!(!open.contains("create_bot_chat"));
         assert!(!open.contains("create_session"));
@@ -2666,9 +2759,23 @@ mod tests {
                 devon_chat(empty_id, "api_server", 1792573589.0, 1792573600.0, 0, ""),
                 summary("notes", "Notes", 1792579999.0),
             ];
-            let opened = session_for_startup(&sessions, empty_id, true, 1792573600.0).unwrap();
+            let opened = session_for_startup(&sessions, empty_id, false, 1792573600.0).unwrap();
             assert_eq!(opened.id, real_id, "{profile}");
             assert!(!opened.read_only, "{profile}");
+            assert!(!opened.explicit, "{profile}");
+            let explicit_empty =
+                session_for_startup(&sessions, empty_id, true, 1792573600.0).unwrap();
+            assert_eq!(explicit_empty.id, empty_id, "{profile}");
+            assert!(explicit_empty.explicit, "{profile}");
+            assert!(stored_pin_after_resolve(
+                empty_id,
+                true,
+                1792573600.0,
+                &real_id,
+                false,
+                1.0
+            )
+            .is_none());
             assert_eq!(canonical_bot_chat(&sessions).unwrap().id, real_id);
         }
 
@@ -2691,9 +2798,19 @@ mod tests {
             ),
         ];
         let ff_opened =
-            session_for_startup(&ff_daily, "api_1792573589_0c14ed12", true, 1792573600.0).unwrap();
+            session_for_startup(&ff_daily, "api_1792573589_0c14ed12", false, 1792573600.0)
+                .unwrap();
         assert_eq!(ff_opened.id, "20261013_180130_88f994");
         assert!(!ff_opened.read_only);
+        assert!(stored_pin_after_resolve(
+            "api_1792573589_0c14ed12",
+            false,
+            1792573600.0,
+            "20261013_180130_88f994",
+            false,
+            1792500000.0
+        )
+        .is_none());
         assert_eq!(
             canonical_bot_chat(&ff_daily).unwrap().id,
             "20261013_180130_88f994"
@@ -2798,6 +2915,221 @@ mod tests {
         let client = &lib[client_start..client_end];
         assert!(!client.contains("create_bot_chat"));
         assert!(!client.contains("create_session"));
+        assert!(client.contains("remember_pin_if_absent"));
+        assert!(!client.contains("remember_pin("));
+    }
+
+    /// Devon 2026-10-22 laptop check of 11a150e. Config and explicit picks
+    /// stay. An empty `api_` Bot Chat loses to a non-empty one. A reconnect
+    /// does not rewrite a session id that is already stored.
+    #[test]
+    fn laptop_session_check_keeps_configured_and_explicit_rows() {
+        let forex = vec![devon_chat(
+            "20261001_013827_25b1eb",
+            "tui",
+            1759279107.0,
+            1792500000.0,
+            2312,
+            "forex",
+        )];
+        let forest = session_for_startup(&forex, "20261001_013827_25b1eb", false, 1759279107.0)
+            .unwrap();
+        assert_eq!(forest.id, "20261001_013827_25b1eb");
+        assert!(forest.read_only);
+        assert_eq!(forest.anchor, 1759279107.0);
+        assert!(stored_pin_after_resolve(
+            "20261001_013827_25b1eb",
+            false,
+            1759279107.0,
+            "20261001_013827_25b1eb",
+            false,
+            1792500000.0
+        )
+        .is_none());
+
+        let mut orch_pick = devon_chat(
+            "20261015_011713_2242f9",
+            "desktop",
+            1791910000.0,
+            1792000000.0,
+            40,
+            "devon pick",
+        );
+        orch_pick.title = "Bot Chat".into();
+        let orch_wrong = devon_chat(
+            "20261020_231552_1372e7",
+            "api_server",
+            1792570000.0,
+            1792571000.0,
+            3,
+            "later",
+        );
+        let orch = vec![orch_wrong, orch_pick];
+        let orch_open =
+            session_for_startup(&orch, "20261015_011713_2242f9", true, 1791910000.0).unwrap();
+        assert_eq!(orch_open.id, "20261015_011713_2242f9");
+        assert!(orch_open.explicit);
+        assert_eq!(orch_open.anchor, 1791910000.0);
+        assert!(stored_pin_after_resolve(
+            "20261015_011713_2242f9",
+            true,
+            1791910000.0,
+            "20261020_231552_1372e7",
+            false,
+            1792571000.0
+        )
+        .is_none());
+
+        let mut ff_real = devon_chat(
+            "20261013_180130_88f994",
+            "desktop",
+            1791914490.0,
+            1792500000.0,
+            373,
+            "判斷截圖顯示嘅問題",
+        );
+        ff_real.title = "判斷截圖顯示嘅問題".into();
+        let ff_empty = devon_chat(
+            "api_1792573589_0c14ed12",
+            "api_server",
+            1792573589.0,
+            1792573600.0,
+            0,
+            "",
+        );
+        let ff_daily = vec![ff_empty, ff_real];
+        assert_eq!(
+            canonical_bot_chat(&ff_daily).unwrap().id,
+            "api_1792573589_0c14ed12"
+        );
+        let ff_open =
+            session_for_startup(&ff_daily, "20261013_180130_88f994", false, 1791914490.0).unwrap();
+        assert_eq!(ff_open.id, "20261013_180130_88f994");
+        assert!(!ff_open.explicit);
+        assert!(!ff_open.read_only);
+        assert_eq!(ff_open.anchor, 1791914490.0);
+        assert!(stored_pin_after_resolve(
+            "20261013_180130_88f994",
+            false,
+            1791914490.0,
+            "api_1792573589_0c14ed12",
+            false,
+            1792573600.0
+        )
+        .is_none());
+
+        let coder_real = devon_chat(
+            "20261012_mtcoder",
+            "desktop",
+            1758000000.0,
+            1792400000.0,
+            42,
+            "coder",
+        );
+        let coder = vec![
+            coder_real,
+            devon_chat(
+                "api_1792573589_f1c99a3b",
+                "api_server",
+                1792573589.0,
+                1792573600.0,
+                0,
+                "",
+            ),
+        ];
+        assert_eq!(
+            session_for_startup(&coder, "api_1792573589_f1c99a3b", false, 1792573600.0)
+                .unwrap()
+                .id,
+            "20261012_mtcoder"
+        );
+        assert!(stored_pin_after_resolve(
+            "api_1792573589_f1c99a3b",
+            false,
+            1792573600.0,
+            "20261012_mtcoder",
+            false,
+            1792400000.0
+        )
+        .is_none());
+
+        let reviewer_only = vec![devon_chat(
+            "api_1792573589_b1b8ccc5",
+            "api_server",
+            1792573589.0,
+            1792573600.0,
+            0,
+            "",
+        )];
+        assert_eq!(
+            session_for_startup(&reviewer_only, "api_1792573589_b1b8ccc5", false, 1792573600.0)
+                .unwrap()
+                .id,
+            "api_1792573589_b1b8ccc5"
+        );
+
+        let tester_empty = devon_chat(
+            "api_1792573589_257658b2",
+            "api_server",
+            1792574000.0,
+            1792574100.0,
+            0,
+            "",
+        );
+        let tester_desktop = devon_chat(
+            "20260901_mttester",
+            "desktop",
+            1750000000.0,
+            1750001000.0,
+            0,
+            "",
+        );
+        let tester = vec![tester_empty.clone(), tester_desktop];
+        assert_eq!(canonical_bot_chat(&tester).unwrap().id, "20260901_mttester");
+        assert_eq!(
+            session_for_startup(&tester, "", false, 0.0).unwrap().id,
+            "20260901_mttester"
+        );
+        let filled = stored_pin_after_resolve("", false, 0.0, "20260901_mttester", false, 1750001000.0)
+            .unwrap();
+        assert_eq!(filled.0, "20260901_mttester");
+        assert!(!filled.1);
+        assert_eq!(filled.2, 1750001000.0);
+        let kept_anchor = stored_pin_after_resolve("", true, 42.0, "20260901_mttester", false, 9.0)
+            .unwrap();
+        assert!(kept_anchor.1);
+        assert_eq!(kept_anchor.2, 42.0);
+
+        let busier = vec![
+            devon_chat("few", "desktop", 1.0, 500.0, 2, "a"),
+            devon_chat("many", "tui", 1.0, 100.0, 80, "b"),
+        ];
+        assert_eq!(canonical_bot_chat(&busier).unwrap().id, "many");
+
+        let counted = parse_session_list(&json!({
+            "data": [
+                {
+                    "id": "by-count",
+                    "title": "Bot Chat",
+                    "messageCount": 4,
+                    "messages": [{"role": "user"}]
+                },
+                {
+                    "id": "by-list",
+                    "title": "Bot Chat",
+                    "messages": [{"role": "user"}, {"role": "assistant"}]
+                },
+                {
+                    "id": "zero-with-list",
+                    "title": "Bot Chat",
+                    "message_count": 0,
+                    "messages": [{"role": "user"}, {"role": "assistant"}, {"role": "user"}]
+                }
+            ]
+        }));
+        assert_eq!(counted[0].message_count, Some(4));
+        assert_eq!(counted[1].message_count, Some(2));
+        assert_eq!(counted[2].message_count, Some(3));
     }
 
     #[test]
@@ -3211,7 +3543,10 @@ data: {}\n\
             .await
             .unwrap();
         assert!(board.unavailable);
-        assert_eq!(board.message, KANBAN_EMPTY);
+        assert_eq!(board.message, KANBAN_UNAVAILABLE);
+        assert!(board.message.contains("404"));
+        assert!(KANBAN_EMPTY.contains("overlay-slash"));
+        assert_ne!(board.message, KANBAN_EMPTY);
         assert!(board.columns.is_empty());
     }
 

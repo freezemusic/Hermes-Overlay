@@ -10,6 +10,7 @@ import {
   previewLine,
   resolveSession,
   sessionLabel,
+  storedPinAfterResolve,
   unseenMessages,
 } from "./sessions.js";
 
@@ -25,8 +26,9 @@ test("Bot Chat is the default even when another session is newer", () => {
   assert.equal(mostRecentBotChat(sessions).id, "older");
   assert.equal(canonicalBotChat(sessions).id, "older");
   const opened = resolveSession(sessions, { id: "split", explicit: false, anchor: 10 });
-  assert.equal(opened.id, "older");
+  assert.equal(opened.id, "split");
   assert.equal(opened.explicit, false);
+  assert.equal(opened.anchor, 10);
   const pinned = resolveSession(sessions, { id: "split", explicit: true, anchor: 10 });
   assert.equal(pinned.id, "split");
   assert.equal(pinned.explicit, true);
@@ -125,6 +127,152 @@ test("Devon Bot Chats: tui-only, and history beats a newer empty duplicate", () 
   const ffOpened = resolveSession(ffDaily, { id: "api_1792573589_0c14ed12", explicit: false, anchor: 1792573600 });
   assert.equal(ffOpened.id, "20261013_180130_88f994");
   assert.equal(ffOpened.readOnly, false);
+});
+
+test("laptop session check keeps a configured id and an explicit pick", () => {
+  const forex = [{
+    id: "20261001_013827_25b1eb",
+    title: "Bot Chat",
+    source: "tui",
+    started_at: 1759279107,
+    last_active: 1792500000,
+    message_count: 2312,
+    preview: "forex",
+  }];
+  const forest = resolveSession(forex, { id: "20261001_013827_25b1eb", explicit: false, anchor: 1759279107 });
+  assert.equal(forest.id, "20261001_013827_25b1eb");
+  assert.equal(forest.readOnly, true);
+  assert.equal(forest.anchor, 1759279107);
+  assert.equal(storedPinAfterResolve(
+    { id: "20261001_013827_25b1eb", explicit: false, anchor: 1759279107 },
+    { id: forest.id, explicit: false, anchor: forest.anchor },
+  ), null);
+
+  const orch = [
+    {
+      id: "20261020_231552_1372e7",
+      title: "Bot Chat",
+      source: "api_server",
+      message_count: 3,
+      last_active: 1792571000,
+    },
+    {
+      id: "20261015_011713_2242f9",
+      title: "Bot Chat",
+      source: "desktop",
+      message_count: 40,
+      last_active: 1792000000,
+    },
+  ];
+  const orchOpen = resolveSession(orch, { id: "20261015_011713_2242f9", explicit: true, anchor: 1791910000 });
+  assert.equal(orchOpen.id, "20261015_011713_2242f9");
+  assert.equal(orchOpen.explicit, true);
+  assert.equal(orchOpen.anchor, 1791910000);
+  assert.equal(storedPinAfterResolve(
+    { id: "20261015_011713_2242f9", explicit: true, anchor: 1791910000 },
+    { id: "20261020_231552_1372e7", explicit: false, anchor: 1792571000 },
+  ), null);
+
+  const ffDaily = [
+    {
+      id: "api_1792573589_0c14ed12",
+      title: "Bot Chat",
+      source: "api_server",
+      started_at: 1792573589,
+      last_active: 1792573600,
+      message_count: 0,
+      preview: "",
+    },
+    {
+      id: "20261013_180130_88f994",
+      title: "判斷截圖顯示嘅問題",
+      source: "desktop",
+      started_at: 1791914490,
+      last_active: 1792500000,
+      message_count: 373,
+      preview: "判斷截圖顯示嘅問題",
+    },
+  ];
+  const ffOpened = resolveSession(ffDaily, { id: "20261013_180130_88f994", explicit: false, anchor: 1791914490 });
+  assert.equal(ffOpened.id, "20261013_180130_88f994");
+  assert.equal(ffOpened.explicit, false);
+  assert.equal(storedPinAfterResolve(
+    { id: "20261013_180130_88f994", explicit: false, anchor: 1791914490 },
+    { id: "api_1792573589_0c14ed12", explicit: false, anchor: 1792573600 },
+  ), null);
+
+  const coder = [
+    {
+      id: "20261012_mtcoder",
+      title: "Bot Chat",
+      source: "desktop",
+      message_count: 42,
+      last_active: 1792400000,
+      preview: "coder",
+    },
+    {
+      id: "api_1792573589_f1c99a3b",
+      title: "Bot Chat",
+      source: "api_server",
+      started_at: 1792573589,
+      last_active: 1792573600,
+      message_count: 0,
+      preview: "",
+    },
+  ];
+  assert.equal(
+    resolveSession(coder, { id: "api_1792573589_f1c99a3b", explicit: false, anchor: 1792573600 }).id,
+    "20261012_mtcoder",
+  );
+  assert.equal(storedPinAfterResolve(
+    { id: "api_1792573589_f1c99a3b", explicit: false, anchor: 1792573600 },
+    { id: "20261012_mtcoder", explicit: false, anchor: 1792400000 },
+  ), null);
+
+  const reviewer = [{
+    id: "api_1792573589_b1b8ccc5",
+    title: "Bot Chat",
+    source: "api_server",
+    message_count: 0,
+    preview: "",
+  }];
+  assert.equal(
+    resolveSession(reviewer, { id: "api_1792573589_b1b8ccc5", explicit: false, anchor: 1 }).id,
+    "api_1792573589_b1b8ccc5",
+  );
+
+  const tester = [
+    {
+      id: "api_1792573589_257658b2",
+      title: "Bot Chat",
+      source: "api_server",
+      started_at: 1792574000,
+      last_active: 1792574100,
+      message_count: 0,
+    },
+    {
+      id: "20260901_mttester",
+      title: "Bot Chat",
+      source: "desktop",
+      started_at: 1750000000,
+      last_active: 1750001000,
+      message_count: 0,
+    },
+  ];
+  assert.equal(canonicalBotChat(tester).id, "20260901_mttester");
+  assert.equal(resolveSession(tester, {}).id, "20260901_mttester");
+  const filled = storedPinAfterResolve(
+    { id: "", explicit: false, anchor: 0 },
+    { id: "20260901_mttester", explicit: false, anchor: 1750001000 },
+  );
+  assert.equal(filled.id, "20260901_mttester");
+  assert.equal(filled.explicit, false);
+  const kept = storedPinAfterResolve(
+    { id: "", explicit: true, anchor: 42 },
+    { id: "20260901_mttester", explicit: false, anchor: 9 },
+  );
+  assert.equal(kept.explicit, true);
+  assert.equal(kept.anchor, 42);
 });
 
 test("cron messages already on screen are not appended again", () => {

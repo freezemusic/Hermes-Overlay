@@ -197,31 +197,44 @@
 **R-KB-03** 未裝 overlay-slash kanban 時顯示「未裝 overlay-slash kanban，看板唔會出現。」，唔可以出假任務。
 - 來源：SPEC §8.2。狀態：❓ / ❓。
 
+**R-KB-04** gateway 對看板路徑回 404（overlay-slash kanban route 唔喺呢部 Hermes）時，顯示「呢部 Hermes 未有看板。伺服器冇提供看板功能（404）。」，字色 `#14142b`，靜態、冇動畫。呢個係功能未提供，唔當逾時，唔進入 R-SY-08 嘅無限重試。
+- 來源：Devon（2026-10-22 手提：看板 endpoint 404）。驗收（單元＋盒）：404 回應之後看板停留喺上面嗰句，`gatewayDown` 係 false；真正連唔到或者逾時仍然行 R-SY-08。
+- 狀態：❓ / ❓。
+
 ---
 
 ## 7. Session（R-SS）
 
 > 2026-10-21 Devon 裁決（C-01）：本節取代 repo `SPEC.md` §5.2、§5.5、§5.7，同埋同本節撞嘅 §5.4、§5.6。
-> 舊版草稿嘅「啟動唔准改已儲存 session id」已經由 R-SS-01／02 取代：主光球唔再跟儲存嘅 id，一律開 Bot Chat。
+> 2026-10-21 曾經寫「啟動唔跟已儲存 session id，一律開標題 Bot Chat」。**已取代**（Devon 2026-10-22 手提，11a150e）：config 或者 explicit 已經有嘅 session 要保留，見下面 R-SS-01／02／04。
 
-**R-SS-01** 每個 bot 嘅**主光球面板**預設開 Hermes Desktop／gateway 實際用來收 Bot Chat 的 session。API 有露出 delivery lease 或 home-channel session 就用嗰條（標題要係 `Bot Chat`；空的唔可以壓過有歷史嗰條）。冇露出就用標題剛好係 `Bot Chat` 嘅**最舊** canonical session，**任何 source 都計，包括 `tui`**，只要 API 讀到。`POST /api/sessions/{id}/chat` 寫入 `tui` 會 `permission_denied`（未綁定的標題亦唔會被 Bot Chat door 續寫，displace 會另開一條），所以 `tui` 照打開、顯示只讀，並講明 API 唔接受寫入。有歷史嘅 session 永遠優先於較新的空重複。啟動同打開都**唔新建** session。
-- 來源：Devon（2026-10-21，C-01 裁決）；同日只讀手提同伺服器：forex-forest 唯一 Bot Chat 係 `tui` `20261001_013827_25b1eb`；mt-coder、mt-tester 的真正 Bot Chat 有歷史，e3db750 喺 10:06 開出的空 `api_1792573589_*` 唔用。ff-daily 的真正 Bot Chat 係 `20261013_180130_88f994`，空的 `api_1792573589_0c14ed12` 唔用。現行 Hermes REST `_session_response` 冇 lease／home-channel 欄，所以用精確標題查詢（`title=Bot Chat&include_hidden=true`，隱藏列先會出）再按上面的規則揀。
-- 驗收（兩邊）：config 入面儲存嘅 session id 指向其他 session，而且有比 Bot Chat 更新嘅 session；啟動之後打開每個主光球面板 → picker 同訊息列表都係有歷史的 canonical Bot Chat。只有 `tui` Bot Chat 時開嗰條，輸入同傳送停用，並顯示只讀原因。閂咗再開一次，結果一樣。單元測試用上面兩組資料。
-- 狀態：❓ / ❌(Win，4 個 bot 被轉走)。單元測試已鎖規則；手提未再驗。
+**R-SS-01** 每個 bot 嘅**主光球面板**開 config 已經記住嘅 session。嗰條 id 喺伺服器存在就用佢，隱藏同 archived 都算存在，啟動、打開面板、同 gateway 重連（R-SY-08）都**唔改** config 嘅 session id、explicit 旗、anchor。explicit 旗唔可以自動清走。config 未有 session id，先至可以寫入一次。
 
-**R-SS-02** app **永遠唔會自動將主光球轉去最新或者任何其他 session**：無論啟動、打開面板、cron 更新 `last_active`、有新 session 出現，都唔會。
-- 來源：Devon（2026-10-21）。
-- 驗收（**Windows 必做**＋盒）：Devon 手提上，forex-forest、mt-coder、mt-reviewer、mt-tester、ff-daily 啟動後、等 60s、逐個開關面板、再重啟一次，全部都仲係 Bot Chat。盒：用 Hermes 開一個新 session 同觸發一次 cron，主光球面板仍然係 Bot Chat。
-- 狀態：❓ / ❌(Win，就係呢 4 個 bot 被轉走)。盒 b919 ✅（盒測驗唔到）。
+已儲存嘅 id 係空、已經唔喺清單、或者條列係空而且有更好的 Bot Chat（而且唔係 explicit），先至跟 Hermes Desktop 嘅次序揀真正嘅 Bot Chat：
+- (a) API 有露出 Desktop delivery lease 或者 `canonical_session` 就用嗰條；空 lease 唔可以壓過有訊息嘅 Bot Chat。
+- (b) 否則用真正有訊息嘅 Bot Chat：訊息最多，打和就最近活動。
+- (c) 有非空候選時，永遠唔開 0 訊息重複。
+- (d) 全部都空，用最舊嗰條；`api_` 開出來嘅重複唔可以壓過 Desktop 或者 `tui`。
+
+`POST /api/sessions/{id}/chat` 寫入 `tui` 會 `permission_denied`，所以 `tui` 照打開、顯示只讀，並講明 API 唔接受寫入。啟動同打開都**唔新建** session。2026-10-21「忽略已儲存 id、淨係跟標題 `Bot Chat`、有歷史就取最舊」**已取代**。
+
+- 來源：Devon（2026-10-22 手提，11a150e 開錯 session 同改寫 config；0 次建立）。Desktop 點揀（查 NousResearch/hermes-agent PR #92129）：`profiles.list` 嘅 `canonical_session` 按**名字**登記 Bot Chat，session id 釘已拿掉；`session.list` 用精確標題 `Bot Chat` 加 `include_hidden`。隱藏列會解析；tool／kanban source 同 archived 唔算入標題登記；壓縮譜系用 `get_compression_tip` 去到 live tip，唔係見個 child 就跟。現行 Hermes REST `GET /api/sessions` 嘅 `_session_response` **冇** lease 欄。Overlay 仍然讀 envelope 嘅 `canonical_session`、`canonical_session_id`、`delivery_session`、`delivery_session_id`、`home_channel_session`、`home_channel`、`lease_session`、`delivery_lease`，同列上嘅 `canonical`／`is_canonical`／`delivery`／`home_channel`／`is_home_channel`。重複開 session 可以把真正對話嘅標題改走，所以 config 記住嘅 id 就算標題唔係 `Bot Chat` 都保留（ff-daily `20261013_180130_88f994`，標題「判斷截圖顯示嘅問題」，373 訊息）。
+- 驗收（兩邊）：ff-daily 開 `20261013_180130_88f994`（config）。mt-orch 開 explicit `20261015_011713_2242f9`，旗保留。forex-forest 留 `20261001_013827_25b1eb`（tui，2312 訊息，只讀）。mt-coder、mt-reviewer、mt-tester：清單入面有非空 Bot Chat 就開嗰條；而家手提錄到嘅列係空的 `api_1792573589_f1c99a3b`、`api_1792573589_b1b8ccc5`、`api_1792573589_257658b2`（e3db750 的「Bot Chat」重複），冇第二條就停喺嗰條，唔再因為標題跳去空重複而改 config。gateway 返嚟之後 session 欄同重連之前一樣。只有 `tui` 時輸入同傳送停用。單元測試用呢組形狀。
+- 狀態：❓ / ❌(Win，11a150e：0 次建立，但開錯 session 同改寫 config)。單元測試已鎖新規則；手提未再驗。
+
+**R-SS-02** 自動路徑**唔改**已記住嘅 session：啟動、打開面板、cron 更新 `last_active`、有新 session、gateway 重連，都唔改 session id、explicit 旗、anchor。explicit 唔會被清走。只有 config 未有 id 先寫入一次。手動 picker（R-SS-04）先可以改 id 同寫上 explicit。2026-10-21「主光球永遠唔可以離開標題 Bot Chat」**已取代**：已記住而且仍然存在嘅 session 就停喺度；空而且唔係 explicit 的儲存列，畫面可以跟有訊息嘅 Bot Chat，但唔寫返 config。
+- 來源：Devon（2026-10-22）。11a150e 喺 gateway 返嚟時改咗 ff-daily、mt-coder、mt-tester、mt-orch 嘅 session id，清走 mt-orch 嘅 explicit，又改咗 anchor。
+- 驗收（**Windows 必做**＋盒）：Devon 手提上，ff-daily、mt-orch、forex-forest 啟動後、等 60s、逐個開關面板、gateway 重連、再重啟一次，session id、explicit、anchor 同開波之前一樣。盒：單元測試 `stored_pin_after_resolve` 喺已有 id 時返回唔寫。
+- 狀態：❓ / ❌(Win，11a150e 改寫 config)。盒未再驗。
 
 **R-SS-03** 啟動時同打開面板時**唔可以新建任何 session**（零次 `POST /api/sessions`）。
 - 來源：Devon（2026-10-21）；6904645 段。
 - 驗收（兩邊）：開 debug log 或者喺 gateway 記錄請求，啟動＋打開全部面板，`POST /api/sessions` = 0 次；前後 `GET /api/sessions` 數目一樣。
-- 狀態：❓ / ✅(盒)；Win ❓。
+- 狀態：❓ / ✅(盒)；Win ❓。11a150e 手提亦係 0 次建立。
 
-**R-SS-04** 面板內嘅 session picker 保留，可以手動揀任何 session（Bot Chat 釘頂）；轉 session 即刻重畫（≤1 幀；要等 fetch 時 ≤333ms）。下一次打開主光球面板仍然返 Bot Chat（見 R-SS-01）。
-- 來源：Devon；SPEC §5.3。驗收（兩邊）：揀另一條 → 即刻顯示；關咗再開 → Bot Chat。
-- 狀態：❓ / ⚠️(盒：重畫 67ms／333ms ✅；「再開返 Bot Chat」未驗)。
+**R-SS-04** 面板內嘅 session picker 保留，可以手動揀任何 session（Bot Chat 釘頂）；轉 session 即刻重畫（≤1 幀；要等 fetch 時 ≤333ms）。手動揀先寫 explicit。下一次打開主光球面板停喺呢個 explicit／已記住嘅 session。2026-10-21「關咗再開返標題 Bot Chat」**已取代**。
+- 來源：Devon；SPEC §5.3；2026-10-22 手提（mt-orch 的 explicit `20261015_011713_2242f9` 要留低）。驗收（兩邊）：揀另一條 → 即刻顯示，config 寫上 explicit；關咗再開 → 同一條，旗仲喺。
+- 狀態：❓ / ⚠️(盒：重畫 67ms／333ms ✅；「再開留喺 explicit」未驗)。
 
 **R-SS-05** 面板開住 Bot Chat 時，新訊息（包括 cron 輸出）即時加入對話；光球收埋時出預覽膠囊（24 小時 `HH:MM`，約 5s）。
 - 來源：SPEC §5.8、§7。狀態：❓ / ❓。
@@ -345,7 +358,7 @@ PR #3 過咗先開新 branch，跟 `SUBORB-SPEC.md` v1（美術監督）。
 
 ## 14. 衝突同未清楚（要 Devon／美術監督裁決）
 
-- **C-01 Session 規則（✅ 已解決，Devon 2026-10-21）**：主光球面板啟動時同打開時一律開 Bot Chat；app 永遠唔自動轉去其他 session，啟動同打開都唔新建 session；picker 保留；其他 session 做 sub-orb。見 R-SS-01–04、R-SS-07。**本檔取代 repo `SPEC.md` §5.2（冇 Bot Chat 就 POST 新建）、§5.5（非明確揀嘅 id 改跟最新 Bot Chat）、§5.7（送出時 404 就新建）**；§5.4、§5.6「明確選擇記住」同 R-SS-04 撞嘅部分亦以本檔為準。原本推斷 §5.5 係 b919b7f 改咗 4 個 bot 嘅原因，未證實。仲有兩點未講（見 C-15）。
+- **C-01 Session 規則（✅ 已解決，Devon 2026-10-21；2026-10-22 收窄）**：啟動同打開都唔新建 session；picker 保留；其他 session 做 sub-orb。見 R-SS-01–04、R-SS-07。**本檔取代 repo `SPEC.md` §5.2（冇 Bot Chat 就 POST 新建）、§5.5（非明確揀嘅 id 改跟最新 Bot Chat）、§5.7（送出時 404 就新建）**；§5.4、§5.6「明確選擇記住」同 R-SS-04 撞嘅部分亦以本檔為準。2026-10-21「一律忽略已儲存 id、淨係開標題 Bot Chat」**已取代**（Devon 2026-10-22 手提）：config 或者 explicit 已經有嘅 session 要保留，見 R-SS-01／02／04。原本推斷 §5.5 係 b919b7f 改咗 4 個 bot 嘅原因，未證實。仲有兩點未講（見 C-15）。
 - **C-02 光球參考版本（✅ 已解決，Devon 2026-10-21）**：參考 build 係 **f8cb046**。R-OB-01、R-CR-02 都同 f8cb046 並排量度。
 - **C-03 排程失敗狀態「.55 核心」**：交帶嘅 Devon 要求寫「failed idle .55 core」，但 Devon 同時要求閒置同 f8cb046 一模一樣（f8cb046 排程光球閒置係 .18，v84 就係因為 .55 地板唔夾）。現行 SPEC §12.2／d8fd9b0：核心跟閒置（.18），只有紅環係實色。本檔跟後者，要確認。
 - **C-04 repo SPEC 自己撞**：§2.8 仲有舊嘅「計劃 240ms `cubic-bezier(.2,.8,.2,1)` scaleX」，§6.8 係 280ms `(.3,.6,.2,1)`；§12.1 寫排程 glyph `#616191` 字重 600，§12.2 寫 glyph `var(--bot)`、冇 `#616191` override。要清走舊條文。

@@ -3,7 +3,19 @@
 export const KANBAN_STATUSES = ["triage", "todo", "ready", "running", "blocked", "done"];
 export const KANBAN_POLL_MS = 5_000;
 export const KANBAN_EMPTY = "未裝 overlay-slash kanban，看板唔會出現。";
+export const KANBAN_UNAVAILABLE = "呢部 Hermes 未有看板。伺服器冇提供看板功能（404）。";
 export const KANBAN_BOARD = "default";
+
+/** 404 or a missing kanban route. This is not a gateway timeout. */
+export function kanbanUnavailable(message) {
+  const text = String(message || "");
+  return (
+    text.includes("未有看板") ||
+    text.includes("未裝 overlay-slash kanban") ||
+    text.includes("找不到路徑（404）") ||
+    /\b404\b/.test(text)
+  );
+}
 
 function clipLine(text) {
   const line = String(text || "").replace(/\s+/g, " ").trim();

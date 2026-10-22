@@ -67,9 +67,11 @@ import {
   KANBAN_BOARD,
   KANBAN_EMPTY,
   KANBAN_POLL_MS,
+  KANBAN_UNAVAILABLE,
   boardFingerprint,
   kanbanChangeLine,
   kanbanErrorText,
+  kanbanUnavailable,
   moveTask,
   normalizeBoard,
   ownerColor,
@@ -5298,8 +5300,10 @@ function paintGatewayWait() {
   const text = gateway.status("gateway") || RECONNECT_STATUS;
   const empty = $("#kanban-empty");
   const root = $("#kanban-board");
-  if (empty && root) {
+  const featureMissing = state.kanban.board?.unavailable && kanbanUnavailable(state.kanban.board.message);
+  if (empty && root && !featureMissing) {
     empty.hidden = false;
+    empty.classList.remove("is-unavailable");
     if (!empty.classList.contains("is-retry")) root.replaceChildren();
     empty.classList.add("is-retry");
     empty.textContent = text;
@@ -5378,9 +5382,12 @@ async function recoverGateway() {
   try {
     board = await invoke("get_kanban_board", { board: KANBAN_BOARD });
   } catch (err) {
-    if (gatewayDown(String(err))) return false;
-    commitKanban(normalizeBoard({ unavailable: true, message: String(err) }));
-    return true;
+    const message = String(err);
+    if (gatewayDown(message)) return false;
+    board = {
+      unavailable: true,
+      message: kanbanUnavailable(message) ? KANBAN_UNAVAILABLE : message,
+    };
   } finally {
     probeGate.end("kanban");
   }
@@ -8645,11 +8652,15 @@ async function refreshKanban() {
       const { invoke } = await import("@tauri-apps/api/core");
       payload = await invoke("get_kanban_board", { board: KANBAN_BOARD });
     } catch (err) {
-      if (gatewayDown(String(err))) {
+      const message = String(err);
+      if (kanbanUnavailable(message)) {
+        payload = { unavailable: true, message: KANBAN_UNAVAILABLE };
+      } else if (gatewayDown(message)) {
         noteGatewayDown();
         return;
+      } else {
+        payload = { unavailable: true, message };
       }
-      payload = { unavailable: true, message: String(err) };
     }
   }
   commitKanban(normalizeBoard(payload));
@@ -8701,8 +8712,9 @@ function paintKanban(board) {
   const title = $("#kanban-title");
   if (title) title.textContent = board.board || "Board";
   if (!root || !empty) return;
-  if (board.retry || (gateway.isDown("gateway") && board.unavailable && gatewayDown(board.message))) {
+  if (board.retry || (gateway.isDown("gateway") && board.unavailable && gatewayDown(board.message) && !kanbanUnavailable(board.message))) {
     empty.hidden = false;
+    empty.classList.remove("is-unavailable");
     empty.classList.add("is-retry");
     empty.textContent = gateway.status("gateway") || RECONNECT_STATUS;
     root.replaceChildren();
@@ -8713,11 +8725,13 @@ function paintKanban(board) {
   if (board.unavailable) {
     empty.hidden = false;
     empty.textContent = board.message || KANBAN_EMPTY;
+    empty.classList.toggle("is-unavailable", kanbanUnavailable(empty.textContent));
     root.replaceChildren();
     scheduleHitSync();
     return;
   }
   empty.hidden = true;
+  empty.classList.remove("is-unavailable");
   root.replaceChildren();
   board.columns.forEach((column) => {
     const col = document.createElement("section");

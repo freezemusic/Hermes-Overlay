@@ -1847,6 +1847,11 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   color: #14142b;
 }
 
+/* R-KB-04: a 404 means this Hermes has no kanban. Same ink, no spinner. */
+.kanban-empty.is-unavailable {
+  color: #14142b;
+}
+
 .kanban-error {
   margin: 0 var(--sp-3) var(--sp-2);
   padding: 6px 8px;

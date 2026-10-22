@@ -45,10 +45,35 @@ function olderThan(a, b) {
   return 0;
 }
 
+function isApiMinted(id) {
+  return String(id || "").startsWith("api_");
+}
+
+/** More messages, then more recent activity, then the smaller id. */
+function busierThan(a, b) {
+  const count = (Number(a.message_count) || 0) - (Number(b.message_count) || 0);
+  if (count) return count;
+  const active = (Number(a.last_active) || 0) - (Number(b.last_active) || 0);
+  if (active) return active;
+  if (a.id < b.id) return 1;
+  if (a.id > b.id) return -1;
+  return 0;
+}
+
+/** Desktop or tui before an api_ mint, then the older row. */
+function emptyRank(a, b) {
+  const minted = (isApiMinted(a.id) ? 1 : 0) - (isApiMinted(b.id) ? 1 : 0);
+  if (minted) return minted;
+  return olderThan(a, b);
+}
+
 /**
- * Delivery lease or home channel when the row is marked and titled Bot Chat,
- * unless that row is an empty duplicate of a chat with history.
- * Otherwise the oldest titled Bot Chat, any source including tui.
+ * Desktop's Bot Chat is the row titled exactly "Bot Chat"
+ * (profiles.list canonical_session; hermes-agent PR 92129).
+ * A marked delivery lease wins when it has messages, or when every titled
+ * row is empty. Otherwise the titled row with the most messages wins.
+ * A 0-message row never beats one with history. When every titled row is
+ * empty, the oldest Desktop or tui row wins over an api_ duplicate.
  */
 export function canonicalBotChat(sessions) {
   const titled = (sessions || []).filter((session) => session && session.id && isBotChat(session));
@@ -56,8 +81,37 @@ export function canonicalBotChat(sessions) {
   const history = titled.some(hasChatHistory);
   const delivery = titled.find((session) => session.delivery === true);
   if (delivery && (!history || hasChatHistory(delivery))) return delivery;
-  const pool = history ? titled.filter(hasChatHistory) : titled;
-  return pool.reduce((best, item) => (olderThan(item, best) < 0 ? item : best));
+  if (history) {
+    return titled.filter(hasChatHistory).reduce((best, item) => (busierThan(item, best) > 0 ? item : best));
+  }
+  return titled.reduce((best, item) => (emptyRank(item, best) < 0 ? item : best));
+}
+
+function emptyWithBetter(saved, sessions) {
+  if (hasChatHistory(saved)) return false;
+  const best = canonicalBotChat(sessions);
+  return Boolean(best && best.id !== saved.id && hasChatHistory(best));
+}
+
+/**
+ * Config already names a session: leave the id, the explicit flag, and the
+ * anchor alone. The only automatic write fills an empty id.
+ */
+export function storedPinAfterResolve(existing, resolved) {
+  const existingId = String(existing?.id || "").trim();
+  if (existingId) return null;
+  const resolvedId = String(resolved?.id || "").trim();
+  if (!resolvedId) return null;
+  const existingAnchor = Number(existing?.anchor);
+  const resolvedAnchor = Number(resolved?.anchor);
+  let anchor = 0;
+  if (Number.isFinite(existingAnchor) && existingAnchor > 0) anchor = existingAnchor;
+  else if (Number.isFinite(resolvedAnchor) && resolvedAnchor > 0) anchor = resolvedAnchor;
+  return {
+    id: resolvedId,
+    explicit: existing?.explicit === true || resolved?.explicit === true,
+    anchor,
+  };
 }
 
 export function mostRecentSession(sessions) {
@@ -93,17 +147,23 @@ export function orderSessions(sessions) {
 }
 
 export function resolveSession(sessions, pin = {}) {
-  const preferred = canonicalBotChat(sessions);
   const remembered = String(pin.id || "").trim();
   const explicit = pin.explicit === true;
-  const anchor = Number(pin.anchor) || 0;
-  const picked = explicit && remembered
-    ? (sessions || []).find((session) => session.id === remembered)
+  const rawAnchor = Number(pin.anchor);
+  const anchor = Number.isFinite(rawAnchor) ? rawAnchor : 0;
+  const saved = remembered
+    ? (sessions || []).find((session) => session && session.id === remembered)
     : null;
-  if (picked) {
-    const newest = Number(mostRecentSession(sessions)?.last_active) || 0;
-    return { id: picked.id, explicit: true, anchor: Math.max(anchor, newest), source: picked.source || "", readOnly: isTuiSource(picked.source) };
+  if (saved && (explicit || !emptyWithBetter(saved, sessions))) {
+    return {
+      id: saved.id,
+      explicit,
+      anchor,
+      source: saved.source || "",
+      readOnly: isTuiSource(saved.source),
+    };
   }
+  const preferred = canonicalBotChat(sessions);
   if (!preferred) return null;
   return {
     id: preferred.id,

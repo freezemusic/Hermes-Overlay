@@ -447,6 +447,55 @@ fn remember_pin(app: &AppHandle, state: &AppState, profile: &str, pin: SessionPi
     persist_pin(app, &state.sessions, &state.config_write, profile, pin);
 }
 
+/// Automatic open, send, and reconnect. A session id already in config is
+/// left untouched, including its explicit flag and anchor. When that id is
+/// still on the server, the resolved row is cached in memory so this process
+/// keeps showing it. A missing id is not replaced in memory.
+fn remember_pin_if_absent(
+    app: &AppHandle,
+    state: &AppState,
+    profile: &str,
+    pin: SessionPin,
+    stored_on_server: bool,
+) {
+    let existing = load_pin(app, state, profile);
+    if let Some((id, explicit, anchor)) = hermes::stored_pin_after_resolve(
+        &existing.id,
+        existing.explicit,
+        existing.anchor,
+        &pin.id,
+        pin.explicit,
+        pin.anchor,
+    ) {
+        remember_pin(
+            app,
+            state,
+            profile,
+            SessionPin {
+                id,
+                explicit,
+                anchor,
+            },
+        );
+        return;
+    }
+    if !stored_on_server {
+        return;
+    }
+    let id = pin.id.trim().to_string();
+    if id.is_empty() {
+        return;
+    }
+    session_map(state).insert(
+        profile.to_string(),
+        SessionPin {
+            id,
+            explicit: pin.explicit,
+            anchor: pin.anchor,
+        },
+    );
+}
+
 fn active_session(app: &AppHandle, state: &AppState, profile: &str) -> Option<String> {
     let pin = load_pin(app, state, profile);
     if pin.id.trim().is_empty() {
@@ -1121,7 +1170,8 @@ async fn open_bot(
             sessions,
         )) => {
             if !session_id.is_empty() {
-                remember_pin(
+                let stored_on_server = sessions.iter().any(|session| session.id == pin.id);
+                remember_pin_if_absent(
                     &app,
                     &state,
                     &profile,
@@ -1130,6 +1180,7 @@ async fn open_bot(
                         explicit,
                         anchor,
                     },
+                    stored_on_server,
                 );
             }
             if !quiet {
@@ -2021,32 +2072,24 @@ async fn session_for_client(
     let sessions = hermes::list_sessions_for_bot_chat(&state.http, root, key)
         .await
         .map_err(|err| explain(&err))?;
-    if pin.explicit && !pin.id.trim().is_empty() {
-        if sessions
-            .iter()
-            .any(|session| session.id == pin.id && hermes::is_tui_source(&session.source))
-        {
-            return Err(hermes::tui_read_only_reason().into());
-        }
-        return Ok(pin.id);
-    }
-    let pick = hermes::canonical_bot_chat(&sessions)
-        .map(hermes::BotChatPick::from_session)
+    let resolved = hermes::session_for_startup(&sessions, &pin.id, pin.explicit, pin.anchor)
         .ok_or_else(|| "未有 Bot Chat".to_string())?;
-    if pick.read_only {
-        return Err(pick.read_only_reason);
+    if resolved.read_only {
+        return Err(resolved.read_only_reason);
     }
-    remember_pin(
+    let stored_on_server = sessions.iter().any(|session| session.id == pin.id);
+    remember_pin_if_absent(
         app,
         state,
         profile,
         SessionPin {
-            id: pick.id.clone(),
-            explicit: false,
-            anchor: 0.0,
+            id: resolved.id.clone(),
+            explicit: resolved.explicit,
+            anchor: resolved.anchor,
         },
+        stored_on_server,
     );
-    Ok(pick.id)
+    Ok(resolved.id)
 }
 
 async fn pin_explicit(

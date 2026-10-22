@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   KANBAN_EMPTY,
+  KANBAN_UNAVAILABLE,
+  kanbanUnavailable,
   KANBAN_STATUSES,
   boardFingerprint,
   kanbanChangeLine,
@@ -98,6 +100,12 @@ test("404 is an empty state and owner colour follows the bot", () => {
   const empty = normalizeBoard({ unavailable: true });
   assert.equal(empty.unavailable, true);
   assert.equal(empty.message, KANBAN_EMPTY);
+  assert.equal(kanbanUnavailable(KANBAN_EMPTY), true);
+  assert.equal(kanbanUnavailable(KANBAN_UNAVAILABLE), true);
+  assert.equal(kanbanUnavailable("找不到路徑（404）。"), true);
+  const feature = normalizeBoard({ unavailable: true, message: KANBAN_UNAVAILABLE });
+  assert.equal(feature.message, KANBAN_UNAVAILABLE);
+  assert.equal(feature.unavailable, true);
   assert.deepEqual(empty.columns, []);
   assert.equal(columnsFromTasks([]).length, KANBAN_STATUSES.length);
   assert.equal(ownerColor("計劃助手", [{ name: "計劃助手", color: "#0000f2" }]), "#0000f2");

@@ -32,6 +32,8 @@ test("gateway down covers the kanban timeout and ignores a rejected key", () => 
   assert.equal(gatewayDown("error sending request for url"), true);
   assert.equal(gatewayDown("Gateway 拒絕金鑰（401）。"), false);
   assert.equal(gatewayDown("Gateway 太忙（429），稍後再試。"), false);
+  assert.equal(gatewayDown("呢部 Hermes 未有看板。伺服器冇提供看板功能（404）。"), false);
+  assert.equal(gatewayDown("找不到路徑（404）。"), false);
 });
 
 test("retry copy is calm and names the next try", () => {
@@ -166,5 +168,8 @@ test("the recover path only reads kanban, cron, profiles, and bot chat", () => {
   const css = fs.readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   assert.match(css, /\.kanban-empty\.is-retry \{[^}]*color:\s*#14142b/s);
   assert.doesNotMatch(css, /\.kanban-empty\.is-retry \{[^}]*animation/s);
+  assert.match(body, /kanbanUnavailable/);
+  assert.match(css, /\.kanban-empty\.is-unavailable \{[^}]*color:\s*#14142b/s);
+  assert.doesNotMatch(css, /\.kanban-empty\.is-unavailable \{[^}]*animation/s);
   assert.match(main, /連唔到 Hermes，自動重試中…|RECONNECT_STATUS/);
 });
