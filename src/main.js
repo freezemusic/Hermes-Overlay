@@ -7420,6 +7420,16 @@ function announcePanelHits(shell) {
   pauseHitSync();
   sendHitRects(keep, "announce-panel");
   debugLog("hit-announce", `bot=${shell.dataset.botId || ""} mode=panel`);
+  // The frozen announce omits close:. A covering plan seam can block the
+  // next flush, so the button's own box is logged for the click-through test.
+  const closeEl = shell.querySelector("[data-hit-id^='close:']");
+  const closeBox = closeEl?.getBoundingClientRect?.();
+  if (closeBox && closeBox.width >= 1 && closeBox.height >= 1) {
+    debugLog(
+      "panel-close-at",
+      `bot=${shell.dataset.botId || ""} x=${Math.round(closeBox.x)} y=${Math.round(closeBox.y)} w=${Math.round(closeBox.width)} h=${Math.round(closeBox.height)}`,
+    );
+  }
   if (shell.dataset.header === "bottom") {
     const slot = bottomHitFloor(shell);
     debugLog(

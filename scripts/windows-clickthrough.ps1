@@ -514,6 +514,46 @@ function Read-PlanClose([string]$bot) {
   return @{ x = [int]$m.Groups['x'].Value; y = [int]$m.Groups['y'].Value }
 }
 
+function Read-PanelCloseBox([string]$bot) {
+  if (-not (Test-Path $log)) { return $null }
+  $hits = Select-String -Path $log -Pattern "panel-close-at bot=$bot " | Select-Object -Last 1
+  if (-not $hits) { return $null }
+  $m = [regex]::Match($hits.Line, 'x=(?<x>-?\d+) y=(?<y>-?\d+) w=(?<w>-?\d+) h=(?<h>-?\d+)')
+  if (-not $m.Success) { return $null }
+  return @{
+    x = [int]$m.Groups['x'].Value
+    y = [int]$m.Groups['y'].Value
+    w = [int]$m.Groups['w'].Value
+    h = [int]$m.Groups['h'].Value
+  }
+}
+
+function Wait-PanelCloseBox([string]$bot, [int]$seconds = 8) {
+  $deadline = (Get-Date).AddSeconds($seconds)
+  while ((Get-Date) -lt $deadline) {
+    $box = Read-PanelCloseBox $bot
+    if ($box -and $box.w -ge 8 -and $box.h -ge 8) { return $box }
+    Start-Sleep -Milliseconds 200
+  }
+  return $null
+}
+
+# Plan × is 22px. A point on the kanban 關閉 control must sit outside that box
+# or planControlUnder swallows the click and the board stays open.
+function Point-OnCloseAwayFrom($box, $avoid) {
+  $points = @(
+    @{ x = [int]($box.x + 4); y = [int]($box.y + $box.h / 2) },
+    @{ x = [int]($box.x + $box.w / 2); y = [int]($box.y + 4) },
+    @{ x = [int]($box.x + $box.w / 2); y = [int]($box.y + $box.h / 2) },
+    @{ x = [int]($box.x + $box.w - 5); y = [int]($box.y + $box.h / 2) }
+  )
+  foreach ($p in $points) {
+    if (-not $avoid) { return $p }
+    if ([Math]::Abs($p.x - $avoid.x) -gt 14 -or [Math]::Abs($p.y - $avoid.y) -gt 14) { return $p }
+  }
+  return $points[0]
+}
+
 function Read-PlanChip([string]$bot) {
   if (-not (Test-Path $log)) { return $null }
   $hits = Select-String -Path $log -Pattern "plan-chip-at bot=$bot " | Select-Object -Last 1
@@ -545,16 +585,6 @@ function Wait-IdGone([string]$id, [int]$seconds = 8) {
     Start-Sleep -Milliseconds 200
   }
   return $false
-}
-
-function Wait-HitId([string]$id, [int]$seconds = 8) {
-  $deadline = (Get-Date).AddSeconds($seconds)
-  while ((Get-Date) -lt $deadline) {
-    $found = @(Read-HitRects | Where-Object { $_.id -eq $id -and $_.w -ge 1 -and $_.h -ge 1 } | Select-Object -First 1)
-    if ($found.Count -ge 1) { return $found[0] }
-    Start-Sleep -Milliseconds 200
-  }
-  return $null
 }
 
 function Assert-Orb([string]$label, $orbPoint) {
@@ -658,21 +688,21 @@ try {
       }
       # Kanban's orb sits under the field panel on a 1024px runner.
       # Ctrl+click must reach that orb (R-CT-02), not the window behind.
-      # The field orb button still holds focus, so Escape closes field and
-      # takes the plan with it. Kanban's own close button is the layer to drop.
+      # The field plan seam keeps hit flushes deferred, so close:kanban is not
+      # in the frozen announce. Click the measured 關閉 button instead.
+      # Escape would close the focused field and take the plan with it.
       Assert-Orb "ctrl-orb-under-panel" $kanban
       if (-not (Wait-Log "hit-announce bot=kanban mode=panel" 8)) {
         Note-Fail "ctrl-orb-under-panel-opened" "kanban did not open under the field panel"
       } else {
         Note-Ok "ctrl-orb-under-panel-opened" ""
         [ClickProbe]::Ctrl($false)
-        $kanbanClose = Wait-HitId "close:kanban" 8
+        $kanbanClose = Wait-PanelCloseBox "kanban" 8
         if (-not $kanbanClose) {
-          Note-Fail "ctrl-orb-under-panel-closed" "kanban close button was not published"
+          Note-Fail "ctrl-orb-under-panel-closed" "kanban close button was not measured"
         } else {
-          $kx = [int]($kanbanClose.x + $kanbanClose.w / 2)
-          $ky = [int]($kanbanClose.y + $kanbanClose.h / 2)
-          Assert-Captured "ctrl-orb-under-panel-close" $kx $ky
+          $spot = Point-OnCloseAwayFrom $kanbanClose $closer
+          Assert-Captured "ctrl-orb-under-panel-close" $spot.x $spot.y
           $kanbanGone = Wait-IdGone "kanban" 8
           $fieldStill = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" })
           if (-not $kanbanGone) {

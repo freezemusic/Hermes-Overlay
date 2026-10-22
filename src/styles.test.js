@@ -449,6 +449,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(announce, /unionOpenPlanRect/);
   assert.doesNotMatch(announce, /pushCloseHit\(keep, shell/);
   assert.match(announce, /close=omitted/);
+  assert.match(announce, /panel-close-at/);
   assert.match(announce, /when=later/);
   assert.match(mainSrc, /BOTTOM_HIT_SLACK = 32/);
   assert.match(mainSrc, /const runaway = measured > host\.bottom \+ BOTTOM_HIT_SLACK \+ 48/);
