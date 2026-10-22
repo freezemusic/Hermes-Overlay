@@ -18,6 +18,9 @@ import {
   commitOrbOpacity,
   orbOpacityText,
   onOrbOpacityTransitionEnd,
+  stepOrbFade,
+  sampleOrbFadeSegments,
+  opacityFramesToward,
   orbDiscHit,
   modifierEngages,
   isCloseHit,
@@ -227,7 +230,18 @@ test("orb fade frames stay monotonic and reach the floor inside 250ms", () => {
   assert.match(apply, /commitOrbOpacity/);
   assert.match(apply, /dataset\.orbFade/);
   assert.match(apply, /orbOpacityText/);
+  assert.match(apply, /stepOrbFade/);
+  assert.match(apply, /readOrbOpacity/);
   assert.doesNotMatch(apply, /style\.transition/);
+  const orbWrite = apply.slice(apply.indexOf("else if (orbShell)"), apply.indexOf("else if (!panelShell"));
+  assert.match(orbWrite, /removeProperty\("--hit-opacity"\)/);
+  assert.doesNotMatch(orbWrite, /setProperty\("--hit-opacity"/);
+  assert.match(orbWrite, /style\.opacity = shown/);
+  const tick = main.slice(main.indexOf("function tickOrbFades"), main.indexOf("function paintLocalProximity"));
+  assert.match(tick, /requestAnimationFrame\(tickOrbFades\)/);
+  assert.match(tick, /stepOrbFade/);
+  assert.match(tick, /style\.opacity = shown/);
+  assert.doesNotMatch(tick, /setProperty\("--hit-opacity"|classList\.(add|remove)|style\.transition/);
   assert.equal(orbOpacityText(1), "1.00");
   assert.equal(orbOpacityText(0.18), "0.18");
   const shellNode = {
@@ -279,6 +293,75 @@ test("orb fade frames stay monotonic and reach the floor inside 250ms", () => {
   assert.match(collect, /orbDiscHit/);
   assert.match(collect, /dataset\.state !== "orb"\) coverBottomFooter/);
 });
+
+test("scripted orb fades stay monotonic when retargeted at random times", () => {
+  const rand = mulberry32(0x0b0505);
+  for (let trial = 0; trial < 80; trial += 1) {
+    const events = [];
+    let t = Math.floor(rand() * 40);
+    let opacity = rand() < 0.5 ? 0.18 : 1;
+    const count = 2 + Math.floor(rand() * 8);
+    for (let i = 0; i < count; i += 1) {
+      events.push({ t, opacity });
+      t += Math.floor(rand() * 180);
+      if (rand() < 0.7) opacity = opacity === 1 ? 0.18 : 1;
+    }
+    const segments = sampleOrbFadeSegments(events, { fps: 30, painted: 1 });
+    assert.ok(segments.length >= 1, JSON.stringify(events));
+    for (const segment of segments) {
+      assert.equal(opacityFramesMonotonic(segment.frames), true, JSON.stringify({ events, segment }));
+      assert.equal(opacityFramesToward(segment.frames, segment.target), true, JSON.stringify({ events, segment }));
+    }
+  }
+
+  const held = sampleOrbFadeSegments(
+    [0, 16, 32, 48, 64, 80, 96, 112, 120, 128, 144].map((time) => ({ t: time, opacity: 0.18 })),
+    { painted: 1 },
+  );
+  assert.equal(held.length, 1);
+  assert.equal(held[0].target, 0.18);
+  assert.equal(opacityFramesMonotonic(held[0].frames), true);
+  assert.equal(opacityFramesToward(held[0].frames, 0.18), true);
+  assert.equal(held[0].frames[held[0].frames.length - 1], 0.18);
+
+  const leave = sampleOrbFadeSegments([
+    { t: 0, opacity: 0.18 },
+    { t: 16, opacity: 0.18 },
+    { t: 50, opacity: 1 },
+    { t: 66, opacity: 1 },
+    { t: 120, opacity: 1 },
+  ], { painted: 1 });
+  assert.equal(leave.length, 2);
+  for (const segment of leave) {
+    assert.equal(opacityFramesMonotonic(segment.frames), true, JSON.stringify(segment));
+    assert.equal(opacityFramesToward(segment.frames, segment.target), true, JSON.stringify(segment));
+  }
+  assert.equal(leave[1].frames[0], leave[0].frames[leave[0].frames.length - 1]);
+  assert.equal(leave[1].frames[leave[1].frames.length - 1], 1);
+
+  let clock = null;
+  let painted = 1;
+  const frames = [];
+  for (const time of [0, 40, 80, 100]) {
+    const stepped = stepOrbFade(clock, time, time < 100 ? 0.18 : 1, painted, 120);
+    clock = stepped.clock;
+    painted = Number(orbOpacityText(stepped.opacity));
+    frames.push(painted);
+  }
+  const back = stepOrbFade(clock, 100, 1, painted, 120);
+  assert.equal(Number(orbOpacityText(back.opacity)), frames[frames.length - 1]);
+  assert.equal(back.running, true);
+});
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 test("distance is zero inside a rect", () => {
   const rect = { x: 10, y: 10, w: 20, h: 20 };

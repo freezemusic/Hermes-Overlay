@@ -146,6 +146,8 @@ import {
   orbOpacityText,
   onOrbOpacityTransitionEnd,
   orbDiscHit,
+  ORB_FADE_MS,
+  stepOrbFade,
 } from "./proximity.js";
 
 const MOCK_BOTS = [
@@ -8089,22 +8091,43 @@ function applyFrames(frames, interactiveAll = false) {
       anim.cancel();
     });
     const panelShell = el.classList?.contains("morph") && el.dataset.state === "panel";
+    const liveCron = el.classList?.contains("morph")
+      && el.dataset.state === "orb"
+      && el.classList.contains("is-cron-live");
     const orbShell = el.classList?.contains("morph")
       && (el.dataset.state === "orb" || el.dataset.visual === "orb")
       && !el.classList.contains("is-cron-live");
-    if (orbShell) {
-      // One write per target. The stylesheet variable and the inline number
-      // stay equal, so a layer teardown cannot sample a different opacity.
-      // transitionend does not touch class or any other style.
-      const previous = el.dataset.orbFade == null || el.dataset.orbFade === ""
-        ? null
-        : { target: Number(el.dataset.orbFade), generation: 1 };
-      const commit = commitOrbOpacity(previous, value);
+    if (liveCron) {
+      // A running disc stays at the stylesheet's 1. Drop the fade number
+      // so it cannot keep a near-cursor sample on screen.
+      orbFadeClocks.delete(el);
+      delete el.dataset.orbFade;
+      if (el.style.opacity) el.style.removeProperty("opacity");
+      if (el.style.getPropertyValue("--hit-opacity")) el.style.removeProperty("--hit-opacity");
+    } else if (orbShell) {
+      // Inline opacity is the only driver. The custom property must not
+      // paint as well. The same target does not restart the clock.
+      if (el.style.getPropertyValue("--hit-opacity")) el.style.removeProperty("--hit-opacity");
+      const previousClock = orbFadeClocks.get(el) || null;
+      const commit = commitOrbOpacity(
+        previousClock
+          ? { target: previousClock.target, generation: previousClock.generation || 1 }
+          : null,
+        value,
+      );
       if (commit.wrote) {
-        const shown = orbOpacityText(commit.target);
-        el.dataset.orbFade = shown;
-        el.style.setProperty("--hit-opacity", shown);
-        el.style.opacity = shown;
+        const stepped = stepOrbFade(
+          previousClock,
+          performance.now(),
+          commit.target,
+          readOrbOpacity(el),
+          orbFadeMs(),
+        );
+        orbFadeClocks.set(el, { ...stepped.clock, generation: commit.generation });
+        el.dataset.orbFade = orbOpacityText(commit.target);
+        const shown = orbOpacityText(stepped.opacity);
+        if (el.style.opacity !== shown) el.style.opacity = shown;
+        if (stepped.running) scheduleOrbFade();
       }
     } else if (!panelShell && el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
       el.style.setProperty("--hit-opacity", nextOpacity);
@@ -8276,6 +8299,46 @@ function releaseOverlayFocus() {
   import("@tauri-apps/api/core")
     .then(({ invoke }) => invoke("release_overlay_focus"))
     .catch(() => {});
+}
+
+const orbFadeClocks = new WeakMap();
+let orbFadeRaf = 0;
+
+function orbFadeMs() {
+  return reducedMotion() ? 1 : ORB_FADE_MS;
+}
+
+/** Opacity on screen. Used when a new target takes over mid-fade. */
+function readOrbOpacity(el) {
+  const computed = Number.parseFloat(getComputedStyle(el).opacity);
+  if (Number.isFinite(computed)) return computed;
+  const inline = Number.parseFloat(el.style.opacity);
+  if (Number.isFinite(inline)) return inline;
+  return 1;
+}
+
+function scheduleOrbFade() {
+  if (orbFadeRaf) return;
+  orbFadeRaf = requestAnimationFrame(tickOrbFades);
+}
+
+function tickOrbFades(now) {
+  orbFadeRaf = 0;
+  const time = typeof now === "number" ? now : performance.now();
+  const duration = orbFadeMs();
+  let running = false;
+  orbFadeClocks.forEach((clock, el) => {
+    if (!el.isConnected || el.dataset.state !== "orb" || el.classList.contains("is-cron-live")) {
+      orbFadeClocks.delete(el);
+      return;
+    }
+    const stepped = stepOrbFade(clock, time, clock.target, clock.from, duration);
+    orbFadeClocks.set(el, { ...stepped.clock, generation: clock.generation || 1 });
+    const shown = orbOpacityText(stepped.opacity);
+    if (el.style.opacity !== shown) el.style.opacity = shown;
+    if (stepped.running) running = true;
+  });
+  if (running) orbFadeRaf = requestAnimationFrame(tickOrbFades);
 }
 
 function paintLocalProximity(rects) {

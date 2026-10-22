@@ -824,10 +824,11 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.orb-core \{[^}]*#fff 0 36%/s);
   assert.doesNotMatch(css, /\.orb-core \{[^}]*var\(--bot-20\) 55%/s);
   assert.match(css, /\.bot-btn\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity,\s*1\)/s);
-  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity,\s*1\)/s);
-  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*opacity 120ms cubic-bezier\(0, 0, \.2, 1\)/s);
+  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*opacity:\s*1;/s);
+  assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*transition:\s*none !important/s);
+  assert.doesNotMatch(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*opacity:\s*var\(--hit-opacity/s);
   assert.match(css, /\.morph\[data-state="orb"\]\[data-hit-id\] \{[^}]*will-change:\s*opacity/s);
-  assert.match(css, /\.morph\[data-state="orb"\] \{\s*transition:\s*opacity 1ms linear !important/s);
+  assert.match(css, /\.morph\[data-state="orb"\] \{\s*transition:\s*none !important/s);
   assert.match(html, /光球（包括設定、看板同排程）預設實色/);
   assert.match(css, /\.bot-btn::before,[\s\S]*?rgb\(var\(--bot-rgb\) \/ \.55\)/);
   assert.match(css, /\.plan-window \{[^}]*border:\s*1px solid var\(--nous-blue\)/s);
@@ -1015,13 +1016,13 @@ test("plan reveal computed clip-path reaches fully open", () => {
 
 test("idle cron orb matches another idle orb", () => {
   const dom = new JSDOM(`<!doctype html><style>${css}</style><body>
-    <div class="morph" data-bot-id="cron" data-state="orb" data-hit-id="bot:cron" style="--hit-opacity:0.18">
+    <div class="morph" data-bot-id="cron" data-state="orb" data-hit-id="bot:cron" style="opacity:0.18; --hit-opacity:0.77">
       <button class="bot-btn morph-orb orb--cron is-idle">
         <span class="orb-core"></span>
         <span class="orb-glyph">時</span>
       </button>
     </div>
-    <div class="morph" data-bot-id="planner" data-state="orb" data-hit-id="bot:planner" style="--hit-opacity:0.18; --bot:#616191; --bot-rgb:97 97 145">
+    <div class="morph" data-bot-id="planner" data-state="orb" data-hit-id="bot:planner" style="opacity:0.18; --hit-opacity:0.77; --bot:#616191; --bot-rgb:97 97 145">
       <button class="bot-btn morph-orb is-idle" style="--bot:#616191; --bot-rgb:97 97 145">
         <span class="orb-core"></span>
         <span class="orb-glyph">策</span>
@@ -1039,8 +1040,9 @@ test("idle cron orb matches another idle orb", () => {
   same(cronBtn.querySelector(".orb-core"), otherBtn.querySelector(".orb-core"), "background-image");
   same(cronBtn.querySelector(".orb-core"), otherBtn.querySelector(".orb-core"), "box-shadow");
   same(cronBtn.querySelector(".orb-glyph"), otherBtn.querySelector(".orb-glyph"), "color");
-  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 1)");
-  assert.equal(cron.style.getPropertyValue("--hit-opacity"), "0.18");
+  assert.equal(getComputedStyle(cron).opacity, "0.18");
+  assert.equal(cron.style.getPropertyValue("--hit-opacity"), "0.77");
+  assert.notEqual(getComputedStyle(cron).opacity, cron.style.getPropertyValue("--hit-opacity"));
   // jsdom does not resolve ::before. Compare the declarations that apply to
   // each button; idle cron may add a disc clip and nothing else.
   const wash = (el, prop) => {
@@ -1081,14 +1083,14 @@ test("failed cron ring and done ripple are outside the idle opacity", () => {
   assert.doesNotMatch(css, /\.is-cron-fail\[data-hit-id\]/);
   const dom = new JSDOM(`<!doctype html><style>${css}</style><body>
     <div class="bot-rail">
-      <div class="morph" data-bot-id="cron" data-state="orb" data-hit-id="bot:cron" style="--hit-opacity:0.18">
+      <div class="morph" data-bot-id="cron" data-state="orb" data-hit-id="bot:cron" style="opacity:0.18; --hit-opacity:0.77">
         <button class="bot-btn morph-orb orb--cron is-failed">
           <span class="orb-core"></span>
           <span class="orb-glyph">時</span>
         </button>
       </div>
       <span class="cron-status is-failed" style="--p:1"></span>
-      <div class="morph" data-bot-id="planner" data-state="orb" data-hit-id="bot:planner" style="--hit-opacity:0.18">
+      <div class="morph" data-bot-id="planner" data-state="orb" data-hit-id="bot:planner" style="opacity:0.18; --hit-opacity:0.77">
         <button class="bot-btn morph-orb is-idle">
           <span class="orb-core"></span>
         </button>
@@ -1100,7 +1102,8 @@ test("failed cron ring and done ripple are outside the idle opacity", () => {
   const other = document.querySelector("[data-bot-id='planner']");
   const ring = document.querySelector(".cron-status");
   assert.equal(getComputedStyle(cron).opacity, getComputedStyle(other).opacity);
-  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 1)");
+  assert.equal(getComputedStyle(cron).opacity, "0.18");
+  assert.notEqual(getComputedStyle(cron).opacity, "0.77");
   assert.equal(ring.parentElement, cron.parentElement);
   assert.equal(ring.closest("[data-hit-id]"), null);
   assert.equal(
@@ -1110,7 +1113,7 @@ test("failed cron ring and done ripple are outside the idle opacity", () => {
   cron.classList.add("is-cron-done");
   ring.classList.remove("is-failed");
   ring.classList.add("is-done");
-  assert.equal(getComputedStyle(cron).opacity, "var(--hit-opacity, 1)");
+  assert.equal(getComputedStyle(cron).opacity, "0.18");
   assert.notEqual(getComputedStyle(cron.querySelector(".orb-core")).opacity, "0");
 });
 

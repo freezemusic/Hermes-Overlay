@@ -87,10 +87,10 @@ export const HIT_MARGIN_PX = 12;
 export const ORB_PROXIMITY_PX = 72;
 
 /**
- * Opacity transition while an orb enters or leaves ORB_PROXIMITY_PX.
+ * Opacity ramp while an orb enters or leaves ORB_PROXIMITY_PX.
  * 120ms ease-out reaches the ≤30% floor inside 250ms, including one poll.
- * The same timing brings the disc back to opaque, so Ctrl does not wait
- * on the old 180ms linear ramp. v92's 180ms linear timing is superseded.
+ * The script paints this. A CSS opacity transition ends by tearing the
+ * layer down, and that last frame jumps backward (R-OB-05).
  */
 export const ORB_FADE_MS = 120;
 export const ORB_FADE_EASE = "cubic-bezier(0, 0, .2, 1)";
@@ -156,11 +156,15 @@ export function commitOrbOpacity(previous, next) {
   return { target, wrote: true, generation: (previous?.generation || 0) + 1 };
 }
 
+function roundOrbOpacity(value) {
+  const n = Math.round(Number(value) * 100) / 100;
+  if (!Number.isFinite(n)) return 1;
+  return n;
+}
+
 /** Always an explicit number. `1` stays `"1.00"`, never an empty property. */
 export function orbOpacityText(value) {
-  const n = Math.round(Number(value) * 100) / 100;
-  if (!Number.isFinite(n)) return "1.00";
-  return n.toFixed(2);
+  return roundOrbOpacity(value).toFixed(2);
 }
 
 /**
@@ -204,6 +208,95 @@ export function playOrbFade(polls, { fps = 30, duration = ORB_FADE_MS, restart =
     frames.push(orbFadeOpacity(t - spec.started, { from: spec.from, to: spec.to, duration }));
   }
   return frames;
+}
+
+/**
+ * One frame of the scripted orb fade.
+ * The same target keeps the clock. A new target starts at `painted`,
+ * the opacity on screen, so a poll cannot jump back to an old endpoint.
+ * `running` is false once the value has arrived.
+ */
+export function stepOrbFade(clock, now, target, painted, duration = ORB_FADE_MS) {
+  const next = roundOrbOpacity(target);
+  const time = Number(now);
+  const span = Number(duration) > 0 ? Number(duration) : 0;
+  if (clock && clock.target === next) {
+    const sample = orbFadeOpacity(time - clock.started, {
+      from: clock.from,
+      to: clock.to,
+      duration: span || 1,
+    });
+    const settled = span === 0 || time - clock.started >= span;
+    return { clock, opacity: settled ? next : sample, running: !settled };
+  }
+  const from = Number.isFinite(Number(painted)) ? Number(painted) : 1;
+  if (span === 0 || Math.abs(from - next) <= 0.005) {
+    const idle = { from: next, to: next, started: time, target: next };
+    return { clock: idle, opacity: next, running: false };
+  }
+  const fresh = { from, to: next, started: time, target: next };
+  return { clock: fresh, opacity: from, running: true };
+}
+
+/**
+ * 30fps samples split on each new target. A repeated poll of the same
+ * target stays in the current segment. The first sample of a segment is
+ * the opacity already on screen.
+ */
+export function sampleOrbFadeSegments(events, {
+  fps = 30,
+  duration = ORB_FADE_MS,
+  painted = 1,
+} = {}) {
+  const dt = 1000 / fps;
+  const list = [...(events || [])].sort((a, b) => a.t - b.t);
+  const last = list.length ? list[list.length - 1].t : 0;
+  const end = last + duration;
+  let clock = null;
+  let onScreen = Number(orbOpacityText(painted));
+  let sampledAt = -1;
+  let index = 0;
+  const segments = [];
+  let frames = null;
+  const paint = (at, target) => {
+    const before = clock ? clock.target : null;
+    const stepped = stepOrbFade(clock, at, target, onScreen, duration);
+    const changed = before !== stepped.clock.target;
+    clock = stepped.clock;
+    onScreen = Number(orbOpacityText(stepped.opacity));
+    if (changed || !frames) {
+      frames = [onScreen];
+      segments.push({ target: clock.target, frames });
+    } else {
+      frames.push(onScreen);
+    }
+    sampledAt = at;
+  };
+  for (let t = 0; t <= end + 1e-6; t += dt) {
+    while (index < list.length && list[index].t <= t + 1e-6) {
+      const at = Math.max(list[index].t, sampledAt);
+      const target = list[index].opacity;
+      const next = Number(orbOpacityText(target));
+      index += 1;
+      if (clock && at > sampledAt + 1e-6 && next !== clock.target) paint(at, clock.target);
+      if (!clock || at > sampledAt + 1e-6 || next !== clock.target) paint(Math.max(at, sampledAt), target);
+    }
+    if (clock && t > sampledAt + 1e-6) paint(t, clock.target);
+  }
+  return segments;
+}
+
+/** Each displayed sample stays put or moves closer to `target`. */
+export function opacityFramesToward(frames, target) {
+  if (!frames || frames.length === 0) return false;
+  const goal = roundOrbOpacity(target);
+  let best = Math.abs(frames[0] - goal);
+  for (let i = 1; i < frames.length; i += 1) {
+    const dist = Math.abs(frames[i] - goal);
+    if (dist > best + 0.001) return false;
+    best = Math.min(best, dist);
+  }
+  return true;
 }
 
 /** True when every step keeps the same direction. Equal samples are allowed. */

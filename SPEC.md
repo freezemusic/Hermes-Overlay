@@ -10,7 +10,7 @@
 
 光球與面板方向相反。
 
-1. 光球（包括設定光球、看板光球與排程光球）在游標不近、又未按住修飾鍵時必須不透明（透明度 1），而且滑鼠穿透：不接收 click、hover 或 right-click。游標距該光球命中圓不超過 72px（`ORB_PROXIMITY_PX`）時，只有那一粒淡到靜止透明度（上限 30%），120ms ease-out。游標離開就淡回不透明。淡出尾段不得有反向一格。透明度只跟全域輪詢的游標距離同 Ctrl，不跟鍵盤事件或焦點。`prefers-reduced-motion` 把這段縮到 1ms。不得加閒置循環動畫。穿透視窗的游標用全域輪詢（Windows `GetCursorPos`、Linux `XQueryPointer`），不得靠 DOM mouse。
+1. 光球（包括設定光球、看板光球與排程光球）在游標不近、又未按住修飾鍵時必須不透明（透明度 1），而且滑鼠穿透：不接收 click、hover 或 right-click。游標距該光球命中圓不超過 72px（`ORB_PROXIMITY_PX`）時，只有那一粒淡到靜止透明度（上限 30%），120ms ease-out。游標離開就淡回不透明。淡出由腳本按目前透明度逐幀寫 inline opacity，冇 CSS opacity transition；`--hit-opacity` 唔同 inline opacity 一齊驅動光球。淡出尾段不得有反向一格。透明度只跟全域輪詢的游標距離同 Ctrl，不跟鍵盤事件或焦點。`prefers-reduced-motion` 把這段縮到 1ms。不得加閒置循環動畫。穿透視窗的游標用全域輪詢（Windows `GetCursorPos`、Linux `XQueryPointer`），不得靠 DOM mouse。
 2. 按住修飾鍵、而且游標在淡出範圍內時，那一粒光球回到不透明（透明度 1）。可點仍然只限游標在其上或距命中區 12px 以內。其餘不在淡出範圍的光球保持不透明與穿透。
 3. 放開修飾鍵後，該光球按游標距離回到第 1 條（近則淡、遠則不透明），並且穿透。名稱標籤只在按住修飾鍵且游標在該光球上時出現；放開後必須消失，不得因 hover 卡住而留在畫面上。Ctrl+C／Ctrl+V 不得讓這段透明度閃一下。
 4. 右鍵「隱藏呢個 Bot」只在按住修飾鍵、而且游標在該 Bot 光球上時出現。未按住修飾鍵時，右鍵不得打開這個選單。

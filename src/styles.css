@@ -2003,8 +2003,10 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 }
 
 .morph[data-state="orb"][data-hit-id] {
-  opacity: var(--hit-opacity, 1);
-  transition: opacity 120ms cubic-bezier(0, 0, .2, 1);
+  /* The script writes inline opacity. A CSS transition on this property
+     snaps one frame backward when the layer is torn down at the end. */
+  opacity: 1;
+  transition: none !important;
   will-change: opacity;
 }
 
@@ -2026,7 +2028,7 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 }
 
 .morph[data-bot-id="cron"][data-state="orb"].is-cron-live[data-hit-id] {
-  opacity: 1;
+  opacity: 1 !important;
 }
 
 .morph[data-state="panel"] {
@@ -2817,7 +2819,7 @@ html[data-pass="1"] .plan-hit-host * {
     transition-delay: 0s !important;
   }
   .morph[data-state="orb"] {
-    transition: opacity 1ms linear !important;
+    transition: none !important;
   }
   .is-thinking .spinner,
   .bot-btn.orb--cron.is-running::after {
