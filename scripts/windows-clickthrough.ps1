@@ -538,18 +538,21 @@ function Wait-PanelCloseBox([string]$bot, [int]$seconds = 8) {
   return $null
 }
 
-# Plan × is 22px. A point on the kanban 關閉 control must sit outside that box
-# or planControlUnder swallows the click and the board stays open.
+# 預覽 and 原文 share the 22px row with × and reach left across the top of 關閉.
+# planControlUnder uses those layout boxes, so the middle of the kanban button
+# is delivered to the plan toggle and the board stays open. The bottom of 關閉
+# sits below that row and left of the ×.
 function Point-OnCloseAwayFrom($box, $avoid) {
   $points = @(
-    @{ x = [int]($box.x + 4); y = [int]($box.y + $box.h / 2) },
-    @{ x = [int]($box.x + $box.w / 2); y = [int]($box.y + 4) },
-    @{ x = [int]($box.x + $box.w / 2); y = [int]($box.y + $box.h / 2) },
-    @{ x = [int]($box.x + $box.w - 5); y = [int]($box.y + $box.h / 2) }
+    @{ x = [int]($box.x + 6); y = [int]($box.y + $box.h - 5) },
+    @{ x = [int]($box.x + 6); y = [int]($box.y + $box.h - 2) },
+    @{ x = [int]($box.x + [Math]::Max(6, $box.w / 2)); y = [int]($box.y + $box.h - 5) }
   )
   foreach ($p in $points) {
     if (-not $avoid) { return $p }
-    if ([Math]::Abs($p.x - $avoid.x) -gt 14 -or [Math]::Abs($p.y - $avoid.y) -gt 14) { return $p }
+    $belowRow = $p.y -gt ($avoid.y + 16)
+    $clearOfClose = [Math]::Abs($p.x - $avoid.x) -gt 24
+    if ($belowRow -and $clearOfClose) { return $p }
   }
   return $points[0]
 }
