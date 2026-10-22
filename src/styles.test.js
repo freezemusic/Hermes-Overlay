@@ -468,6 +468,10 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph\[data-state="orb"\] \.center-panel\.settings-panel[^{]*\{[^}]*display:\s*none/s);
   assert.match(css, /\.alt-warning \{[^}]*color:\s*#14142b/s);
   assert.doesNotMatch(css, /\.alt-warning \{[^}]*color:\s*var\(--nous-orange\)/s);
+  assert.match(css, /\.kanban-error \{[^}]*color:\s*#14142b/s);
+  assert.doesNotMatch(css, /\.kanban-error \{[^}]*color:\s*var\(--nous-red\)/s);
+  assert.match(css, /\.kanban-error \{[^}]*border-left:[^;]*var\(--nous-red\)/s);
+  assert.match(css, /\.morph\[data-state="orb"\] \.morph-orb:not\(\.orb--cron\) \{[^}]*overflow:\s*hidden/s);
   assert.match(css, /\.alt-warning::before \{[^}]*background:\s*var\(--nous-orange\)/s);
   assert.match(css, /\.morph\[data-header="bottom"\] \.settings-head \{\s*position:\s*static;/);
   assert.match(html, /<div class="settings-scroll">/);
@@ -1109,6 +1113,15 @@ test("muted text is #14142b and the idle orb keeps the f8cb046 rim wash", () => 
   assert.match(css, /\.morph\[data-state="orb"\] \.morph-fill::after \{[^}]*rgb\(var\(--bot-rgb\) \/ \.22\)/s);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   assert.match(main, /dataset\.intent === "close"/);
+  assert.match(main, /closeYieldsToOpen/);
+  assert.match(main, /chromeToggleAction/);
+  assert.match(main, /function seatKanbanClose/);
+  const drag = main.slice(main.indexOf("function bindPanelDrag"), main.indexOf("function removeBotPanels"));
+  assert.match(drag, /panelDragHost\(panel\)/);
+  assert.doesNotMatch(drag, /\|\| panel/);
+  assert.match(drag, /Math\.abs\(dx\) < 1 && Math\.abs\(dy\) < 1/);
+  const paint = main.slice(main.indexOf("function paintClip"), main.indexOf("function planNode"));
+  assert.doesNotMatch(paint, /removeProperty\("clip-path"\)/);
   assert.match(main, /state\.modifierHeld === true/);
   assert.match(main, /function noteChordKey/);
 });

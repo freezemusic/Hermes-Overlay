@@ -902,6 +902,99 @@ export function planControlUnder(root, x, y) {
   return null;
 }
 
+/** Drag must move the morph shell. A panel that has not been adopted yet is
+ *  not a host: writing its viewport left/top parks the card inside the shell
+ *  and one click leaves only a sliver (R-PN-03). */
+export function panelDragHost(panel) {
+  const shell = panel?.closest?.(".morph");
+  if (!shell || shell === panel) return null;
+  return shell;
+}
+
+/** An open asked for while a pill is retracting has to win. Leaving
+ *  intent=close makes the morph refuse, and the open flag then sticks. */
+export function closeYieldsToOpen(target, intent) {
+  return target !== "orb" && intent === "close";
+}
+
+/** Raise only a panel that is actually showing. A stuck open flag on an
+ *  orb or a retracting pill must open again. */
+export function chromeToggleAction({
+  open = false,
+  state = "orb",
+  opening = "",
+  collapsing = false,
+} = {}) {
+  const shown = !collapsing && (state === "panel" || opening === "panel");
+  if (open && shown) return "raise";
+  return "open";
+}
+
+export function rectsOverlap(a, b) {
+  if (!a || !b) return false;
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/** Close button in a top header. `end` is the trailing edge, where a
+ *  right-docked plan's 預覽/原文 row lands on a 1024px screen. */
+export function headerCloseBox(shell, {
+  side = "end",
+  pad = 8,
+  buttonW = 52,
+  buttonH = 28,
+  insetY = 8,
+} = {}) {
+  const left = Number(shell?.left) || 0;
+  const top = Number(shell?.top) || 0;
+  const width = Number(shell?.width) || 0;
+  const x = side === "end" ? left + width - pad - buttonW : left + pad;
+  return { x, y: top + insetY, w: buttonW, h: buttonH };
+}
+
+/** 預覽 / 原文 / ✕ cluster along the top of a plan. */
+export function planActionRow(plan, { rowH = 36, width = 180 } = {}) {
+  const x = Number(plan?.x) || 0;
+  const y = Number(plan?.y) || 0;
+  const w = Number(plan?.w) || 0;
+  const span = Math.min(Math.max(0, width), w);
+  return { x: x + w - span, y, w: span, h: rowH };
+}
+
+/** Smallest shift that puts the whole close button outside every blocker.
+ *  Down wins a tie so the button stays on the trailing edge, clear of the
+ *  header orb. */
+export function closeNudge(button, blockers) {
+  let dx = 0;
+  let dy = 0;
+  const placed = () => ({
+    x: button.x + dx,
+    y: button.y + dy,
+    w: button.w,
+    h: button.h,
+  });
+  for (let pass = 0; pass < 4; pass += 1) {
+    const current = placed();
+    const hit = (blockers || []).find((block) => rectsOverlap(current, block));
+    if (!hit) break;
+    const down = hit.y + hit.h - current.y;
+    const up = current.y + current.h - hit.y;
+    const left = current.x + current.w - hit.x;
+    const right = hit.x + hit.w - current.x;
+    const options = [
+      { dx: 0, dy: down, cost: down - 0.01 },
+      { dx: -left, dy: 0, cost: left },
+      { dx: right, dy: 0, cost: right },
+      { dx: 0, dy: -up, cost: up },
+    ].filter((item) => item.cost > 0 && item.cost < 80);
+    options.sort((a, b) => a.cost - b.cost);
+    const pick = options[0];
+    if (!pick) break;
+    dx += pick.dx;
+    dy += pick.dy;
+  }
+  return { dx, dy };
+}
+
 /** Poll refresh. True when the open chat would look the same. */
 export function sameChatSnapshot(current, opened) {
   const prev = current?.messages || [];

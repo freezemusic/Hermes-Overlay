@@ -538,25 +538,6 @@ function Wait-PanelCloseBox([string]$bot, [int]$seconds = 8) {
   return $null
 }
 
-# 預覽 and 原文 share the 22px row with × and reach left across the top of 關閉.
-# planControlUnder uses those layout boxes, so the middle of the kanban button
-# is delivered to the plan toggle and the board stays open. The bottom of 關閉
-# sits below that row and left of the ×.
-function Point-OnCloseAwayFrom($box, $avoid) {
-  $points = @(
-    @{ x = [int]($box.x + 6); y = [int]($box.y + $box.h - 5) },
-    @{ x = [int]($box.x + 6); y = [int]($box.y + $box.h - 2) },
-    @{ x = [int]($box.x + [Math]::Max(6, $box.w / 2)); y = [int]($box.y + $box.h - 5) }
-  )
-  foreach ($p in $points) {
-    if (-not $avoid) { return $p }
-    $belowRow = $p.y -gt ($avoid.y + 16)
-    $clearOfClose = [Math]::Abs($p.x - $avoid.x) -gt 24
-    if ($belowRow -and $clearOfClose) { return $p }
-  }
-  return $points[0]
-}
-
 function Read-PlanChip([string]$bot) {
   if (-not (Test-Path $log)) { return $null }
   $hits = Select-String -Path $log -Pattern "plan-chip-at bot=$bot " | Select-Object -Last 1
@@ -692,7 +673,8 @@ try {
       # Kanban's orb sits under the field panel on a 1024px runner.
       # Ctrl+click must reach that orb (R-CT-02), not the window behind.
       # The field plan seam keeps hit flushes deferred, so close:kanban is not
-      # in the frozen announce. Click the measured 關閉 button instead.
+      # in the frozen announce. Click the centre of the measured 關閉 button.
+      # seatKanbanClose moves that button clear of the plan's 預覽/原文 row.
       # Escape would close the focused field and take the plan with it.
       Assert-Orb "ctrl-orb-under-panel" $kanban
       if (-not (Wait-Log "hit-announce bot=kanban mode=panel" 8)) {
@@ -704,8 +686,9 @@ try {
         if (-not $kanbanClose) {
           Note-Fail "ctrl-orb-under-panel-closed" "kanban close button was not measured"
         } else {
-          $spot = Point-OnCloseAwayFrom $kanbanClose $closer
-          Assert-Captured "ctrl-orb-under-panel-close" $spot.x $spot.y
+          $kx = [int]($kanbanClose.x + $kanbanClose.w / 2)
+          $ky = [int]($kanbanClose.y + $kanbanClose.h / 2)
+          Assert-Captured "ctrl-orb-under-panel-close" $kx $ky
           $kanbanGone = Wait-IdGone "kanban" 8
           $fieldStill = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" })
           if (-not $kanbanGone) {

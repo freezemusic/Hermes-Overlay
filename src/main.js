@@ -36,6 +36,10 @@ import {
   dropParkedAnchor,
   placeShell,
   fitPlanBox,
+  panelDragHost,
+  closeYieldsToOpen,
+  chromeToggleAction,
+  closeNudge,
   previewBlocked,
   revealClip,
   separateStackedPanels,
@@ -331,8 +335,9 @@ function paintClip(shell, insets, visual = shell.dataset.visual || shell.dataset
     // clip for revealClip's calc rebuilds the orb about a second later.
     if (!outer && held && (held === next || held === px)) {
       /* resting clip already matches */
-    } else {
-      shell.style.removeProperty("clip-path");
+    } else if (held !== next) {
+      // Clearing the inline clip first paints the stylesheet's full-panel
+      // inset for one frame, and that frame's outline goes dark (R-PN-05).
       shell.style.clipPath = next;
     }
   }
@@ -551,6 +556,7 @@ function layoutShells() {
   const shells = [...document.querySelectorAll(".morph")];
   shells.forEach((shell) => layoutShell(shell));
   separateOpenShells(shells);
+  seatKanbanClose();
   scheduleHitSync();
 }
 
@@ -965,7 +971,17 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
  *  Settle must not repeat this, or the finish frame washes. */
 function commitClosedShell(shell) {
   markVisual(shell, "orb");
-  shell.classList.remove("is-morphing", "is-collapsing", "is-orb-docked", "is-orb-moving", "is-content-hold", "open");
+  shell.classList.remove(
+    "is-morphing",
+    "is-collapsing",
+    "is-orb-docked",
+    "is-orb-moving",
+    "is-content-hold",
+    "open",
+    "is-growing-panel",
+    "is-growing-pill",
+    "is-content-promoted",
+  );
   shell.dataset.contentOnce = "";
   shell.dataset.opening = "";
   shell.dataset.intent = "";
@@ -978,6 +994,11 @@ function commitClosedShell(shell) {
     panel.style.removeProperty("overflow");
     panel.style.removeProperty("opacity");
     panel.style.removeProperty("display");
+    if (panel.id === "settings" || panel.id === "kanban-panel") {
+      for (const prop of ["left", "top", "right", "bottom", "width", "height", "transform", "box-shadow", "filter", "outline"]) {
+        panel.style.removeProperty(prop);
+      }
+    }
   });
   const plan = planNode(shell);
   if (plan) {
@@ -1031,6 +1052,10 @@ function commitClosedShell(shell) {
     });
     orb.style.removeProperty("transform");
     orb.style.removeProperty("transform-origin");
+    orb.style.removeProperty("outline");
+    orb.style.removeProperty("box-shadow");
+    orb.style.removeProperty("filter");
+    if (orb.ownerDocument?.activeElement === orb) orb.blur();
   }
   if (orb?.classList.contains("active") && !state.openIds.includes(shell.dataset.botId)) {
     orb.classList.remove("active");
@@ -3350,7 +3375,10 @@ async function runShellMorph(shell, target) {
   if (!shell) return false;
   abortPlanRehearsal(shell);
   restoreHostedPlan(shell);
-  if (target !== "orb" && shell.dataset.intent === "close") return false;
+  if (closeYieldsToOpen(target, shell.dataset.intent)) {
+    shell.dataset.intent = "";
+    shell.classList.remove("is-collapsing");
+  }
   let closingScale = 1;
   if (target === "orb") {
     const orb = shell.querySelector(".morph-orb");
@@ -3420,11 +3448,6 @@ async function runShellMorph(shell, target) {
     shell.dataset.opening = "";
   } else {
     shell.classList.remove("is-collapsing");
-    if (shell.dataset.intent === "close") {
-      shell._motion = "";
-      shell.classList.remove("is-morphing");
-      return false;
-    }
     shell.dataset.intent = target === "panel" ? "open" : "preview";
     if (target === "panel") {
       shell.dataset.opening = "panel";
@@ -3461,9 +3484,7 @@ async function runShellMorph(shell, target) {
   if (target === "orb") {
     await collapsePlanSeam(shell, token);
     if (!alive()) {
-      shell.classList.remove("is-plan-collapse");
-      shell._motion = "";
-      releaseCollapseGate(shell);
+      if (target === "orb") releaseCollapseGate(shell);
       return false;
     }
     beginPanelCollapseContent(shell);
@@ -3481,14 +3502,13 @@ async function runShellMorph(shell, target) {
         settleShell(shell, "orb");
         return true;
       }
-      shell._motion = "";
+      if (alive()) shell._motion = "";
       if (target === "orb") releaseCollapseGate(shell);
       return false;
     }
     current = step.state;
   }
   if (!alive()) {
-    shell._motion = "";
     if (target === "orb") releaseCollapseGate(shell);
     return false;
   }
@@ -3532,7 +3552,6 @@ async function runShellMorph(shell, target) {
     }
   }
   if (!alive()) {
-    shell._motion = "";
     if (target === "orb") releaseCollapseGate(shell);
     return false;
   }
@@ -3550,33 +3569,55 @@ function raisePanel(panel) {
   scheduleHitSync();
 }
 
+function clearInnerPanelBox(panel, shell) {
+  if (!panel || panel === shell) return;
+  for (const prop of ["left", "top", "right", "bottom", "width", "height"]) {
+    panel.style.removeProperty(prop);
+  }
+}
+
 function bindPanelDrag(panel) {
-  const host = panel.closest?.(".morph") || panel;
+  if (!panel) return;
   const header = panel.querySelector(".panel-header, .settings-head");
-  if (!header || header.dataset.dragBound) return;
-  header.dataset.dragBound = "1";
+  if (!header) return;
+  // Bound before the panel moves into a morph, the listener keeps the panel
+  // as its host and one click writes viewport coordinates onto it (R-PN-03).
+  if (!panelDragHost(panel)) return;
+  if (header.dataset.dragBound === "shell") return;
+  header.dataset.dragBound = "shell";
   header.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     if (event.target.closest("button, input, textarea, select, a, label")) return;
+    const shell = panelDragHost(panel);
+    if (!shell) return;
     event.preventDefault();
-    state.dragHitId = host.dataset.hitId || "";
-    raisePanel(host);
-    flushHits();
     const startX = event.clientX;
     const startY = event.clientY;
-    const origin = host.getBoundingClientRect();
-    host.style.right = "auto";
-    host.style.bottom = "auto";
-    host.style.left = `${origin.left}px`;
-    host.style.top = `${origin.top}px`;
+    let dragged = false;
+    let origin = null;
     const move = (ev) => {
       if (ev.pointerId !== event.pointerId) return;
-      host.style.left = `${origin.left + ev.clientX - startX}px`;
-      host.style.top = `${origin.top + ev.clientY - startY}px`;
-      syncPlanSide(host);
-      if (host.dataset.planHost === "1") placePlanHost(host);
-      else hostOpenPlan(host);
-      rememberAnchor(host);
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!dragged) {
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+        dragged = true;
+        clearInnerPanelBox(panel, shell);
+        state.dragHitId = shell.dataset.hitId || "";
+        raisePanel(shell);
+        flushHits();
+        origin = shell.getBoundingClientRect();
+        shell.style.right = "auto";
+        shell.style.bottom = "auto";
+        shell.style.left = `${origin.left}px`;
+        shell.style.top = `${origin.top}px`;
+      }
+      shell.style.left = `${origin.left + dx}px`;
+      shell.style.top = `${origin.top + dy}px`;
+      syncPlanSide(shell);
+      if (shell.dataset.planHost === "1") placePlanHost(shell);
+      else hostOpenPlan(shell);
+      rememberAnchor(shell);
       scheduleHitSync();
     };
     const up = (ev) => {
@@ -3584,9 +3625,11 @@ function bindPanelDrag(panel) {
       header.removeEventListener("pointermove", move);
       header.removeEventListener("pointerup", up);
       header.removeEventListener("pointercancel", up);
+      if (!dragged) return;
       state.dragHitId = "";
-      rememberAnchor(host);
-      layoutShell(host);
+      clearInnerPanelBox(panel, shell);
+      rememberAnchor(shell);
+      layoutShell(shell);
       separateOpenShells([...document.querySelectorAll(".morph")]);
       flushHits();
     };
@@ -4078,13 +4121,16 @@ function renderSettingsOrb() {
   const shell = shellFor("settings");
   const btn = shell?.querySelector(".orb--settings");
   if (!btn) return;
-  const next = ["bot-btn", "morph-orb", "orb--settings", settingsOpen() ? "active" : ""].filter(Boolean).join(" ");
-  if (btn.className === next && shell.style.width) return;
-  btn.className = next;
-  paintIdleChromeColor(shell, btn, NOUS.blue);
+  const open = settingsOpen();
+  const next = ["bot-btn", "morph-orb", "orb--settings", open ? "active" : ""].filter(Boolean).join(" ");
+  const laid = btn.className === next && !!shell.style.width;
+  const dirtyColor = !open && !!shell.style.getPropertyValue("--bot-rgb");
+  if (btn.className !== next) btn.className = next;
+  if (!open) btn.classList.remove("active");
+  if (!laid || dirtyColor) paintIdleChromeColor(shell, btn, NOUS.blue);
   btn.setAttribute("aria-label", "Hermes 設定");
   btn.title = "Hermes 設定";
-  layoutShell(shell);
+  if (!laid) layoutShell(shell);
 }
 
 function fillOrb(btn) {
@@ -7224,9 +7270,10 @@ function orbShellAtPoint(x, y) {
   let best = null;
   let bestZ = -Infinity;
   document.querySelectorAll(".morph").forEach((shell) => {
-    const visual = shell.dataset.state;
+    const visual = shell.dataset.visual || shell.dataset.state;
     if (visual !== "orb" && visual !== "pill") return;
-    if (shell.classList.contains("is-collapsing")) return;
+    // A retracting pill is still the orb under the cursor. Skipping it
+    // dropped the open, and the flag then stayed true (R-KB).
     const visible = visibleBox(shell);
     let box = visible;
     if (box.w < 1 || box.h < 1) {
@@ -7382,7 +7429,39 @@ function retractPlanHit(shell) {
   );
 }
 
+/** A right-docked plan's 預覽/原文 row covers kanban 關閉 on a 1024px screen.
+ *  Shift the button until its whole box is outside those controls. A click
+ *  with no overlap leaves the button where the header put it. */
+function seatKanbanClose() {
+  const shell = shellFor("kanban");
+  const button = document.getElementById("btn-kanban-close");
+  if (!shell || !button) return;
+  const open = shell.dataset.state === "panel"
+    || shell.dataset.opening === "panel"
+    || shell.dataset.visual === "panel";
+  if (!open) {
+    button.style.removeProperty("transform");
+    return;
+  }
+  button.style.removeProperty("transform");
+  const box = button.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return;
+  const blockers = [];
+  document.querySelectorAll("[data-role='plan-preview-mode'], [data-role='plan-source-mode'], [data-role='plan-close']").forEach((node) => {
+    if (node.closest("[hidden]")) return;
+    const rect = node.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return;
+    blockers.push({ x: rect.left, y: rect.top, w: rect.width, h: rect.height });
+  });
+  const nudge = closeNudge(
+    { x: box.left, y: box.top, w: box.width, h: box.height },
+    blockers,
+  );
+  if (nudge.dx || nudge.dy) button.style.transform = `translate(${nudge.dx}px, ${nudge.dy}px)`;
+}
+
 function announcePanelHits(shell) {
+  seatKanbanClose();
   const id = hitFor(shell.dataset.botId, "panel");
   const host = shell.getBoundingClientRect();
   const rect = {
@@ -8223,7 +8302,13 @@ function showToast(id, toast) {
 
 function toggleKanban() {
   const shell = shellFor("kanban");
-  if (state.kanbanOpen && shell && !shell.classList.contains("is-collapsing")) {
+  const action = chromeToggleAction({
+    open: state.kanbanOpen,
+    state: shell?.dataset.state || "orb",
+    opening: shell?.dataset.opening || "",
+    collapsing: !!shell?.classList.contains("is-collapsing"),
+  });
+  if (action === "raise" && shell) {
     raisePanel(shell);
     return;
   }
@@ -8232,22 +8317,25 @@ function toggleKanban() {
 
 function openKanban() {
   ensureChrome();
-  state.kanbanOpen = true;
-  state.kanban.unread = false;
   const panel = $("#kanban-panel");
   const shell = shellFor("kanban");
-  if (panel && shell) {
-    const opening = shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing");
-    panel.hidden = false;
-    applyBotColor(shell, NOUS.neutral);
-    applyBotColor(panel, NOUS.neutral);
-    window.clearTimeout(shell._pillTimer);
-    if (opening) {
-      raisePanel(shell);
-      void runShellMorph(shell, "panel");
-    } else {
-      raisePanel(shell);
-    }
+  if (!panel || !shell) return;
+  state.kanbanOpen = true;
+  state.kanban.unread = false;
+  const opening = shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing");
+  panel.hidden = false;
+  applyBotColor(shell, NOUS.neutral);
+  applyBotColor(panel, NOUS.neutral);
+  window.clearTimeout(shell._pillTimer);
+  shell.dataset.intent = "open";
+  raisePanel(shell);
+  if (opening) {
+    void runShellMorph(shell, "panel").then((opened) => {
+      if (opened) return;
+      if (shell.dataset.state === "panel" || shell.dataset.opening === "panel") return;
+      state.kanbanOpen = false;
+      renderKanbanOrb();
+    });
   }
   renderBots();
   refreshKanban();
@@ -8583,7 +8671,13 @@ function mockCronGroups() {
 
 function toggleCron() {
   const shell = shellFor("cron");
-  if (state.cronOpen && shell && !shell.classList.contains("is-collapsing")) {
+  const action = chromeToggleAction({
+    open: state.cronOpen,
+    state: shell?.dataset.state || "orb",
+    opening: shell?.dataset.opening || "",
+    collapsing: !!shell?.classList.contains("is-collapsing"),
+  });
+  if (action === "raise" && shell) {
     raisePanel(shell);
     return;
   }
@@ -8592,23 +8686,27 @@ function toggleCron() {
 
 function openCron() {
   ensureChrome();
-  state.cronOpen = true;
   const panel = $("#cron-panel");
   const shell = shellFor("cron");
-  if (panel && shell) {
-    const opening = shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing");
-    panel.hidden = false;
-    applyBotColor(shell, NOUS.neutral);
-    applyBotColor(panel, NOUS.neutral);
-    window.clearTimeout(shell._pillTimer);
-    paintCron();
-    if (opening) {
-      raisePanel(shell);
-      void runShellMorph(shell, "panel");
-    } else {
-      raisePanel(shell);
-      syncCronBox();
-    }
+  if (!panel || !shell) return;
+  state.cronOpen = true;
+  const opening = shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing");
+  panel.hidden = false;
+  applyBotColor(shell, NOUS.neutral);
+  applyBotColor(panel, NOUS.neutral);
+  window.clearTimeout(shell._pillTimer);
+  shell.dataset.intent = "open";
+  paintCron();
+  raisePanel(shell);
+  if (opening) {
+    void runShellMorph(shell, "panel").then((opened) => {
+      if (opened) return;
+      if (shell.dataset.state === "panel" || shell.dataset.opening === "panel") return;
+      state.cronOpen = false;
+      renderCronOrb();
+    });
+  } else {
+    syncCronBox();
   }
   renderBots();
   refreshCron();

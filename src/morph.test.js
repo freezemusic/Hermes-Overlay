@@ -61,6 +61,13 @@ import {
   chatTailAction,
   hostOpenPlan,
   planControlUnder,
+  panelDragHost,
+  closeYieldsToOpen,
+  chromeToggleAction,
+  headerCloseBox,
+  planActionRow,
+  closeNudge,
+  rectsOverlap,
   restoreHostedPlan,
   sameChatSnapshot,
   separateStackedPanels,
@@ -246,6 +253,82 @@ test("a plan stays inside a 1024px viewport", () => {
   });
   assert.equal(left.side, "left");
   assert.equal(left.x, 980);
+});
+
+test("settings drag waits until the panel is inside its shell", () => {
+  const dom = new JSDOM("<!doctype html><body><aside id='settings'></aside></body>");
+  const { document } = dom.window;
+  const panel = document.getElementById("settings");
+  assert.equal(panelDragHost(panel), null);
+  const shell = document.createElement("div");
+  shell.className = "morph";
+  shell.append(panel);
+  assert.equal(panelDragHost(panel), shell);
+  assert.equal(panelDragHost(shell), null);
+});
+
+test("kanban open wins while the startup pill is retracting", () => {
+  assert.equal(closeYieldsToOpen("panel", "close"), true);
+  assert.equal(closeYieldsToOpen("pill", "close"), true);
+  assert.equal(closeYieldsToOpen("orb", "close"), false);
+  assert.equal(closeYieldsToOpen("panel", "open"), false);
+  assert.equal(chromeToggleAction({
+    open: true,
+    state: "orb",
+    collapsing: false,
+  }), "open");
+  assert.equal(chromeToggleAction({
+    open: true,
+    state: "pill",
+    collapsing: true,
+  }), "open");
+  assert.equal(chromeToggleAction({
+    open: true,
+    state: "panel",
+    collapsing: false,
+  }), "raise");
+  assert.equal(chromeToggleAction({
+    open: false,
+    state: "pill",
+    collapsing: false,
+  }), "open");
+});
+
+test("kanban close moves clear of the plan action row at 1024px", () => {
+  const screenW = 1024;
+  const screenH = 768;
+  const pad = 42;
+  const point = fixedOrbPoint("kanban", screenW, screenH, pad, ORB);
+  const shell = placeShell(
+    point.x,
+    point.y,
+    Math.min(960, screenW * 0.8),
+    Math.min(screenH * 0.8, 760),
+    screenW,
+    screenH,
+  );
+  const plan = fitPlanBox({
+    shellLeft: 241,
+    shellTop: 42,
+    shellW: 420,
+    shellH: 560,
+    planW: 420,
+    screenW,
+    screenH,
+  });
+  const actions = planActionRow(plan, { rowH: 36, width: 180 });
+  const button = headerCloseBox(shell, { side: "end", pad: 16, insetY: 16 });
+  assert.equal(rectsOverlap(button, actions), true);
+  const nudge = closeNudge(button, [actions]);
+  const moved = { x: button.x + nudge.dx, y: button.y + nudge.dy, w: button.w, h: button.h };
+  assert.equal(rectsOverlap(moved, actions), false);
+  const cx = moved.x + moved.w / 2;
+  const cy = moved.y + moved.h / 2;
+  const centreCovered = cx >= actions.x && cx < actions.x + actions.w
+    && cy >= actions.y && cy < actions.y + actions.h;
+  assert.equal(centreCovered, false);
+  const clear = { ...button, y: actions.y + actions.h + 4 };
+  assert.deepEqual(closeNudge(clear, [actions]), { dx: 0, dy: 0 });
 });
 
 test("the anchor stays on the orb centre and the shell does not move between shapes", () => {

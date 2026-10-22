@@ -1846,7 +1846,7 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   margin: 0 var(--sp-3) var(--sp-2);
   padding: 6px 8px;
   border-left: 2px solid var(--nous-red);
-  color: var(--nous-red);
+  color: #14142b;
   font: 400 var(--fs-meta)/1.4 var(--font-body);
 }
 
@@ -1994,6 +1994,18 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 
 .morph[data-state="orb"][data-hit-id] {
   opacity: var(--hit-opacity, 0.18);
+}
+
+/* The 12px hit pad and the ::before glow sit outside the disc. A resting
+   settings orb was the one that still showed them after Esc. Cron keeps
+   the status ring outside the button. */
+.morph[data-state="orb"] .morph-orb:not(.orb--cron) {
+  overflow: hidden;
+}
+
+.morph[data-state="orb"] .morph-orb:focus,
+.morph[data-state="orb"] .morph-orb:focus-visible {
+  outline: none;
 }
 
 .morph[data-bot-id="cron"][data-state="orb"] {
@@ -2348,7 +2360,9 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 .morph .center-panel.settings-panel[hidden],
 .morph[data-state="orb"] .center-panel.settings-panel,
 .morph[data-state="pill"] .center-panel.settings-panel {
-  display: none;
+  display: none !important;
+  box-shadow: none !important;
+  filter: none !important;
 }
 
 .morph .center-panel.cron-panel {
