@@ -635,6 +635,9 @@ try {
         Assert-Through "plan-former" $cx $cy
         Start-Sleep -Seconds 1
         Assert-Through "plan-former+1s" $cx $cy
+        # The blank point is clear only while the plan is shut. 睇計劃
+        # opens it to the left on this runner and covers (16,384) again.
+        Assert-Empty "bot-panel-open"
         if (-not (Wait-Count "plan-chip-at bot=field " 0 8)) {
           Note-Fail "plan-reopen" "debug log has no plan-chip-at for field"
         } else {
@@ -654,7 +657,6 @@ try {
       }
     }
   }
-  Assert-Empty "bot-panel-open"
   $focus = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" -or $_.id -eq "settings" } | Select-Object -First 1)
   if ($focus) {
     $fx = [int]($focus.x + 48)
