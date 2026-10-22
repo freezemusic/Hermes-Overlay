@@ -156,6 +156,26 @@ export function commitOrbOpacity(previous, next) {
   return { target, wrote: true, generation: (previous?.generation || 0) + 1 };
 }
 
+/** Always an explicit number. `1` stays `"1.00"`, never an empty property. */
+export function orbOpacityText(value) {
+  const n = Math.round(Number(value) * 100) / 100;
+  if (!Number.isFinite(n)) return "1.00";
+  return n.toFixed(2);
+}
+
+/**
+ * transitionend on an orb. The opacity number is already the target.
+ * Class and every other style stay as they were.
+ */
+export function onOrbOpacityTransitionEnd(shell) {
+  if (!shell) return null;
+  return {
+    className: shell.className || "",
+    opacity: shell.style?.opacity || "",
+    hitOpacity: shell.style?.getPropertyValue?.("--hit-opacity") || "",
+  };
+}
+
 /**
  * Sampled disc opacity. Repeated polls of the same target stay on one ramp.
  * `restart` models the old poll, which began the ramp from 1 again.

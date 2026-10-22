@@ -157,7 +157,7 @@
 **R-OB-04** 光球核心只得近白眩光，冇實色粗藍圈；思考圈係 1px `--bot-60` 弧，等候時唔轉，思考中先轉。
 - 來源：美術監督 v20（DESIGN-REVIEW）；SPEC §10.5–10.6。驗收（盒）：1:1 截圖；思考完弧即刻消失。狀態：❓ / ❓。
 
-**R-OB-05** 光球近距淡出。游標唔近、又冇揸 Ctrl 時，光球實色、完全睇到。游標進入該粒光球嘅命中圓再加 `ORB_PROXIMITY_PX`（72px，光暈／命中半徑加一個 60–80px 以內嘅邊）時，只有嗰粒（或同樣近嘅幾粒）用 120ms ease-out 淡到靜止透明度（預設 18%，上限 30%）。游標離開就用同一段淡返實色。同一目標只寫一次：輪詢唔好重寫同一個 opacity，亦唔好拆走再裝上 transition，否則淡出尾段會有一格跳返近實色。穿透唔變：預設穿透，只有揸住 Ctrl 而且游標喺 12px 命中邊內先可以撳（R-CT-*）。Ctrl 揸住而且游標喺 72px 淡出範圍內，嗰粒用同一段 120ms 返實色；可以撳仍然只係 12px 命中邊，而且命中圓對齊可見光碟（底部 footer slack 唔好拉高 orb 嘅 hit，令圓心跌低）。Ctrl+C／Ctrl+V 唔閃（R-CT-06）。面板唔變：預設實色可撳，Ctrl 揸住先透明同穿透。穿透視窗要靠全域游標輪詢（Windows `GetCursorPos`、Linux `XQueryPointer`，經 `device_query`），唔好靠 DOM mouse。`prefers-reduced-motion` 縮到 1ms。冇閒置循環動畫（R-PN-08）。2026-10-22 早段「約 180ms、淡出 150–200ms」**已取代**（v92 盒：180ms linear 加輪詢，6/21 次過唔到 250ms 內 ≤30%）。
+**R-OB-05** 光球近距淡出。游標唔近、又冇揸 Ctrl 時，光球實色、完全睇到。游標進入該粒光球嘅命中圓再加 `ORB_PROXIMITY_PX`（72px，光暈／命中半徑加一個 60–80px 以內嘅邊）時，只有嗰粒（或同樣近嘅幾粒）用 120ms ease-out 淡到靜止透明度（預設 18%，上限 30%）。游標離開就用同一段淡返實色。同一目標只寫一次：輪詢唔好重寫同一個 opacity，亦唔好拆走再裝上 transition。光球殼保持 `will-change: opacity`，transitionend 唔改 class 或者其他 style，opacity 永遠係明確數字（包括 `1.00`）。透明度只跟全域輪詢嘅游標距離同 Ctrl，唔跟鍵盤事件或者焦點；游標遠一定係 1。Esc 關面板之後放開 overlay 嘅鍵盤焦點。穿透唔變：預設穿透，只有揸住 Ctrl 而且游標喺 12px 命中邊內先可以撳（R-CT-*）。Ctrl 揸住而且游標喺 72px 淡出範圍內，嗰粒用同一段 120ms 返實色；可以撳仍然只係 12px 命中邊，而且命中圓對齊可見光碟（底部 footer slack 唔好拉高 orb 嘅 hit，令圓心跌低）。Ctrl+C／Ctrl+V 唔閃（R-CT-06），就算 overlay 仲有焦點都唔好把遠方光球留喺 0.18。面板唔變：預設實色可撳，Ctrl 揸住先透明同穿透。穿透視窗要靠全域游標輪詢（Windows `GetCursorPos`、Linux `XQueryPointer`，經 `device_query`），唔好靠 DOM mouse。`prefers-reduced-motion` 縮到 1ms。冇閒置循環動畫（R-PN-08）。2026-10-22 早段「約 180ms、淡出 150–200ms」**已取代**（v92 盒：180ms linear 加輪詢，6/21 次過唔到 250ms 內 ≤30%）。5dac6e2 嘅 250ms 目標 21/21 已過，但 15/84 次尾段仍有一格反向，而且 overlay 有焦點時 Ctrl+C 會把看板光球留喺 0.18。
 - 來源：Devon 2026-10-08 原規則；2026-10-22 恢復（整合 REQUIREMENTS.md 時漏咗）。見 C-16。取代 R-CT-02／R-CT-03 嘅「預設半透明」。
 - 驗收（兩邊）：游標遠時光球實色；進入 72px 後 250ms 內透明度 ≤30%；離開返實色；Ctrl 揸住近光球時實色而且 12px 內可撳；Ctrl 放開，喺淡出範圍內撳仍然穿透；Ctrl+C／V 冇閃。
 - 狀態：❓ / ❓。
@@ -197,7 +197,7 @@
 **R-KB-03** 未裝 overlay-slash kanban 時顯示「未裝 overlay-slash kanban，看板唔會出現。」，唔可以出假任務。
 - 來源：SPEC §8.2。狀態：❓ / ❓。
 
-**R-KB-04** gateway 對看板路徑回 404（overlay-slash kanban route 唔喺呢部 Hermes）時，顯示「呢部 Hermes 未有看板。伺服器冇提供看板功能（404）。」，字色 `#14142b`，靜態、冇動畫。呢個係功能未提供，唔當逾時，唔進入 R-SY-08 嘅無限重試。
+**R-KB-04** gateway 對看板路徑回 404（overlay-slash kanban route 唔喺呢部 Hermes）時，顯示「呢部 Hermes 未有看板。伺服器冇提供看板功能。」，字色 `#14142b`，靜態、冇動畫。唔好再寫「（404）」，以免全形括號自己跳一行。呢個係功能未提供，唔當逾時，唔進入 R-SY-08 嘅無限重試。
 - 來源：Devon（2026-10-22 手提：看板 endpoint 404）。驗收（單元＋盒）：404 回應之後看板停留喺上面嗰句，`gatewayDown` 係 false；真正連唔到或者逾時仍然行 R-SY-08。
 - 狀態：❓ / ❓。
 
@@ -208,7 +208,7 @@
 > 2026-10-21 Devon 裁決（C-01）：本節取代 repo `SPEC.md` §5.2、§5.5、§5.7，同埋同本節撞嘅 §5.4、§5.6。
 > 2026-10-21 曾經寫「啟動唔跟已儲存 session id，一律開標題 Bot Chat」。**已取代**（Devon 2026-10-22 手提，11a150e）：config 或者 explicit 已經有嘅 session 要保留，見下面 R-SS-01／02／04。
 
-**R-SS-01** 每個 bot 嘅**主光球面板**開 config 已經記住嘅 session。嗰條 id 喺伺服器存在就用佢，隱藏同 archived 都算存在，啟動、打開面板、同 gateway 重連（R-SY-08）都**唔改** config 嘅 session id、explicit 旗、anchor。explicit 旗唔可以自動清走。config 未有 session id，先至可以寫入一次。
+**R-SS-01** 每個 bot 嘅**主光球面板**開 config 已經記住嘅 session。嗰條 id 喺伺服器存在就用佢，隱藏同 archived 都算存在。啟動、打開或關閉面板、同 gateway 重連（R-SY-08）之後，config.json 位元組保持不變：唔改 session id、explicit 旗、anchor。explicit 旗唔可以自動清走。活動 watermark 可以留喺記憶，唔寫入 config.json。只有設定畫面改動，或者人手揀 session，先可以寫檔。「config 未有 session id，先至可以寫入一次」**已取代**（v92：打開面板把 researcher／writer／broken 嘅 anchor 改成最新訊息時間）。
 
 已儲存嘅 id 係空、已經唔喺清單、或者條列係空而且有更好的 Bot Chat（而且唔係 explicit），先至跟 Hermes Desktop 嘅次序揀真正嘅 Bot Chat：
 - (a) API 有露出 Desktop delivery lease 或者 `canonical_session` 就用嗰條；空 lease 唔可以壓過有訊息嘅 Bot Chat。
@@ -222,7 +222,7 @@
 - 驗收（兩邊）：ff-daily 開 `20261013_180130_88f994`（config）。mt-orch 開 explicit `20261015_011713_2242f9`，旗保留。forex-forest 留 `20261001_013827_25b1eb`（tui，2312 訊息，只讀）。mt-coder、mt-reviewer、mt-tester：清單入面有非空 Bot Chat 就開嗰條；而家手提錄到嘅列係空的 `api_1792573589_f1c99a3b`、`api_1792573589_b1b8ccc5`、`api_1792573589_257658b2`（e3db750 的「Bot Chat」重複），冇第二條就停喺嗰條，唔再因為標題跳去空重複而改 config。gateway 返嚟之後 session 欄同重連之前一樣。只有 `tui` 時輸入同傳送停用。單元測試用呢組形狀。
 - 狀態：❓ / ❌(Win，11a150e：0 次建立，但開錯 session 同改寫 config)。單元測試已鎖新規則；手提未再驗。
 
-**R-SS-02** 自動路徑**唔改**已記住嘅 session：啟動、打開面板、cron 更新 `last_active`、有新 session、gateway 重連，都唔改 session id、explicit 旗、anchor。explicit 唔會被清走。只有 config 未有 id 先寫入一次。手動 picker（R-SS-04）先可以改 id 同寫上 explicit。2026-10-21「主光球永遠唔可以離開標題 Bot Chat」**已取代**：已記住而且仍然存在嘅 session 就停喺度；空而且唔係 explicit 的儲存列，畫面可以跟有訊息嘅 Bot Chat，但唔寫返 config。
+**R-SS-02** 自動路徑**唔改**已記住嘅 session：啟動、打開或關閉面板、cron 更新 `last_active`、有新 session、gateway 重連，config.json 位元組都保持不變，包括 session id、explicit 旗、anchor。explicit 唔會被清走。手動 picker（R-SS-04）先可以改 id 同寫上 explicit；anchor 數字唔跟最新訊息時間改寫。2026-10-21「主光球永遠唔可以離開標題 Bot Chat」**已取代**：已記住而且仍然存在嘅 session 就停喺度；空而且唔係 explicit 的儲存列，畫面可以跟有訊息嘅 Bot Chat，但唔寫返 config。「只有 config 未有 id 先寫入一次」**已取代**（v92 打開面板改寫 anchor）。
 - 來源：Devon（2026-10-22）。11a150e 喺 gateway 返嚟時改咗 ff-daily、mt-coder、mt-tester、mt-orch 嘅 session id，清走 mt-orch 嘅 explicit，又改咗 anchor。
 - 驗收（**Windows 必做**＋盒）：Devon 手提上，ff-daily、mt-orch、forex-forest 啟動後、等 60s、逐個開關面板、gateway 重連、再重啟一次，session id、explicit、anchor 同開波之前一樣。盒：單元測試 `stored_pin_after_resolve` 喺已有 id 時返回唔寫。
 - 狀態：❓ / ❌(Win，11a150e 改寫 config)。盒未再驗。
@@ -320,7 +320,7 @@
 **R-SY-07** 測試次序：先盒測，全部過咗先交美術監督；**裝手提之前一定要先話俾 Devon 知**。手提上唔閂 Hermes Desktop、唔人手改視窗樣式。
 - 來源：Devon。狀態：流程要求（每次記錄）。
 
-**R-SY-08** Hermes gateway 連唔到或者逾時，看板、排程、Bot 名單／profile、同每個 Bot 嘅對話都要自己接返，唔使重開程式、亦唔使人手撳。退避大約 5 秒、10 秒、20 秒，之後封頂 60 秒，每次上下 20%。網路恢復、系統由睡眠醒返、或者打開受影響嘅面板，即刻再試。重試期間看板／光球顯示平靜狀態「連唔到 Hermes，自動重試中…」加下次再試時間，唔顯示原始錯誤；字色 `#14142b`，對比 ≥4.5:1（R-VS-01）。唔可以有閒置循環動畫（R-PN-08）：唔轉圈，靜態狀態加倒數文字就得。恢復之後每個消費者刷新一次並清走錯誤。重試同重連永遠唔建立 session、亦唔離開 Bot Chat（0 次建立，R-SS-01…04）。每個 profile 同時最多一個進行中嘅探測。
+**R-SY-08** Hermes gateway 連唔到或者逾時，看板、排程、Bot 名單／profile、同每個 Bot 嘅對話都要自己接返，唔使重開程式、亦唔使人手撳。退避大約 5 秒、10 秒、20 秒，之後封頂 60 秒，每次上下 20%。網路恢復、系統由睡眠醒返、或者打開受影響嘅面板，即刻再試，而且唔好跳級：打開面板觸發嘅即時重試如果失敗，停留喺而家嗰級（例如 20 秒），唔好直接去 60 秒封頂。重試期間看板／光球顯示平靜狀態「連唔到 Hermes，自動重試中…」加下次再試時間，唔顯示原始錯誤；字色 `#14142b`，對比 ≥4.5:1（R-VS-01）。唔可以有閒置循環動畫（R-PN-08）：唔轉圈，靜態狀態加倒數文字就得。恢復之後每個消費者刷新一次並清走錯誤。重試同重連永遠唔建立 session、亦唔離開 Bot Chat（0 次建立，R-SS-01…04）。每個 profile 同時最多一個進行中嘅探測。v92 盒：打開面板失敗之後倒數顯示「49 秒」（+15s），跳過咗 20 秒級。
 - 來源：Devon（2026-10-22）。
 - 驗收：停掉假 gateway，面板出重試狀態；再開 gateway，喺退避窗口加 1 秒內看板同 Bot 自己出現；全程 0 次建立 session。CI／單元測試覆蓋假 gateway 由落到起。
 - 狀態：❓ / ❓。

@@ -447,10 +447,10 @@ fn remember_pin(app: &AppHandle, state: &AppState, profile: &str, pin: SessionPi
     persist_pin(app, &state.sessions, &state.config_write, profile, pin);
 }
 
-/// Automatic open, send, and reconnect. A session id already in config is
-/// left untouched, including its explicit flag and anchor. When that id is
-/// still on the server, the resolved row is cached in memory so this process
-/// keeps showing it. A missing id is not replaced in memory.
+/// Automatic open, send, and reconnect. This never writes config.json.
+/// A configured id keeps its explicit flag and its saved anchor in memory.
+/// An empty config id may cache the resolved row in memory only. A missing
+/// id is not shadowed.
 fn remember_pin_if_absent(
     app: &AppHandle,
     state: &AppState,
@@ -459,39 +459,44 @@ fn remember_pin_if_absent(
     stored_on_server: bool,
 ) {
     let existing = load_pin(app, state, profile);
-    if let Some((id, explicit, anchor)) = hermes::stored_pin_after_resolve(
-        &existing.id,
-        existing.explicit,
-        existing.anchor,
-        &pin.id,
-        pin.explicit,
-        pin.anchor,
-    ) {
-        remember_pin(
-            app,
-            state,
-            profile,
+    if !existing.id.trim().is_empty() {
+        if !stored_on_server {
+            return;
+        }
+        let id = pin.id.trim().to_string();
+        if id.is_empty() {
+            return;
+        }
+        let anchor = if existing.anchor.is_finite() {
+            existing.anchor
+        } else {
+            0.0
+        };
+        session_map(state).insert(
+            profile.to_string(),
             SessionPin {
                 id,
-                explicit,
+                explicit: existing.explicit,
                 anchor,
             },
         );
-        return;
-    }
-    if !stored_on_server {
         return;
     }
     let id = pin.id.trim().to_string();
     if id.is_empty() {
         return;
     }
+    let anchor = if existing.anchor.is_finite() && existing.anchor > 0.0 {
+        existing.anchor
+    } else {
+        0.0
+    };
     session_map(state).insert(
         profile.to_string(),
         SessionPin {
             id,
-            explicit: pin.explicit,
-            anchor: pin.anchor,
+            explicit: false,
+            anchor,
         },
     );
 }
@@ -513,56 +518,57 @@ fn persist_pin(
     pin: SessionPin,
 ) {
     let _write = config_write.lock().unwrap_or_else(|err| err.into_inner());
-    let id = pin.id.trim().to_string();
-    let mut anchor = if id.is_empty() { 0.0 } else { pin.anchor };
     let loaded = config_path(app)
         .ok()
         .and_then(|path| config::load(&path).ok().map(|cfg| (path, cfg)));
-    if !id.is_empty() {
-        if let Some((_, cfg)) = loaded.as_ref() {
-            if let Some(bot) = cfg.bot(profile) {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|dur| dur.as_secs_f64())
-                    .unwrap_or(0.0);
-                anchor = hermes::merge_session_anchor(
-                    &bot.session_id,
-                    bot.session_anchor,
-                    &id,
-                    anchor,
-                    now,
-                );
-            }
-        }
-    }
-    let pin = SessionPin {
-        explicit: pin.explicit && !id.is_empty(),
-        anchor,
-        id,
+    let (file_id, file_explicit, file_anchor) = loaded
+        .as_ref()
+        .and_then(|(_, cfg)| cfg.bot(profile))
+        .map(|bot| {
+            (
+                bot.session_id.clone(),
+                bot.session_explicit,
+                bot.session_anchor,
+            )
+        })
+        .unwrap_or_else(|| (String::new(), false, 0.0));
+    let update = hermes::session_file_update(
+        &file_id,
+        file_explicit,
+        file_anchor,
+        &pin.id,
+        pin.explicit,
+        pin.anchor,
+    );
+    let stored_anchor = update
+        .as_ref()
+        .map(|(_, _, anchor)| *anchor)
+        .unwrap_or(file_anchor);
+    let stored = SessionPin {
+        id: pin.id.trim().to_string(),
+        explicit: pin.explicit && !pin.id.trim().is_empty(),
+        anchor: stored_anchor,
     };
     {
         let mut map = sessions.lock().unwrap_or_else(|err| err.into_inner());
-        if pin.id.is_empty() {
+        if stored.id.is_empty() {
             map.remove(profile);
         } else {
-            map.insert(profile.to_string(), pin.clone());
+            map.insert(profile.to_string(), stored);
         }
     }
+    let Some((next_id, next_explicit, next_anchor)) = update else {
+        return;
+    };
     let Some((path, mut cfg)) = loaded else {
         return;
     };
     let Some(bot) = cfg.bot_mut(profile) else {
         return;
     };
-    if bot.session_id == pin.id
-        && bot.session_explicit == pin.explicit
-        && bot.session_anchor == pin.anchor
-    {
-        return;
-    }
-    bot.session_id = pin.id;
-    bot.session_explicit = pin.explicit;
-    bot.session_anchor = pin.anchor;
+    bot.session_id = next_id;
+    bot.session_explicit = next_explicit;
+    bot.session_anchor = next_anchor;
     let _ = config::save(&path, &cfg);
 }
 
@@ -828,9 +834,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
                 .map(|bot| bot.session_explicit)
                 .unwrap_or(false)
         });
-        let session_anchor = pin
-            .map(|pin| pin.anchor)
-            .unwrap_or_else(|| previous_bot.map(|bot| bot.session_anchor).unwrap_or(0.0));
+        let session_anchor = previous_bot.map(|bot| bot.session_anchor).unwrap_or(0.0);
         bots.push(BotConfig {
             color: config::normalize_color(&bot.color, &profile),
             detail: bot.detail.trim().to_string(),
@@ -2214,6 +2218,15 @@ fn modifier_down_now(state: State<'_, AppState>) -> bool {
     interaction::modifier_down_now(state.interaction.as_ref())
 }
 
+/// Esc closed a panel. The webview must not keep the next Ctrl chord.
+#[tauri::command]
+fn release_overlay_focus(app: AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    interaction::release_overlay_focus(&window);
+}
+
 /// Orb id latched when the hit check saw Ctrl+press. The page reads this
 /// from a late pointerdown; a newer key sample is not the answer.
 #[tauri::command]
@@ -2352,6 +2365,7 @@ pub fn run() {
             map_overlay_for_layout,
             wait_presented_frames,
             modifier_down_now,
+            release_overlay_focus,
             armed_press,
             note_opacity_written,
             drive_presented_seam,

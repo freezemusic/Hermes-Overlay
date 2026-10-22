@@ -16,6 +16,8 @@ import {
   playOrbFade,
   opacityFramesMonotonic,
   commitOrbOpacity,
+  orbOpacityText,
+  onOrbOpacityTransitionEnd,
   orbDiscHit,
   modifierEngages,
   isCloseHit,
@@ -224,7 +226,55 @@ test("orb fade frames stay monotonic and reach the floor inside 250ms", () => {
   const apply = main.slice(main.indexOf("function applyFrames"), main.indexOf("function paintOrbLabel"));
   assert.match(apply, /commitOrbOpacity/);
   assert.match(apply, /dataset\.orbFade/);
+  assert.match(apply, /orbOpacityText/);
   assert.doesNotMatch(apply, /style\.transition/);
+  assert.equal(orbOpacityText(1), "1.00");
+  assert.equal(orbOpacityText(0.18), "0.18");
+  const shellNode = {
+    className: "morph",
+    dataset: { state: "orb" },
+    style: {
+      opacity: "0.18",
+      cssText: "opacity: 0.18; --hit-opacity: 0.18;",
+      getPropertyValue(name) {
+        return name === "--hit-opacity" ? "0.18" : "";
+      },
+    },
+  };
+  const beforeEnd = {
+    className: shellNode.className,
+    opacity: shellNode.style.opacity,
+    cssText: shellNode.style.cssText,
+  };
+  const ended = onOrbOpacityTransitionEnd(shellNode);
+  assert.equal(ended.className, beforeEnd.className);
+  assert.equal(ended.opacity, beforeEnd.opacity);
+  assert.equal(shellNode.style.cssText, beforeEnd.cssText);
+  assert.equal(shellNode.className, beforeEnd.className);
+  const endFn = onOrbOpacityTransitionEnd.toString();
+  assert.doesNotMatch(endFn, /className\s*=|classList|removeProperty|setProperty|style\.opacity\s*=|style\.transition/);
+  const fadeEnd = main.slice(main.indexOf("function onOrbFadeEnd"), main.indexOf("function paintOrbLabel"));
+  assert.match(fadeEnd, /onOrbOpacityTransitionEnd/);
+  assert.doesNotMatch(fadeEnd, /classList|removeProperty|setProperty|style\.opacity\s*=|style\.transition/);
+  const localPaint = main.slice(main.indexOf("function paintLocalProximity"), main.indexOf("function setupProximity"));
+  assert.match(localPaint, /if \(inTauri\(\)\) return/);
+  const reload = main.slice(main.indexOf("async function reloadOpenSession"), main.indexOf("async function loadBotHistory"));
+  assert.match(reload, /loadBotHistory/);
+  assert.doesNotMatch(reload, /select_session/);
+  const far = elementStates({
+    held: false,
+    cursor: { x: 0, y: 0 },
+    rects: [{ id: "bot:kanban", x: 800, y: 40, w: 44, h: 44, round: true }],
+    minOpacity: 0.18,
+  });
+  assert.equal(far[0].opacity, 1);
+  const farCtrl = elementStates({
+    held: true,
+    cursor: { x: 0, y: 0 },
+    rects: [{ id: "bot:kanban", x: 800, y: 40, w: 44, h: 44, round: true }],
+    minOpacity: 0.18,
+  });
+  assert.equal(farCtrl[0].opacity, 1);
   const collect = main.slice(main.indexOf("function collectHits"), main.indexOf("let hitFrame"));
   assert.match(collect, /orbDiscHit/);
   assert.match(collect, /dataset\.state !== "orb"\) coverBottomFooter/);

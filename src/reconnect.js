@@ -57,8 +57,10 @@ export function createProbeGate() {
 
 /**
  * One supervisor. `fail` arms the backoff. `kick` retries immediately
- * (panel open, network online, OS resume). A second fail while a timer
- * or a probe is already running does not start another probe.
+ * (panel open, network online, OS resume) and does not spend a ladder
+ * step: a failed kick reschedules the delay that was already waiting.
+ * A second fail while a timer or a probe is already running does not
+ * start another probe.
  */
 export function createReconnect(options = {}) {
   const now = options.now || (() => Date.now());
@@ -72,7 +74,15 @@ export function createReconnect(options = {}) {
   function row(key) {
     let item = lanes.get(key);
     if (!item) {
-      item = { attempt: 0, timer: null, inflight: 0, down: false, nextAt: 0, run: null };
+      item = {
+        attempt: 0,
+        timer: null,
+        inflight: 0,
+        down: false,
+        nextAt: 0,
+        run: null,
+        kickProbe: false,
+      };
       lanes.set(key, item);
     }
     return item;
@@ -99,6 +109,7 @@ export function createReconnect(options = {}) {
   function finish(key, ok) {
     const item = row(key);
     if (ok === true) {
+      item.kickProbe = false;
       item.down = false;
       item.attempt = 0;
       item.nextAt = 0;
@@ -106,15 +117,18 @@ export function createReconnect(options = {}) {
       onClear();
       return;
     }
-    if (ok !== "busy") item.attempt += 1;
+    const kicked = item.kickProbe;
+    item.kickProbe = false;
+    if (ok !== "busy" && !kicked) item.attempt += 1;
     item.down = true;
     schedule(key);
     onWait();
   }
 
-  function start(key) {
+  function start(key, fromKick) {
     const item = row(key);
     if (item.inflight || !item.run) return false;
+    item.kickProbe = fromKick === true;
     item.inflight = 1;
     Promise.resolve()
       .then(() => item.run())
@@ -144,7 +158,7 @@ export function createReconnect(options = {}) {
       clear(item);
       item.nextAt = now();
       onWait();
-      return start(key);
+      return start(key, true);
     },
     kickDown() {
       let n = 0;
@@ -160,6 +174,7 @@ export function createReconnect(options = {}) {
         item.attempt = 0;
         item.nextAt = 0;
         item.inflight = 0;
+        item.kickProbe = false;
       }
     },
     status(key, at) {

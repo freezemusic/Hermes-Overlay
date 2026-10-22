@@ -143,6 +143,8 @@ import {
   selectKeyOpensDropdown,
   BLUR_RELEASE_MS,
   commitOrbOpacity,
+  orbOpacityText,
+  onOrbOpacityTransitionEnd,
   orbDiscHit,
 } from "./proximity.js";
 
@@ -5179,18 +5181,7 @@ function armChatRefresh() {
 const pendingHistory = new Map();
 
 async function reloadOpenSession(id, token, { quiet = false } = {}) {
-  const thread = threadFor(id);
-  const sessionId = thread.sessionId;
-  if (!sessionId) return loadBotHistory(id, token, { quiet });
-  const { invoke } = await import("@tauri-apps/api/core");
-  try {
-    const opened = await invoke("select_session", { profile: id, sessionId });
-    if (token !== state.reconnectToken || state.mode !== "hermes") return false;
-    applyOpened(id, opened, { quiet });
-    return true;
-  } catch {
-    return loadBotHistory(id, token, { quiet });
-  }
+  return loadBotHistory(id, token, { quiet });
 }
 
 async function loadBotHistory(id, token, { quiet = false } = {}) {
@@ -6985,8 +6976,7 @@ function setupComposer() {
       closeSlash();
       return;
     }
-    const active = document.activeElement;
-    if (active && active !== document.body && typeof active.blur === "function") active.blur();
+    releaseOverlayFocus();
     closeOpenPanel(action.id);
     syncLatch();
   }, true);
@@ -8103,15 +8093,18 @@ function applyFrames(frames, interactiveAll = false) {
       && (el.dataset.state === "orb" || el.dataset.visual === "orb")
       && !el.classList.contains("is-cron-live");
     if (orbShell) {
-      // One write per target. Setting it again, or touching --hit-opacity,
-      // restarts the stylesheet transition and paints one frame backward.
+      // One write per target. The stylesheet variable and the inline number
+      // stay equal, so a layer teardown cannot sample a different opacity.
+      // transitionend does not touch class or any other style.
       const previous = el.dataset.orbFade == null || el.dataset.orbFade === ""
         ? null
         : { target: Number(el.dataset.orbFade), generation: 1 };
       const commit = commitOrbOpacity(previous, value);
       if (commit.wrote) {
-        el.dataset.orbFade = String(commit.target);
-        el.style.opacity = String(commit.target);
+        const shown = orbOpacityText(commit.target);
+        el.dataset.orbFade = shown;
+        el.style.setProperty("--hit-opacity", shown);
+        el.style.opacity = shown;
       }
     } else if (!panelShell && el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
       el.style.setProperty("--hit-opacity", nextOpacity);
@@ -8120,6 +8113,13 @@ function applyFrames(frames, interactiveAll = false) {
     else delete el.dataset.hitCapture;
   });
   paintOrbLabel();
+}
+
+function onOrbFadeEnd(event) {
+  if (!event || event.propertyName !== "opacity") return;
+  const shell = event.target;
+  if (!shell || shell.dataset?.state !== "orb") return;
+  onOrbOpacityTransitionEnd(shell);
 }
 
 function paintOrbLabel() {
@@ -8264,7 +8264,22 @@ function engagedModifier(now = performance.now()) {
   return next.held;
 }
 
+function releaseOverlayFocus() {
+  const active = document.activeElement;
+  if (active && active !== document.body && typeof active.blur === "function") active.blur();
+  state.heldKeys.clear();
+  modifierArm.at = null;
+  modifierArm.suppressed = false;
+  window.clearTimeout(modifierArm.timer);
+  modifierArm.timer = 0;
+  if (!inTauri()) return;
+  import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("release_overlay_focus"))
+    .catch(() => {});
+}
+
 function paintLocalProximity(rects) {
+  if (inTauri()) return;
   const list = rects || collectHits();
   const cfg = state.interaction;
   const held = engagedModifier();
@@ -8389,7 +8404,9 @@ function setupProximity() {
   window.addEventListener("click", (event) => {
     logPointer("click", event, orbIdFromEventTarget(event.target));
   }, true);
+  document.addEventListener("transitionend", onOrbFadeEnd);
   window.addEventListener("keydown", (event) => {
+    if (inTauri()) return;
     if (event.repeat) return;
     const isMod = event.key === "Control" || event.key === "Shift" || event.key === "Alt";
     if (!isMod) {
@@ -8402,6 +8419,7 @@ function setupProximity() {
     logCtrlEdge("down", event.ctrlKey || event.key === "Control");
   });
   window.addEventListener("keyup", (event) => {
+    if (inTauri()) return;
     if (event.key !== "Control" && event.key !== "Shift" && event.key !== "Alt") return;
     state.heldKeys.delete(event.key);
     if (event.key === modifierKeyName()) {

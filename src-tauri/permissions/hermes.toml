@@ -144,6 +144,11 @@ description = "Read the OS modifier at pointerdown, not the last poll."
 commands.allow = ["modifier_down_now"]
 
 [[permission]]
+identifier = "allow-release-overlay-focus"
+description = "Drop the overlay keyboard focus after Escape closes a panel."
+commands.allow = ["release_overlay_focus"]
+
+[[permission]]
 identifier = "allow-armed-press"
 description = "Read the orb id latched when a press began with the modifier down."
 commands.allow = ["armed_press"]

@@ -1055,6 +1055,22 @@ pub fn classify_window_ids(
     FocusOwner::Other
 }
 
+/// Drop the page key target after Esc closes a panel. The window stays
+/// mapped. Orb opacity keeps following the global poll.
+pub fn release_overlay_focus(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::*;
+        if let Ok(gtk_window) = window.gtk_window() {
+            gtk_window.set_focus(None::<&gtk::Widget>);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+    }
+}
+
 pub fn focus_owner_name(owner: FocusOwner) -> &'static str {
     match owner {
         FocusOwner::Own => "own",

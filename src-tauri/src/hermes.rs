@@ -318,28 +318,49 @@ pub fn resolve_session(
     session_for_startup(sessions, remembered, explicit, anchor)
 }
 
-/// `0.0` is not a timestamp. The same session keeps a saved watermark.
-/// A different session with no timestamp gets `now`.
+/// `0.0` is not a timestamp. A newer `last_active` must not replace the
+/// saved watermark: v92 rewrote `session_anchor` on every panel open.
+/// The file keeps the previous number. `now` and `next_anchor` are ignored.
 pub fn merge_session_anchor(
-    previous_id: &str,
+    _previous_id: &str,
     previous_anchor: f64,
     next_id: &str,
-    next_anchor: f64,
-    now: f64,
+    _next_anchor: f64,
+    _now: f64,
 ) -> f64 {
     if next_id.trim().is_empty() {
         return 0.0;
     }
-    if next_anchor.is_finite() && next_anchor > 0.0 {
-        return next_anchor;
-    }
-    if previous_id == next_id && previous_anchor.is_finite() && previous_anchor > 0.0 {
+    if previous_anchor.is_finite() && previous_anchor > 0.0 {
         return previous_anchor;
     }
-    if now.is_finite() && now > 0.0 {
-        return now;
-    }
     0.0
+}
+
+/// Automatic open, reconnect, and panel close must not rewrite config.
+/// `None` means the file stays byte-for-byte. A hand pick that changes the
+/// id or the explicit flag may write, and the anchor number stays.
+pub fn session_file_update(
+    previous_id: &str,
+    previous_explicit: bool,
+    previous_anchor: f64,
+    next_id: &str,
+    next_explicit: bool,
+    next_anchor: f64,
+) -> Option<(String, bool, f64)> {
+    let id = next_id.trim();
+    let explicit = next_explicit && !id.is_empty();
+    let anchor = merge_session_anchor(
+        previous_id,
+        previous_anchor,
+        id,
+        next_anchor,
+        0.0,
+    );
+    if previous_id == id && previous_explicit == explicit && previous_anchor == anchor {
+        return None;
+    }
+    Some((id.to_string(), explicit, anchor))
 }
 
 /// A stored row is empty and some other Bot Chat actually has messages.
@@ -1031,7 +1052,7 @@ pub async fn fetch_overlay_commands(
 }
 
 pub const KANBAN_EMPTY: &str = "未裝 overlay-slash kanban，看板唔會出現。";
-pub const KANBAN_UNAVAILABLE: &str = "呢部 Hermes 未有看板。伺服器冇提供看板功能（404）。";
+pub const KANBAN_UNAVAILABLE: &str = "呢部 Hermes 未有看板。伺服器冇提供看板功能。";
 pub const KANBAN_STATUSES: [&str; 6] = ["triage", "todo", "ready", "running", "blocked", "done"];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -2545,14 +2566,17 @@ mod tests {
         );
         assert_eq!(
             merge_session_anchor("split", 10.0, "split", 20.0, 99.0),
-            20.0
+            10.0
         );
         assert_eq!(merge_session_anchor("split", 10.0, "", 0.0, 99.0), 0.0);
         assert_eq!(
             merge_session_anchor("split", 10.0, "other", 0.0, 99.0),
-            99.0
+            10.0
         );
-        assert_eq!(merge_session_anchor("split", 0.0, "split", 0.0, 99.0), 99.0);
+        assert_eq!(merge_session_anchor("split", 0.0, "split", 0.0, 99.0), 0.0);
+        assert!(session_file_update("sess", true, 1792546080.05, "sess", true, 1792606967.10).is_none());
+        assert!(session_file_update("sess", false, 1792546210.56, "sess", false, 1792607001.46).is_none());
+        assert!(session_file_update("sess", true, 1792545967.28, "sess", true, 1792606891.45).is_none());
         let explicit = session_for_startup(&sessions, "desktop", true, 3.0).unwrap();
         assert_eq!(explicit.id, "desktop");
         assert!(explicit.explicit);
@@ -2718,6 +2742,76 @@ mod tests {
         assert!(!open.contains("ensure_bot_chat"));
         assert!(!open.contains("create_bot_chat"));
         assert!(!open.contains("create_session"));
+        assert!(!open.contains("config::save"));
+        let absent_at = open_src.find("fn remember_pin_if_absent").expect("absent");
+        let absent_end = open_src.find("fn active_session").expect("active_session");
+        let absent = &open_src[absent_at..absent_end];
+        assert!(!absent.contains("remember_pin("));
+        assert!(!absent.contains("persist_pin"));
+        assert!(!absent.contains("config::save"));
+        let pin_at = open_src.find("fn persist_pin").expect("persist_pin");
+        let pin_end = open_src.find("fn session_choices").expect("session_choices");
+        let pin_body = &open_src[pin_at..pin_end];
+        assert!(pin_body.contains("session_file_update"));
+        assert!(!pin_body.contains("merge_session_anchor"));
+    }
+
+    #[test]
+    fn opening_a_configured_session_leaves_config_bytes_unchanged() {
+        use crate::config::{load, save, AppConfig, BotConfig, InteractionConfig};
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-overlay-open-bytes-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let bot = |profile: &str, id: &str, explicit: bool, anchor: f64| BotConfig {
+            profile: profile.into(),
+            display_name: profile.into(),
+            color: String::new(),
+            base_url: String::new(),
+            detail: String::new(),
+            session_id: id.into(),
+            session_explicit: explicit,
+            session_anchor: anchor,
+            enabled: true,
+        };
+        let cfg = AppConfig {
+            version: 1,
+            gateway_base_url: "http://127.0.0.1:8642".into(),
+            dashboard_base_url: "http://127.0.0.1:9119".into(),
+            bots: vec![
+                bot("researcher", "20261015_researcher", true, 1792546080.05),
+                bot("writer", "20261015_writer", true, 1792546210.56),
+                bot("broken", "20261015_broken", false, 1792545967.28),
+            ],
+            interaction: InteractionConfig::default(),
+        };
+        save(&path, &cfg).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let loaded = load(&path).unwrap();
+        for (profile, next_anchor) in [
+            ("researcher", 1792606967.10),
+            ("writer", 1792607001.46),
+            ("broken", 1792606891.45),
+        ] {
+            let row = loaded.bot(profile).unwrap();
+            assert!(
+                session_file_update(
+                    &row.session_id,
+                    row.session_explicit,
+                    row.session_anchor,
+                    &row.session_id,
+                    row.session_explicit,
+                    next_anchor,
+                )
+                .is_none(),
+                "{profile}"
+            );
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Devon 2026-10-21, read from the laptop and the server.
@@ -3544,7 +3638,8 @@ data: {}\n\
             .unwrap();
         assert!(board.unavailable);
         assert_eq!(board.message, KANBAN_UNAVAILABLE);
-        assert!(board.message.contains("404"));
+        assert!(board.message.contains("未有看板"));
+        assert!(!board.message.contains("（404）"));
         assert!(KANBAN_EMPTY.contains("overlay-slash"));
         assert_ne!(board.message, KANBAN_EMPTY);
         assert!(board.columns.is_empty());

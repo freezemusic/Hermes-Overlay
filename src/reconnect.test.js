@@ -33,6 +33,7 @@ test("gateway down covers the kanban timeout and ignores a rejected key", () => 
   assert.equal(gatewayDown("Gateway 拒絕金鑰（401）。"), false);
   assert.equal(gatewayDown("Gateway 太忙（429），稍後再試。"), false);
   assert.equal(gatewayDown("呢部 Hermes 未有看板。伺服器冇提供看板功能（404）。"), false);
+  assert.equal(gatewayDown("呢部 Hermes 未有看板。伺服器冇提供看板功能。"), false);
   assert.equal(gatewayDown("找不到路徑（404）。"), false);
 });
 
@@ -121,6 +122,42 @@ test("one probe per profile, and a down gateway recovers without creating a sess
   assert.equal(calls.some((name) => name.includes("create")), false);
   assert.equal(link.isDown("gateway"), false);
   assert.equal(link.status("gateway"), "");
+});
+
+test("opening a panel retries immediately and stays on the 20s rung", async () => {
+  let now = 1_000;
+  const timers = [];
+  const link = createReconnect({
+    now: () => now,
+    random: () => 0.5,
+    setTimer(fn, ms) {
+      const id = timers.length + 1;
+      timers.push({ id, fn, at: now + ms, ms });
+      return id;
+    },
+    clearTimer(id) {
+      const row = timers.find((item) => item.id === id);
+      if (row) row.fn = null;
+    },
+  });
+  link.bind("gateway", async () => false);
+  link.fail("gateway");
+  assert.equal(timers.at(-1).ms, 5000);
+  for (const expect of [10_000, 20_000]) {
+    const timer = timers.filter((item) => item.fn).at(-1);
+    now = timer.at;
+    timer.fn();
+    timer.fn = null;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(timers.filter((item) => item.fn).at(-1).ms, expect);
+  }
+  assert.equal(link.attempt("gateway"), 2);
+  assert.equal(link.kick("gateway"), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timers.filter((item) => item.fn).at(-1).ms, 20_000);
+  assert.equal(link.attempt("gateway"), 2);
+  const status = link.status("gateway", now + 15_000);
+  assert.match(status, /5 秒後再試/);
 });
 
 test("opening the panel or the network returning retries immediately", async () => {

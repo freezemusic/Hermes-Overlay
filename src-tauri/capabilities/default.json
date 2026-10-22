@@ -43,6 +43,7 @@
     "allow-map-overlay-for-layout",
     "allow-wait-presented-frames",
     "allow-modifier-down-now",
+    "allow-release-overlay-focus",
     "allow-armed-press",
     "allow-note-opacity-written",
     "allow-drive-presented-seam",
