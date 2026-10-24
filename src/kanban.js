@@ -1,9 +1,50 @@
 /** Kanban board shaping for the overlay-slash proxy. */
 
-export const KANBAN_STATUSES = ["triage", "todo", "ready", "running", "blocked", "done"];
+export const KANBAN_STATUSES = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"];
 export const KANBAN_POLL_MS = 5_000;
 export const KANBAN_EMPTY = "未裝 overlay-slash kanban，看板唔會出現。";
+export const KANBAN_UNAVAILABLE = "呢部 Hermes 未有看板。伺服器冇提供看板功能。";
+export const KANBAN_LOGIN = "要登入 Kanban";
 export const KANBAN_BOARD = "default";
+
+/** 404 or a missing kanban route. A sign-in prompt is not a 404. */
+export function kanbanUnavailable(message) {
+  const text = String(message || "");
+  if (text.includes(KANBAN_LOGIN)) return false;
+  return (
+    text.includes("未有看板") ||
+    text.includes("未裝 overlay-slash kanban") ||
+    text.includes("找不到路徑（404）") ||
+    text.includes("（404）") ||
+    /\b404\b/.test(text)
+  );
+}
+
+function clipLine(text) {
+  const line = String(text || "").replace(/\s+/g, " ").trim();
+  const chars = Array.from(line);
+  if (chars.length <= 180) return line;
+  return `${chars.slice(0, 179).join("")}…`;
+}
+
+/** One preview line for a real board change. The first snapshot stays quiet. */
+export function kanbanChangeLine(previous, next) {
+  if (!previous || !next || previous.unavailable || next.unavailable || previous.needsLogin || next.needsLogin) return "";
+  const before = tasksOf(previous);
+  const after = tasksOf(next);
+  const beforeById = new Map(before.map((task) => [task.id, task]));
+  const added = after.filter((task) => !beforeById.has(task.id));
+  if (added.length === 1) return clipLine(`新增：${added[0].title || "卡片"}`);
+  if (added.length > 1) return clipLine(`新增 ${added.length} 張卡片`);
+  const moved = after.filter((task) => {
+    const old = beforeById.get(task.id);
+    return old && old.status !== task.status;
+  });
+  if (moved.length === 1) return clipLine(`${moved[0].title || "卡片"} → ${moved[0].status}`);
+  if (moved.length > 1) return clipLine(`${moved.length} 張卡片改咗狀態`);
+  if (boardFingerprint(previous) !== boardFingerprint(next)) return "看板有更新";
+  return "";
+}
 
 export function boardFingerprint(board) {
   const tasks = tasksOf(board).map((task) => [
@@ -14,7 +55,12 @@ export function boardFingerprint(board) {
     task.priority,
     task.updated_at,
   ]);
-  return JSON.stringify(tasks);
+  return JSON.stringify({
+    needsLogin: Boolean(board?.needsLogin),
+    unavailable: Boolean(board?.unavailable),
+    message: board?.message || "",
+    tasks,
+  });
 }
 
 export function tasksOf(board) {
@@ -48,11 +94,21 @@ export function columnsFromTasks(tasks) {
 }
 
 export function normalizeBoard(payload) {
+  if (payload?.needs_login || payload?.needsLogin) {
+    return {
+      board: payload.board || KANBAN_BOARD,
+      columns: [],
+      unavailable: false,
+      needsLogin: true,
+      message: KANBAN_LOGIN,
+    };
+  }
   if (!payload || payload.unavailable) {
     return {
       board: payload?.board || KANBAN_BOARD,
       columns: [],
       unavailable: true,
+      needsLogin: false,
       message: payload?.message || KANBAN_EMPTY,
     };
   }
@@ -61,6 +117,7 @@ export function normalizeBoard(payload) {
     board: payload.board || KANBAN_BOARD,
     columns: columnsFromTasks(tasks),
     unavailable: false,
+    needsLogin: false,
     message: "",
   };
 }

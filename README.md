@@ -6,6 +6,8 @@
 
 未填 gateway 位址時，畫面用內置 mock Bot，可以離線睇版面。填咗位址就改由名單上嘅 profile 排邊框頭像；連唔到會顯示錯誤，唔會靜靜雞退返去 mock。
 
+需求以根目錄 [SPEC.md](SPEC.md) 為準。改程式之前先讀，並逐條核對受影響嘅條文。見 [AGENTS.md](AGENTS.md)。
+
 ## 安裝 / Install
 
 由 [GitHub Releases](https://github.com/freezemusic/Hermes-Overlay/releases) 下載草稿或已發佈嘅安裝檔。而家嘅 build **未簽名**。`macOSPrivateApi` 開住先至透明，所以呢個 app **入唔到 Mac App Store**。
@@ -103,7 +105,7 @@ hermes gateway
 curl http://127.0.0.1:8642/health
 ```
 
-**Bot 就係 profile。** 每個 Bot 一條永久對話，標題剛好係 `Bot Chat`。具名 profile 要喺自己嘅 `~/.hermes/profiles/<profile>/.env` 設**另一條** `API_SERVER_KEY`。共享一個 listener 時要開 multiplex：
+**Bot 就係 profile。** 每個 Bot 的主對話標題係 `Bot Chat`，cron 輸出都寫入呢度。排程工作本身有獨立光球，只供查看。具名 profile 要喺自己嘅 `~/.hermes/profiles/<profile>/.env` 設**另一條** `API_SERVER_KEY`。共享一個 listener 時要開 multiplex：
 
 ```yaml
 gateway:
@@ -192,26 +194,30 @@ cargo test --manifest-path src-tauri/Cargo.toml
 2. Gateway 位址填 `http://127.0.0.1:8642`（留空 = 示範模式）。
 3. 每個 Bot：profile 名稱、顯示名稱、顏色、API 金鑰。金鑰留空代表保留鑰匙圈入面已有嗰條。
 4. 儲存。邊框會按名單數量排頭像。
-5. 點一個頭像：先用設定檔入面呢個 profile 記低嘅 session id。冇或者個 id 已經無效，先搵標題係 `Bot Chat` 嘅 session（包含 hidden），再冇就建立一條。`/new` 同 `/branch` 會更新呢個 id，重開 overlay 仍然開返同一條。
-6. 傳送會 `POST /api/sessions/{id}/chat/stream`，即時顯示文字、工具開始／完成／失敗，同埋忙碌或閒置。助手同歷史訊息會渲染 Markdown（標題、粗斜體、清單、程式碼、引用、表格、分隔線）；串流期間約 50ms 更新一次，未閉合嘅程式碼圍欄都會保持成塊程式碼。連結用系統瀏覽器打開，唔會喺 overlay 裡面跳頁。你自己打嘅字維持純文字。每次打開 `/` 選單都會再攞 overlay-slash 目錄（`GET /v1/overlay/commands`，有 ETag，未變就 304）。分類按首次出現次序合併。↑↓ 移動，Tab 補全；有參數提示嘅指令會喺游標後面顯示淡色提示。`args_hint` 空嘅指令按 Enter 會補全並送出。回合進行中仍然可以打 `/stop`。`/new`、`/title`、`/branch`、`/model`、`/stop` 由 overlay 自己處理；其他指令原文送出，由 plugin 改寫。串流回應嘅 `X-Hermes-Command` 會變成氣泡上嘅小標籤（例如 `plan`、`skill:arxiv`）。歷史入面第一行 `<!-- overlay-slash: {"display":"/plan add dark mode","command":"plan"} -->` 會顯示 `display` 同 chip；`command` 係指令名或 skill slug（疊加係 `arxiv+pdf`），唔帶 `skill:`。如果 overlay 開得比 gateway 早，會以 1 秒、2 秒、4 秒退避到 30 秒，之後每 30 秒再試健康同對話紀錄，成功就清走「連唔到 Hermes gateway」並載入歷史。
+5. 點一個頭像：主光球開該 profile 同 Hermes Desktop 一樣的 Bot Chat（標題剛好係 `Bot Chat`，通常 hidden；標題查已經係最新 child，客戶端唔沿 `parent_session_id`；`source` 同訊息數都不計，空的都有效）。人手 explicit 先可以蓋過。非 explicit 的已存 id 讓給這條，而且不寫回 config。啟動同打開都唔建立 session，亦唔改跟最新 session；未有 Bot Chat 就保持未有對話。選擇器仍可手動改揀，`Bot Chat` 釘在最頂，手動先寫 explicit。收合再打開：有 explicit 就留喺嗰條，否則回到 Desktop 的 Bot Chat。
+6. 傳送會 `POST /api/sessions/{id}/chat/stream`，即時顯示文字、工具開始／完成／失敗，同埋忙碌或閒置。助手同歷史訊息會渲染 Markdown（標題、粗斜體、清單、程式碼、引用、表格、分隔線）；串流期間約 50ms 更新一次，未閉合嘅程式碼圍欄都會保持成塊程式碼。連結用系統瀏覽器打開，唔會喺 overlay 裡面跳頁。你自己打嘅字維持純文字。每次打開 `/` 選單都會再攞 overlay-slash 目錄（`GET /v1/overlay/commands`，有 ETag，未變就 304）。分類按首次出現次序合併。↑↓ 移動，Tab 補全；有參數提示嘅指令會喺游標後面顯示淡色提示。`args_hint` 空嘅指令按 Enter 會補全並送出。回合進行中仍然可以打 `/stop`。`/new`、`/title`、`/branch`、`/model`、`/stop` 由 overlay 自己處理；其他指令原文送出，由 plugin 改寫。串流回應嘅 `X-Hermes-Command` 會變成氣泡上嘅小標籤（例如 `plan`、`skill:arxiv`）。歷史入面第一行 `<!-- overlay-slash: {"display":"/plan add dark mode","command":"plan"} -->` 會顯示 `display` 同 chip；`command` 係指令名或 skill slug（疊加係 `arxiv+pdf`），唔帶 `skill:`。如果 gateway 連唔到或者逾時，看板、排程、Bot 名單同對話會以 5 秒、10 秒、20 秒退避到 60 秒（上下 20%）自動再試；網路恢復、休眠醒來、或者打開相關面板會即刻再試。重試期間顯示「連唔到 Hermes，自動重試中…」同下次時間，恢復之後載入一次並清走錯誤。重試唔會建立 session。
 7. 「測試已儲存連線」打 `GET /health`，再對每個已存金鑰打 `GET /api/sessions?limit=1`。
 
 ## 外觀
 
-色板、圓角同字體都係 `:root` 嘅 CSS 變數，之後可以整組換主題。色同公開 Nous / Hermes 站一致：電光藍 `#0000f2`、螢光黃 `#edff45`、紙色字 `#f5f5f5`。頭像係太陽光暈（`--orb-glare-tint`、`--orb-core-alpha`、`--orb-glow-radius`、`--orb-glow-alpha`、`--orb-selected-glow-radius`、`--orb-selected-glow-alpha`）：細粒近白熱核、只帶少少 Bot 色，用徑向漸變向外淡到完全透明，冇實色圓球同硬邊。未選中光暈大約 34px。選中係更大更亮嘅同一種光，大約 52px。邊位頭像內縮夠選中光暈，貼住螢幕邊都唔會被切走。選中嘅光只喺切換時以 transform 脈衝兩次，之後保持靜態。Linux 面板唔再用模糊 box-shadow，自己放喺一層合成上面。狀態點同樣係圓。中間面板大約 76% 不透明，設定卡大約 80%，支援嘅 WebView 會加 `backdrop-filter` 模糊。Linux 嘅 WebKitGTK 畫唔到 `backdrop-filter`，面板同設定卡會提高到大約 90% 不透明，對比唔再靠背後嘅牆紙。字用紙色加陰影，淺色或深色牆紙都讀到。標題用 Barlow Condensed，正文用 Schibsted Grotesk，狀態用 IBM Plex Mono，中文繼續落 PingFang HK / Noto Sans TC。呢啲係開源替代，冇嵌入 Rules、Aeonik 或其他專有字檔同標誌。
+色板、圓角同字體都係 `:root` 嘅 CSS 變數，之後可以整組換主題。色同公開 Nous / Hermes 站一致：電光藍 `#0000f2`、螢光黃 `#edff45`、紙色字 `#f5f5f5`。頭像係太陽光暈（`--orb-glare-tint`、`--orb-core-alpha`、`--orb-glow-radius`、`--orb-glow-alpha`、`--orb-selected-glow-radius`、`--orb-selected-glow-alpha`）：細粒近白熱核、只帶少少 Bot 色，用徑向漸變向外淡到完全透明，冇實色圓球同硬邊。Bot 色只用於光球核心、光暈、頭像環同 2px 色條。文字、氣泡框同實色按鈕用 #0000f2 或 #14142b。淺色填色上面的字用 #14142b。每對對比至少 4.5。未選中光暈大約 34px。選中係更大更亮嘅同一種光，大約 52px。邊位頭像內縮夠選中光暈，貼住螢幕邊都唔會被切走。選中嘅光只喺切換時以 transform 脈衝兩次，之後保持靜態。Linux 面板唔再用模糊 box-shadow，自己放喺一層合成上面。狀態點同樣係圓。中間面板大約 76% 不透明，設定卡大約 80%，支援嘅 WebView 會加 `backdrop-filter` 模糊。Linux 嘅 WebKitGTK 畫唔到 `backdrop-filter`，面板同設定卡會提高到大約 90% 不透明，對比唔再靠背後嘅牆紙。字用紙色加陰影，淺色或深色牆紙都讀到。標題用 Barlow Condensed，正文用 Schibsted Grotesk，狀態用 IBM Plex Mono，中文繼續落 PingFang HK / Noto Sans TC。呢啲係開源替代，冇嵌入 Rules、Aeonik 或其他專有字檔同標誌。
 
 ## 游標同穿透
 
-互動對齊 Rainmeter：
+光球同面板方向相反。預設修飾鍵係 **Ctrl**（可改 Shift 或 Alt）。靜止透明度預設 18%（可設 5–60%）。
 
-- 預設成個 overlay（包括面板同頭像）係 click-through。點擊、滾動、hover 會去到底下嗰個程式。
-- 游標靠近某個元素就會按距離淡出：大約 120px 以外係實色，貼住元素大約 18% 透明度。可以喺設定改距離、最低透明度，或者關掉淡出。
-- 按住修飾鍵（預設 **Ctrl**，可改 Shift 或 Alt）時，**只係游標下面嗰一個元素**即刻去到全強度同可點擊。面板用矩形再加大約 12px。頭像用圓形：距離圓心唔超過半徑加 12px 先算對準，外接正方形嘅角位唔會接手。全強度頭像仍然係呢團光（近距離淡出乘喺成個元素上面），面板就係玻璃面嘅本來透明度。其他元素繼續按距離淡出，而且保持穿透。游標由一個元素移去下一個，全強度會跟住游標走。
-- 修飾鍵喺所有元素範圍以外撳（例如喺另一個程式 Ctrl+C / Ctrl+V）唔會改變任何元素，亦唔會接手點擊。
+- 光球（Bot、設定、看板、排程）預設實色而且穿透：唔收 click、hover、右撳。游標距命中圓 72px 內，嗰粒先用 120ms ease-out 淡到靜止透明度（上限 30%）；離開就淡返實色。淡出由腳本逐幀寫 inline opacity（120ms ease-out，`transition: none`），輪詢喺目標改變後繼續送約 168ms，到埗就停寫。透明度只跟全域輪詢嘅游標距離同 Ctrl。
+- 揸住修飾鍵，而且游標喺淡出範圍內，嗰粒返實色。可以撳仍然只係游標下面或者 12px 內。其他唔近嘅光球維持實色同穿透。放手之後按游標距離返第上一條。名稱標籤只喺修飾鍵加 hover 先出，放手即消失。光球用圓形：距離圓心唔超過半徑加 12px 先算對準，外接正方形嘅角位唔會接手。Ctrl+C／Ctrl+V 唔閃。
+- 面板（Bot 面板、設定、看板、排程、貼住嘅計劃視窗）預設實色、可以撳、可以操作。游標行近唔會令佢變淡。
+- 揸住修飾鍵，所有面板（連關閉掣同計劃視窗）變透明而且穿透。放手即返實色、可操作。
+- 訊息預覽膠囊平時實色但穿透。只有修飾鍵加游標喺膠囊上先可以撳，再展開成面板。
+- 喺其他程式或者輸入框撳 Ctrl+C／Ctrl+V，光球同面板嘅透明度同穿透唔變、唔閃，包括 C／V 放咗、Ctrl 仲揸住嗰段。
+- 讀唔到全域游標或者修飾鍵（純 Wayland）時，光球同面板保持可撳，唔入穿透。
+- 任何 hit flush 都要跟住而家嘅修飾鍵。Ctrl 仍然按住、游標又喺光球或預覽膠囊上時，不得把 input shape 清成 n=0；要保留或重算嗰個矩形。滑鼠已經按下期間亦不得清走現有命中區。呢個判斷喺 Rust，用系統鍵監測（`device_query`，同驅動 Ctrl 時 n=1 嗰個），唔信網頁 keydown。穿透視窗未聚焦時撳落嘅 Ctrl，頁面會報 `ctrl=0`，都不得清走 Rust 嘅鍵態。有面板蓋住光球時，只要游標喺已公佈嘅光球或膠囊上，shape 都留住嗰個矩形。Rust 把真實鍵態交俾頁面。滑鼠鍵亦係 `device_query`。Ctrl 按住時喺光球上按下，就把當時的 input shape 鎖到放開，重新公佈唔會改形狀。重新公佈用同 n=1 一樣的 CSS 座標打新矩形；游標樣本缺失就沿用上次打中的點。游標仲喺上一份形狀的光球裡面就不得公佈 n=0。開咗 debug log 會寫 `hit-shape`（游標、候選矩形、點解落到 n=0）。Ctrl+光球由 pointerup 打開：pointerdown 用 pointer capture 記住光球 id，唔靠同一個元素的 click。按下期間同之後約 300ms 唔開始計劃彩排，亦唔重畫光球；進行中的彩排會中止並延後。真實計劃接縫期間彩排同 hit flush 都延後。Rust 鎖住形狀時用鎖住的光球 id。debug log 會寫 `pointer`（phase、目標、光球 id）。pointerup 要按下開始時修飾鍵按住先打開：Rust hit check 鎖住嘅光球 id，同埋 pointerdown 嘅 ctrlKey；之後先至推到嘅鍵態不得取消。剛放開就點不得打開。計劃增長時鐘要等殼嘅收起 clip 已經合成，而且 GTK after-paint 確認至少兩幀，先開始 280ms。揭示跟返 v71：殼 `shell.animate` 剪裁，`fill: both`，`holdMotion` 係 `transition: none !important`。冷開第一個超過 20ms 嘅樣本重新對原點，最多三次，仍然遲就顯示 20ms；第二個提交樣本最多 45ms，暖開同底緣都用同一對上限。重新對鐘之後第一個可見樣本停喺 20ms。計劃 ✕ 同右邊界從第一幀就喺剪裁入面，揭示前寬度鎖定，排隊重畫不得改幾何或換走 ✕。揭示中途呈現幀距超過一幀就每幀最多行一幀，總時間超過兩倍先追，而且不得連續兩幀同一進度，每一個呈現樣本至少行一幀曲線。最後一個樣本同一幀寫入完全打開嘅整數 px clip，並推計劃層重畫成個矩形，after-paint 確認後先還原；開咗 debug log 先寫 `seam-final`。曲線唔改。鍵沿用 run_javascript 直接寫透明度。打開、變形同啟動的 input shape 即時套用。Ctrl 鍵沿矩形冇變就唔再 combine，亦不得延遲加入游標打得到的矩形。完成但 computed clip-path 仍然收起就寫 `seam-clip-stuck`。計劃收回去到 160ms 就開始面板收回，兩段曲線同時間唔改。計劃收回同面板收回中間唔改畫面，面板層要喺計劃收回期間已經合成，關閉按鈕唔播背景 transition。Ctrl 按下或放開由 `device_query` 監測即時推去頁面，唔等 morph、收回、彩排或 hit flush；面板透明係 Ctrl 鍵沿處理器入面同步寫殼嘅 inline opacity，唔等 rAF、after-paint 或 input shape；新的 input shape 即時套用，冇變的 Ctrl 鍵沿先跳過 combine。寫入記 `opacity-write`，下一幀 after-paint 記 `opacity-present`。呢下唔重畫 Bot。Ctrl 按住穿過打開，動畫完結第一幀就要透明。聚焦輸入框嘅 Enter 用 DOM ctrlKey 或者系統鍵態，唔好兩個一齊先算。
 - 輸入框聚焦會保持**中間對話面板**實色，游標喺塊面板上先可以點。設定頁打開會保持**設定面板**同樣處理。Esc、點到元素以外嘅空白，或者視窗失焦，會 blur 輸入框並解除鎖定。視窗交畀另一個程式會即時解除鎖定；網頁內短暫失焦先會等約 150ms。修飾鍵選單嘅彈出視窗、本程式視窗，同埋佢嘅外框，都仍然算本程式，設定卡會保持。Linux 用前景視窗嘅 X11 window id 對照呢啲 id，唔再靠 `_NET_WM_PID`；任何其他非零前景視窗都係另一個程式，連續兩次讀到就放開，並且清走 dropdown 旗、blur 修飾鍵選單，再叫 WebKit 閂 option menu，GTK menu 用 cancel／deactivate 收起。WebKit 自己嘅 popup 唔係 GtkMenu，`menu.close()` 收唔到；抓手係普通 popup window 時，向個 window 送合成 Escape（`widget.event`），等 WebKit 自己取消。唔再用 hide 同 seat ungrab，避免下一次撳選單要撳兩下。讀唔到前景視窗先保持。Windows 同 macOS 仍然用行程 id。
 - 修飾鍵可以改做 Alt，但 Linux 視窗管理員（xfwm4 預設，GNOME／KDE 都常見）用 Alt 拖移視窗，Alt+click 可能去唔到 overlay。設定頁喺 Linux 會顯示呢個警告，Alt 仍然可以揀。唔使點擊都可以開設定：全域快捷鍵 **Ctrl+Shift+Alt+H**，或者系統匣選單「設定 (Ctrl+Shift+Alt+H)」。系統匣亦有「結束」。中間面板嘅「關閉」只收起對話面板，唔會結束程式。收起會設 `[hidden]`，`.center-panel[hidden]` 用 `display: none` 蓋過 `display: flex`，面板先會真係消失，hit-sync 亦會丟掉呢塊矩形。置頂只切換 keep-above。置頂之後大約 1 秒內先拒絕關閉要求，避免 keep-above 令程式退出。過咗呢一秒，Alt+F4 同 wmctrl -c 可以正常結束。設定頁有「結束」，同系統匣「結束」一樣呼叫 `app.exit(0)`。`quit_app` 同 `arm_pin_close_guard` 要喺預設 capability 允許先叫到；叫唔到會出喺錯誤橫額。Unix 嘅 SIGINT／SIGTERM 同樣走呢條路。
 
-實作用 Rust 大約每 16ms 讀全域游標同修飾鍵（`device_query`），前端報上元素矩形。`set_ignore_cursor_events` 只喺游標進入「修飾鍵對準嘅元素」或者「鎖定緊嘅面板」時先關閉。Windows、macOS、Linux X11（包括開咗 `DISPLAY` 嘅 XWayland）先支援。純 Wayland 讀唔到全域游標／修飾鍵，overlay 會保持可點擊，唔會穿透。macOS 要喺「私隱與保安 → 輔助使用」允許呢個 app，否則修飾鍵可能讀唔到。全域快捷鍵同樣要輔助使用權限。
+實作用 Rust 大約每 16ms 讀全域游標同修飾鍵（`device_query`），前端報上元素矩形。Windows 同 macOS 用成個視窗嘅 `set_ignore_cursor_events`：有任何應接收游標嘅光球或面板先關閉穿透。光球只喺修飾鍵對準時接收；面板喺未按修飾鍵而且游標喺上面時接收。Linux X11（包括開咗 `DISPLAY` 嘅 XWayland）用 GDK input shape。純 Wayland 讀唔到全域游標／修飾鍵，overlay 會保持可點擊，唔會穿透。macOS 要喺「私隱與保安 → 輔助使用」允許呢個 app，否則修飾鍵可能讀唔到。全域快捷鍵同樣要輔助使用權限。
 
 設定檔（位址、名稱、顏色、詳情）喺 app config 目錄嘅 `config.json`，目錄名係 bundle identifier。金鑰同 dashboard token 喺 OS keychain，service 名同 identifier 一樣（已安裝版 `com.freezemusic.hermes-overlay`，`tauri dev` 係 `com.freezemusic.hermes-overlay.dev`）。網頁層只知道 `has_key`，唔會再攞到明文。未有設定檔時會自動打開設定，示範橫額亦可以撳開設定。
 
@@ -225,14 +231,14 @@ cargo test --manifest-path src-tauri/Cargo.toml
 | `decorations` | `false` | 無標題列 |
 | `alwaysOnTop` | `true` | 長期置頂 |
 | `shadow` | `false` | 減少邊框陰影 |
-| `maximized` | `true` | 大範圍 overlay |
+| `maximized` | `false` | 唔好等 show 之後先 maximize；隱藏時先鋪滿螢幕 |
 | `macOSPrivateApi` | `true` | macOS 透明背景 |
 | `identifier` | `com.freezemusic.hermes-overlay` | bundle id |
 
 ## 已知限制
 
 1. **Click-through**  
-   預設開啟（見上面「游標同穿透」）。純 Wayland 未支援全域游標／修飾鍵查詢，會保持可點擊。Linux 用 X11 或 XWayland。
+   光球預設穿透，面板預設可撳（見上面「游標同穿透」）。純 Wayland 未支援全域游標／修飾鍵查詢，會保持可點擊。Linux 用 X11 或 XWayland。
 
 2. **Profile 列表**  
    API server 冇已文件化、穩定嘅 roster 端點（曾經提出嘅 `GET /api/profiles` 冇落地）。Dashboard 嘅 `GET /api/profiles` 先係實驗匯入，而且唔包含 API 金鑰。Hidden 嘅 `Bot Chat` 要 gateway 支援 `include_hidden=true` 先搵到；舊版忽略呢個 query 時，如果標題已被隱藏 session 佔用，建立會 400。
@@ -261,7 +267,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
     └── src/
         ├── lib.rs           # Tauri commands、事件
         ├── hermes.rs        # Sessions / SSE
-        ├── interaction.rs   # 穿透、淡出、修飾鍵
+        ├── interaction.rs   # 穿透、Ctrl、修飾鍵
         ├── secrets.rs       # OS keychain
         └── config.rs
 ```

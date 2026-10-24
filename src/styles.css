@@ -1,5 +1,16 @@
 /* HUD glass. OFL faces live in ./assets/fonts (offline). Rules and Aeonik are not bundled.
-   Tones are rgb(var(--bot-rgb) / a) so older WebKitGTK can paint them. */
+   Tones are rgb(var(--bot-rgb) / a) so older WebKitGTK can paint them.
+   v20 rulings: fog rgb(247 248 248 / .88) or denser; ink #0000f2 / #14142b;
+   panels 1px #0000f2 hairline + HUD corners, radius ≤ 3px;
+   popout shadow only (0 4px 40px rgb(0 0 145 / .6));
+   hover/press 120–200ms, no scale bounce;
+   the orb, pill, and panel are one shell. Clip-path inset() morphs the shape.
+   Orb→pill 200ms, pill→panel 480ms, cubic-bezier(.2,.8,.2,1), no spring.
+   Click chains the pill into the panel; hover rests on the pill.
+   Collapse clocks are pinned per edge (right 300, left 316, bottom 266, top 300)
+   so a 30fps sample lands in 300–333ms. Content fades in the first 80ms.
+   prefers-reduced-motion fades opacity.
+   CJK stays untracked — uppercase and letter-spacing only under :lang(en). */
 
 @font-face {
   font-family: "Big Shoulders Display";
@@ -87,17 +98,18 @@
   --bot-80: rgb(var(--bot-rgb) / .80);
   --bot-color: var(--bot);
 
-  --glass-fog: rgb(247 248 248 / .72);
-  --glass-fog-soft: rgb(247 248 248 / .55);
+  --glass-fog: rgb(247 248 248 / .88);
+  --glass-fog-soft: rgb(247 248 248 / .88);
   --glass-sheen: linear-gradient(180deg, rgb(255 255 255 / .70) 0%, rgb(255 255 255 / 0) 38%);
   --glass-tint: linear-gradient(160deg, var(--bot-5), transparent 60%);
   --glass-edge: 1px solid var(--bot-20);
   --glass-inner: inset 0 0 0 1px rgb(255 255 255 / .55), inset 0 0 24px var(--bot-5);
   --glass-glow: 0 0 0 1px var(--bot-10), 0 8px 32px -8px var(--bot-20);
   --noise: url("./assets/noise.png");
-  --text: var(--nous-navy);
-  --text-muted: rgb(0 0 145 / .58);
-  --text-ink: var(--bot);
+  --text: #0000f2;
+  --text-body: #14142b;
+  --text-muted: #14142b;
+  --text-ink: #14142b;
 
   --font-display: "Big Shoulders Display", "Antonio", "Noto Sans HK", sans-serif;
   --font-label: "Barlow Condensed", "Noto Sans HK", sans-serif;
@@ -130,23 +142,23 @@
 
   --r-xs: 2px;
   --r-sm: 3px;
-  --r-lg: 6px;
-  --r-panel: 10px;
+  --r-lg: 6px; /* large popout only; panels and controls stay ≤ 3px */
+  --r-panel: 3px;
   --radius-xs: var(--r-xs);
   --radius-sm: var(--r-sm);
   --hair: 1px solid var(--bot-20);
   --hairline: var(--bot-20);
 
   --glow-sm: 0 0 8px var(--bot-40);
-  --glow-md: 0 0 18px var(--bot-40), 0 0 2px var(--bot-60);
-  --shadow-float: 0 12px 40px -12px rgb(20 20 122 / .25);
+  --shadow-pop: 0 4px 40px rgb(0 0 145 / .6);
 
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-morph: cubic-bezier(.2, .8, .2, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-  --ease-spring: cubic-bezier(0.2, 0.8, 0.2, 1.05);
   --dur-1: 120ms;
   --dur-2: 200ms;
   --dur-3: 320ms;
+  --dur-enter: 0.48s;
   --dur-4: 600ms;
 
   --brand: var(--nous-blue);
@@ -156,7 +168,7 @@
   --warn: var(--nous-yellow);
   --scrim: rgb(0 0 145 / .08);
 
-  --bot-size: 52px;
+  --bot-size: 44px;
   --orb-glow-radius: 34px;
   --edge-pad: calc(var(--orb-glow-radius) + 8px);
   --avatar-radius: 50%;
@@ -167,10 +179,10 @@
   line-height: var(--lh-body);
 }
 
-/* Linux uses a denser paper fog. The panels stay flat, with no blur layer. */
+/* Linux WebKitGTK does not paint a blur layer, so the paper fog is denser. */
 html.platform-linux {
   --glass-fog: rgb(247 248 248 / .92);
-  --glass-fog-soft: rgb(247 248 248 / .86);
+  --glass-fog-soft: rgb(247 248 248 / .92);
 }
 
 * { box-sizing: border-box; }
@@ -212,11 +224,10 @@ html, body {
   cursor: pointer;
   isolation: isolate;
   contain: layout style;
-  will-change: opacity;
   display: grid;
   place-items: center;
   user-select: none;
-  color: var(--bot);
+  color: #14142b;
 }
 
 .active-avatar {
@@ -235,8 +246,8 @@ html, body {
   z-index: -1;
   border-radius: 50%;
   pointer-events: none;
-  background: radial-gradient(circle, var(--bot-40) 0%, var(--bot-10) 40%, transparent 70%);
-  opacity: 0.6;
+  background: radial-gradient(circle, rgb(var(--bot-rgb) / .55) 0%, rgb(var(--bot-rgb) / .22) 42%, transparent 72%);
+  opacity: 0.85;
   transition: opacity var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 
@@ -245,7 +256,8 @@ html, body {
   inset: 0;
   border-radius: 50%;
   pointer-events: none;
-  background: radial-gradient(circle, #fff 0 30%, rgb(255 255 255 / .9) 38%, var(--bot-20) 55%, transparent 72%);
+  background: radial-gradient(circle, #fff 0 36%, rgb(255 255 255 / .92) 50%, rgb(255 255 255 / .2) 68%, transparent 80%);
+  box-shadow: none;
 }
 
 .orb-glyph {
@@ -269,20 +281,27 @@ html, body {
   margin-top: 6px;
   left: 50%;
   transform: translateX(-50%);
+  padding: 1px 4px;
+  border: 1px solid rgb(0 0 242 / .35);
+  border-radius: 2px;
+  background: rgb(247 248 248 / .92);
   font: 500 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   text-transform: none;
   white-space: nowrap;
-  color: var(--text-muted);
+  color: #0000f2;
   text-shadow: 0 0 4px #fff, 0 0 2px #fff;
   pointer-events: none;
+  opacity: 0;
 }
 
+.orb--cron .bot-label { background: rgba(248, 248, 252, .82); }
+
 .bot-btn:hover::before { opacity: 1; transform: scale(1.08); }
-.bot-btn:hover .bot-label { color: var(--bot); }
+.bot-btn:hover .bot-label { color: #0000f2; }
 
 .bot-btn.active .orb-core {
-  box-shadow: 0 0 0 1px var(--bot-40), var(--glow-md);
+  box-shadow: none;
 }
 
 .bot-btn.orb-enter .orb-core {
@@ -313,23 +332,156 @@ html, body {
   animation: ping var(--dur-4) var(--ease-out) 1 forwards;
 }
 
+.orb--cron { --bot: var(--nous-neutral); --bot-rgb: 97 97 145; }
+
+/* Status rings sit on ::after and the shell stays overflow:visible. Clip the
+   shared wash to the disc so an idle cron orb matches the other orbs. */
+.bot-btn.orb--cron::before {
+  clip-path: inset(var(--orb-glow-radius) round 999px);
+}
+
+.bot-btn.orb--cron {
+  contain: none;
+  overflow: visible;
+}
+
+.bot-btn.orb--cron::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  z-index: 3;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  animation: none;
+  background: conic-gradient(#0000f2 calc(var(--p, 0) * 1turn), rgba(0, 0, 242, .12) 0);
+  -webkit-mask: radial-gradient(circle closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  mask: radial-gradient(circle closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+}
+
+.bot-btn.orb--cron.is-progress::after,
+.bot-btn.orb--cron.is-failed::after {
+  opacity: 1;
+  animation: none;
+}
+
+.bot-btn.orb--cron.is-progress .orb-core,
+.bot-btn.orb--cron.is-running .orb-core {
+  background: radial-gradient(#fff 0 30%, rgba(0, 0, 242, .35) 60%, transparent 75%);
+  box-shadow: 0 0 10px 2px rgba(0, 0, 242, .25);
+}
+
+.bot-btn.orb--cron.is-running::after {
+  opacity: 1;
+  background: conic-gradient(#0000f2 0 90deg, transparent 0);
+  animation: spin 2.4s linear infinite;
+}
+
+.bot-btn.orb--cron.is-failed::after {
+  background: conic-gradient(#e5484d calc(var(--p, 1) * 1turn), rgba(229, 72, 77, .18) 0);
+}
+
+/* The shell opacity fades every descendant. These two states draw on a
+   sibling so the red ring and the done ripple stay at full strength. */
+.bot-btn.orb--cron.is-failed::after,
+.bot-btn.orb--cron.is-done::after {
+  content: none;
+  opacity: 0;
+  animation: none;
+}
+
+.cron-status {
+  position: absolute;
+  z-index: 0;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.cron-status[hidden] { display: none; }
+
+.cron-status::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.cron-status.is-failed::after {
+  opacity: 1;
+  background: conic-gradient(#e5484d calc(var(--p, 1) * 1turn), rgba(229, 72, 77, .18) 0);
+  -webkit-mask: radial-gradient(circle closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  mask: radial-gradient(circle closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+}
+
+.cron-status.is-done::after {
+  opacity: 1;
+  inset: -2px;
+  background: none;
+  border: 2px solid #0000f2;
+  -webkit-mask: none;
+  mask: none;
+  animation: cron-ring 400ms linear 1 forwards;
+}
+
+.bot-btn.orb--cron.is-done::after {
+  opacity: 1;
+  inset: -2px;
+  background: none;
+  border: 2px solid #0000f2;
+  -webkit-mask: none;
+  mask: none;
+  animation: cron-ring 400ms linear 1 forwards;
+}
+
+.bot-btn.orb--cron.is-idle::after {
+  opacity: 0;
+  animation: none;
+  background: none;
+  border: 0;
+  -webkit-mask: none;
+  mask: none;
+}
+
+.cron-readout {
+  position: absolute;
+  z-index: 30;
+  padding: 2px 4px;
+  border: 1px solid rgba(97, 97, 145, .35);
+  border-radius: 2px;
+  background: rgba(248, 248, 252, .82);
+  color: #14142b;
+  font: 400 10px/1.2 var(--font-mono);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.cron-readout.is-live { color: #0000f2; }
+
+.cron-readout[hidden] { display: none; }
+
 .orb--kanban { --bot: var(--nous-neutral); --bot-rgb: 97 97 145; }
 
 .orb--kanban .orb-core {
+  inset: 11px;
   border-radius: 2px;
-  transform: rotate(45deg) scale(0.62);
+  transform: rotate(45deg);
   background: #fff;
-  border: 3px solid #0e0e24;
-  box-shadow:
-    0 0 0 2px #fff,
-    0 0 0 5px rgb(0 0 0 / .72);
+  border: 1px solid #616191;
+  box-shadow: none;
+}
+
+.orb--kanban .orb-glyph {
+  color: #616191;
+  text-shadow: none;
 }
 
 .orb--kanban.active .orb-core {
-  box-shadow:
-    0 0 0 2px #fff,
-    0 0 0 5px rgb(0 0 0 / .72),
-    var(--glow-md);
+  border-color: #616191;
+  box-shadow: none;
 }
 
 .orb--kanban.orb-enter .orb-core { animation: none; }
@@ -339,14 +491,14 @@ html, body {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: conic-gradient(var(--bot), rgb(var(--bot-rgb) / .45) 40%, transparent 70%);
-  -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px);
-  mask: radial-gradient(circle, transparent 5px, #000 5.5px);
+  background: conic-gradient(var(--bot-60), transparent 70%);
+  -webkit-mask: radial-gradient(circle, transparent 6px, #000 6.5px);
+  mask: radial-gradient(circle, transparent 6px, #000 6.5px);
 }
 
 .bot-btn .spinner {
   position: absolute;
-  inset: -3px;
+  inset: 1px;
   width: auto;
   height: auto;
   z-index: 4;
@@ -355,8 +507,10 @@ html, body {
   -webkit-mask: none;
   mask: none;
   border-radius: 50%;
-  border: 2px solid rgb(var(--bot-rgb) / .28);
-  border-top-color: var(--bot);
+  border: 1px solid transparent;
+  border-top-color: var(--bot-60);
+  border-left-color: var(--bot-60);
+  box-shadow: none;
 }
 
 .is-thinking .spinner {
@@ -376,7 +530,7 @@ html, body {
 .center-panel,
 .settings-card {
   position: relative;
-  border: var(--hair);
+  border: 1px solid var(--nous-blue);
   border-radius: var(--r-panel);
   background:
     var(--glass-sheen),
@@ -385,10 +539,9 @@ html, body {
     linear-gradient(90deg, var(--grid-line) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
     var(--noise),
     var(--glass-fog);
-  box-shadow: var(--glass-inner), var(--shadow-float);
+  box-shadow: var(--glass-inner);
   color: var(--text);
   font: 400 var(--fs-body)/var(--lh-body) var(--font-body);
-  animation: panel-in var(--dur-3) var(--ease-spring) 1 both;
 }
 
 .center-panel {
@@ -401,6 +554,7 @@ html, body {
   flex-direction: column;
   gap: var(--sp-3);
   padding: var(--sp-4);
+  overflow: hidden;
   isolation: isolate;
 }
 
@@ -411,7 +565,123 @@ html, body {
   left: max(16px, calc((100% - min(960px, 80vw)) / 2));
   width: min(960px, 80vw);
   height: min(80vh, 760px);
-  --grid-line: var(--bot-10);
+  --grid-line: var(--bot-5);
+}
+
+.cron-panel {
+  width: min(320px, 86vw);
+  height: fit-content;
+  max-height: 70vh;
+  overflow: auto;
+  --grid-line: rgb(97 97 145 / .06);
+}
+
+.morph[data-bot-id="cron"] { --grid-line: rgb(97 97 145 / .06); }
+
+.cron-list {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: visible;
+}
+
+.cron-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cron-group-title {
+  margin: 0 0 6px;
+  color: var(--nous-blue);
+  font: 500 var(--fs-meta)/1.3 var(--font-body);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.cron-job {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(97, 97, 145, .25);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, .78);
+}
+
+.cron-card-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cron-name {
+  margin: 0;
+  color: #10102a;
+  font: 600 13px/1.3 var(--font-body);
+}
+
+.cron-expr,
+.cron-time {
+  margin: 0;
+  color: #14142b;
+  font: 400 11px/1.4 var(--font-mono);
+}
+
+.cron-tag {
+  align-self: flex-start;
+  padding: 0 4px;
+  border: 1px solid #616191;
+  border-radius: 2px;
+  color: #14142b;
+  font: 400 10px/1.6 var(--font-body);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.cron-tag.is-on {
+  border-color: #0000f2;
+  color: #0000f2;
+}
+
+.cron-dot,
+.cron-arc {
+  flex: none;
+  margin-top: 4px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.cron-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.cron-dot.is-on { background: #0000f2; }
+
+.cron-dot.is-off {
+  background: transparent;
+  border: 1px solid #616191;
+  box-shadow: none;
+}
+
+.cron-arc {
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+  background: conic-gradient(#0000f2 calc(var(--p, 0.25) * 1turn), rgba(0, 0, 242, .12) 0);
+  -webkit-mask: radial-gradient(circle, transparent 3px, #000 4px);
+  mask: radial-gradient(circle, transparent 3px, #000 4px);
+}
+
+.cron-note,
+.cron-meta {
+  color: #14142b;
+  font: 400 12px/1.4 var(--font-body);
 }
 
 .hud-corner {
@@ -419,14 +689,18 @@ html, body {
   width: 8px;
   height: 8px;
   pointer-events: none;
-  border: 1px solid var(--bot-40);
-  z-index: 2;
+  border: 1px solid rgba(0, 0, 242, .4);
+  z-index: 6;
 }
 
-.hud-corner.tl { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
-.hud-corner.tr { top: -1px; right: -1px; border-left: 0; border-bottom: 0; }
-.hud-corner.bl { bottom: -1px; left: -1px; border-right: 0; border-top: 0; }
-.hud-corner.br { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+.cron-panel > .hud-corner {
+  display: block;
+  z-index: 8;
+}
+.hud-corner.tl { top: -3px; left: -3px; border-right: 0; border-bottom: 0; }
+.hud-corner.tr { top: -3px; right: -3px; border-left: 0; border-bottom: 0; }
+.hud-corner.bl { bottom: -3px; left: -3px; border-right: 0; border-top: 0; }
+.hud-corner.br { bottom: -3px; right: -3px; border-left: 0; border-top: 0; }
 
 .panel-header,
 .settings-head,
@@ -438,7 +712,11 @@ html, body {
   gap: var(--sp-2);
 }
 
-.panel-header { cursor: grab; }
+.panel-header,
+.settings-head { cursor: grab; flex: none; }
+
+.panel-header:active,
+.settings-head:active { cursor: grabbing; }
 
 .bot-identity {
   display: flex;
@@ -457,7 +735,7 @@ html, body {
   font: 500 var(--fs-title)/1 var(--font-display);
   letter-spacing: 0;
   text-transform: none;
-  color: var(--bot);
+  color: #0000f2;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -479,9 +757,9 @@ html, body {
   width: 14px;
   height: 14px;
   border: none;
-  background: conic-gradient(var(--bot), rgb(var(--bot-rgb) / .45) 40%, transparent 70%);
-  -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px);
-  mask: radial-gradient(circle, transparent 5px, #000 5.5px);
+  background: conic-gradient(var(--bot-60), transparent 70%);
+  -webkit-mask: radial-gradient(circle, transparent 6px, #000 6.5px);
+  mask: radial-gradient(circle, transparent 6px, #000 6.5px);
 }
 
 .interact-hint,
@@ -494,7 +772,19 @@ html, body {
 
 .hint { margin: 8px 0; font-size: 12px; line-height: 1.45; }
 
-.alt-warning { color: var(--nous-orange); }
+/* Body text stays #14142b (≥4.5:1). The marker is the orange swatch, not the words (R-VS-01). */
+.alt-warning { color: #14142b; }
+
+.alt-warning::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border-radius: 1px;
+  background: var(--nous-orange);
+}
 
 .panel-actions,
 .settings-actions-main {
@@ -511,17 +801,28 @@ html, body {
   height: 28px;
   padding: 0 var(--sp-3);
   border-radius: var(--r-sm);
-  border: var(--hair);
-  background: transparent;
-  color: var(--bot);
+  border: 1px solid var(--nous-blue);
+  background: rgb(255 255 255 / .94);
+  color: #0000f2;
   font: 500 var(--fs-ui)/1 var(--font-label);
   letter-spacing: 0;
   text-transform: none;
   cursor: pointer;
-  transition: background-color var(--dur-1) var(--ease-out);
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-2) var(--ease-out);
 }
 
 .icon-btn:hover { background: var(--bot-10); }
+
+/* The close control must not ease its background. That 120ms transition
+   is the two frames the panel sits still while 關閉 is pressed. */
+.panel-header .icon-btn,
+.panel-header .icon-btn:hover,
+.panel-header .icon-btn:active,
+.panel-header .icon-btn.danger,
+.panel-header .icon-btn.danger:hover,
+.panel-header .icon-btn.danger:active {
+  transition: none;
+}
 
 .icon-btn.danger:hover { color: var(--nous-red); }
 
@@ -529,12 +830,12 @@ html, body {
 
 .send-btn {
   height: 36px;
-  background: var(--bot);
-  border-color: var(--bot);
+  background: #0000f2;
+  border-color: #0000f2;
   color: #fff;
 }
 
-.send-btn:hover { background: var(--bot); box-shadow: var(--glow-sm); }
+.send-btn:hover { background: #0000f2; box-shadow: var(--glow-sm); }
 
 .send-btn:disabled,
 .icon-btn:disabled { opacity: 0.45; cursor: default; }
@@ -546,21 +847,388 @@ html, body {
   font: 500 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   text-transform: none;
-  color: var(--bot-80);
+  color: var(--nous-blue);
 }
 
 .section-label::before,
 .roster-head h3::before,
 .experimental legend::before { content: "▪ "; }
 
-.detail-block {
+.detail-block,
+.soul-block {
   padding: var(--sp-3);
   border-radius: var(--r-sm);
   background: var(--bot-2);
   border: var(--hair);
 }
 
+.soul-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.soul-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.soul-actions .hint { margin: 0; }
+
+.field textarea,
+.soul-input {
+  width: 100%;
+  min-height: 64px;
+  max-height: 140px;
+  resize: vertical;
+  padding: 8px var(--sp-3);
+  background: rgb(255 255 255 / .96);
+  border: 1px solid var(--bot-60);
+  border-radius: var(--r-sm);
+  font: 400 var(--fs-meta)/1.45 var(--font-body);
+  color: #14142b;
+}
+
+.soul-input {
+  min-height: 88px;
+  font-family: var(--font-mono);
+}
+
 .bot-detail { margin: 0; color: var(--text); }
+
+.plan-window {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--nous-blue);
+  border-radius: var(--r-panel);
+  background:
+    linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    rgba(248, 248, 252, .92);
+  color: #14142b;
+  box-shadow: 0 0 0 1px rgba(0, 0, 242, .45), 0 6px 24px rgba(0, 0, 242, .12);
+}
+
+.plan-window[hidden] { display: none; }
+
+.plan-fit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  transform-origin: left center;
+}
+
+.plan-raster {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+  transform-origin: left center;
+}
+
+.plan-raster canvas,
+.plan-raster img {
+  display: block;
+  pointer-events: none;
+  transform-origin: left center;
+}
+
+.morph[data-plan-side="left"] .plan-raster,
+.morph[data-plan-side="left"] .plan-raster canvas,
+.morph[data-plan-side="left"] .plan-raster img {
+  transform-origin: right center;
+}
+
+.plan-chip {
+  display: inline-flex;
+  margin-top: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--nous-blue);
+  border-radius: var(--r-sm);
+  background: #fff;
+  color: #0000f2;
+  font: 400 12px/1 var(--font-body);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.plan-title {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 13px/1.3 var(--font-body);
+  color: #0000f2;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.plan-segment {
+  display: inline-flex;
+  border: 1px solid rgba(0, 0, 242, .45);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.plan-toggle {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #14142b;
+  font: 400 12px/1 var(--font-body);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.plan-segment .plan-toggle + .plan-toggle {
+  border-left: 1px solid rgba(0, 0, 242, .35);
+}
+
+.plan-segment .plan-toggle[aria-pressed="true"] {
+  background: #0000f2;
+  color: #fff;
+}
+
+.plan-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #0000f2;
+  font: 600 13px/1 var(--font-body);
+}
+
+.plan-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  color: #14142b;
+  font: 400 13px/1.55 var(--font-body);
+}
+
+.plan-body[hidden],
+.plan-source[hidden] { display: none; }
+
+.plan-source {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: #14142b;
+  background: rgb(255 255 255 / .94);
+  border: 1px solid var(--bot-20);
+  border-radius: var(--r-sm);
+  padding: 8px;
+  font: 400 12px/1.45 var(--font-mono);
+}
+
+.plan-body :is(h1, h2, h3, h4) {
+  margin: 0 0 6px;
+  color: #0000f2;
+  font: 500 14px/1.3 var(--font-body);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.plan-body p,
+.plan-body li { margin: 0 0 4px; color: #14142b; }
+
+.plan-body pre {
+  position: relative;
+  margin: 6px 0;
+  padding: 28px 10px 10px;
+  overflow-x: auto;
+  background: #000;
+  color: #fff;
+  border: 1px solid var(--bot-20);
+  border-radius: 2px;
+  font: 400 11px/1.45 var(--font-mono);
+  white-space: pre;
+}
+
+.plan-body pre code {
+  background: none;
+  border: 0;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+}
+
+.plan-body .code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: 1px solid rgb(255 255 255 / .4);
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: #fff;
+  font: 400 var(--fs-meta)/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.panel-switch {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.panel-tab {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--nous-blue);
+  border-radius: var(--r-sm);
+  background: #fff;
+  color: #0000f2;
+  font: 500 var(--fs-ui)/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.panel-tab[aria-selected="true"] {
+  background: #0000f2;
+  border-color: #0000f2;
+  color: #fff;
+}
+
+.panel-view,
+.bot-sheet {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.panel-view[hidden],
+.bot-sheet[hidden] { display: none; }
+
+.bot-sheet { overflow-y: auto; }
+
+.plan-window::before { display: none; }
+
+/* Resting transform is none. Growth keeps this box at the final width.
+   The shell clip reveals it. Do not animate width or the plan's own transform. */
+.morph .plan-window {
+  position: absolute;
+  left: 100%;
+  top: 0;
+  width: min(420px, 42vw);
+  height: 100%;
+  z-index: 3;
+  margin-left: 0;
+  overflow: visible;
+  border-left: none;
+  border-radius: 0 var(--r-panel) var(--r-panel) 0;
+  box-shadow: none;
+}
+
+.morph[data-plan-side="left"] .plan-window {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 0;
+  border-left: 1px solid var(--nous-blue);
+  border-right: none;
+  border-radius: var(--r-panel) 0 0 var(--r-panel);
+}
+
+.morph:not([data-state="panel"]) .plan-window,
+.morph.is-morphing .plan-window,
+.morph.is-collapsing .plan-window {
+  display: none;
+}
+
+/* Beats the morphing `display: none` above. The plan has to stay painted
+   for the whole seam grow, or WebKit shows it in one frame when the class drops. */
+.morph.is-morphing .plan-window.is-seam-grow,
+.morph.is-collapsing .plan-window.is-seam-grow,
+.morph .plan-window.is-seam-grow {
+  display: flex;
+  overflow: hidden;
+  transform-origin: left center;
+}
+
+.morph[data-plan-side="left"] .plan-window.is-seam-grow,
+.morph[data-plan-side="left"] .plan-fit {
+  transform-origin: right center;
+}
+
+/* Settled panels force overflow:visible so the corner L can leave the box.
+   The seam has to keep clipping or the counter-scaled text paints at full width. */
+.morph[data-state="panel"] .plan-window.is-seam-grow {
+  overflow: hidden !important;
+  align-items: flex-start;
+  box-sizing: border-box;
+  padding: 0;
+  background: transparent;
+}
+
+.morph .plan-window.is-seam-grow > .plan-fit {
+  flex: none;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  background:
+    linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    rgba(248, 248, 252, .92);
+}
+
+.morph[data-plan-side="left"] .plan-window.is-seam-grow > .plan-fit {
+  align-self: flex-end;
+}
+
+/* The parked plan stays visibility:visible. visibility:hidden skips the
+   paint, and the seam then has nothing to present until growth ends.
+   The cold sweep lifts it to opacity 0.01 above the paper (z-index -1 under
+   the opaque fill is never rasterised). The translate keeps that sweep
+   inside the panel clip, so the side stays closed until the real clock. */
+.morph:has(.plan-window.is-plan-parked) .morph-fill {
+  background-color: #f8f8fc;
+}
+
+.plan-window.is-plan-parked {
+  visibility: visible;
+  pointer-events: none;
+}
+
+.plan-window[data-size-lock="1"] {
+  overflow: hidden !important;
+}
+
+.plan-window[data-size-lock="1"] > .plan-fit {
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
 
 .chat-block {
   flex: 1;
@@ -569,35 +1237,77 @@ html, body {
   flex-direction: column;
 }
 
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.chat-head .section-label { margin: 0; }
+
+.panel-view .session-select { width: 100%; }
+
+.session-select {
+  width: min(220px, 46%);
+  height: 28px;
+  padding: 0 28px 0 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--nous-blue);
+  background-color: rgb(255 255 255 / .96);
+  color: #14142b;
+  font: 400 12px/1 var(--font-body);
+  letter-spacing: 0;
+  text-transform: none;
+  appearance: none;
+  -webkit-appearance: none;
+  color-scheme: light;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, #14142b 50%),
+    linear-gradient(135deg, #14142b 50%, transparent 50%);
+  background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
 .chat-messages,
 .slash-popup,
-.settings-card {
+.settings-card,
+.settings-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--bot-20) transparent;
 }
 
 .chat-messages::-webkit-scrollbar,
 .slash-popup::-webkit-scrollbar,
-.settings-card::-webkit-scrollbar { width: 6px; }
+.settings-card::-webkit-scrollbar,
+.settings-scroll::-webkit-scrollbar { width: 6px; }
 
 .chat-messages::-webkit-scrollbar-track,
 .slash-popup::-webkit-scrollbar-track,
-.settings-card::-webkit-scrollbar-track { background: transparent; }
+.settings-card::-webkit-scrollbar-track,
+.settings-scroll::-webkit-scrollbar-track { background: transparent; }
 
 .chat-messages::-webkit-scrollbar-thumb,
 .slash-popup::-webkit-scrollbar-thumb,
-.settings-card::-webkit-scrollbar-thumb {
+.settings-card::-webkit-scrollbar-thumb,
+.settings-scroll::-webkit-scrollbar-thumb {
   background: var(--bot-20);
   border-radius: 3px;
 }
 
 .chat-messages::-webkit-scrollbar-thumb:hover,
 .slash-popup::-webkit-scrollbar-thumb:hover,
-.settings-card::-webkit-scrollbar-thumb:hover { background: var(--bot-40); }
+.settings-card::-webkit-scrollbar-thumb:hover,
+.settings-scroll::-webkit-scrollbar-thumb:hover { background: var(--bot-40); }
 
 .chat-messages {
-  flex: 1;
+  flex: 1 1 96px;
+  min-height: 96px;
   overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -611,15 +1321,24 @@ html, body {
   font-size: var(--fs-body);
   line-height: var(--lh-body);
   word-break: break-word;
-  color: var(--text);
+  color: #14142b;
   animation: msg-in var(--dur-2) var(--ease-out) 1 both;
+}
+
+/* Entry fade starts at opacity 0. During morph and collapse that frame is
+   the washed panel, so bubbles rest at opacity 1 with no animation. */
+.morph.is-morphing .bubble,
+.morph.is-collapsing .bubble {
+  animation: none !important;
+  opacity: 1;
 }
 
 .bubble.bot {
   align-self: flex-start;
-  background: rgb(255 255 255 / .45);
+  background: rgb(255 255 255 / .94);
   border: none;
-  border-left: 2px solid var(--bot-40);
+  border-left: 2px solid var(--bot);
+  color: #14142b;
   white-space: normal;
   overflow-wrap: break-word;
 }
@@ -637,7 +1356,7 @@ html, body {
   font-weight: 500;
   line-height: 1.2;
   margin: 0.6em 0 0.25em;
-  color: var(--nous-navy);
+  color: #0000f2;
 }
 
 .bubble.bot p,
@@ -651,7 +1370,7 @@ html, body {
 .bubble.bot ol { padding-left: 1.35em; }
 
 .bubble.bot a {
-  color: var(--bot);
+  color: #0000f2;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
 }
@@ -671,7 +1390,7 @@ html, body {
   background: var(--bot-5);
   border: 1px solid var(--bot-20);
   border-radius: var(--r-xs);
-  color: var(--bot);
+  color: #14142b;
 }
 
 .bubble.bot pre {
@@ -680,8 +1399,9 @@ html, body {
   overflow-x: auto;
   background: #000;
   color: #fff;
-  border: var(--hair);
-  border-radius: var(--r-sm);
+  border: 1px solid var(--bot-20);
+  border-radius: 2px;
+  font: 400 11px/1.45 var(--font-mono);
   white-space: pre;
 }
 
@@ -690,6 +1410,7 @@ html, body {
   border: 0;
   color: inherit;
   padding: 0;
+  font: inherit;
 }
 
 .bubble.bot .code-copy {
@@ -706,7 +1427,7 @@ html, body {
 
 .bubble.bot blockquote {
   padding-left: 10px;
-  border-left: 2px solid var(--bot-40);
+  border-left: 2px solid var(--bot);
   color: var(--text-muted);
 }
 
@@ -731,8 +1452,8 @@ html, body {
   margin-left: auto;
   max-width: 85%;
   background: var(--bot-10);
-  border: var(--hair);
-  color: var(--bot);
+  border: 1px solid #0000f2;
+  color: #14142b;
 }
 
 .user-line { white-space: pre-wrap; }
@@ -749,7 +1470,7 @@ html, body {
   padding: 0;
   border: 0;
   background: none;
-  color: var(--bot);
+  color: #0000f2;
   font: 400 var(--fs-meta)/1.4 var(--font-mono);
   cursor: pointer;
 }
@@ -762,7 +1483,7 @@ html, body {
 
 .chat-messages.streaming .bubble.bot[data-live]::after {
   content: "▍";
-  color: var(--bot);
+  color: #0000f2;
   animation: blink 1s steps(2) infinite;
 }
 
@@ -780,14 +1501,23 @@ html, body {
   align-self: flex-start;
   background: rgb(242 0 0 / .08);
   border: 1px solid rgb(242 0 0 / .45);
-  color: var(--nous-navy);
+  color: #14142b;
 }
 
 .composer {
   position: relative;
+  flex: none;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--sp-2);
   align-items: center;
+}
+
+.readonly-note {
+  flex: 1 0 100%;
+  margin: 0;
+  color: #14142b;
+  font: 400 var(--fs-body) var(--font-body);
 }
 
 .composer input,
@@ -796,11 +1526,11 @@ html, body {
 .bot-row input {
   height: 36px;
   padding: 0 var(--sp-3);
-  background: rgb(255 255 255 / .6);
-  border: var(--hair);
+  background: rgb(255 255 255 / .96);
+  border: 1px solid var(--bot-60);
   border-radius: var(--r-sm);
   font: 400 var(--fs-body) var(--font-body);
-  color: var(--text);
+  color: #14142b;
   outline: none;
   transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
 }
@@ -809,11 +1539,13 @@ html, body {
 
 .composer input::placeholder,
 .field input::placeholder,
-.bot-row input::placeholder { color: var(--text-muted); }
+.bot-row input::placeholder,
+textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 
 .composer input:focus,
 .field input:focus,
 .field select:focus,
+.session-select:focus,
 .bot-row input:focus {
   border-color: var(--bot-60);
   box-shadow: 0 0 0 3px var(--bot-10);
@@ -823,11 +1555,11 @@ html, body {
   appearance: none;
   -webkit-appearance: none;
   color-scheme: light;
-  background-color: rgb(255 255 255 / .6);
-  color: var(--text);
+  background-color: rgb(255 255 255 / .96);
+  color: #14142b;
   padding-right: 28px;
-  background-image: linear-gradient(45deg, transparent 50%, var(--bot) 50%),
-    linear-gradient(135deg, var(--bot) 50%, transparent 50%);
+  background-image: linear-gradient(45deg, transparent 50%, #14142b 50%),
+    linear-gradient(135deg, #14142b 50%, transparent 50%);
   background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
@@ -835,7 +1567,12 @@ html, body {
 
 .field select option {
   background-color: #f7f8f8;
-  color: var(--nous-navy);
+  color: #14142b;
+}
+
+.session-select option {
+  background-color: #f7f8f8;
+  color: #14142b;
 }
 
 .slash-ghost {
@@ -864,13 +1601,13 @@ html, body {
   border-radius: var(--r-sm);
   background: var(--glass-sheen), var(--noise), var(--glass-fog);
   color: var(--text);
-  box-shadow: var(--glass-inner), var(--shadow-float);
+  box-shadow: var(--glass-inner), var(--shadow-pop);
 }
 
 .slash-cat,
 .slash-hint {
   margin: 6px 4px 2px;
-  color: var(--bot-80);
+  color: #0000f2;
   font: 500 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   text-transform: none;
@@ -895,12 +1632,12 @@ html, body {
 .slash-item.active { background: var(--bot-10); }
 
 .slash-item.disabled,
-.slash-item:disabled { opacity: 0.4; cursor: default; }
+.slash-item:disabled { cursor: default; }
 
 .slash-name {
   flex: none;
   font: 400 var(--fs-meta)/1.4 var(--font-mono);
-  color: var(--bot);
+  color: #0000f2;
 }
 
 .slash-desc {
@@ -909,6 +1646,24 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-muted);
+  font-weight: 400;
+}
+
+#panel-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#conn-banner {
+  position: absolute;
+  z-index: 45;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(560px, 86vw);
+  pointer-events: none;
 }
 
 .conn-banner {
@@ -917,7 +1672,7 @@ html, body {
   border-radius: var(--r-sm);
   border: 1px solid rgb(242 0 0 / .45);
   background: rgb(242 0 0 / .08);
-  color: var(--nous-navy);
+  color: #14142b;
   font-size: var(--fs-meta);
   line-height: 1.4;
 }
@@ -933,9 +1688,14 @@ html, body {
 }
 
 .conn-banner.info {
-  border-color: var(--bot-40);
+  border-color: #0000f2;
   background: var(--bot-10);
-  color: var(--bot);
+  color: #14142b;
+}
+
+.conn-banner.ok,
+.conn-banner.info {
+  border-radius: 999px;
 }
 
 .conn-banner .banner-action {
@@ -949,11 +1709,12 @@ html, body {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  pointer-events: auto;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.setup-hint { color: var(--nous-navy); }
+.setup-hint { color: #0000f2; }
 
 .toast-stack { position: fixed; inset: 0; pointer-events: none; z-index: 40; }
 
@@ -966,12 +1727,12 @@ html, body {
   border-left: 2px solid var(--bot);
   border-radius: var(--r-sm);
   background: var(--glass-sheen), var(--noise), var(--glass-fog-soft);
-  box-shadow: var(--glass-inner), var(--shadow-float);
-  color: var(--text);
+  box-shadow: var(--glass-inner), var(--shadow-pop);
+  color: #0000f2;
   text-align: left;
   cursor: pointer;
   pointer-events: auto;
-  animation: toast-in var(--dur-3) var(--ease-spring) 1 both;
+  animation: toast-in var(--dur-enter) var(--ease-out) 1 both;
 }
 
 .toast[data-side="left"] { --tx: -12px; }
@@ -990,7 +1751,7 @@ html, body {
   font: 500 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   text-transform: none;
-  color: var(--bot);
+  color: #0000f2;
 }
 
 .toast time {
@@ -1017,13 +1778,15 @@ html, body {
   width: 100%;
 }
 
+.kanban[hidden] { display: none; }
+
 .kanban-col + .kanban-col { border-left: var(--hair); }
 
 .kanban-col-head {
   font: 500 var(--fs-hero)/1 var(--font-display);
   letter-spacing: 0;
   text-transform: none;
-  color: var(--bot);
+  color: var(--nous-blue);
   padding: var(--sp-3) var(--sp-2);
   border-bottom: var(--hair);
   display: flex;
@@ -1040,7 +1803,7 @@ html, body {
 .kanban-card {
   margin: var(--sp-2);
   padding: var(--sp-3);
-  background: rgb(255 255 255 / .55);
+  background: rgb(255 255 255 / .94);
   border: var(--hair);
   border-left: 2px solid var(--owner, var(--bot));
   border-radius: var(--r-sm);
@@ -1064,7 +1827,7 @@ html, body {
 .kanban-title {
   margin: 0 0 6px;
   font-size: var(--fs-body);
-  color: var(--text);
+  color: #14142b;
 }
 
 .kanban-meta {
@@ -1078,14 +1841,63 @@ html, body {
 .kanban-empty {
   margin: var(--sp-6) var(--sp-2);
   font: 500 var(--fs-hero)/1 var(--font-display);
-  color: var(--bot);
+  color: var(--nous-blue);
+}
+
+/* R-SY-08: calm retry ink on the glass. Static text, no animation. */
+.kanban-empty.is-retry {
+  color: #14142b;
+}
+
+/* R-KB-04: a 404 means this Hermes has no kanban. Same ink, no spinner. */
+.kanban-empty.is-unavailable {
+  color: #14142b;
+}
+
+/* R-KB-05: a 401 is a sign-in prompt. Same ink, no spinner. */
+.kanban-empty.is-login {
+  color: #14142b;
+}
+
+.kanban-login {
+  margin: var(--sp-6) var(--sp-2);
+}
+
+.kanban-login .icon-btn {
+  margin-top: var(--sp-3);
+}
+
+.kanban-detail {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 var(--sp-3) var(--sp-4);
+  color: #14142b;
+}
+
+.kanban-detail h2,
+.kanban-detail p,
+.kanban-detail li {
+  color: #14142b;
+}
+
+.kanban-detail h2 {
+  margin: 8px 0;
+  font: 500 var(--fs-hero)/1.15 var(--font-display);
+}
+
+.kanban-detail p,
+.kanban-detail li {
+  margin: 0 0 8px;
+  font: 400 var(--fs-body)/1.45 var(--font-body);
+  white-space: pre-wrap;
 }
 
 .kanban-error {
   margin: 0 var(--sp-3) var(--sp-2);
   padding: 6px 8px;
   border-left: 2px solid var(--nous-red);
-  color: var(--nous-red);
+  color: #14142b;
   font: 400 var(--fs-meta)/1.4 var(--font-body);
 }
 
@@ -1111,7 +1923,10 @@ html, body {
 
 [data-hit-id] {
   opacity: var(--hit-opacity, 1);
-  will-change: opacity;
+}
+
+.bot-btn[data-hit-id] {
+  opacity: var(--hit-opacity, 1);
 }
 
 .field {
@@ -1119,32 +1934,653 @@ html, body {
   flex-direction: column;
   gap: 4px;
   margin: 8px 0;
-  font: 500 var(--fs-micro)/1 var(--font-label);
+  font: 400 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   color: var(--text-muted);
 }
 
 .field-inline { flex-direction: row; align-items: center; }
 
-.settings-layer {
+.settings-panel.settings-card {
+  left: auto;
+  right: 8%;
+  width: min(680px, 92vw);
+  height: min(86vh, 760px);
+  padding: 0;
+  overflow: hidden;
+  box-shadow: var(--glass-inner), var(--shadow-pop);
+}
+
+#settings-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--sp-4);
+}
+
+.settings-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.morph {
+  --pill-h: 44px;
+  --pill-w: 320px;
+  position: absolute;
+  background: var(--nous-blue);
+  color: var(--text);
+  overflow: hidden;
+  /* The shell is the full panel box. WebKitGTK hit-testing honours
+     clip-path and does not hit a descendant outside this border box, even
+     when a negative inset paints it. An open plan is hosted beside the shell. */
+  pointer-events: none;
+  will-change: auto;
+  clip-path: inset(0px 0px 0px 0px round 3px);
+  transform-origin: var(--ax, 22px) var(--ay, 22px);
+}
+
+.morph[data-hit-id] {
+  opacity: var(--hit-opacity, 1);
+  will-change: auto;
+}
+
+.morph.is-morphing {
+  will-change: clip-path, transform, opacity;
+}
+
+.morph.is-growing-pill {
+  transition: clip-path 200ms cubic-bezier(.2, .8, .2, 1) 0s;
+}
+
+.morph.is-growing-pill .morph-fill {
+  transition: clip-path 200ms cubic-bezier(.2, .8, .2, 1) 0s;
+}
+
+.morph.is-growing-panel {
+  transition: clip-path 480ms cubic-bezier(.2, .8, .2, 1) 0s;
+}
+
+.morph.is-growing-panel .morph-fill {
+  transition: clip-path 480ms cubic-bezier(.2, .8, .2, 1) 0s;
+  box-shadow: none;
+  /* Opaque paper behind the glass layers, so the stroke reads only in the
+     1px gap and does not tint the panel. */
+  background-color: #f8f8fc;
+}
+
+/* Blue ring that follows the clip. It stays in layout (visibility, not
+   display:none) so the first panel frame already has a box to clip. The
+   glass sits 1px inside it, so all four edges read from that frame. */
+.morph-stroke {
   position: absolute;
   inset: 0;
-  z-index: 30;
+  visibility: hidden;
+  pointer-events: none;
+  background: #0000f2;
+}
+
+.morph.is-growing-panel .morph-stroke {
+  visibility: visible;
+}
+
+.morph.is-morphing[data-state="panel"] .morph-stroke,
+.morph[data-state="panel"] .morph-stroke {
+  visibility: visible;
+}
+
+/* Paper color stays for the whole open panel. Losing it when
+   is-growing-panel drops rebuilds the glass, and the left title washes
+   about five frames later. */
+.morph[data-state="panel"] .morph-fill,
+.morph.is-morphing[data-state="panel"] .morph-fill,
+.morph[data-kind="bot"][data-state="panel"] .morph-fill {
+  background-color: #f8f8fc;
+}
+
+.morph[data-state="orb"][data-hit-id] {
+  /* Script writes inline opacity every frame. A CSS opacity transition
+     paints one reversed frame when it finishes. This rule does not set
+     opacity: a solid pin keeps the disc from fading and has rebuilt a
+     hit rim. will-change stays so the layer is not torn down on the
+     last sample. */
+  transition: none !important;
+  will-change: opacity;
+}
+
+/* The 12px hit pad and the ::before glow sit outside the disc. A resting
+   settings orb was the one that still showed them after Esc. Cron keeps
+   the status ring outside the button. */
+.morph[data-state="orb"] .morph-orb:not(.orb--cron) {
+  overflow: hidden;
+}
+
+.morph[data-state="orb"] .morph-orb:focus,
+.morph[data-state="orb"] .morph-orb:focus-visible {
+  outline: none;
+}
+
+.morph[data-bot-id="cron"][data-state="orb"] {
+  background: transparent;
+  overflow: visible;
+}
+
+.morph[data-bot-id="cron"][data-state="orb"].is-cron-live[data-hit-id] {
+  opacity: 1 !important;
+}
+
+.morph[data-state="panel"] {
+  filter: drop-shadow(var(--shadow-pop));
+  /* Opacity jumps on the key. clip-path is the WAAPI seam, not a CSS
+     transition: an !important clip-path transition holds the used clip
+     at the closed inset while the specified value is already open. */
+  will-change: clip-path, transform, opacity;
+  transition-property: opacity !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+
+.morph[data-state="panel"] .plan-window,
+.plan-hit-host > .plan-window {
+  will-change: transform, opacity;
+  transition-property: opacity !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+
+.morph[data-kind="bot"] {
+  background: rgba(0, 0, 242, .45);
+}
+
+.morph[data-kind="bot"] .morph-fill {
+  background:
+    var(--glass-sheen),
+    var(--glass-tint),
+    linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    var(--noise),
+    rgba(248, 248, 252, .92);
+}
+
+.morph[data-kind="bot"][data-state="panel"] {
+  filter: drop-shadow(0 6px 24px rgba(0, 0, 242, .12));
+  box-shadow: 0 0 0 1px rgba(0, 0, 242, .45);
+}
+
+.morph[data-kind="bot"][data-state="panel"][data-plan-open="1"] {
+  filter: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 242, .45), 0 6px 24px rgba(0, 0, 242, .12);
+}
+
+/* Set before the clip ends so the handoff does not swap filter, background,
+   or overflow in the same frame as the orb move and the seam grow. The
+   panel clip still hides the plan; overflow only matters once clip-path is none. */
+.morph.is-morphing[data-kind="bot"][data-state="panel"] {
+  overflow: visible;
+  background: transparent;
+  filter: none;
+  box-shadow: none;
+}
+
+.morph.is-morphing[data-kind="bot"][data-state="panel"] .morph-fill {
+  box-shadow: none;
+}
+
+/* Settled panels paint the 8px L outside the frame. The shell stays
+   transparent so the square border box does not fill the corner, and the
+   hairline moves onto the fill, which keeps its own rounded clip. */
+.morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) {
+  overflow: visible;
+  background: transparent;
+  filter: none;
+  box-shadow: none;
+  /* The morph clip stays at its final keyframe. Clearing it drops the layer. */
+}
+
+.morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .center-panel,
+.morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .plan-window {
+  overflow: visible !important;
+}
+
+.morph .center-panel > .hud-corner,
+.morph .plan-window > .hud-corner {
+  z-index: 8;
+}
+
+.morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .morph-fill {
+  clip-path: inset(0 round 3px) !important;
+  box-shadow: inset 0 0 0 1px #0000f2;
+  filter: none;
+}
+
+.morph[data-state="panel"][data-plan-open="1"]:not(.is-morphing):not(.is-collapsing):not([data-plan-side="left"]) .morph-fill {
+  clip-path: inset(0 round 3px 0 0 3px) !important;
+}
+
+.morph[data-state="panel"][data-plan-open="1"][data-plan-side="left"]:not(.is-morphing):not(.is-collapsing) .morph-fill {
+  clip-path: inset(0 round 0 3px 3px 0) !important;
+}
+
+.morph[data-plan-open="1"]:not([data-plan-side="left"]) > .center-panel > .hud-corner.tr,
+.morph[data-plan-open="1"]:not([data-plan-side="left"]) > .center-panel > .hud-corner.br,
+.morph[data-plan-open="1"]:not([data-plan-side="left"]) > .plan-window > .hud-corner.tl,
+.morph[data-plan-open="1"]:not([data-plan-side="left"]) > .plan-window > .hud-corner.bl,
+.morph[data-plan-open="1"][data-plan-side="left"] > .center-panel > .hud-corner.tl,
+.morph[data-plan-open="1"][data-plan-side="left"] > .center-panel > .hud-corner.bl,
+.morph[data-plan-open="1"][data-plan-side="left"] > .plan-window > .hud-corner.tr,
+.morph[data-plan-open="1"][data-plan-side="left"] > .plan-window > .hud-corner.br {
+  display: none;
+}
+
+.morph.is-collapsing {
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* The shell clip is wider than the paper on the plan side for the last
+   frames. Clip the chat to the panel box so text cannot pass the right edge. */
+.morph.is-collapsing .center-panel,
+.morph.is-collapsing .content,
+.morph.is-collapsing .morph-body {
+  overflow: hidden;
+}
+
+/* One clock. A stylesheet clip or transform must not run beside the WAAPI,
+   or the left and right edges keep moving after the animation duration. */
+.morph.is-collapsing,
+.morph.is-collapsing .morph-fill,
+.morph.is-collapsing .morph-stroke,
+.morph.is-collapsing .morph-orb {
+  transition: none !important;
+}
+
+.morph-fill {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    var(--glass-sheen),
+    var(--glass-tint),
+    linear-gradient(var(--grid-line) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    var(--noise),
+    var(--glass-fog);
+}
+
+/* f8cb046 idle disc. The core is transparent past 80%, so this wash is the
+   rim at r≈20–22. The shell clip keeps it inside the orb (r24–48 stays put). */
+.morph[data-state="orb"] .morph-fill::after {
+  content: "";
+  position: absolute;
+  left: var(--ax, 22px);
+  top: var(--ay, 22px);
+  width: 140px;
+  height: 140px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background: radial-gradient(circle, rgb(var(--bot-rgb) / .22) 0%, transparent 70%);
+}
+
+.morph-glow {
+  position: absolute;
+  left: var(--ax, 22px);
+  top: var(--ay, 22px);
+  width: 96px;
+  height: 96px;
+  transform: translate(-48px, -48px);
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(circle, rgb(var(--bot-rgb) / .12) 0%, transparent 70%);
+}
+
+.morph.is-orb-docked .morph-glow {
+  transform: translate(-48px, -48px);
+}
+
+.morph.is-morphing:not(.is-orb-docked):not(.is-orb-moving) .morph-glow,
+.morph.is-collapsing .morph-glow {
+  transform: translate(-48px, -48px);
+}
+
+.morph.is-orb-moving .morph-orb {
+  transition: none;
+  will-change: transform;
+}
+
+.morph.is-orb-moving .morph-glow {
+  will-change: transform;
+}
+
+.morph[data-state="orb"] .morph-glow {
+  opacity: 0;
+}
+
+.morph[data-state="panel"]:not(.is-collapsing) .morph-glow,
+.morph.is-orb-docked:not(.is-collapsing) .morph-glow {
+  opacity: 1;
+  transition: opacity 160ms linear 320ms;
+}
+
+.morph.is-collapsing .morph-glow {
+  opacity: 0;
+  transition: opacity 80ms linear !important;
+}
+
+/* Dropping is-orb-moving must not evict the header layer. The left orb
+   sits on the title, and that eviction washes the panel a few frames later. */
+.morph.is-orb-docked .morph-orb,
+.morph.is-orb-docked .morph-glow,
+.morph[data-state="panel"] .morph-orb,
+.morph[data-state="panel"] .morph-glow {
+  will-change: transform;
+}
+
+.morph.is-orb-moving .morph-orb {
+  contain: none;
+}
+
+/* Dropping is-orb-moving must not put contain:layout back on the header orb.
+   That restart repaints the left title and tabs for one frame. */
+.morph.is-orb-docked .morph-orb,
+.morph.is-morphing .morph-orb,
+.morph[data-state="panel"] .morph-orb {
+  contain: none;
+}
+
+.morph.is-orb-moving .morph-orb::before,
+.morph.is-orb-docked .morph-orb::before {
+  transition: none;
+}
+
+/* The header orb sits on the title. A hover or class swap must not restart
+   the ::before opacity transition, or the left edge washes the title for a frame. */
+.morph.is-morphing .morph-orb::before,
+.morph[data-state="panel"] .morph-orb::before,
+.morph.is-orb-moving .morph-orb:hover::before,
+.morph.is-orb-docked .morph-orb:hover::before,
+.morph[data-state="panel"] .morph-orb:hover::before {
+  opacity: 0.85;
+  transform: none;
+  transition: none;
+}
+
+/* Entire open, pill included. Hover, a className rewrite, or the pill's
+   120ms delay must not fade the left title under the orb. */
+.morph.is-morphing .morph-orb,
+.morph.is-morphing .morph-orb::before,
+.morph.is-morphing .morph-orb::after,
+.morph.is-morphing .bot-btn,
+.morph.is-morphing .bot-btn::before,
+.morph.is-morphing .bot-btn::after,
+.morph.is-morphing .bot-btn:hover::before,
+.morph.is-morphing .morph-orb:hover::before,
+.morph.is-morphing .content,
+.morph.is-morphing .content::before,
+.morph.is-morphing .content::after,
+.morph.is-morphing .morph-body,
+.morph.is-morphing .morph-body::before,
+.morph.is-morphing .morph-body::after,
+.morph.is-morphing .morph-pill,
+.morph.is-morphing .morph-pill::before,
+.morph.is-morphing .panel-header,
+.morph.is-morphing .panel-header *,
+.morph.is-morphing .panel-header *::before,
+.morph.is-morphing .panel-header *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
+.morph.is-morphing .morph-orb::before,
+.morph.is-morphing .bot-btn::before,
+.morph.is-morphing .bot-btn:hover::before,
+.morph.is-morphing .morph-orb:hover::before {
+  opacity: 0.85 !important;
+  transform: none !important;
+}
+
+/* 1px tick outside the viewport. It stays off the orb's layer so the
+   orb tile is the same colour on every edge, before open and after close. */
+.seam-tick {
+  position: fixed;
+  left: -1px;
+  top: -1px;
+  width: 1px;
+  height: 1px;
+  background: #fff;
+  opacity: 1;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.morph .morph-orb {
+  position: absolute;
+  left: calc(var(--ax, 22px) - 22px);
+  top: calc(var(--ay, 22px) - 22px);
+  z-index: 4;
+  margin: 0;
+  transform-origin: center center;
+}
+
+.morph.is-orb-docked .morph-orb,
+.morph[data-state="panel"]:not(.is-morphing) .morph-orb {
+  pointer-events: none;
+  transform: scale(calc(28 / 44));
+}
+
+.morph.is-morphing:not(.is-orb-docked):not(.is-orb-moving) .morph-orb,
+.morph.is-collapsing:not(.is-orb-docked) .morph-orb {
+  transform: scale(1);
+}
+
+.morph[data-visual="wide"] .morph-orb,
+.morph[data-visual="tall"] .morph-orb {
+  transform: translate(0px, 0px) scale(1);
+}
+
+html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
+  pointer-events: none !important;
+}
+
+.morph .center-panel {
+  position: absolute;
+  inset: 0;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: auto;
+  /* Fill the shell. height:auto let the settings form grow to its content
+     (~2256px on a 1080px screen) and the close button laid out off-screen. */
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.morph .center-panel.settings-panel {
   display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Author display:flex beats `.center-panel[hidden]`. After one open the
+   settings head (#f8f8fc) stays painted inside the orb clip and covers the
+   blue rim (R-OB-01). hidden and a resting orb must win. */
+.morph .center-panel.settings-panel[hidden],
+.morph[data-state="orb"] .center-panel.settings-panel,
+.morph[data-state="pill"] .center-panel.settings-panel {
+  display: none !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.morph .center-panel.cron-panel {
+  overflow: auto;
+}
+
+.morph .active-avatar { display: none; }
+
+.morph[data-anchor="start"] .center-panel > .panel-header,
+.morph[data-anchor="start"] .settings-head { padding-left: 40px; }
+
+.morph[data-anchor="end"] .center-panel > .panel-header,
+.morph[data-anchor="end"] .settings-head { padding-right: 40px; }
+
+.morph .plan-window .plan-head {
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 0;
+  padding-right: 0;
+  box-sizing: border-box;
+}
+
+.morph .plan-window .plan-head .panel-actions {
+  flex: none;
+}
+
+/* The header slot is the orb. A bottom slot sits under the composer. */
+.morph[data-header="bottom"] .center-panel {
+  padding-bottom: 0;
+}
+
+.morph[data-header="bottom"] .center-panel > .composer {
+  order: 7;
+}
+
+.morph[data-header="bottom"] .center-panel > .panel-header,
+.morph[data-header="bottom"] .settings-head {
+  order: 8;
+  flex: 0 0 auto;
+  min-height: 44px;
   align-items: center;
-  justify-content: center;
-  background: var(--scrim);
+}
+
+.morph[data-header="bottom"] #settings-form {
+  flex: 1 1 auto;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+/* The header stays in the visible card. Sticky-inside-the-form put 關閉
+   at the bottom of the ~2256px content (y≈2430 on a 1080px screen). */
+.morph[data-header="bottom"] .settings-head {
+  position: static;
+  z-index: 3;
+  margin-top: 0;
+  background: #f8f8fc;
+}
+
+.morph-body,
+.morph-pill,
+.content {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.morph-pill { transition: opacity var(--dur-1) linear var(--dur-1); }
+
+/* The left pill covers the header. A delayed opacity transition restarts
+   on the clip handoff and washes the title for one frame. */
+.morph.is-morphing .morph-pill {
+  transition: none;
+}
+
+.content {
+  opacity: 0;
+}
+
+.open .content {
+  opacity: 1;
+}
+
+.morph.is-content-hold .content,
+.morph.is-content-hold .morph-body {
+  opacity: 1;
+  transition: none;
+}
+
+/* Promoted while the panel clip is still running, so the clip-end handoff
+   does not build the text layer in the same frame it starts the seam. */
+.morph.is-content-promoted .content,
+.morph.is-content-promoted .morph-body {
+  transform: translateZ(0);
+  will-change: opacity;
+}
+
+.morph.open:not(.is-collapsing) .morph-body {
+  opacity: 1;
   pointer-events: auto;
 }
 
-.settings-layer[hidden] { display: none !important; }
-
-.settings-card {
-  width: min(680px, 92vw);
-  max-height: 86vh;
-  overflow: auto;
-  padding: var(--sp-4);
+.morph[data-state="pill"]:not(.is-collapsing):not([data-opening="panel"]) .morph-pill {
+  opacity: 1;
+  pointer-events: auto;
 }
+
+/* Dropping is-plan-collapse must not fade the chat. That fade is the blank
+   card between the plan clip and the panel clip. The shell clip hides it. */
+.morph.is-collapsing .morph-body,
+.morph.is-collapsing .content,
+.morph.is-collapsing .morph-pill {
+  opacity: 1;
+  pointer-events: none;
+  transition: none;
+}
+
+.morph-pill {
+  position: absolute;
+  top: calc(var(--ay, 22px) - 22px);
+  height: 44px;
+  width: 320px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  color: #0000f2;
+  font: 400 var(--fs-ui)/1.2 var(--font-body);
+  z-index: 3;
+}
+
+.morph[data-anchor="start"] .morph-pill {
+  left: 0;
+  padding: 0 12px 0 52px;
+}
+
+.morph[data-anchor="end"] .morph-pill {
+  right: 0;
+  left: auto;
+  padding: 0 52px 0 12px;
+  flex-direction: row-reverse;
+}
+
+.morph-preview {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.morph-pill time {
+  flex: none;
+  font: 400 var(--fs-meta)/1 var(--font-mono);
+  color: var(--text-muted);
+}
+
+.morph-pill.is-error { color: var(--nous-red); }
 
 .bot-editor {
   display: flex;
@@ -1155,10 +2591,102 @@ html, body {
 
 .bot-row {
   display: grid;
-  grid-template-columns: 1.1fr 1.1fr 42px auto;
+  grid-template-columns: auto 1.1fr 1.1fr 42px auto;
   gap: 6px;
   align-items: center;
 }
+
+.show-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #0000f2;
+  font: 400 12px/1 var(--font-body);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.bot-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  box-shadow: none;
+}
+
+.orb-names {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.orb-name {
+  position: absolute;
+  max-width: 96px;
+  overflow: hidden;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: #f7f8f8;
+  color: #14142b;
+  font: 500 var(--fs-micro)/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+  pointer-events: none;
+  transition: none;
+}
+
+.orb-name[hidden] { display: none; }
+
+.orb-hover-label[hidden] { display: none; }
+
+.orb-hover-label {
+  position: absolute;
+  z-index: 30;
+  padding: 1px 4px;
+  border: 1px solid rgb(0 0 242 / .35);
+  border-radius: 2px;
+  background: rgb(247 248 248 / .92);
+  color: #0000f2;
+  font: 500 var(--fs-micro)/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  text-shadow: 0 0 4px #fff, 0 0 2px #fff;
+  pointer-events: none;
+}
+
+.orb-menu[hidden] { display: none; }
+
+.orb-menu {
+  position: absolute;
+  z-index: 80;
+  min-width: 148px;
+  padding: 4px;
+  background: rgb(247 248 248 / .96);
+  border: 1px solid var(--nous-blue);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow-pop);
+}
+
+.orb-menu-btn {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: #0000f2;
+  font: 500 var(--fs-ui)/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.orb-menu-btn:hover { background: var(--bot-10); }
 
 .bot-row .span-2 { grid-column: 1 / -1; }
 
@@ -1169,7 +2697,7 @@ html, body {
   border: var(--hair);
 }
 
-.experimental legend { padding: 0 6px; color: var(--bot); }
+.experimental legend { padding: 0 6px; color: #0000f2; }
 
 .settings-status {
   min-height: 1.2em;
@@ -1184,7 +2712,144 @@ html.overlay-passthrough .overlay-root * { pointer-events: none !important; }
 html.overlay-passthrough .overlay-root [data-hit-capture],
 html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: auto !important; }
 
-@keyframes panel-in { from { transform: translateY(8px) scale(0.98); } }
+html.overlay-passthrough .orb-name[data-hit-capture] { pointer-events: auto !important; }
+
+html.overlay-passthrough .morph[data-state="panel"] .morph-pill,
+html.overlay-passthrough .morph[data-state="orb"] .morph-pill,
+.morph[data-state="panel"] .morph-pill,
+.morph[data-state="orb"] .morph-pill {
+  pointer-events: none !important;
+}
+
+/* An open panel is hit-testable the instant the pointer arrives. Ctrl sets
+   data-pass and the panel body goes click-through again; the close button stays. */
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .center-panel,
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .center-panel *,
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .plan-window:not([hidden]),
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) .plan-window:not([hidden]) * {
+  pointer-events: auto !important;
+}
+
+/* The panel clip is finished while is-morphing stays up for the seam.
+   The composer has to take a click then. The plan window stays inert. */
+html.overlay-passthrough:not([data-pass="1"]) .morph.is-plan-seam[data-state="panel"]:not(.is-collapsing) .center-panel,
+html.overlay-passthrough:not([data-pass="1"]) .morph.is-plan-seam[data-state="panel"]:not(.is-collapsing) .center-panel * {
+  pointer-events: auto !important;
+}
+
+html.overlay-passthrough .overlay-root [data-hit-id^="close:"],
+html.overlay-passthrough .overlay-root [data-hit-id^="close:"] * {
+  pointer-events: auto !important;
+}
+
+/* A focused composer stays hittable across a modifier press so the first
+   keys after release are not dropped on a blurred, click-through field. */
+html.overlay-passthrough .morph[data-state="panel"] :is(input, textarea):focus {
+  pointer-events: auto !important;
+}
+
+/* Plan controls stay clickable once the pane is open. The seam rule above
+   only arms the chat, so 預覽, 原文 and × were hitting the page body. */
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"][data-plan-open="1"]:not(.is-collapsing) .plan-window:not([hidden]):not(.is-plan-parked),
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"][data-plan-open="1"]:not(.is-collapsing) .plan-window:not([hidden]):not(.is-plan-parked) *,
+html.overlay-passthrough:not([data-pass="1"]) .plan-hit-host,
+html.overlay-passthrough:not([data-pass="1"]) .plan-hit-host > .plan-window:not([hidden]):not(.is-plan-parked),
+html.overlay-passthrough:not([data-pass="1"]) .plan-hit-host > .plan-window:not([hidden]):not(.is-plan-parked) * {
+  pointer-events: auto !important;
+}
+
+/* Open plan, same pixels as left:100% / right:100%, but not a descendant of
+   the shell clip. WebKitGTK will not hit that descendant. */
+.plan-hit-host {
+  position: absolute;
+  overflow: visible;
+  /* WebKitGTK skips a pointer-events:none ancestor even when the buttons
+     opt back in, so a click on 預覽/原文/× lands on BODY. The host is only
+     the plan box. Ctrl sets data-pass and this rule yields. */
+  pointer-events: auto;
+  background: transparent;
+}
+
+html[data-pass="1"] .plan-hit-host,
+html[data-pass="1"] .plan-hit-host * {
+  pointer-events: none !important;
+}
+
+.plan-hit-host > .plan-window {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: auto;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: visible;
+  border-left: none;
+  border-radius: 0 var(--r-panel) var(--r-panel) 0;
+  box-shadow: none;
+}
+
+.plan-hit-host[data-plan-side="left"] > .plan-window {
+  border-left: 1px solid var(--nous-blue);
+  border-right: none;
+  border-radius: var(--r-panel) 0 0 var(--r-panel);
+}
+
+.plan-hit-host > .plan-window > .hud-corner { z-index: 8; }
+
+.plan-hit-host:not([data-plan-side="left"]) > .plan-window > .hud-corner.tl,
+.plan-hit-host:not([data-plan-side="left"]) > .plan-window > .hud-corner.bl,
+.plan-hit-host[data-plan-side="left"] > .plan-window > .hud-corner.tr,
+.plan-hit-host[data-plan-side="left"] > .plan-window > .hud-corner.br {
+  display: none;
+}
+
+/* Same paint as the in-shell seam. Leaving .morph must not drop padding 0
+   or move the paper off .plan-fit. */
+.plan-hit-host > .plan-window.is-seam-grow {
+  display: flex;
+  overflow: hidden !important;
+  align-items: flex-start;
+  box-sizing: border-box;
+  padding: 0;
+  background: transparent;
+}
+
+.plan-hit-host > .plan-window.is-seam-grow > .plan-fit {
+  flex: none;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  background:
+    linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    rgba(248, 248, 252, .92);
+}
+
+.plan-hit-host[data-plan-side="left"] > .plan-window,
+.plan-hit-host[data-plan-side="left"] > .plan-window .plan-fit {
+  transform-origin: right center;
+}
+
+.plan-hit-host[data-plan-side="left"] > .plan-window.is-seam-grow > .plan-fit {
+  align-self: flex-end;
+}
+
+.plan-hit-host > .plan-window .plan-head {
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 0;
+  padding-right: 0;
+  box-sizing: border-box;
+}
+
+.plan-hit-host > .plan-window .plan-head .panel-actions {
+  flex: none;
+}
+
 @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes ping { from { transform: scale(1); opacity: 0.6; } to { transform: scale(2.2); opacity: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1192,8 +2857,12 @@ html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: au
 @keyframes toast-in { from { opacity: 0; transform: translateX(var(--tx, 12px)); } }
 @keyframes toast-out { to { opacity: 0; } }
 @keyframes orb-pulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.06); }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+@keyframes cron-ring {
+  from { transform: scale(1); opacity: 1; }
+  to { transform: scale(1.65); opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1202,7 +2871,30 @@ html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: au
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
   }
-  .is-thinking .spinner {
+  .morph,
+  .morph-fill {
+    animation: none !important;
+    transition: opacity 120ms linear !important;
+  }
+  .morph-body,
+  .morph-pill {
+    transition: opacity 120ms linear !important;
+  }
+  .morph.is-morphing { will-change: auto; }
+  /* Later and more specific than the 120ms opacity transition above.
+     That duration is the press dim and the release lag on a settled panel. */
+  .morph[data-state="panel"],
+  .morph[data-state="panel"] .plan-window,
+  .plan-hit-host > .plan-window {
+    transition-property: opacity !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+  }
+  .morph[data-state="orb"] {
+    transition: none !important;
+  }
+  .is-thinking .spinner,
+  .bot-btn.orb--cron.is-running::after {
     animation: none;
     opacity: 0.6;
   }
@@ -1218,7 +2910,7 @@ html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: au
   .center-panel.is-thinking .spinner::before,
   .is-thinking .bot-status .spinner::before {
     content: "···";
-    color: var(--bot);
+    color: #0000f2;
     font: 400 var(--fs-meta)/1 var(--font-mono);
   }
 }

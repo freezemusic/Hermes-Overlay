@@ -9,6 +9,11 @@ description = "Save gateway settings and keychain entries."
 commands.allow = ["save_settings"]
 
 [[permission]]
+identifier = "allow-set-show-bot-names"
+description = "Persist the always-show bot name toggle."
+commands.allow = ["set_show_bot_names"]
+
+[[permission]]
 identifier = "allow-probe-gateway"
 description = "Probe the Hermes gateway and saved bot keys."
 commands.allow = ["probe_gateway"]
@@ -22,6 +27,11 @@ commands.allow = ["discover_profiles"]
 identifier = "allow-open-bot"
 description = "Load a bot chat transcript."
 commands.allow = ["open_bot"]
+
+[[permission]]
+identifier = "allow-select-session"
+description = "Pin one Hermes session for a profile."
+commands.allow = ["select_session"]
 
 [[permission]]
 identifier = "allow-send-chat"
@@ -45,13 +55,28 @@ commands.allow = ["client_command"]
 
 [[permission]]
 identifier = "allow-get-kanban-board"
-description = "Read an overlay-slash kanban board."
+description = "Read the kanban board from hermes serve on port 9119."
 commands.allow = ["get_kanban_board"]
+
+[[permission]]
+identifier = "allow-get-kanban-task"
+description = "Read one kanban card from hermes serve."
+commands.allow = ["get_kanban_task"]
+
+[[permission]]
+identifier = "allow-sign-in-kanban"
+description = "Sign in to the kanban server and store secrets in this app's keyring."
+commands.allow = ["sign_in_kanban"]
 
 [[permission]]
 identifier = "allow-patch-kanban-task"
 description = "Move or edit an overlay-slash kanban task."
 commands.allow = ["patch_kanban_task"]
+
+[[permission]]
+identifier = "allow-list-cron-jobs"
+description = "Read Hermes scheduled jobs for each shown profile."
+commands.allow = ["list_cron_jobs"]
 
 [[permission]]
 identifier = "allow-set-hit-rects"
@@ -77,3 +102,83 @@ commands.allow = ["arm_pin_close_guard"]
 identifier = "allow-quit-app"
 description = "Quit the overlay from the Settings 結束 button."
 commands.allow = ["quit_app"]
+
+[[permission]]
+identifier = "allow-read-soul"
+description = "Read one bot profile SOUL.md."
+commands.allow = ["read_soul"]
+
+[[permission]]
+identifier = "allow-write-soul"
+description = "Write one bot profile SOUL.md."
+commands.allow = ["write_soul"]
+
+[[permission]]
+identifier = "allow-save-bot-meta"
+description = "Save one bot display name and detail."
+commands.allow = ["save_bot_meta"]
+
+[[permission]]
+identifier = "allow-sync-profiles"
+description = "Discover Hermes profiles into the roster without inventing API keys."
+commands.allow = ["sync_profiles"]
+
+[[permission]]
+identifier = "allow-set-profile-enabled"
+description = "Show or hide one roster profile without deleting its key."
+commands.allow = ["set_profile_enabled"]
+
+[[permission]]
+identifier = "allow-debug-log-enabled"
+description = "Report whether HERMES_OVERLAY_DEBUG_LOG is set."
+commands.allow = ["debug_log_enabled"]
+
+[[permission]]
+identifier = "allow-debug-log"
+description = "Append one line when HERMES_OVERLAY_DEBUG_LOG is set."
+commands.allow = ["debug_log"]
+
+[[permission]]
+identifier = "allow-fit-overlay"
+description = "Size the hidden overlay to the monitor before the first paint."
+commands.allow = ["fit_overlay"]
+
+[[permission]]
+identifier = "allow-map-overlay-for-layout"
+description = "Map the overlay at opacity 0 so the page can lay out at the monitor size."
+commands.allow = ["map_overlay_for_layout"]
+
+[[permission]]
+identifier = "allow-wait-presented-frames"
+description = "Wait until the GTK frame clock has presented closed seam frames."
+commands.allow = ["wait_presented_frames"]
+
+[[permission]]
+identifier = "allow-modifier-down-now"
+description = "Read the OS modifier at pointerdown, not the last poll."
+commands.allow = ["modifier_down_now"]
+
+[[permission]]
+identifier = "allow-release-overlay-focus"
+description = "Drop the overlay keyboard focus after Escape closes a panel."
+commands.allow = ["release_overlay_focus"]
+
+[[permission]]
+identifier = "allow-armed-press"
+description = "Read the orb id latched when a press began with the modifier down."
+commands.allow = ["armed_press"]
+
+[[permission]]
+identifier = "allow-note-opacity-written"
+description = "Log the presented frame after a panel opacity write, then allow the input shape."
+commands.allow = ["note_opacity_written"]
+
+[[permission]]
+identifier = "allow-drive-presented-seam"
+description = "Advance the plan seam from GTK after-paint timestamps."
+commands.allow = ["drive_presented_seam"]
+
+[[permission]]
+identifier = "allow-reveal-overlay"
+description = "Show the overlay after the first transparent paint."
+commands.allow = ["reveal_overlay"]
