@@ -387,8 +387,212 @@ pub fn append_new_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint]) -> 
     added
 }
 
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+fn scan_json_string(bytes: &[u8], start: usize) -> Option<usize> {
+    if start >= bytes.len() || bytes[start] != b'"' {
+        return None;
+    }
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                i += 2;
+                if i > bytes.len() {
+                    return None;
+                }
+            }
+            b'"' => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn skip_json_container(bytes: &[u8], start: usize, open: u8, close: u8) -> Option<usize> {
+    let mut i = start + 1;
+    let mut depth = 1i32;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => i = scan_json_string(bytes, i)?,
+            c if c == open => {
+                depth += 1;
+                i += 1;
+            }
+            c if c == close => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn skip_json_value(bytes: &[u8], i: usize) -> Option<usize> {
+    if i >= bytes.len() {
+        return None;
+    }
+    match bytes[i] {
+        b'"' => scan_json_string(bytes, i),
+        b'{' => skip_json_container(bytes, i, b'{', b'}'),
+        b'[' => skip_json_container(bytes, i, b'[', b']'),
+        b't' | b'f' | b'n' | b'-' | b'0'..=b'9' => {
+            let mut j = i + 1;
+            while j < bytes.len()
+                && !matches!(bytes[j], b',' | b'}' | b']' | b' ' | b'\n' | b'\r' | b'\t')
+            {
+                j += 1;
+            }
+            Some(j)
+        }
+        _ => None,
+    }
+}
+
+struct JsonField {
+    key_start: usize,
+    value_start: usize,
+    value_end: usize,
+}
+
+fn root_object_close(bytes: &[u8]) -> Option<usize> {
+    let i = skip_ws(bytes, 0);
+    if i >= bytes.len() || bytes[i] != b'{' {
+        return None;
+    }
+    let end = skip_json_container(bytes, i, b'{', b'}')?;
+    Some(end - 1)
+}
+
+fn top_level_field(text: &str, name: &str) -> Option<JsonField> {
+    let bytes = text.as_bytes();
+    let mut i = skip_ws(bytes, 0);
+    if i >= bytes.len() || bytes[i] != b'{' {
+        return None;
+    }
+    i += 1;
+    loop {
+        i = skip_ws(bytes, i);
+        if i >= bytes.len() || bytes[i] == b'}' {
+            return None;
+        }
+        if bytes[i] != b'"' {
+            return None;
+        }
+        let key_start = i;
+        let key_end = scan_json_string(bytes, i)?;
+        let key = &text[key_start + 1..key_end - 1];
+        i = skip_ws(bytes, key_end);
+        if i >= bytes.len() || bytes[i] != b':' {
+            return None;
+        }
+        i = skip_ws(bytes, i + 1);
+        let value_start = i;
+        let value_end = skip_json_value(bytes, i)?;
+        if key == name {
+            return Some(JsonField {
+                key_start,
+                value_start,
+                value_end,
+            });
+        }
+        i = skip_ws(bytes, value_end);
+        if i < bytes.len() && bytes[i] == b',' {
+            i += 1;
+            continue;
+        }
+        return None;
+    }
+}
+
+fn insert_show_bot_names(text: &str) -> Result<String, String> {
+    let bytes = text.as_bytes();
+    let close = root_object_close(bytes).ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    let mut j = close;
+    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    let mut out = String::with_capacity(text.len() + 32);
+    if j > 0 && bytes[j - 1] == b'{' {
+        out.push_str(&text[..j]);
+        out.push_str("\n  \"show_bot_names\": true\n");
+        out.push_str(&text[close..]);
+        return Ok(out);
+    }
+    out.push_str(&text[..j]);
+    out.push_str(",\n  \"show_bot_names\": true\n");
+    out.push_str(&text[close..]);
+    Ok(out)
+}
+
+fn remove_top_level_field(text: &str, span: &JsonField) -> String {
+    let bytes = text.as_bytes();
+    let after = skip_ws(bytes, span.value_end);
+    if after < bytes.len() && bytes[after] == b',' {
+        let mut start = span.key_start;
+        while start > 0 && (bytes[start - 1] == b' ' || bytes[start - 1] == b'\t') {
+            start -= 1;
+        }
+        let mut end = after + 1;
+        if end < bytes.len() && bytes[end] == b'\r' {
+            end += 1;
+        }
+        if end < bytes.len() && bytes[end] == b'\n' {
+            end += 1;
+        }
+        let mut out = String::with_capacity(text.len());
+        out.push_str(&text[..start]);
+        out.push_str(&text[end..]);
+        return out;
+    }
+    let mut start = span.key_start;
+    while start > 0 && (bytes[start - 1] == b' ' || bytes[start - 1] == b'\t') {
+        start -= 1;
+    }
+    let mut k = start;
+    if k > 0 && bytes[k - 1] == b'\n' {
+        k -= 1;
+        if k > 0 && bytes[k - 1] == b'\r' {
+            k -= 1;
+        }
+    }
+    let mut c = k;
+    while c > 0 && bytes[c - 1].is_ascii_whitespace() {
+        c -= 1;
+    }
+    let cut = if c > 0 && bytes[c - 1] == b',' {
+        c - 1
+    } else {
+        start
+    };
+    let mut out = String::with_capacity(text.len());
+    out.push_str(&text[..cut]);
+    out.push_str(&text[span.value_end..]);
+    out
+}
+
+fn write_config_text(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("開唔到設定目錄：{e}"))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, text).map_err(|e| format!("寫唔到設定：{e}"))?;
+    fs::rename(&tmp, path).map_err(|e| format!("寫唔到設定：{e}"))?;
+    Ok(())
+}
+
 /// Writes `show_bot_names` only when the stored value changes.
-/// Patches that one key so a full save cannot invent omitted fields.
+/// Splices that one key so the other keys keep their order and a full
+/// save cannot invent omitted fields.
 pub fn store_show_bot_names(path: &Path, enabled: bool) -> Result<bool, String> {
     if !path.exists() {
         if !enabled {
@@ -400,8 +604,11 @@ pub fn store_show_bot_names(path: &Path, enabled: bool) -> Result<bool, String> 
         return Ok(true);
     }
     let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
-    let mut value: serde_json::Value =
+    let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    if !value.is_object() {
+        return Err("設定檔格式唔啱".to_string());
+    }
     let current = value
         .get("show_bot_names")
         .and_then(serde_json::Value::as_bool)
@@ -409,21 +616,22 @@ pub fn store_show_bot_names(path: &Path, enabled: bool) -> Result<bool, String> 
     if current == enabled {
         return Ok(false);
     }
-    let obj = value
-        .as_object_mut()
-        .ok_or_else(|| "設定檔格式唔啱".to_string())?;
-    if enabled {
-        obj.insert("show_bot_names".into(), serde_json::Value::Bool(true));
+    let patched = if enabled {
+        if let Some(span) = top_level_field(&text, "show_bot_names") {
+            let mut out = String::with_capacity(text.len() + 8);
+            out.push_str(&text[..span.value_start]);
+            out.push_str("true");
+            out.push_str(&text[span.value_end..]);
+            out
+        } else {
+            insert_show_bot_names(&text)?
+        }
     } else {
-        obj.remove("show_bot_names");
-    }
-    let pretty = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("開唔到設定目錄：{e}"))?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &pretty).map_err(|e| format!("寫唔到設定：{e}"))?;
-    fs::rename(&tmp, path).map_err(|e| format!("寫唔到設定：{e}"))?;
+        let span = top_level_field(&text, "show_bot_names")
+            .ok_or_else(|| "設定檔格式唔啱".to_string())?;
+        remove_top_level_field(&text, &span)
+    };
+    write_config_text(path, &patched)?;
     Ok(true)
 }
 
@@ -1065,6 +1273,40 @@ other:
         assert!(!patched.contains("kanban_base_url"));
         assert!(patched.contains("api_1792573589_f1c99a3b"));
         assert!(patched.contains("#112233"));
+        let version_at = patched.find("\"version\"").unwrap();
+        let gateway_at = patched.find("\"gateway_base_url\"").unwrap();
+        let bots_at = patched.find("\"bots\"").unwrap();
+        let names_at = patched.find("\"show_bot_names\"").unwrap();
+        assert!(version_at < gateway_at && gateway_at < bots_at && bots_at < names_at);
+
+        let ordered = dir.join("ordered.json");
+        fs::write(
+            &ordered,
+            r##"{
+  "bots": [],
+  "version": 1,
+  "gateway_base_url": "http://10.10.24.33:8642"
+}
+"##,
+        )
+        .unwrap();
+        assert_eq!(store_show_bot_names(&ordered, true).unwrap(), true);
+        let turned_on = String::from_utf8(fs::read(&ordered).unwrap()).unwrap();
+        let bots_i = turned_on.find("\"bots\"").unwrap();
+        let version_i = turned_on.find("\"version\"").unwrap();
+        let gateway_i = turned_on.find("\"gateway_base_url\"").unwrap();
+        let names_i = turned_on.find("\"show_bot_names\"").unwrap();
+        assert!(bots_i < version_i && version_i < gateway_i && gateway_i < names_i);
+        assert!(!turned_on.contains("kanban_base_url"));
+        assert_eq!(store_show_bot_names(&ordered, false).unwrap(), true);
+        let turned_off = String::from_utf8(fs::read(&ordered).unwrap()).unwrap();
+        assert!(!turned_off.contains("show_bot_names"));
+        assert!(turned_off.find("\"bots\"").unwrap() < turned_off.find("\"version\"").unwrap());
+        assert!(
+            turned_off.find("\"version\"").unwrap()
+                < turned_off.find("\"gateway_base_url\"").unwrap()
+        );
+        assert!(load(&ordered).unwrap().gateway_base_url.contains("8642"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

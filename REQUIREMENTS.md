@@ -163,7 +163,7 @@
 - 狀態：❓ / ❓。
 
 **R-OB-06** 設定有開關「永遠顯示員工名」，預設關。關住時光球同而家一樣。值係 config.json 嘅 `show_bot_names`；關住唔寫出呢個欄。只有 Devon 撥個開關先寫檔。啟動、重連、靜態名單同步（R-SY-09）唔好為咗呢個值改 config.json。
-開咗之後，每粒光球（Bot、設定、看板、排程，同之後嘅子光球）喺光球下面顯示 `display_name`；下面會撞到面板、其他名、或者連線膠囊先擺側面。長名截斷加省略號，tooltip 同 aria-label 保留全名。名稱片置中喺光球下面。字唔可以用淺色 bot 色（黃 `#f2f200`、青 `#00f2f2`），對住背後至少 4.5:1；用淺色底片，字用 `#14142b`。標籤屬於嗰粒光球：跟 R-OB-05 一齊淡，預設穿透，只有揸住 Ctrl 先可以撳同喺近距返實色（R-CT-01、R-CT-03）。冇揸 Ctrl 時命中區維持光碟加原本 12px，唔好因為標籤變大。標籤唔好疊住面板，標籤之間亦唔好重疊。撥開關只寫 `show_bot_names` 呢一個鍵；舊檔冇 `kanban_base_url` 就唔好順便寫出空字串。
+開咗之後，每粒光球（Bot、設定、看板、排程，同之後嘅子光球）喺光球下面顯示 `display_name`；下面會撞到面板、其他名、或者連線膠囊先擺側面。長名截斷加省略號，tooltip 同 aria-label 保留全名。名稱片置中喺光球下面。字唔可以用淺色 bot 色（黃 `#f2f200`、青 `#00f2f2`），對住背後至少 4.5:1；用淺色底片，字用 `#14142b`。標籤屬於嗰粒光球：跟 R-OB-05 一齊淡，預設穿透，只有揸住 Ctrl 先可以撳同喺近距返實色（R-CT-01、R-CT-03）。冇揸 Ctrl 時命中區維持光碟加原本 12px，唔好因為標籤變大。標籤唔好疊住面板，標籤之間亦唔好重疊。撥開關只寫 `show_bot_names` 呢一個鍵；舊檔冇 `kanban_base_url` 就唔好順便寫出空字串，亦唔好把其他鍵按字母重排。名稱片嘅底片跟字嘅闊度，置中仍然對齊光球中心。
 - 來源：Devon 2026-10-24，排喺 R-SY-09 之後。
 - 驗收：開關持久而且冇改過唔寫檔；標籤有渲染同截斷；冇 Ctrl 時命中矩形不變；字同底片對比 ≥4.5，唔係淺色 bot 色。
 - 狀態：❓ / ❓。
@@ -347,10 +347,12 @@
 
 config.json 只有名單真係多咗 profile 先寫。冇變動嘅每一輪，檔案位元組保持一樣。已有 Bot 嘅 sessionId、enabled、顏色、次序、名稱、詳情都唔改。計時器唔刪走消失或者隱藏嘅 profile，亦唔因為今次搵唔到就標做不可用（一次讀取失敗唔可以隱藏晒所有人）。
 
-每次同步都要為新 profile 出一次金鑰提示，包括啟動 `connectHermes`、`recoverGateway` 同靜態計時。已經喺名單入面嘅唔再提示。光球位係前綴穩定：加一個 profile 唔好令已有光球換位。6 粒或以上唔好疊到看板、排程、設定。`profiles/` 入面以點開頭嘅目錄（例如 `.deleted`）唔算 profile。
+每次同步都要為新 profile 出一次金鑰提示，包括啟動 `connectHermes`、`recoverGateway` 同靜態計時。已經喺名單入面嘅唔再提示。提示用 sticky kind `keys`：第一次載入歷史、`clearConnectionBanner()`、同 4 秒計時都唔好清走。Gateway 膠囊顯示期間記住呢句，膠囊收起之後再出。打開設定，或者金鑰儲存之後先清；幾個 profile 一齊未有金鑰時，儲存只拿走近來有金鑰嗰幾個，其餘繼續顯示。
 
-- 來源：Devon。8cf5af4 盒：恢復先跑同步，3 個新 profile 有 2 個冇金鑰提示；加光球會重排，6 粒時 researcher 疊住 cron；`.deleted` 被當成 profile。
-- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(5)` 係 `distributeEdges(6)` 嘅前綴，6 同 8 粒唔疊 chrome；點開頭目錄唔出現。
+頭四粒光球用經典邊位（一粒喺頂邊 t=0.21；四粒係頂、右、底、左），加 profile 唔好郁呢四粒。第五粒起放入空位：中心距要大過光碟直徑加兩個 72px 淡出半徑，72px 淡出先唔會同時捉到兩粒；新位亦唔好落入打開咗嘅看板面板。6 粒或以上唔好疊到看板、排程、設定光球。`profiles/` 入面以點開頭嘅目錄（例如 `.deleted`）唔算 profile。
+
+- 來源：Devon。8cf5af4 盒：恢復先跑同步，3 個新 profile 有 2 個冇金鑰提示；加光球會重排，6 粒時 researcher 疊住 cron；`.deleted` 被當成 profile。f1ebd03 盒：金鑰提示約 60ms／340ms 就被歷史載入或 gateway 膠囊清走；穩定槽把原有四粒推去角落，新粒相距約 70px 一齊淡，打開看板蓋住預設光球。
+- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示，打開設定會清；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
 - 狀態：❓ / ❓。
 
 ---

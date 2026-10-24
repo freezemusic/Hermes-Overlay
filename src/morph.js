@@ -4,6 +4,8 @@
  * during the animation, and the anchor's screen position does not move.
  */
 
+import { ORB_PROXIMITY_PX } from "./proximity.js";
+
 export const ORB = 44;
 export const PILL_W = 320;
 export const PANEL_W = 420;
@@ -501,42 +503,100 @@ export function phaseList(edge, from, to) {
   return openPhases(edge);
 }
 
-const SLOT_EDGES = ["right", "bottom", "left", "top"];
+/** Top-edge bots sit either side of centre so they do not cover the kanban orb. */
+function topSlot(index, count) {
+  const half = Math.ceil(count / 2);
+  if (index < half) return ((index + 1) / (half + 1)) * 0.42;
+  const rest = count - half;
+  return 0.58 + ((index - half + 1) / (rest + 1)) * 0.42;
+}
+
+/** Classic edge homes. Counts 1–4 are prefixes of the four-bot layout. */
+function classicEdges(count) {
+  const segments = [
+    { edge: "top", weight: 1 },
+    { edge: "right", weight: 3 },
+    { edge: "bottom", weight: 3 },
+    { edge: "left", weight: 2 },
+  ];
+  const total = segments.reduce((sum, seg) => sum + seg.weight, 0);
+  const slots = [];
+  let remaining = count;
+  segments.forEach((seg, index) => {
+    const isLast = index === segments.length - 1;
+    const n = isLast ? remaining : Math.max(1, Math.round((seg.weight / total) * count));
+    const take = Math.min(n, remaining);
+    remaining -= take;
+    for (let j = 0; j < take; j += 1) {
+      const t = seg.edge === "top" ? topSlot(j, take) : (j + 1) / (take + 1);
+      slots.push({ edge: seg.edge, t });
+    }
+  });
+  return slots;
+}
+
+/** Two discs both fade when a cursor can sit inside both 72px halos. */
+function sharesFade(a, b, orb) {
+  return Math.hypot(a.x - b.x, a.y - b.y) <= orb + 2 * ORB_PROXIMITY_PX;
+}
+
+function discHitsRect(cx, cy, radius, rect) {
+  const right = rect.left + rect.width;
+  const bottom = rect.top + rect.height;
+  const dx = cx < rect.left ? rect.left - cx : cx > right ? cx - right : 0;
+  const dy = cy < rect.top ? rect.top - cy : cy > bottom ? cy - bottom : 0;
+  return Math.hypot(dx, dy) <= radius;
+}
+
+function kanbanPanelRect(width, height, pad, orb) {
+  const anchor = fixedOrbPoint("kanban", width, height, pad, orb);
+  const boxW = Math.min(960, width * 0.8);
+  const boxH = Math.min(height * 0.8, 760);
+  const placed = placeShell(anchor.x, anchor.y, boxW, boxH, width, height);
+  return { left: placed.left, top: placed.top, width: placed.width, height: placed.height };
+}
 
 /**
- * Slot i does not depend on how many bots there are. Adding a profile
- * keeps every earlier orb where it was. Candidates that land on the
- * kanban, cron, or settings orbs are skipped.
+ * Extra bots go to edge slots whose fade halo misses every orb already
+ * placed, and whose disc misses the open kanban panel.
  */
-export function distributeEdges(count, screen = {}) {
+function freeEdgeSlots(need, homes, screen) {
+  if (need <= 0) return [];
   const width = screen.width || screen.w || 1280;
   const height = screen.height || screen.h || 800;
   const pad = screen.pad ?? 42;
   const orb = screen.orb ?? ORB;
-  const chromeGap = orb + 8;
-  const chrome = ["kanban", "cron", "settings"].map((id) => fixedOrbPoint(id, width, height, pad, orb));
-  const span = Math.max(1, Math.min(width, height) * 0.84);
-  const step = Math.min(0.18, Math.max(0.07, (chromeGap + 4) / span));
-  const ts = [];
-  for (let t = step; t <= 1 - step * 0.5 + 1e-6; t += step) {
-    ts.push(Math.round(t * 1000) / 1000);
-  }
-  const wanted = Math.max(0, count | 0);
-  const accepted = [];
-  const points = [];
-  for (let index = 0; index < ts.length && accepted.length < wanted; index += 1) {
-    for (const edge of SLOT_EDGES) {
-      if (accepted.length >= wanted) break;
-      const slot = { edge, t: ts[index] };
-      const point = slotPoint(slot.edge, slot.t, width, height, pad, orb);
-      const hitsChrome = chrome.some((item) => Math.hypot(point.x - item.x, point.y - item.y) <= chromeGap);
-      const hitsBot = points.some((item) => Math.hypot(point.x - item.x, point.y - item.y) <= orb);
-      if (hitsChrome || hitsBot) continue;
-      accepted.push(slot);
-      points.push(point);
+  const occupied = [
+    ...homes.map((slot) => slotPoint(slot.edge, slot.t, width, height, pad, orb)),
+    ...["kanban", "cron", "settings"].map((id) => fixedOrbPoint(id, width, height, pad, orb)),
+  ];
+  const panel = kanbanPanelRect(width, height, pad, orb);
+  const added = [];
+  const edges = ["top", "right", "bottom", "left"];
+  for (const edge of edges) {
+    const span = Math.max(1, ((edge === "top" || edge === "bottom") ? width : height) * 0.84);
+    const step = 8 / span;
+    for (let raw = 0; raw <= 1 + 1e-9 && added.length < need; raw += step) {
+      const slot = { edge, t: Math.round(Math.min(raw, 1) * 1000) / 1000 };
+      const point = slotPoint(edge, slot.t, width, height, pad, orb);
+      if (occupied.some((other) => sharesFade(point, other, orb))) continue;
+      if (discHitsRect(point.x, point.y, orb / 2, panel)) continue;
+      added.push(slot);
+      occupied.push(point);
     }
   }
-  return accepted;
+  return added;
+}
+
+/**
+ * The first four bots keep the classic edge homes. A later profile is
+ * appended into a free slot, so the earlier orbs do not move.
+ */
+export function distributeEdges(count, screen = {}) {
+  const wanted = Math.max(0, count | 0);
+  const homes = classicEdges(Math.min(wanted, 4));
+  if (wanted <= 4) return homes;
+  return homes.concat(freeEdgeSlots(wanted - homes.length, homes, screen));
 }
 
 export function slotPoint(edge, t, width, height, pad = 42, orb = ORB) {

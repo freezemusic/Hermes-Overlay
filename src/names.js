@@ -82,21 +82,24 @@ export function layoutOrbNames(orbs, panels = [], viewport = { width: 1280, heig
     const h = ORB_NAME_H;
     const cx = orb.x + orb.w / 2;
     const spots = [
-      { x: cx - w / 2, y: orb.y + orb.h + ORB_NAME_GAP },
-      { x: orb.x + orb.w + ORB_NAME_GAP, y: orb.y + (orb.h - h) / 2 },
-      { x: orb.x - w - ORB_NAME_GAP, y: orb.y + (orb.h - h) / 2 },
-      { x: cx - w / 2, y: orb.y - h - ORB_NAME_GAP },
+      { x: cx - w / 2, y: orb.y + orb.h + ORB_NAME_GAP, align: "center" },
+      { x: orb.x + orb.w + ORB_NAME_GAP, y: orb.y + (orb.h - h) / 2, align: "side" },
+      { x: orb.x - w - ORB_NAME_GAP, y: orb.y + (orb.h - h) / 2, align: "side" },
+      { x: cx - w / 2, y: orb.y - h - ORB_NAME_GAP, align: "center" },
     ];
     let choice = null;
+    let align = "center";
     for (const spot of spots) {
-      const box = clampBox({ ...spot, w, h }, viewport);
+      const box = clampBox({ x: spot.x, y: spot.y, w, h }, viewport);
       const blocked = [...panels, ...placed].some((other) => overlaps(box, other));
       if (!blocked) {
         choice = box;
+        align = spot.align;
         break;
       }
     }
     if (!choice) {
+      align = "center";
       let box = clampBox({ x: cx - w / 2, y: orb.y + orb.h + ORB_NAME_GAP, w, h }, viewport);
       for (let step = 0; step < 6 && [...panels, ...placed].some((other) => overlaps(box, other)); step += 1) {
         box = clampBox({ ...box, y: box.y + h + 2 }, viewport);
@@ -104,7 +107,7 @@ export function layoutOrbNames(orbs, panels = [], viewport = { width: 1280, heig
       choice = box;
     }
     placed.push(choice);
-    out.push({ id: orb.id, ...choice, text, title });
+    out.push({ id: orb.id, ...choice, text, title, align, anchorX: cx });
   }
   return out;
 }

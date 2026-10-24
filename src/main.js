@@ -3760,6 +3760,7 @@ const state = {
   kanbanOpen: false,
   kanban: { board: null, fingerprint: "", unread: false, saving: false, dragging: false, detailOpen: false },
   rosterTimer: 0,
+  keyPromptBots: [],
   prefetchDeferred: false,
   kanbanPaintDue: null,
   kanbanTimer: 0,
@@ -3842,10 +3843,11 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
     return;
   }
   banner.textContent = text;
-  if ((kind === "ok" || kind === "info") && sticky !== "keyring" && sticky !== "gateway") {
+  if ((kind === "ok" || kind === "info") && sticky !== "keyring" && sticky !== "gateway" && sticky !== "keys") {
     bannerTimer = window.setTimeout(() => {
       bannerTimer = 0;
-      if (banner.dataset.sticky === "keyring") return;
+      const held = banner.dataset.sticky;
+      if (held === "keyring" || held === "gateway" || held === "keys") return;
       setBanner("");
     }, BANNER_OK_MS);
   }
@@ -3853,7 +3855,8 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
 
 function clearConnectionBanner() {
   const banner = $("#conn-banner");
-  if (banner.dataset.sticky === "keyring" || banner.dataset.sticky === "gateway") return;
+  const held = banner.dataset.sticky;
+  if (held === "keyring" || held === "gateway" || held === "keys") return;
   setBanner("");
 }
 
@@ -5380,7 +5383,47 @@ function clearGatewayWait() {
     btn.setAttribute("aria-label", "看板");
   }
   const banner = $("#conn-banner");
-  if (banner?.dataset.sticky === "gateway") setBanner("");
+  if (banner?.dataset.sticky === "gateway") {
+    if (!showKeyPrompt()) setBanner("");
+  }
+}
+
+function keyPromptText(bots) {
+  const names = bots.map((bot) => bot.display_name || bot.profile).join("、");
+  return `${names} 未有 API 金鑰，請喺設定填寫。金鑰唔會自動產生。`;
+}
+
+function showKeyPrompt() {
+  const bots = state.keyPromptBots || [];
+  if (!bots.length || gateway.isDown("gateway")) return false;
+  setBanner(keyPromptText(bots), "info", "keys", "settings");
+  return true;
+}
+
+function clearKeyPrompt() {
+  state.keyPromptBots = [];
+  const banner = $("#conn-banner");
+  if (banner?.dataset.sticky === "keys") setBanner("");
+}
+
+function reconcileKeyPrompt(bots) {
+  const pending = state.keyPromptBots || [];
+  if (!pending.length) return;
+  const rows = new Map((bots || []).filter((bot) => bot?.profile).map((bot) => [bot.profile, bot]));
+  const next = [];
+  for (const bot of pending) {
+    const row = rows.get(bot.profile);
+    if (row?.has_key) continue;
+    if (row && row.enabled === false) continue;
+    next.push(row ? { ...bot, display_name: row.display_name || bot.display_name } : bot);
+  }
+  state.keyPromptBots = next;
+  if (!next.length) {
+    const banner = $("#conn-banner");
+    if (banner?.dataset.sticky === "keys") setBanner("");
+    return;
+  }
+  showKeyPrompt();
 }
 
 async function claimProfiles(ids, fn) {
@@ -5397,8 +5440,15 @@ async function claimProfiles(ids, fn) {
 function announceNewKeys(before, synced) {
   const added = profilesNeedingKeys(before, synced?.bots || []);
   if (!added.length || synced?.keyring_error) return;
-  const names = added.map((bot) => bot.display_name || bot.profile).join("、");
-  setBanner(`${names} 未有 API 金鑰，請喺設定填寫。金鑰唔會自動產生。`, "info", "", "settings");
+  const seen = new Set((state.keyPromptBots || []).map((bot) => bot.profile));
+  const next = [...(state.keyPromptBots || [])];
+  for (const bot of added) {
+    if (seen.has(bot.profile)) continue;
+    next.push(bot);
+    seen.add(bot.profile);
+  }
+  state.keyPromptBots = next;
+  showKeyPrompt();
 }
 
 /** One read of each consumer. Never calls create_session or create_bot_chat. */
@@ -6496,6 +6546,7 @@ function focusSettings() {
 }
 
 function openSettings() {
+  clearKeyPrompt();
   window.clearTimeout(blurReleaseTimer);
   blurReleaseTimer = 0;
   state.windowFocused = true;
@@ -6571,6 +6622,7 @@ async function saveSettings(event) {
     $("#dashboard-token").value = "";
     if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。", "settings");
     else await connectHermes(settings);
+    reconcileKeyPrompt(settings.bots || []);
     closeSettings();
   } catch (err) {
     $("#settings-status").textContent = String(err);
@@ -8405,12 +8457,14 @@ function paintOrbNames() {
       host.appendChild(node);
     }
     applyOrbName(node, item.title);
-    const left = `${Math.round(item.x)}px`;
+    const centered = item.align !== "side";
+    const left = centered ? `${Math.round(item.anchorX)}px` : `${Math.round(item.x)}px`;
     const top = `${Math.round(item.y)}px`;
-    const width = `${Math.round(item.w)}px`;
+    const transform = centered ? "translateX(-50%)" : "";
     if (node.style.left !== left) node.style.left = left;
     if (node.style.top !== top) node.style.top = top;
-    if (node.style.width !== width) node.style.width = width;
+    if (node.style.width) node.style.width = "";
+    if (node.style.transform !== transform) node.style.transform = transform;
     const shell = byId.get(item.id)?.shell;
     const opacity = shell?.style.opacity || "1";
     if (node.style.opacity !== opacity) node.style.opacity = opacity;
