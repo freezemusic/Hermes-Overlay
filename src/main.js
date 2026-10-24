@@ -60,7 +60,7 @@ import {
   cronShellHeight,
   chatTailAction,
 } from "./morph.js";
-import { isProfileEnabled, keyBannerTop, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
+import { isProfileEnabled, keyBannerSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
 import { TUI_READ_ONLY_REASON, isTuiSource, orderSessions, previewLine, resolveSession, sessionLabel, unseenMessages } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
@@ -5403,52 +5403,58 @@ function showKeyPrompt() {
   return true;
 }
 
+function resetKeyBannerShift(banner) {
+  if (!banner) return;
+  banner.style.top = "";
+  banner.style.left = "";
+  banner.style.transform = "";
+}
+
 function hideKeyPrompt() {
   const banner = $("#conn-banner");
   if (banner?.dataset.sticky === "keys") setBanner("");
-  if (banner?.style.top) banner.style.top = "";
+  resetKeyBannerShift(banner);
+}
+
+function openPanelBox(node) {
+  if (!node || node.hidden || node.closest("[hidden]")) return null;
+  if (node.classList.contains("is-plan-parked")) return null;
+  const rect = node.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) return null;
+  const header = node.querySelector(".panel-header, .settings-head, .plan-head");
+  let head = null;
+  if (header && !header.hidden && !header.closest("[hidden]")) {
+    const band = header.getBoundingClientRect();
+    if (band.width >= 1 && band.height >= 1) {
+      head = { x: band.x, y: band.y, w: band.width, h: band.height };
+    }
+  }
+  return { x: rect.x, y: rect.y, w: rect.width, h: rect.height, header: head };
 }
 
 function placeKeyBanner() {
   const banner = $("#conn-banner");
   if (!banner) return;
   if (banner.hidden || banner.dataset.sticky !== "keys") {
-    if (banner.style.top) banner.style.top = "";
+    resetKeyBannerShift(banner);
     return;
   }
-  const previous = banner.style.top;
-  banner.style.top = "";
+  resetKeyBannerShift(banner);
   const box = banner.getBoundingClientRect();
-  const obstacles = [];
-  const pushObstacle = (node) => {
-    if (!node || node.hidden || node.closest("[hidden]")) return;
-    const rect = node.getBoundingClientRect();
-    if (rect.width < 1 || rect.height < 1) return;
-    obstacles.push({ x: rect.x, y: rect.y, w: rect.width, h: rect.height });
-  };
+  const panels = [];
   document.querySelectorAll(
-    ".morph[data-state='panel']:not(.is-collapsing) .panel-header, .morph[data-state='panel']:not(.is-collapsing) .settings-head",
-  ).forEach(pushObstacle);
-  pushObstacle(document.getElementById("kanban-empty"));
-  pushObstacle(document.getElementById("kanban-error"));
-  // Once the plan has opened, hostOpenPlan moves it out of .morph into
-  // .plan-hit-host. Both homes can hold the Goal: line.
-  document.querySelectorAll(
-    ".morph[data-state='panel']:not(.is-collapsing) [data-role='plan-body'] p, .morph[data-state='panel']:not(.is-collapsing) [data-role='plan-body'] li, .plan-hit-host [data-role='plan-body'] p, .plan-hit-host [data-role='plan-body'] li",
+    ".morph[data-state='panel']:not(.is-collapsing) .center-panel, .plan-hit-host, .morph[data-state='panel']:not(.is-collapsing) .plan-window",
   ).forEach((node) => {
-    if (!/Goal:/.test(node.textContent || "")) return;
-    pushObstacle(node);
+    const panel = openPanelBox(node);
+    if (panel) panels.push(panel);
   });
-  // A logged-in board hides #kanban-empty. One board rect keeps the banner
-  // 8px under the visible columns; per-card boxes would walk down the column.
-  const board = document.getElementById("kanban-board");
-  if (board?.querySelector(".kanban-col")) pushObstacle(board);
-  const top = keyBannerTop(
-    { x: box.x, y: box.y, w: box.width, h: box.height },
-    obstacles,
-  );
-  const next = top > box.y + 0.5 ? `${Math.round(top)}px` : "";
-  banner.style.top = next === previous ? previous : next;
+  const home = { x: box.x, y: box.y, w: box.width, h: box.height };
+  const slot = keyBannerSlot(home, panels, { w: window.innerWidth, h: window.innerHeight });
+  if (Math.abs(slot.y - home.y) > 0.5) banner.style.top = `${Math.round(slot.y)}px`;
+  if (Math.abs(slot.x - home.x) > 0.5) {
+    banner.style.left = `${Math.round(slot.x)}px`;
+    banner.style.transform = "none";
+  }
 }
 
 function reconcileKeyPrompt(bots) {

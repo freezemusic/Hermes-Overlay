@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import { createProbeGate } from "./reconnect.js";
-import { isProfileEnabled, keyBannerTop, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
+import { isProfileEnabled, keyBannerSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
 
 test("missing enabled stays visible and false hides", () => {
   assert.equal(isProfileEnabled({ profile: "a" }), true);
@@ -28,27 +28,54 @@ test("only newly discovered profiles without a key are prompted", () => {
   );
 });
 
-test("the key banner drops below an open panel header and stays put when clear", () => {
+test("the key banner keeps its home slot when open panels are clear", () => {
   const banner = { x: 360, y: 96, w: 560, h: 36 };
-  const header = { x: 320, y: 42, w: 960, h: 72 };
-  assert.equal(keyBannerTop(banner, [header]), 42 + 72 + 8);
-  assert.equal(keyBannerTop(banner, [{ x: 1100, y: 42, w: 160, h: 72 }]), 96);
-  assert.equal(keyBannerTop(banner, []), 96);
-  const goal = { x: 780, y: 130, w: 280, h: 20 };
-  assert.equal(keyBannerTop(banner, [header, goal]), 130 + 20 + 8);
-  const touching = { x: 400, y: 132, w: 480, h: 18 };
-  assert.equal(keyBannerTop(banner, [touching]), 132 + 18 + 8);
-  const clear = { x: 360, y: 96, w: 560, h: 28 };
-  assert.equal(keyBannerTop(clear, [{ x: 400, y: 132, w: 280, h: 18 }]), 96);
+  const screen = { w: 1280, h: 900 };
+  assert.deepEqual(keyBannerSlot(banner, [], screen), { x: 360, y: 96 });
+  assert.deepEqual(
+    keyBannerSlot(banner, [{ x: 1100, y: 42, w: 160, h: 72 }], screen),
+    { x: 360, y: 96 },
+  );
 });
 
-test("a hosted Goal line and a logged-in kanban board keep 8px under the key banner", () => {
-  // eafdd1e box: banner y 109–142 covered a hosted Goal line at y 110–118.
-  const banner = { x: 360, y: 109, w: 560, h: 33 };
-  const hostedGoal = { x: 780, y: 110, w: 280, h: 8 };
-  assert.equal(keyBannerTop(banner, [hostedGoal]), 110 + 8 + 8);
-  const loggedInBoard = { x: 160, y: 114, w: 960, h: 520 };
-  assert.equal(keyBannerTop(banner, [loggedInBoard]), 114 + 520 + 8);
+test("an open plan parks the key banner outside the panel, clear of step 1 and the session dropdown", () => {
+  const banner = { x: 360, y: 96, w: 560, h: 36 };
+  const screen = { w: 1280, h: 900 };
+  const bot = { x: 200, y: 48, w: 420, h: 620 };
+  const plan = { x: 620, y: 48, w: 300, h: 620 };
+  const slot = keyBannerSlot(banner, [bot, plan], screen);
+  assert.deepEqual(slot, { x: 360, y: 48 + 620 + 8 });
+  const step = { x: 640, y: 133, w: 260, h: 22 };
+  const dropdown = { x: 400, y: 118, w: 200, h: 28 };
+  assert.ok(slot.y >= step.y + step.h + 8);
+  assert.ok(slot.y >= dropdown.y + dropdown.h + 8);
+  assert.notEqual(slot.y, 133);
+});
+
+test("a logged-in kanban board parks the key banner 8px outside the panel border", () => {
+  const banner = { x: 360, y: 96, w: 560, h: 36 };
+  const screen = { w: 1280, h: 900 };
+  const panel = { x: 160, y: 41, w: 960, h: 760 };
+  assert.equal(panel.y + panel.h, 801);
+  const slot = keyBannerSlot(banner, [panel], screen);
+  assert.deepEqual(slot, { x: 360, y: 801 + 8 });
+  assert.ok(slot.y >= 801 + 8);
+});
+
+test("the key banner uses the header row when no outside edge fits on screen", () => {
+  const banner = { x: 360, y: 96, w: 560, h: 36 };
+  const screen = { w: 1280, h: 820 };
+  const panel = {
+    x: 160,
+    y: 40,
+    w: 960,
+    h: 770,
+    header: { x: 180, y: 52, w: 920, h: 56 },
+  };
+  const slot = keyBannerSlot(banner, [panel], screen);
+  assert.equal(slot.x, 360);
+  assert.equal(slot.y, 52 + (56 - 36) / 2);
+  assert.ok(slot.y + banner.h <= 52 + 56);
 });
 
 test("the quiet roster tick waits about a minute and skips a busy or down gateway", () => {
@@ -96,14 +123,12 @@ test("the quiet tick claims roster, prompts for a new key, and does not write ke
   const hide = main.slice(main.indexOf("function hideKeyPrompt"), main.indexOf("function placeKeyBanner"));
   assert.doesNotMatch(hide, /keyPromptBots = \[\]/);
   const placed = main.slice(main.indexOf("function placeKeyBanner"), main.indexOf("function reconcileKeyPrompt"));
-  assert.match(placed, /keyBannerTop/);
-  assert.match(placed, /panel-header/);
-  assert.match(placed, /kanban-empty/);
-  assert.match(placed, /Goal:/);
-  assert.match(placed, /\.plan-hit-host \[data-role='plan-body'\] p/);
-  assert.match(placed, /\.plan-hit-host \[data-role='plan-body'\] li/);
-  assert.match(placed, /getElementById\("kanban-board"\)/);
-  assert.match(placed, /querySelector\("\.kanban-col"\)/);
+  assert.match(placed, /keyBannerSlot/);
+  assert.match(placed, /\.morph\[data-state='panel'\]:not\(\.is-collapsing\) \.center-panel/);
+  assert.match(placed, /\.plan-hit-host/);
+  assert.match(placed, /\.plan-window/);
+  assert.doesNotMatch(placed, /Goal:/);
+  assert.doesNotMatch(placed, /kanban-col/);
   const opened = main.slice(main.indexOf("function openSettings"), main.indexOf("function closeSettings"));
   assert.match(opened, /hideKeyPrompt/);
   assert.doesNotMatch(opened, /keyPromptBots = \[\]/);

@@ -20,33 +20,67 @@ export function rosterTickAllowed(flags) {
   return true;
 }
 
+function bannerHits(slot, banner, box, gap) {
+  return slot.x < box.x + box.w + gap && slot.x + banner.w + gap > box.x
+    && slot.y < box.y + box.h + gap && slot.y + banner.h + gap > box.y;
+}
+
+function bannerOnScreen(slot, banner, screen) {
+  if (!screen || !(screen.w > 0) || !(screen.h > 0)) return slot.x >= 0 && slot.y >= 0;
+  return slot.x >= 0 && slot.y >= 0
+    && slot.x + banner.w <= screen.w
+    && slot.y + banner.h <= screen.h;
+}
+
 /**
- * The key banner's top. A header, a plan Goal line, a kanban status line,
- * or a logged-in kanban board closer than `gap` pushes the banner just
- * below that box.
+ * Fixed slot for the key banner. The home position stays when it is `gap`
+ * clear of every open panel. Otherwise the banner sits just outside the
+ * panel edge (below, then above, then right, then left). The header row is
+ * the last slot, so the banner never rests on panel content.
  */
-export function keyBannerTop(banner, obstacles, gap = 8) {
-  if (!banner) return 0;
-  let top = banner.y;
-  const list = obstacles || [];
-  let moved = true;
-  let guard = 0;
-  while (moved && guard < 8) {
-    moved = false;
-    guard += 1;
-    for (const box of list) {
-      if (!(box?.w >= 1) || !(box?.h >= 1)) continue;
-      const overlapsX = banner.x < box.x + box.w && banner.x + banner.w > box.x;
-      const overlapsY = top < box.y + box.h + gap && top + banner.h + gap > box.y;
-      if (!overlapsX || !overlapsY) continue;
-      const next = box.y + box.h + gap;
-      if (next > top) {
-        top = next;
-        moved = true;
-      }
-    }
+export function keyBannerSlot(banner, panels, screen, gap = 8) {
+  if (!banner) return { x: 0, y: 0 };
+  const home = { x: banner.x, y: banner.y };
+  const boxes = (panels || []).filter((box) => box && box.w >= 1 && box.h >= 1);
+  const clear = (slot) => bannerOnScreen(slot, banner, screen)
+    && boxes.every((box) => !bannerHits(slot, banner, box, gap));
+  if (clear(home)) return home;
+
+  const blocking = boxes.filter((box) => bannerHits(home, banner, box, gap));
+  const list = blocking.length ? blocking : boxes;
+  let top = Infinity;
+  let bottom = -Infinity;
+  let left = Infinity;
+  let right = -Infinity;
+  for (const box of list) {
+    top = Math.min(top, box.y);
+    bottom = Math.max(bottom, box.y + box.h);
+    left = Math.min(left, box.x);
+    right = Math.max(right, box.x + box.w);
   }
-  return top;
+  const outside = [
+    { x: home.x, y: bottom + gap },
+    { x: home.x, y: top - banner.h - gap },
+    { x: right + gap, y: home.y },
+    { x: left - banner.w - gap, y: home.y },
+  ];
+  for (const slot of outside) {
+    if (clear(slot)) return slot;
+  }
+
+  for (const box of list) {
+    const header = box.header;
+    if (!header || header.h < 1 || header.w < 1) continue;
+    const y = header.h >= banner.h
+      ? header.y + (header.h - banner.h) / 2
+      : header.y + header.h - banner.h;
+    const slot = { x: home.x, y };
+    const bottomEdge = y + banner.h;
+    const staysOnHeader = bottomEdge <= header.y + header.h + 0.01 && bottomEdge > header.y;
+    const othersClear = boxes.every((other) => other === box || !bannerHits(slot, banner, other, gap));
+    if (staysOnHeader && bannerOnScreen(slot, banner, screen) && othersClear) return slot;
+  }
+  return home;
 }
 
 /** Profiles added by this sync that still have no API key. */
