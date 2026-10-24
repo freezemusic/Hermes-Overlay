@@ -60,7 +60,7 @@ import {
   cronShellHeight,
   chatTailAction,
 } from "./morph.js";
-import { isProfileEnabled, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
+import { isProfileEnabled, keyBannerTop, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
 import { TUI_READ_ONLY_REASON, isTuiSource, orderSessions, previewLine, resolveSession, sessionLabel, unseenMessages } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
@@ -5385,6 +5385,7 @@ function clearGatewayWait() {
   const banner = $("#conn-banner");
   if (banner?.dataset.sticky === "gateway") {
     if (!showKeyPrompt()) setBanner("");
+    scheduleHitSync("keys");
   }
 }
 
@@ -5397,13 +5398,42 @@ function showKeyPrompt() {
   const bots = state.keyPromptBots || [];
   if (!bots.length || gateway.isDown("gateway")) return false;
   setBanner(keyPromptText(bots), "info", "keys", "settings");
+  placeKeyBanner();
+  scheduleHitSync("keys");
   return true;
 }
 
-function clearKeyPrompt() {
-  state.keyPromptBots = [];
+function hideKeyPrompt() {
   const banner = $("#conn-banner");
   if (banner?.dataset.sticky === "keys") setBanner("");
+  if (banner?.style.top) banner.style.top = "";
+}
+
+function placeKeyBanner() {
+  const banner = $("#conn-banner");
+  if (!banner) return;
+  if (banner.hidden || banner.dataset.sticky !== "keys") {
+    if (banner.style.top) banner.style.top = "";
+    return;
+  }
+  const previous = banner.style.top;
+  banner.style.top = "";
+  const box = banner.getBoundingClientRect();
+  const headers = [];
+  document.querySelectorAll(
+    ".morph[data-state='panel']:not(.is-collapsing) .panel-header, .morph[data-state='panel']:not(.is-collapsing) .settings-head",
+  ).forEach((node) => {
+    if (node.closest("[hidden]")) return;
+    const rect = node.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return;
+    headers.push({ x: rect.x, y: rect.y, w: rect.width, h: rect.height });
+  });
+  const top = keyBannerTop(
+    { x: box.x, y: box.y, w: box.width, h: box.height },
+    headers,
+  );
+  const next = top > box.y + 0.5 ? `${Math.round(top)}px` : "";
+  banner.style.top = next === previous ? previous : next;
 }
 
 function reconcileKeyPrompt(bots) {
@@ -5413,14 +5443,13 @@ function reconcileKeyPrompt(bots) {
   const next = [];
   for (const bot of pending) {
     const row = rows.get(bot.profile);
-    if (row?.has_key) continue;
-    if (row && row.enabled === false) continue;
-    next.push(row ? { ...bot, display_name: row.display_name || bot.display_name } : bot);
+    if (!row || row.has_key || row.enabled === false) continue;
+    next.push({ ...bot, display_name: row.display_name || bot.display_name });
   }
   state.keyPromptBots = next;
   if (!next.length) {
-    const banner = $("#conn-banner");
-    if (banner?.dataset.sticky === "keys") setBanner("");
+    hideKeyPrompt();
+    scheduleHitSync("keys");
     return;
   }
   showKeyPrompt();
@@ -6546,7 +6575,7 @@ function focusSettings() {
 }
 
 function openSettings() {
-  clearKeyPrompt();
+  hideKeyPrompt();
   window.clearTimeout(blurReleaseTimer);
   blurReleaseTimer = 0;
   state.windowFocused = true;
@@ -6590,7 +6619,8 @@ function closeSettings() {
     if (!closed) return;
     renderSettingsOrb();
     syncLatch();
-    scheduleHitSync();
+    if ((state.keyPromptBots || []).length) showKeyPrompt();
+    else scheduleHitSync();
   });
   renderSettingsOrb();
 }
@@ -8131,6 +8161,7 @@ function releaseCollapseGate(shell) {
 let hitDeferLogged = false;
 
 function scheduleHitSync(tag = "schedule") {
+  placeKeyBanner();
   const blocked = hitBlockReason();
   if (blocked) {
     if (!hitDeferLogged) {

@@ -20,6 +20,34 @@ export function rosterTickAllowed(flags) {
   return true;
 }
 
+/**
+ * The key banner's top. A header it would cover pushes it just below that
+ * header. Other banners stay where CSS put them.
+ */
+export function keyBannerTop(banner, headers, gap = 8) {
+  if (!banner) return 0;
+  let top = banner.y;
+  const list = headers || [];
+  let moved = true;
+  let guard = 0;
+  while (moved && guard < 8) {
+    moved = false;
+    guard += 1;
+    for (const header of list) {
+      if (!(header?.w >= 1) || !(header?.h >= 1)) continue;
+      const overlapsX = banner.x < header.x + header.w && banner.x + banner.w > header.x;
+      const overlapsY = top < header.y + header.h + gap && top + banner.h > header.y;
+      if (!overlapsX || !overlapsY) continue;
+      const next = header.y + header.h + gap;
+      if (next > top) {
+        top = next;
+        moved = true;
+      }
+    }
+  }
+  return top;
+}
+
 /** Profiles added by this sync that still have no API key. */
 export function profilesNeedingKeys(before, after) {
   const known = new Set((before || []).map((bot) => bot.profile));

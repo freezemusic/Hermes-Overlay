@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import { createProbeGate } from "./reconnect.js";
-import { isProfileEnabled, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
+import { isProfileEnabled, keyBannerTop, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
 
 test("missing enabled stays visible and false hides", () => {
   assert.equal(isProfileEnabled({ profile: "a" }), true);
@@ -26,6 +26,14 @@ test("only newly discovered profiles without a key are prompted", () => {
     profilesNeedingKeys(before, after).map((bot) => bot.profile),
     ["research"],
   );
+});
+
+test("the key banner drops below an open panel header and stays put when clear", () => {
+  const banner = { x: 360, y: 96, w: 560, h: 36 };
+  const header = { x: 320, y: 42, w: 960, h: 72 };
+  assert.equal(keyBannerTop(banner, [header]), 42 + 72 + 8);
+  assert.equal(keyBannerTop(banner, [{ x: 1100, y: 42, w: 160, h: 72 }]), 96);
+  assert.equal(keyBannerTop(banner, []), 96);
 });
 
 test("the quiet roster tick waits about a minute and skips a busy or down gateway", () => {
@@ -66,8 +74,20 @@ test("the quiet tick claims roster, prompts for a new key, and does not write ke
   assert.match(cleared, /"keys"/);
   const waited = main.slice(main.indexOf("function clearGatewayWait"), main.indexOf("function keyPromptText"));
   assert.match(waited, /showKeyPrompt/);
+  assert.match(waited, /scheduleHitSync\("keys"\)/);
+  const prompt = main.slice(main.indexOf("function showKeyPrompt"), main.indexOf("function hideKeyPrompt"));
+  assert.match(prompt, /placeKeyBanner/);
+  assert.match(prompt, /scheduleHitSync\("keys"\)/);
+  const hide = main.slice(main.indexOf("function hideKeyPrompt"), main.indexOf("function placeKeyBanner"));
+  assert.doesNotMatch(hide, /keyPromptBots = \[\]/);
+  const placed = main.slice(main.indexOf("function placeKeyBanner"), main.indexOf("function reconcileKeyPrompt"));
+  assert.match(placed, /keyBannerTop/);
+  assert.match(placed, /panel-header/);
   const opened = main.slice(main.indexOf("function openSettings"), main.indexOf("function closeSettings"));
-  assert.match(opened, /clearKeyPrompt/);
+  assert.match(opened, /hideKeyPrompt/);
+  assert.doesNotMatch(opened, /keyPromptBots = \[\]/);
+  const closed = main.slice(main.indexOf("function closeSettings"), main.indexOf("async function saveSettings"));
+  assert.match(closed, /showKeyPrompt/);
   const saved = main.slice(main.indexOf("async function saveSettings"), main.indexOf("async function probeSaved"));
   assert.match(saved, /reconcileKeyPrompt/);
   const recover = main.slice(main.indexOf("async function recoverGateway"), main.indexOf("function applyRoster"));
