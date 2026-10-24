@@ -148,6 +148,7 @@ import {
   applyOrbFadeFrame,
   ORB_FADE_MS,
 } from "./proximity.js";
+import { applyOrbName, layoutOrbNames, orbHitRect } from "./names.js";
 
 const MOCK_BOTS = [
   {
@@ -606,6 +607,7 @@ function layoutShells() {
   shells.forEach((shell) => layoutShell(shell));
   separateOpenShells(shells);
   seatKanbanClose();
+  paintOrbNames();
   scheduleHitSync();
 }
 
@@ -3729,6 +3731,7 @@ const state = {
   heldKeys: new Set(),
   osModifierDown: false,
   modifierHeld: false,
+  showBotNames: false,
   latchedOrbId: "",
   pressFrozen: false,
   latchedIds: [],
@@ -4011,7 +4014,11 @@ function ensureBotShell(bot) {
 
 function ensureChromeShell(panel, id, glyph, label, orbClass) {
   let shell = shellFor(id);
-  if (shell) return shell;
+  if (shell) {
+    const existing = shell.querySelector(".morph-orb");
+    if (existing && existing.dataset.orbName !== label) existing.dataset.orbName = label;
+    return shell;
+  }
   shell = document.createElement("div");
   shell.className = "morph";
   shell.dataset.kind = "chrome";
@@ -4031,6 +4038,7 @@ function ensureChromeShell(panel, id, glyph, label, orbClass) {
   btn.type = "button";
   btn.className = `bot-btn morph-orb ${orbClass}`;
   btn.dataset.botId = id;
+  btn.dataset.orbName = label;
   if (id === "kanban") {
     btn.addEventListener("animationend", (event) => {
       if (event.animationName === "ping") event.target.remove();
@@ -4078,7 +4086,7 @@ function botPaintSig() {
       thread.statusState || "",
       thread.unread ? 1 : 0,
     ].join(":");
-  }).join("|") + `|${state.activeId || ""}`;
+  }).join("|") + `|${state.activeId || ""}|${state.showBotNames ? 1 : 0}`;
 }
 
 function renderBots(tag = "renderBots") {
@@ -4101,6 +4109,7 @@ function renderBots(tag = "renderBots") {
     renderKanbanOrb();
     renderCronOrb();
     renderSettingsOrb();
+    paintOrbNames();
     return;
   }
   renderBots.sig = sig;
@@ -4123,6 +4132,7 @@ function renderBots(tag = "renderBots") {
       || shell.classList.contains("is-collapsing")
       || visualQuiet(shell);
     const btn = shell.querySelector(".morph-orb");
+    if (btn && btn.dataset.orbName !== bot.name) btn.dataset.orbName = bot.name;
     const thread = threadFor(bot.id);
     if (morphing) {
       // Rewriting className restarts the orb ::before transition. On the left
@@ -4158,6 +4168,7 @@ function renderBots(tag = "renderBots") {
   renderCronOrb();
   renderSettingsOrb();
   separateOpenShells([...document.querySelectorAll(".morph")]);
+  paintOrbNames();
   scheduleHitSync();
   schedulePlanRehearsal();
 }
@@ -4411,6 +4422,7 @@ function renderCronOrb(options = {}) {
   placeCronReadout(shell, face);
   syncCronClock(face);
   if (options.tick) paintCronArcs();
+  paintOrbNames();
 }
 
 function chatStamp(thread) {
@@ -6178,6 +6190,7 @@ function useHermes(settings) {
   state.catalogProfile = "";
   state.mode = "hermes";
   state.settings = settings;
+  state.showBotNames = !!settings?.show_bot_names;
   state.bots = botsFromSettings(settings);
   state.threads = new Map();
   state.busy.clear();
@@ -6448,6 +6461,8 @@ function fillSettings(settings) {
   $("#interaction-modifier").value = interaction.modifier || "ctrl";
   const min = interaction.min_opacity ?? interaction.minOpacity ?? 0.18;
   $("#interaction-min-opacity").value = String(Math.round(Number(min) * 100));
+  const showNames = $("#show-bot-names");
+  if (showNames) showNames.checked = !!settings?.show_bot_names;
   const support = $("#interaction-support");
   const supported = interaction.supported !== false;
     support.textContent = supported
@@ -6538,6 +6553,7 @@ async function saveSettings(event) {
         dashboard_token: $("#dashboard-token").value,
         clear_dashboard_token: false,
         interaction: readInteractionForm(),
+        show_bot_names: !!$("#show-bot-names")?.checked,
         bots,
       },
     });
@@ -7106,6 +7122,9 @@ function setupComposer() {
   $("#btn-add-bot").addEventListener("click", () => $("#bot-editor").appendChild(rowFromBot()));
   $("#btn-probe").addEventListener("click", probeSaved);
   $("#btn-discover").addEventListener("click", discoverProfiles);
+  $("#show-bot-names")?.addEventListener("change", (event) => {
+    void setShowBotNames(event.target.checked);
+  });
   $("#btn-kanban-signin")?.addEventListener("click", () => {
     void signInKanban();
   });
@@ -7264,6 +7283,24 @@ function pushCloseHit(rects, shell, level) {
   });
 }
 
+function orbNameChip(id) {
+  const host = document.getElementById("orb-names");
+  if (!host || !id) return null;
+  for (const node of host.children) {
+    if (node.dataset.orbId === id) return node;
+  }
+  return null;
+}
+
+function orbNameHitBox(id) {
+  if (!state.showBotNames || state.modifierHeld !== true) return null;
+  const el = orbNameChip(id);
+  if (!el || el.hidden) return null;
+  const box = el.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return null;
+  return { x: box.x, y: box.y, w: box.width, h: box.height };
+}
+
 function collectHits() {
   const rects = [];
   const push = (id, el, z = 0, round = false) => {
@@ -7363,10 +7400,15 @@ function collectHits() {
           ? { x: button.x, y: button.y, w: button.width, h: button.height }
           : null;
         const circle = orbDiscHit(box, disc);
-        rect.x = circle.x;
-        rect.y = circle.y;
-        rect.w = circle.w;
-        rect.h = circle.h;
+        const label = state.showBotNames && state.modifierHeld
+          ? orbNameHitBox(shell.dataset.botId)
+          : null;
+        const hit = orbHitRect(circle, label, !!label);
+        rect.x = hit.x;
+        rect.y = hit.y;
+        rect.w = hit.w;
+        rect.h = hit.h;
+        if (label) rect.round = false;
       }
       const plan = planNode(shell);
       const seam = shell.classList.contains("is-plan-seam");
@@ -7480,6 +7522,8 @@ function pointerTargetText(node) {
 
 function orbIdFromEventTarget(node) {
   if (!node?.closest) return "";
+  const chip = node.closest(".orb-name");
+  if (chip?.dataset?.orbId && chip.dataset.hitCapture === "1") return chip.dataset.orbId;
   const stand = node.closest(".plan-rehearsal-stand");
   if (stand?.dataset?.botId) return stand.dataset.botId;
   const shell = node.closest(".morph");
@@ -7602,23 +7646,30 @@ function orbShellAtPoint(x, y) {
     // dropped the open, and the flag then stayed true (R-KB).
     const visible = visibleBox(shell);
     let box = visible;
+    let named = false;
     if (shell.dataset.state === "orb" && box.w >= 1 && box.h >= 1) {
       const button = shell.querySelector(".morph-orb")?.getBoundingClientRect();
       const disc = button && button.width >= 1 && button.height >= 1
         ? { x: button.x, y: button.y, w: button.width, h: button.height }
         : null;
       box = orbDiscHit(box, disc);
+      const label = orbNameHitBox(shell.dataset.botId);
+      if (label) {
+        box = orbHitRect(box, label, true);
+        named = true;
+      }
     }
     if (box.w < 1 || box.h < 1) {
       const host = shell.getBoundingClientRect();
       const ax = Number(shell.dataset.ax) || ORB / 2;
       const ay = Number(shell.dataset.ay) || ORB / 2;
       box = { x: host.x + ax - ORB / 2, y: host.y + ay - ORB / 2, w: ORB, h: ORB };
+      named = false;
     }
     if (!pointInBox(x, y, box)) return;
     const level = shellHitLevel(shell);
     if (!best || level >= bestZ) {
-      best = { shell, box, level };
+      best = { shell, box, level, named };
       bestZ = level;
     }
   });
@@ -7637,7 +7688,7 @@ function ctrlOrbRect() {
     w: hit.box.w,
     h: hit.box.h,
     z: hit.level,
-    round: shell.dataset.state === "orb",
+    round: shell.dataset.state === "orb" && !hit.named,
   };
 }
 
@@ -8100,6 +8151,10 @@ function paintHeldPanels(down) {
 function applyOpacityEdge(payload) {
   const seen = Date.now();
   if (!acceptModifier(payload)) return false;
+  if (state.showBotNames) {
+    paintOrbNames();
+    scheduleHitSync("orb-names");
+  }
   const panels = paintHeldPanels(state.modifierHeld === true);
   renderCronOrb({ force: true });
   const unix = Date.now();
@@ -8207,6 +8262,7 @@ function applyFrames(frames, interactiveAll = false) {
     else delete el.dataset.hitCapture;
   });
   paintOrbLabel();
+  paintOrbNames();
 }
 
 function onOrbFadeEnd(event) {
@@ -8219,6 +8275,11 @@ function onOrbFadeEnd(event) {
 function paintOrbLabel() {
   const label = document.getElementById("orb-hover-label");
   if (!label) return;
+  if (state.showBotNames) {
+    label.hidden = true;
+    label.textContent = "";
+    return;
+  }
   const shells = [...document.querySelectorAll('.morph[data-state="orb"][data-hit-capture]')]
     .filter((item) => item.dataset.botId !== "cron");
   let shell = shells.length === 1 ? shells[0] : null;
@@ -8250,6 +8311,118 @@ function paintOrbLabel() {
   label.style.top = `${Math.round(top)}px`;
 }
 
+function syncOrbNameFade() {
+  if (!state.showBotNames) return;
+  const host = document.getElementById("orb-names");
+  if (!host) return;
+  for (const label of host.children) {
+    const shell = shellFor(label.dataset.orbId);
+    if (!shell || shell.dataset.state !== "orb") {
+      label.hidden = true;
+      continue;
+    }
+    const next = shell.style.opacity || "1";
+    if (label.style.opacity !== next) label.style.opacity = next;
+    if (state.modifierHeld === true) label.dataset.hitCapture = "1";
+    else delete label.dataset.hitCapture;
+  }
+}
+
+function paintOrbNames() {
+  const host = document.getElementById("orb-names");
+  if (!host) return;
+  if (!state.showBotNames) {
+    if (host.childElementCount) host.replaceChildren();
+    return;
+  }
+  const orbs = [];
+  const obstacles = [];
+  document.querySelectorAll(".morph").forEach((shell) => {
+    const box = shell.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) return;
+    if (shell.dataset.state === "panel") {
+      obstacles.push({ x: box.x, y: box.y, w: box.width, h: box.height });
+      return;
+    }
+    if (shell.dataset.state !== "orb") return;
+    const btn = shell.querySelector(".morph-orb");
+    const name = (btn?.dataset.orbName || btn?.getAttribute("aria-label") || "").trim();
+    const disc = btn?.getBoundingClientRect();
+    if (!name || !disc || disc.width < 1 || disc.height < 1) return;
+    orbs.push({
+      id: shell.dataset.botId,
+      name,
+      x: disc.x,
+      y: disc.y,
+      w: disc.width,
+      h: disc.height,
+      shell,
+    });
+    obstacles.push({ x: disc.x, y: disc.y, w: disc.width, h: disc.height });
+  });
+  const readout = document.getElementById("cron-readout");
+  if (readout && !readout.hidden) {
+    const box = readout.getBoundingClientRect();
+    if (box.width >= 1 && box.height >= 1) {
+      obstacles.push({ x: box.x, y: box.y, w: box.width, h: box.height });
+    }
+  }
+  const placed = layoutOrbNames(orbs, obstacles, {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
+  const byId = new Map(orbs.map((orb) => [orb.id, orb]));
+  const keep = new Set(placed.map((item) => item.id));
+  for (const node of [...host.children]) {
+    if (!keep.has(node.dataset.orbId)) node.remove();
+  }
+  for (const item of placed) {
+    let node = orbNameChip(item.id);
+    if (!node) {
+      node = document.createElement("span");
+      node.className = "orb-name";
+      node.dataset.orbId = item.id;
+      host.appendChild(node);
+    }
+    applyOrbName(node, item.title);
+    const left = `${Math.round(item.x)}px`;
+    const top = `${Math.round(item.y)}px`;
+    if (node.style.left !== left) node.style.left = left;
+    if (node.style.top !== top) node.style.top = top;
+    const shell = byId.get(item.id)?.shell;
+    const opacity = shell?.style.opacity || "1";
+    if (node.style.opacity !== opacity) node.style.opacity = opacity;
+    if (state.modifierHeld === true) node.dataset.hitCapture = "1";
+    else delete node.dataset.hitCapture;
+  }
+}
+
+let showBotNamesWrite = 0;
+
+async function setShowBotNames(enabled) {
+  const value = !!enabled;
+  state.showBotNames = value;
+  if (state.settings) state.settings.show_bot_names = value;
+  paintOrbLabel();
+  paintOrbNames();
+  scheduleHitSync("orb-names");
+  if (!inTauri()) return;
+  const generation = ++showBotNamesWrite;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const settings = await invoke("set_show_bot_names", { enabled: value });
+    if (generation !== showBotNamesWrite || !settings) return;
+    state.settings = settings;
+    state.showBotNames = !!settings.show_bot_names;
+    const box = $("#show-bot-names");
+    if (box) box.checked = state.showBotNames;
+    paintOrbNames();
+  } catch (err) {
+    if (generation !== showBotNamesWrite) return;
+    setBanner(String(err), "error");
+  }
+}
+
 function readOrbOpacity(el) {
   const inline = Number.parseFloat(el?.style?.opacity);
   if (Number.isFinite(inline)) return inline;
@@ -8270,6 +8443,7 @@ function tickOrbFades() {
     orbFadeClocks.set(el, stepped.clock);
     if (stepped.running) running = true;
   });
+  syncOrbNameFade();
   if (running) scheduleOrbFade();
 }
 
@@ -8585,6 +8759,7 @@ function setupProximity() {
         applyFrames(payload.opacities || []);
         if (freshModifier && (beforeModifier !== state.osModifierDown || payload.held === true || payload.held === false)) {
           paintHeldPanels(state.modifierHeld === true);
+          if (state.showBotNames) scheduleHitSync("orb-names");
         }
       });
     });
@@ -10068,6 +10243,7 @@ async function boot() {
     });
     const settings = await invoke("get_settings");
     state.settings = settings;
+    state.showBotNames = !!settings?.show_bot_names;
     applyInteraction(settings.interaction);
     if (settings.needs_setup) {
       useMock(SETUP_BANNER, "settings");

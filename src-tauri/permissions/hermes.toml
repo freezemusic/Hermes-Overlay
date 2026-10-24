@@ -9,6 +9,11 @@ description = "Save gateway settings and keychain entries."
 commands.allow = ["save_settings"]
 
 [[permission]]
+identifier = "allow-set-show-bot-names"
+description = "Persist the always-show bot name toggle."
+commands.allow = ["set_show_bot_names"]
+
+[[permission]]
 identifier = "allow-probe-gateway"
 description = "Probe the Hermes gateway and saved bot keys."
 commands.allow = ["probe_gateway"]

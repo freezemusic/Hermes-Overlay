@@ -78,6 +78,13 @@ pub struct AppConfig {
     pub bots: Vec<BotConfig>,
     #[serde(default)]
     pub interaction: InteractionConfig,
+    /// R-OB-06. Omitted while off so an unchanged file stays byte-identical.
+    #[serde(default, skip_serializing_if = "skip_false")]
+    pub show_bot_names: bool,
+}
+
+fn skip_false(value: &bool) -> bool {
+    !*value
 }
 
 fn one() -> u32 {
@@ -135,6 +142,7 @@ impl Default for AppConfig {
             kanban_base_url: String::new(),
             bots: Vec::new(),
             interaction: InteractionConfig::default(),
+            show_bot_names: false,
         }
     }
 }
@@ -377,6 +385,17 @@ pub fn append_new_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint]) -> 
         added = true;
     }
     added
+}
+
+/// Writes `show_bot_names` only when the stored value changes.
+pub fn store_show_bot_names(path: &Path, enabled: bool) -> Result<bool, String> {
+    let mut cfg = load(path)?;
+    if cfg.show_bot_names == enabled {
+        return Ok(false);
+    }
+    cfg.show_bot_names = enabled;
+    save(path, &cfg)?;
+    Ok(true)
 }
 
 /// Writes config.json only when a new profile was appended.
@@ -940,6 +959,58 @@ other:
         assert_eq!(apply_quiet_roster(&path, &[]).unwrap(), false);
         assert_eq!(fs::read(&path).unwrap(), with_new);
         assert_eq!(load(&path).unwrap().bots.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn show_bot_names_is_written_only_when_the_toggle_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-names-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let cfg = AppConfig {
+            bots: vec![BotConfig {
+                profile: "mt-coder".into(),
+                display_name: "Coder".into(),
+                color: "#112233".into(),
+                base_url: String::new(),
+                detail: String::new(),
+                session_id: "api_1792573589_f1c99a3b".into(),
+                session_explicit: false,
+                session_anchor: 4.0,
+                enabled: true,
+            }],
+            ..AppConfig::default()
+        };
+        save(&path, &cfg).unwrap();
+        let before = fs::read(&path).unwrap();
+        let text = String::from_utf8(before.clone()).unwrap();
+        assert!(!text.contains("show_bot_names"));
+        assert!(!load(&path).unwrap().show_bot_names);
+        assert_eq!(store_show_bot_names(&path, false).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(store_show_bot_names(&path, true).unwrap(), true);
+        let on = fs::read(&path).unwrap();
+        assert_ne!(on, before);
+        assert!(String::from_utf8(on.clone()).unwrap().contains("\"show_bot_names\": true"));
+        let loaded = load(&path).unwrap();
+        assert!(loaded.show_bot_names);
+        assert_eq!(loaded.bots[0].session_id, "api_1792573589_f1c99a3b");
+        assert_eq!(loaded.bots[0].color, "#112233");
+        assert!(loaded.bots[0].enabled);
+        assert_eq!(store_show_bot_names(&path, true).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), on);
+        assert_eq!(store_show_bot_names(&path, false).unwrap(), true);
+        let off = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+        assert!(!off.contains("show_bot_names"));
+        assert_eq!(load(&path).unwrap().bots[0].session_id, "api_1792573589_f1c99a3b");
         let _ = fs::remove_dir_all(&dir);
     }
 }

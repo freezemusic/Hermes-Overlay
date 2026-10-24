@@ -2611,6 +2611,32 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   box-shadow: none;
 }
 
+.orb-names {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.orb-name {
+  position: absolute;
+  max-width: 96px;
+  overflow: hidden;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: #f7f8f8;
+  color: #14142b;
+  font: 500 var(--fs-micro)/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  transition: none;
+}
+
+.orb-name[hidden] { display: none; }
+
 .orb-hover-label[hidden] { display: none; }
 
 .orb-hover-label {
@@ -2682,6 +2708,8 @@ html.overlay-passthrough .overlay-root * { pointer-events: none !important; }
 
 html.overlay-passthrough .overlay-root [data-hit-capture],
 html.overlay-passthrough .overlay-root [data-hit-capture] * { pointer-events: auto !important; }
+
+html.overlay-passthrough .orb-name[data-hit-capture] { pointer-events: auto !important; }
 
 html.overlay-passthrough .morph[data-state="panel"] .morph-pill,
 html.overlay-passthrough .morph[data-state="orb"] .morph-pill,

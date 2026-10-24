@@ -15,6 +15,7 @@
     "global-shortcut:default",
     "allow-get-settings",
     "allow-save-settings",
+    "allow-set-show-bot-names",
     "allow-probe-gateway",
     "allow-discover-profiles",
     "allow-open-bot",

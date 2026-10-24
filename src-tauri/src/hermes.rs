@@ -2865,6 +2865,7 @@ mod tests {
             gateway_base_url: "http://127.0.0.1:8642".into(),
             dashboard_base_url: "http://127.0.0.1:9119".into(),
             kanban_base_url: String::new(),
+            show_bot_names: false,
             bots: vec![
                 bot("researcher", "20261015_researcher", true, 1792546080.05),
                 bot("writer", "20261015_writer", true, 1792546210.56),
