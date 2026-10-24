@@ -272,15 +272,25 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
   assert.equal(kept.anchor, 42);
 });
 
-test("desktop Bot Chat follows the title, an explicit pick, and the compression tip", () => {
+test("desktop Bot Chat stays on the titled row and does not follow a continuation child", () => {
   const chain = [
     { id: "bot-root", title: "Bot Chat", hidden: true, source: "tui", last_active: 10, message_count: 4 },
     { id: "bot-old", title: "old branch", parent_session_id: "bot-root", last_active: 15 },
     { id: "bot-mid", title: "continued", parent_session_id: "bot-root", last_active: 20 },
     { id: "bot-tip", title: "tip", parent_session_id: "bot-mid", last_active: 40 },
   ];
-  assert.equal(canonicalBotChat(chain).id, "bot-tip");
-  assert.equal(resolveSession(chain, { id: "stale-config", explicit: false, anchor: 1 }).id, "bot-tip");
+  assert.equal(canonicalBotChat(chain).id, "bot-root");
+  assert.equal(resolveSession(chain, { id: "stale-config", explicit: false, anchor: 1 }).id, "bot-root");
+  const js = readFileSync(new URL("./sessions.js", import.meta.url), "utf8");
+  assert.doesNotMatch(js, /parent_session_id/);
+  const rust = readFileSync(new URL("../src-tauri/src/hermes.rs", import.meta.url), "utf8");
+  const list = rust.slice(rust.indexOf("pub async fn list_sessions("), rust.indexOf("pub async fn list_titled_bot_chats"));
+  const titled = rust.slice(rust.indexOf("pub async fn list_titled_bot_chats"), rust.indexOf("pub async fn list_sessions_for_bot_chat"));
+  assert.match(list, /include_hidden=true/);
+  assert.match(titled, /title=\{title\}&include_hidden=true&include_archived=true/);
+  assert.doesNotMatch(list, /include_children/);
+  assert.doesNotMatch(titled, /include_children/);
+  assert.doesNotMatch(rust.slice(rust.indexOf("pub fn canonical_bot_chat"), rust.indexOf("pub fn fallback_session")), /parent_session_id/);
 
   const archived = [
     { id: "20261001_013821_3e5864", title: "", archived: true, hidden: true, source: "tui" },

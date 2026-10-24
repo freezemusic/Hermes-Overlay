@@ -238,40 +238,15 @@ fn desktop_bot_chat_root(sessions: &[SessionSummary]) -> Option<&SessionSummary>
     pool.into_iter().min_by(|a, b| a.id.cmp(&b.id))
 }
 
-/// Latest child of `root` along `parent_session_id`. A row with no child is the tip.
-fn compression_tip<'a>(
-    root: &'a SessionSummary,
-    sessions: &'a [SessionSummary],
-) -> &'a SessionSummary {
-    let mut current = root;
-    let mut seen = Vec::new();
-    seen.push(current.id.as_str());
-    for _ in 0..=sessions.len() {
-        let next = sessions
-            .iter()
-            .filter(|session| {
-                !session.parent_session_id.is_empty() && session.parent_session_id == current.id
-            })
-            .max_by(|a, b| session_rank(a, b));
-        let Some(next) = next else {
-            return current;
-        };
-        if seen.iter().any(|id| *id == next.id) {
-            return current;
-        }
-        seen.push(next.id.as_str());
-        current = next;
-    }
-    current
-}
-
 /// The Bot Chat Hermes Desktop opens.
 ///
 /// Identity is the exact title `Bot Chat` (usually `hidden=1`; the title
-/// index allows one). Then the compression tip via `parent_session_id`.
-/// Source and message count do not matter. An empty row is valid.
+/// index allows one). The gateway title lookup already returns the latest
+/// continuation child, and the blanket session list omits children, so this
+/// does not walk `parent_session_id`. Source and message count do not matter.
+/// An empty row is valid.
 pub fn canonical_bot_chat(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
-    desktop_bot_chat_root(sessions).map(|root| compression_tip(root, sessions))
+    desktop_bot_chat_root(sessions)
 }
 
 /// Latest session that is not a Bot Chat from another surface.
@@ -3320,8 +3295,9 @@ mod tests {
         assert_eq!(counted[2].message_count, Some(3));
     }
 
-    /// Devon 2026-10-22. Desktop's Bot Chat is the hidden exact-title row,
-    /// then its compression tip. Explicit wins. Config is not rewritten.
+    /// Devon 2026-10-22. Desktop's Bot Chat is the hidden exact-title row.
+    /// A continuation child in the list is not followed. Explicit wins.
+    /// Config is not rewritten.
     #[test]
     fn desktop_bot_chat_follows_the_titled_row_and_its_tip() {
         let mut forex = devon_chat(
@@ -3437,9 +3413,9 @@ mod tests {
         let mut tip = summary("bot-tip", "tip", 40.0);
         tip.parent_session_id = "bot-mid".into();
         let chain = vec![root, stale_child, mid, tip];
-        assert_eq!(canonical_bot_chat(&chain).unwrap().id, "bot-tip");
+        assert_eq!(canonical_bot_chat(&chain).unwrap().id, "bot-root");
         let chained = session_for_startup(&chain, "stale-config", false, 1.0).unwrap();
-        assert_eq!(chained.id, "bot-tip");
+        assert_eq!(chained.id, "bot-root");
         assert!(session_for_startup(
             &[summary("only-latest", "System Architect", 99.0)],
             "only-latest",
@@ -3473,7 +3449,7 @@ mod tests {
         assert_eq!(parsed[0].hidden, Some(true));
         assert!(!parsed[0].archived);
         assert_eq!(parsed[1].parent_session_id, "api_1792573589_f1c99a3b");
-        assert_eq!(canonical_bot_chat(&parsed).unwrap().id, "child");
+        assert_eq!(canonical_bot_chat(&parsed).unwrap().id, "api_1792573589_f1c99a3b");
     }
 
     #[test]

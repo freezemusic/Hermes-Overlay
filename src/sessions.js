@@ -30,7 +30,8 @@ function retiredBotChat(session) {
 
 /**
  * Desktop's Bot Chat is the one row titled exactly "Bot Chat"
- * (usually hidden). Then the latest child along parent_session_id.
+ * (usually hidden). The gateway title lookup already returns the latest
+ * continuation child. The client opens that row and does not follow children.
  * Source and message count do not matter. An empty row is valid.
  */
 export function canonicalBotChat(sessions) {
@@ -42,28 +43,7 @@ export function canonicalBotChat(sessions) {
   const live = pool.filter((session) => session.archived !== true);
   if (live.length) pool = live;
   pool.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return compressionTip(pool[0], list);
-}
-
-function compressionTip(root, sessions) {
-  let current = root;
-  const seen = new Set([current.id]);
-  for (let guard = 0; guard <= sessions.length; guard += 1) {
-    const children = sessions.filter((session) => session && session.parent_session_id === current.id);
-    if (!children.length) return current;
-    children.sort((a, b) => {
-      const active = (Number(b.last_active) || 0) - (Number(a.last_active) || 0);
-      if (active) return active;
-      if (a.id < b.id) return -1;
-      if (a.id > b.id) return 1;
-      return 0;
-    });
-    const next = children[0];
-    if (seen.has(next.id)) return current;
-    seen.add(next.id);
-    current = next;
-  }
-  return current;
+  return pool[0];
 }
 
 /**
