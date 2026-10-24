@@ -21,24 +21,24 @@ export function rosterTickAllowed(flags) {
 }
 
 /**
- * The key banner's top. A header it would cover pushes it just below that
- * header. Other banners stay where CSS put them.
+ * The key banner's top. A header, a plan Goal line, or a kanban status
+ * line closer than `gap` pushes the banner just below that box.
  */
-export function keyBannerTop(banner, headers, gap = 8) {
+export function keyBannerTop(banner, obstacles, gap = 8) {
   if (!banner) return 0;
   let top = banner.y;
-  const list = headers || [];
+  const list = obstacles || [];
   let moved = true;
   let guard = 0;
   while (moved && guard < 8) {
     moved = false;
     guard += 1;
-    for (const header of list) {
-      if (!(header?.w >= 1) || !(header?.h >= 1)) continue;
-      const overlapsX = banner.x < header.x + header.w && banner.x + banner.w > header.x;
-      const overlapsY = top < header.y + header.h + gap && top + banner.h > header.y;
+    for (const box of list) {
+      if (!(box?.w >= 1) || !(box?.h >= 1)) continue;
+      const overlapsX = banner.x < box.x + box.w && banner.x + banner.w > box.x;
+      const overlapsY = top < box.y + box.h + gap && top + banner.h + gap > box.y;
       if (!overlapsX || !overlapsY) continue;
-      const next = header.y + header.h + gap;
+      const next = box.y + box.h + gap;
       if (next > top) {
         top = next;
         moved = true;

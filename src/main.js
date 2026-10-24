@@ -5419,18 +5419,27 @@ function placeKeyBanner() {
   const previous = banner.style.top;
   banner.style.top = "";
   const box = banner.getBoundingClientRect();
-  const headers = [];
-  document.querySelectorAll(
-    ".morph[data-state='panel']:not(.is-collapsing) .panel-header, .morph[data-state='panel']:not(.is-collapsing) .settings-head",
-  ).forEach((node) => {
-    if (node.closest("[hidden]")) return;
+  const obstacles = [];
+  const pushObstacle = (node) => {
+    if (!node || node.hidden || node.closest("[hidden]")) return;
     const rect = node.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return;
-    headers.push({ x: rect.x, y: rect.y, w: rect.width, h: rect.height });
+    obstacles.push({ x: rect.x, y: rect.y, w: rect.width, h: rect.height });
+  };
+  document.querySelectorAll(
+    ".morph[data-state='panel']:not(.is-collapsing) .panel-header, .morph[data-state='panel']:not(.is-collapsing) .settings-head",
+  ).forEach(pushObstacle);
+  pushObstacle(document.getElementById("kanban-empty"));
+  pushObstacle(document.getElementById("kanban-error"));
+  document.querySelectorAll(
+    ".morph[data-state='panel']:not(.is-collapsing) [data-role='plan-body'] p, .morph[data-state='panel']:not(.is-collapsing) [data-role='plan-body'] li",
+  ).forEach((node) => {
+    if (!/Goal:/.test(node.textContent || "")) return;
+    pushObstacle(node);
   });
   const top = keyBannerTop(
     { x: box.x, y: box.y, w: box.width, h: box.height },
-    headers,
+    obstacles,
   );
   const next = top > box.y + 0.5 ? `${Math.round(top)}px` : "";
   banner.style.top = next === previous ? previous : next;

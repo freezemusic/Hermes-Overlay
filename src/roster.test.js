@@ -34,6 +34,12 @@ test("the key banner drops below an open panel header and stays put when clear",
   assert.equal(keyBannerTop(banner, [header]), 42 + 72 + 8);
   assert.equal(keyBannerTop(banner, [{ x: 1100, y: 42, w: 160, h: 72 }]), 96);
   assert.equal(keyBannerTop(banner, []), 96);
+  const goal = { x: 780, y: 130, w: 280, h: 20 };
+  assert.equal(keyBannerTop(banner, [header, goal]), 130 + 20 + 8);
+  const touching = { x: 400, y: 132, w: 480, h: 18 };
+  assert.equal(keyBannerTop(banner, [touching]), 132 + 18 + 8);
+  const clear = { x: 360, y: 96, w: 560, h: 28 };
+  assert.equal(keyBannerTop(clear, [{ x: 400, y: 132, w: 280, h: 18 }]), 96);
 });
 
 test("the quiet roster tick waits about a minute and skips a busy or down gateway", () => {
@@ -83,6 +89,8 @@ test("the quiet tick claims roster, prompts for a new key, and does not write ke
   const placed = main.slice(main.indexOf("function placeKeyBanner"), main.indexOf("function reconcileKeyPrompt"));
   assert.match(placed, /keyBannerTop/);
   assert.match(placed, /panel-header/);
+  assert.match(placed, /kanban-empty/);
+  assert.match(placed, /Goal:/);
   const opened = main.slice(main.indexOf("function openSettings"), main.indexOf("function closeSettings"));
   assert.match(opened, /hideKeyPrompt/);
   assert.doesNotMatch(opened, /keyPromptBots = \[\]/);
