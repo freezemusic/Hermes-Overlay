@@ -21,8 +21,9 @@ export function rosterTickAllowed(flags) {
 }
 
 /**
- * The key banner's top. A header, a plan Goal line, or a kanban status
- * line closer than `gap` pushes the banner just below that box.
+ * The key banner's top. A header, a plan Goal line, a kanban status line,
+ * or a logged-in kanban board closer than `gap` pushes the banner just
+ * below that box.
  */
 export function keyBannerTop(banner, obstacles, gap = 8) {
   if (!banner) return 0;

@@ -42,6 +42,15 @@ test("the key banner drops below an open panel header and stays put when clear",
   assert.equal(keyBannerTop(clear, [{ x: 400, y: 132, w: 280, h: 18 }]), 96);
 });
 
+test("a hosted Goal line and a logged-in kanban board keep 8px under the key banner", () => {
+  // eafdd1e box: banner y 109–142 covered a hosted Goal line at y 110–118.
+  const banner = { x: 360, y: 109, w: 560, h: 33 };
+  const hostedGoal = { x: 780, y: 110, w: 280, h: 8 };
+  assert.equal(keyBannerTop(banner, [hostedGoal]), 110 + 8 + 8);
+  const loggedInBoard = { x: 160, y: 114, w: 960, h: 520 };
+  assert.equal(keyBannerTop(banner, [loggedInBoard]), 114 + 520 + 8);
+});
+
 test("the quiet roster tick waits about a minute and skips a busy or down gateway", () => {
   assert.equal(rosterSyncDelayMs(0), 48_000);
   assert.equal(rosterSyncDelayMs(0.5), 60_000);
@@ -91,6 +100,10 @@ test("the quiet tick claims roster, prompts for a new key, and does not write ke
   assert.match(placed, /panel-header/);
   assert.match(placed, /kanban-empty/);
   assert.match(placed, /Goal:/);
+  assert.match(placed, /\.plan-hit-host \[data-role='plan-body'\] p/);
+  assert.match(placed, /\.plan-hit-host \[data-role='plan-body'\] li/);
+  assert.match(placed, /getElementById\("kanban-board"\)/);
+  assert.match(placed, /querySelector\("\.kanban-col"\)/);
   const opened = main.slice(main.indexOf("function openSettings"), main.indexOf("function closeSettings"));
   assert.match(opened, /hideKeyPrompt/);
   assert.doesNotMatch(opened, /keyPromptBots = \[\]/);

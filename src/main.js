@@ -5431,12 +5431,18 @@ function placeKeyBanner() {
   ).forEach(pushObstacle);
   pushObstacle(document.getElementById("kanban-empty"));
   pushObstacle(document.getElementById("kanban-error"));
+  // Once the plan has opened, hostOpenPlan moves it out of .morph into
+  // .plan-hit-host. Both homes can hold the Goal: line.
   document.querySelectorAll(
-    ".morph[data-state='panel']:not(.is-collapsing) [data-role='plan-body'] p, .morph[data-state='panel']:not(.is-collapsing) [data-role='plan-body'] li",
+    ".morph[data-state='panel']:not(.is-collapsing) [data-role='plan-body'] p, .morph[data-state='panel']:not(.is-collapsing) [data-role='plan-body'] li, .plan-hit-host [data-role='plan-body'] p, .plan-hit-host [data-role='plan-body'] li",
   ).forEach((node) => {
     if (!/Goal:/.test(node.textContent || "")) return;
     pushObstacle(node);
   });
+  // A logged-in board hides #kanban-empty. One board rect keeps the banner
+  // 8px under the visible columns; per-card boxes would walk down the column.
+  const board = document.getElementById("kanban-board");
+  if (board?.querySelector(".kanban-col")) pushObstacle(board);
   const top = keyBannerTop(
     { x: box.x, y: box.y, w: box.width, h: box.height },
     obstacles,

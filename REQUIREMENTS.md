@@ -347,12 +347,12 @@
 
 config.json 只有名單真係多咗 profile 先寫。冇變動嘅每一輪，檔案位元組保持一樣。已有 Bot 嘅 sessionId、enabled、顏色、次序、名稱、詳情都唔改。計時器唔刪走消失或者隱藏嘅 profile，亦唔因為今次搵唔到就標做不可用（一次讀取失敗唔可以隱藏晒所有人）。
 
-每次同步都要為新 profile 出一次金鑰提示，包括啟動 `connectHermes`、`recoverGateway` 同靜態計時。已經喺名單入面嘅唔再提示。提示用 sticky kind `keys`：第一次載入歷史、`clearConnectionBanner()`、同 4 秒計時都唔好清走。Gateway 膠囊顯示期間記住呢句，膠囊收起之後再出，而且要更新 hit rect。金鑰橫額跟面板：平常點擊打開設定；揸住 Ctrl 就穿透，同其他面板一樣。打開設定先收起橫額，名單留住。儲存之後只留仍然未有金鑰嘅 profile，再出橫額。金鑰橫額唔好疊住打開咗嘅面板 header，同計劃欄嘅 Goal: 行、同看板「連唔到 Kanban。」至少隔 8px。
+每次同步都要為新 profile 出一次金鑰提示，包括啟動 `connectHermes`、`recoverGateway` 同靜態計時。已經喺名單入面嘅唔再提示。提示用 sticky kind `keys`：第一次載入歷史、`clearConnectionBanner()`、同 4 秒計時都唔好清走。Gateway 膠囊顯示期間記住呢句，膠囊收起之後再出，而且要更新 hit rect。金鑰橫額跟面板：平常點擊打開設定；揸住 Ctrl 就穿透，同其他面板一樣。打開設定先收起橫額，名單留住。儲存之後只留仍然未有金鑰嘅 profile，再出橫額。金鑰橫額唔好疊住打開咗嘅面板 header。計劃欄嘅 Goal: 行，無論仲喺 `.morph` 定已經搬入 `.plan-hit-host`，都要搵到，橫額同呢行至少隔 8px。看板「連唔到 Kanban。」同已登入而且顯示緊嘅看板（`#kanban-board` 入面有欄）都至少隔 8px。
 
 頭四粒光球用經典邊位（一粒喺頂邊 t=0.21；四粒係頂、右、底、左），加 profile 唔好郁呢四粒。第五粒起放入空位：中心距要大過光碟直徑加兩個 72px 淡出半徑，72px 淡出先唔會同時捉到兩粒；新位亦唔好落入打開咗嘅看板面板。6 粒或以上唔好疊到看板、排程、設定光球。`profiles/` 入面以點開頭嘅目錄（例如 `.deleted`）唔算 profile。
 
-- 來源：Devon。8cf5af4 盒：恢復先跑同步，3 個新 profile 有 2 個冇金鑰提示；加光球會重排，6 粒時 researcher 疊住 cron；`.deleted` 被當成 profile。f1ebd03 盒：金鑰提示約 60ms／340ms 就被歷史載入或 gateway 膠囊清走；穩定槽把原有四粒推去角落，新粒相距約 70px 一齊淡，打開看板蓋住預設光球。afb21e2 盒：平常點擊橫額開到設定；Ctrl+click 穿透係面板規則，`interaction.rs` 維持只放行光球同 `pill:`。
-- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額同面板 header、Goal: 行、看板「連唔到 Kanban。」至少隔 8px；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
+- 來源：Devon。8cf5af4 盒：恢復先跑同步，3 個新 profile 有 2 個冇金鑰提示；加光球會重排，6 粒時 researcher 疊住 cron；`.deleted` 被當成 profile。f1ebd03 盒：金鑰提示約 60ms／340ms 就被歷史載入或 gateway 膠囊清走；穩定槽把原有四粒推去角落，新粒相距約 70px 一齊淡，打開看板蓋住預設光球。afb21e2 盒：平常點擊橫額開到設定；Ctrl+click 穿透係面板規則，`interaction.rs` 維持只放行光球同 `pill:`。eafdd1e 盒：計劃打開之後 Goal 行搬入 `.plan-hit-host`，橫額 y 109–142 仍然蓋住 Goal y 110–118。
+- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額同面板 header、`.plan-hit-host` 入面嘅 Goal: 行、看板「連唔到 Kanban。」、同顯示緊嘅已登入看板至少隔 8px；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
 - 狀態：❓ / ❓。
 
 ---
