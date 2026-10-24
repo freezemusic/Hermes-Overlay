@@ -313,8 +313,13 @@ function anchorPoint(id) {
   const pad = edgePadPx();
   if (id === "settings" || id === "kanban" || id === "cron") return fixedOrbPoint(id, vw, vh, pad, ORB);
   const index = Math.max(0, state.bots.findIndex((bot) => bot.id === id));
-  const slots = distributeEdges(Math.max(state.bots.length, 1));
-  const slot = slots[index] || { edge: "right", t: 0.5 };
+  const slots = distributeEdges(Math.max(state.bots.length, 1), {
+    width: vw,
+    height: vh,
+    pad,
+    orb: ORB,
+  });
+  const slot = slots[index] || { edge: "left", t: ((index % 7) + 1) / 8 };
   return slotPoint(slot.edge, slot.t, vw, vh, pad, ORB);
 }
 
@@ -5389,6 +5394,13 @@ async function claimProfiles(ids, fn) {
   }
 }
 
+function announceNewKeys(before, synced) {
+  const added = profilesNeedingKeys(before, synced?.bots || []);
+  if (!added.length || synced?.keyring_error) return;
+  const names = added.map((bot) => bot.display_name || bot.profile).join("、");
+  setBanner(`${names} 未有 API 金鑰，請喺設定填寫。金鑰唔會自動產生。`, "info", "", "settings");
+}
+
 /** One read of each consumer. Never calls create_session or create_bot_chat. */
 async function recoverGateway() {
   if (state.mode !== "hermes" || !inTauri()) return true;
@@ -5399,21 +5411,24 @@ async function recoverGateway() {
     board = await invoke("get_kanban_board", { board: KANBAN_BOARD });
   } catch (err) {
     const message = String(err);
-    if (gatewayDown(message)) return false;
     board = message.includes(KANBAN_LOGIN)
       ? { needs_login: true, message: KANBAN_LOGIN }
       : {
           unavailable: true,
-          message: kanbanUnavailable(message) ? KANBAN_UNAVAILABLE : message,
+          message: gatewayDown(message)
+            ? "連唔到 Kanban。"
+            : (kanbanUnavailable(message) ? KANBAN_UNAVAILABLE : message),
         };
   } finally {
     probeGate.end("kanban");
   }
   commitKanban(normalizeBoard(board));
   const roster = await claimProfiles(["roster"], async () => {
+    const before = state.settings?.bots || [];
     try {
       const synced = await invoke("sync_profiles");
       applyRoster(synced);
+      announceNewKeys(before, synced);
       return true;
     } catch (err) {
       return gatewayDown(String(err)) ? false : true;
@@ -5491,12 +5506,8 @@ async function tickRoster() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const synced = await invoke("sync_profiles", { quiet: true });
-      const added = profilesNeedingKeys(before, synced?.bots || []);
       applyRoster(synced);
-      if (added.length && !synced.keyring_error) {
-        const names = added.map((bot) => bot.display_name || bot.profile).join("、");
-        setBanner(`${names} 未有 API 金鑰，請喺設定填寫。金鑰唔會自動產生。`, "info", "", "settings");
-      }
+      announceNewKeys(before, synced);
     } catch (err) {
       if (gatewayDown(String(err))) failedDown = true;
     }
@@ -6220,12 +6231,8 @@ async function connectHermes(settings) {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const synced = await invoke("sync_profiles");
-    const added = profilesNeedingKeys(before, synced.bots || []);
     useHermes(synced);
-    if (added.length && !synced.keyring_error) {
-      const names = added.map((bot) => bot.display_name || bot.profile).join("、");
-      setBanner(`${names} 未有 API 金鑰，請喺設定填寫。金鑰唔會自動產生。`, "info", "", "settings");
-    }
+    announceNewKeys(before, synced);
   } catch (err) {
     useHermes(settings);
     if (gatewayDown(String(err))) noteGatewayDown();
@@ -6425,10 +6432,11 @@ function applyInteraction(raw) {
 }
 
 function readInteractionForm() {
+  const fadeDistance = Number(state.interaction?.fadeDistance ?? state.settings?.interaction?.fade_distance);
   return {
     modifier: $("#interaction-modifier").value,
-    fade_enabled: false,
-    fade_distance: 120,
+    fade_enabled: state.interaction?.fadeEnabled !== false && state.settings?.interaction?.fade_enabled !== false,
+    fade_distance: Number.isFinite(fadeDistance) ? fadeDistance : 120,
     min_opacity: Number($("#interaction-min-opacity").value) / 100,
   };
 }
@@ -8344,6 +8352,11 @@ function paintOrbNames() {
       obstacles.push({ x: box.x, y: box.y, w: box.width, h: box.height });
       return;
     }
+    if (shell.dataset.state === "pill") {
+      const vis = visibleBox(shell);
+      if (vis.w >= 1 && vis.h >= 1) obstacles.push(vis);
+      return;
+    }
     if (shell.dataset.state !== "orb") return;
     const btn = shell.querySelector(".morph-orb");
     const name = (btn?.dataset.orbName || btn?.getAttribute("aria-label") || "").trim();
@@ -8360,6 +8373,13 @@ function paintOrbNames() {
     });
     obstacles.push({ x: disc.x, y: disc.y, w: disc.width, h: disc.height });
   });
+  const banner = document.getElementById("conn-banner");
+  if (banner && !banner.hidden) {
+    const box = banner.getBoundingClientRect();
+    if (box.width >= 1 && box.height >= 1) {
+      obstacles.push({ x: box.x, y: box.y, w: box.width, h: box.height });
+    }
+  }
   const readout = document.getElementById("cron-readout");
   if (readout && !readout.hidden) {
     const box = readout.getBoundingClientRect();
@@ -8387,8 +8407,10 @@ function paintOrbNames() {
     applyOrbName(node, item.title);
     const left = `${Math.round(item.x)}px`;
     const top = `${Math.round(item.y)}px`;
+    const width = `${Math.round(item.w)}px`;
     if (node.style.left !== left) node.style.left = left;
     if (node.style.top !== top) node.style.top = top;
+    if (node.style.width !== width) node.style.width = width;
     const shell = byId.get(item.id)?.shell;
     const opacity = shell?.style.opacity || "1";
     if (node.style.opacity !== opacity) node.style.opacity = opacity;
@@ -9011,8 +9033,7 @@ async function refreshKanban() {
       } else if (kanbanUnavailable(message)) {
         payload = { unavailable: true, message: KANBAN_UNAVAILABLE };
       } else if (gatewayDown(message)) {
-        noteGatewayDown();
-        return;
+        payload = { unavailable: true, message: "連唔到 Kanban。" };
       } else {
         payload = { unavailable: true, message };
       }
@@ -9069,7 +9090,10 @@ function showKanbanLogin() {
     empty.hidden = true;
     empty.classList.remove("is-retry", "is-unavailable");
   }
-  if (root) root.hidden = true;
+  if (root) {
+    root.replaceChildren();
+    root.hidden = true;
+  }
   if (detail) {
     detail.hidden = true;
     detail.replaceChildren();
@@ -9317,7 +9341,7 @@ async function openKanbanDetail(taskId) {
       showKanbanLogin();
       return;
     }
-    setKanbanError(message);
+    setKanbanError(gatewayDown(message) ? "連唔到 Kanban。" : message);
   }
 }
 

@@ -287,7 +287,7 @@ pub fn local_hermes_profiles(home: &Path) -> Vec<ProfileHint> {
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if validate_profile(name).is_err() {
+            if name.starts_with('.') || validate_profile(name).is_err() {
                 continue;
             }
             names.push(name.to_string());
@@ -388,13 +388,42 @@ pub fn append_new_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint]) -> 
 }
 
 /// Writes `show_bot_names` only when the stored value changes.
+/// Patches that one key so a full save cannot invent omitted fields.
 pub fn store_show_bot_names(path: &Path, enabled: bool) -> Result<bool, String> {
-    let mut cfg = load(path)?;
-    if cfg.show_bot_names == enabled {
+    if !path.exists() {
+        if !enabled {
+            return Ok(false);
+        }
+        let mut cfg = AppConfig::default();
+        cfg.show_bot_names = true;
+        save(path, &cfg)?;
+        return Ok(true);
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    let current = value
+        .get("show_bot_names")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if current == enabled {
         return Ok(false);
     }
-    cfg.show_bot_names = enabled;
-    save(path, &cfg)?;
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    if enabled {
+        obj.insert("show_bot_names".into(), serde_json::Value::Bool(true));
+    } else {
+        obj.remove("show_bot_names");
+    }
+    let pretty = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("開唔到設定目錄：{e}"))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, &pretty).map_err(|e| format!("寫唔到設定：{e}"))?;
+    fs::rename(&tmp, path).map_err(|e| format!("寫唔到設定：{e}"))?;
     Ok(true)
 }
 
@@ -716,6 +745,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("profiles").join("planner")).unwrap();
         fs::create_dir_all(root.join("profiles").join("bad name")).unwrap();
+        fs::create_dir_all(root.join("profiles").join(".deleted")).unwrap();
         fs::write(root.join("config.yaml"), "model: x").unwrap();
         fs::write(
             root.join("profile.yaml"),
@@ -1011,6 +1041,30 @@ other:
         let off = String::from_utf8(fs::read(&path).unwrap()).unwrap();
         assert!(!off.contains("show_bot_names"));
         assert_eq!(load(&path).unwrap().bots[0].session_id, "api_1792573589_f1c99a3b");
+
+        let bare = dir.join("bare.json");
+        fs::write(
+            &bare,
+            r##"{
+  "version": 1,
+  "gateway_base_url": "http://10.10.24.33:8642",
+  "bots": [{
+    "profile": "mt-coder",
+    "display_name": "Coder",
+    "color": "#112233",
+    "session_id": "api_1792573589_f1c99a3b",
+    "enabled": true
+  }]
+}
+"##,
+        )
+        .unwrap();
+        assert_eq!(store_show_bot_names(&bare, true).unwrap(), true);
+        let patched = String::from_utf8(fs::read(&bare).unwrap()).unwrap();
+        assert!(patched.contains("\"show_bot_names\": true"));
+        assert!(!patched.contains("kanban_base_url"));
+        assert!(patched.contains("api_1792573589_f1c99a3b"));
+        assert!(patched.contains("#112233"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

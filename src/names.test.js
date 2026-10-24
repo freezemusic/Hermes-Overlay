@@ -53,6 +53,12 @@ test("name chips clear panels and each other", () => {
   for (const chip of placed) {
     assert.equal(overlap(chip, panels[0]), false);
   }
+  const kanban = { id: "kanban", name: "看板", x: 618, y: 42, w: 44, h: 44 };
+  const alone = layoutOrbNames([kanban], [], { width: 1280, height: 800 })[0];
+  assert.ok(Math.abs(alone.x + alone.w / 2 - (kanban.x + kanban.w / 2)) < 0.6);
+  const banner = { x: 360, y: 90, w: 560, h: 36 };
+  const moved = layoutOrbNames([kanban], [banner], { width: 1280, height: 800 })[0];
+  assert.equal(overlap(moved, banner), false);
 });
 
 test("name ink clears 4.5 on the chip and is not a light bot colour", () => {
@@ -69,6 +75,7 @@ test("name ink clears 4.5 on the chip and is not a light bot colour", () => {
   assert.match(rule, /background:\s*#f7f8f8/);
   assert.match(rule, /pointer-events:\s*none/);
   assert.match(rule, /text-overflow:\s*ellipsis/);
+  assert.match(rule, /text-align:\s*center/);
   assert.doesNotMatch(rule, /color:\s*(?:var\(--bot\)|#f2f200|#00f2f2)/);
   assert.doesNotMatch(rule, /animation/);
   const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -81,4 +88,11 @@ test("name ink clears 4.5 on the chip and is not a light bot colour", () => {
   const tick = main.slice(main.indexOf("async function tickRoster"), main.indexOf("async function refreshBotQuiet"));
   assert.doesNotMatch(tick, /set_show_bot_names/);
   assert.match(main, /set_show_bot_names/);
+  const paint = main.slice(main.indexOf("function paintOrbNames"), main.indexOf("let showBotNamesWrite"));
+  assert.match(paint, /conn-banner/);
+  assert.match(paint, /style\.width/);
+  assert.match(paint, /dataset\.state === "pill"/);
+  const form = main.slice(main.indexOf("function readInteractionForm"), main.indexOf("function fillSettings"));
+  assert.doesNotMatch(form, /fade_enabled:\s*false/);
+  assert.match(form, /fadeEnabled/);
 });

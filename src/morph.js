@@ -501,39 +501,42 @@ export function phaseList(edge, from, to) {
   return openPhases(edge);
 }
 
-/** Top-edge bots sit either side of centre so they do not cover the kanban orb. */
-function topSlot(index, count) {
-  const half = Math.ceil(count / 2);
-  if (index < half) return ((index + 1) / (half + 1)) * 0.42;
-  const rest = count - half;
-  return 0.58 + ((index - half + 1) / (rest + 1)) * 0.42;
-}
+const SLOT_EDGES = ["right", "bottom", "left", "top"];
 
-export function distributeEdges(count) {
-  const segments = [
-    { edge: "top", weight: 1 },
-    { edge: "right", weight: 3 },
-    { edge: "bottom", weight: 3 },
-    { edge: "left", weight: 2 },
-  ];
-  const total = segments.reduce((sum, seg) => sum + seg.weight, 0);
-  const slots = [];
-  let remaining = count;
-  segments.forEach((seg, index) => {
-    const isLast = index === segments.length - 1;
-    const n = isLast ? remaining : Math.max(1, Math.round((seg.weight / total) * count));
-    const take = Math.min(n, remaining);
-    remaining -= take;
-    for (let j = 0; j < take; j += 1) {
-      const t = seg.edge === "top" ? topSlot(j, take) : (j + 1) / (take + 1);
-      slots.push({ edge: seg.edge, t });
-    }
-  });
-  while (remaining > 0) {
-    slots.push({ edge: "right", t: 0.5 });
-    remaining -= 1;
+/**
+ * Slot i does not depend on how many bots there are. Adding a profile
+ * keeps every earlier orb where it was. Candidates that land on the
+ * kanban, cron, or settings orbs are skipped.
+ */
+export function distributeEdges(count, screen = {}) {
+  const width = screen.width || screen.w || 1280;
+  const height = screen.height || screen.h || 800;
+  const pad = screen.pad ?? 42;
+  const orb = screen.orb ?? ORB;
+  const chromeGap = orb + 8;
+  const chrome = ["kanban", "cron", "settings"].map((id) => fixedOrbPoint(id, width, height, pad, orb));
+  const span = Math.max(1, Math.min(width, height) * 0.84);
+  const step = Math.min(0.18, Math.max(0.07, (chromeGap + 4) / span));
+  const ts = [];
+  for (let t = step; t <= 1 - step * 0.5 + 1e-6; t += step) {
+    ts.push(Math.round(t * 1000) / 1000);
   }
-  return slots;
+  const wanted = Math.max(0, count | 0);
+  const accepted = [];
+  const points = [];
+  for (let index = 0; index < ts.length && accepted.length < wanted; index += 1) {
+    for (const edge of SLOT_EDGES) {
+      if (accepted.length >= wanted) break;
+      const slot = { edge, t: ts[index] };
+      const point = slotPoint(slot.edge, slot.t, width, height, pad, orb);
+      const hitsChrome = chrome.some((item) => Math.hypot(point.x - item.x, point.y - item.y) <= chromeGap);
+      const hitsBot = points.some((item) => Math.hypot(point.x - item.x, point.y - item.y) <= orb);
+      if (hitsChrome || hitsBot) continue;
+      accepted.push(slot);
+      points.push(point);
+    }
+  }
+  return accepted;
 }
 
 export function slotPoint(edge, t, width, height, pad = 42, orb = ORB) {

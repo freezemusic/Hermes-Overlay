@@ -90,6 +90,28 @@ test("kanban sits on the top edge and cron on the right", () => {
   assert.equal(cron.x, screen.w - 42 - ORB / 2);
   assert.equal(cron.y, Math.round(screen.h * 0.38));
   assert.equal(fixedOrbPoint("settings", screen.w, screen.h).edge, "bottom");
+  const five = distributeEdges(5);
+  const six = distributeEdges(6);
+  const eight = distributeEdges(8);
+  assert.deepEqual(six.slice(0, 5), five);
+  assert.deepEqual(eight.slice(0, 6), six);
+  const chrome = ["kanban", "cron", "settings"].map((id) => fixedOrbPoint(id, screen.w, screen.h));
+  for (const count of [6, 8]) {
+    const points = distributeEdges(count).map((slot) => slotPoint(slot.edge, slot.t, screen.w, screen.h, 42, ORB));
+    assert.equal(points.length, count);
+    for (const point of points) {
+      for (const other of chrome) {
+        const dist = Math.hypot(point.x - other.x, point.y - other.y);
+        assert.ok(dist > ORB, `${count} ${point.x},${point.y} vs ${other.x},${other.y} ${dist}`);
+      }
+    }
+    for (let i = 0; i < points.length; i += 1) {
+      for (let j = i + 1; j < points.length; j += 1) {
+        const dist = Math.hypot(points[i].x - points[j].x, points[i].y - points[j].y);
+        assert.ok(dist > ORB, `${count} ${i}-${j} ${dist}`);
+      }
+    }
+  }
   for (const count of [1, 3, 8]) {
     for (const slot of distributeEdges(count)) {
       const point = slotPoint(slot.edge, slot.t, screen.w, screen.h, 42, ORB);

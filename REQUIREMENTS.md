@@ -157,13 +157,13 @@
 **R-OB-04** 光球核心只得近白眩光，冇實色粗藍圈；思考圈係 1px `--bot-60` 弧，等候時唔轉，思考中先轉。
 - 來源：美術監督 v20（DESIGN-REVIEW）；SPEC §10.5–10.6。驗收（盒）：1:1 截圖；思考完弧即刻消失。狀態：❓ / ❓。
 
-**R-OB-05** 光球近距淡出。游標唔近、又冇揸 Ctrl 時，光球實色、完全睇到。游標進入該粒光球嘅命中圓再加 `ORB_PROXIMITY_PX`（72px，光暈／命中半徑加一個 60–80px 以內嘅邊）時，只有嗰粒（或同樣近嘅幾粒）用 120ms ease-out 淡到靜止透明度（預設 18%，上限 30%）。游標離開就用同一段淡返實色。淡出由腳本逐幀寫殼嘅 inline opacity（120ms ease-out），`transition: none`，唔靠 CSS transition 播完。第一格用而家嘅 computed opacity 做起點，之後每一格向目標行，唔好停喺 `from`=1.00。近距輪詢喺目標改變之後繼續送約 168ms，視窗未聚焦、rAF 停咗都推到時鐘；到埗之後同一目標唔再寫 style，亦唔重設起點。`--hit-opacity` 唔可以同時驅動光球，亦唔好用 `opacity: 1 !important` 釘實光球。殼保持 `will-change: opacity`。transitionend 唔改 class 或者其他 style。每一幀 computed opacity 向目標單調，包括最後一格。透明度只跟全域輪詢嘅游標距離同 Ctrl，唔跟鍵盤事件或者焦點；游標遠一定係 1。Esc 關面板之後放開 overlay 嘅鍵盤焦點。穿透唔變：預設穿透，只有揸住 Ctrl 而且游標喺 12px 命中邊內先可以撳（R-CT-*）。Ctrl 揸住而且游標喺 72px 淡出範圍內，嗰粒用同一段 120ms 返實色；可以撳仍然只係 12px 命中邊，而且命中圓對齊可見光碟（底部 footer slack 唔好拉高 orb 嘅 hit，令圓心跌低）。Ctrl+C／Ctrl+V 唔閃（R-CT-06），就算 overlay 仲有焦點都唔好把遠方光球留喺 0.18。面板唔變：預設實色可撳，Ctrl 揸住先透明同穿透。穿透視窗要靠全域游標輪詢（Windows `GetCursorPos`、Linux `XQueryPointer`，經 `device_query`），唔好靠 DOM mouse。`prefers-reduced-motion` 縮到 1ms。冇閒置循環動畫（R-PN-08）。2026-10-22 早段「約 180ms、淡出 150–200ms」**已取代**（v92 盒：180ms linear 加輪詢，6/21 次過唔到 250ms 內 ≤30%）。5dac6e2 嘅 250ms 目標 21/21 已過，但 15/84 次尾段仍有一格反向。2da217e 將反向減到 11/84。e301d99 改用腳本逐幀之後光球完全唔淡（21/21 近距樣本仍係 1）：輪詢每個目標只送一次，時鐘冇再推。改返由 compositor 嘅 CSS transition 播去 inline 目標，而且唔再同時寫 `--hit-opacity`。ae88559 一次 inline 目標加 CSS transition 令淡出 21/21 恢復，但尾段反向返到 29/125：完結嗰格畫咗中間值或舊值。CSS transition 完結會補一格，所以改返腳本逐幀，輪詢喺淡出期間持續送樣，到埗就停寫。
+**R-OB-05** 光球近距淡出。游標唔近、又冇揸 Ctrl 時，光球實色、完全睇到。游標進入該粒光球嘅命中圓再加 `ORB_PROXIMITY_PX`（72px，光暈／命中半徑加一個 60–80px 以內嘅邊）時，只有嗰粒（或同樣近嘅幾粒）用 120ms ease-out 淡到靜止透明度（預設 18%，上限 30%）。游標離開就用同一段淡返實色。淡出由腳本逐幀寫殼嘅 inline opacity（120ms ease-out），`transition: none`，唔靠 CSS transition 播完。第一格用而家嘅 computed opacity 做起點，之後每一格向目標行，唔好停喺 `from`=1.00。近距輪詢喺目標改變之後繼續送約 168ms，視窗未聚焦、rAF 停咗都推到時鐘；到埗之後同一目標唔再寫 style，亦唔重設起點。`--hit-opacity` 唔可以同時驅動光球，亦唔好用 `opacity: 1 !important` 釘實光球。殼保持 `will-change: opacity`。transitionend 唔改 class 或者其他 style。每一幀 computed opacity 向目標單調，包括最後一格。透明度只跟全域輪詢嘅游標距離同 Ctrl，唔跟鍵盤事件或者焦點；游標遠一定係 1。Esc 關面板之後放開 overlay 嘅鍵盤焦點。儲存設定要保留已有嘅 `fade_enabled` 同 `fade_distance`。設定表單冇呢兩個欄，唔好寫死 `fade_enabled: false`。穿透唔變：預設穿透，只有揸住 Ctrl 而且游標喺 12px 命中邊內先可以撳（R-CT-*）。Ctrl 揸住而且游標喺 72px 淡出範圍內，嗰粒用同一段 120ms 返實色；可以撳仍然只係 12px 命中邊，而且命中圓對齊可見光碟（底部 footer slack 唔好拉高 orb 嘅 hit，令圓心跌低）。Ctrl+C／Ctrl+V 唔閃（R-CT-06），就算 overlay 仲有焦點都唔好把遠方光球留喺 0.18。面板唔變：預設實色可撳，Ctrl 揸住先透明同穿透。穿透視窗要靠全域游標輪詢（Windows `GetCursorPos`、Linux `XQueryPointer`，經 `device_query`），唔好靠 DOM mouse。`prefers-reduced-motion` 縮到 1ms。冇閒置循環動畫（R-PN-08）。2026-10-22 早段「約 180ms、淡出 150–200ms」**已取代**（v92 盒：180ms linear 加輪詢，6/21 次過唔到 250ms 內 ≤30%）。5dac6e2 嘅 250ms 目標 21/21 已過，但 15/84 次尾段仍有一格反向。2da217e 將反向減到 11/84。e301d99 改用腳本逐幀之後光球完全唔淡（21/21 近距樣本仍係 1）：輪詢每個目標只送一次，時鐘冇再推。改返由 compositor 嘅 CSS transition 播去 inline 目標，而且唔再同時寫 `--hit-opacity`。ae88559 一次 inline 目標加 CSS transition 令淡出 21/21 恢復，但尾段反向返到 29/125：完結嗰格畫咗中間值或舊值。CSS transition 完結會補一格，所以改返腳本逐幀，輪詢喺淡出期間持續送樣，到埗就停寫。
 - 來源：Devon 2026-10-08 原規則；2026-10-22 恢復（整合 REQUIREMENTS.md 時漏咗）。見 C-16。取代 R-CT-02／R-CT-03 嘅「預設半透明」。
 - 驗收（兩邊）：游標遠時光球實色；進入 72px 後 250ms 內透明度 ≤30%；離開返實色；Ctrl 揸住近光球時實色而且 12px 內可撳；Ctrl 放開，喺淡出範圍內撳仍然穿透；Ctrl+C／V 冇閃。
 - 狀態：❓ / ❓。
 
 **R-OB-06** 設定有開關「永遠顯示員工名」，預設關。關住時光球同而家一樣。值係 config.json 嘅 `show_bot_names`；關住唔寫出呢個欄。只有 Devon 撥個開關先寫檔。啟動、重連、靜態名單同步（R-SY-09）唔好為咗呢個值改 config.json。
-開咗之後，每粒光球（Bot、設定、看板、排程，同之後嘅子光球）喺光球下面顯示 `display_name`；下面會撞到面板或者其他名先擺側面。長名截斷加省略號，tooltip 同 aria-label 保留全名。字唔可以用淺色 bot 色（黃 `#f2f200`、青 `#00f2f2`），對住背後至少 4.5:1；用淺色底片，字用 `#14142b`。標籤屬於嗰粒光球：跟 R-OB-05 一齊淡，預設穿透，只有揸住 Ctrl 先可以撳同喺近距返實色（R-CT-01、R-CT-03）。冇揸 Ctrl 時命中區維持光碟加原本 12px，唔好因為標籤變大。標籤唔好疊住面板，標籤之間亦唔好重疊。
+開咗之後，每粒光球（Bot、設定、看板、排程，同之後嘅子光球）喺光球下面顯示 `display_name`；下面會撞到面板、其他名、或者連線膠囊先擺側面。長名截斷加省略號，tooltip 同 aria-label 保留全名。名稱片置中喺光球下面。字唔可以用淺色 bot 色（黃 `#f2f200`、青 `#00f2f2`），對住背後至少 4.5:1；用淺色底片，字用 `#14142b`。標籤屬於嗰粒光球：跟 R-OB-05 一齊淡，預設穿透，只有揸住 Ctrl 先可以撳同喺近距返實色（R-CT-01、R-CT-03）。冇揸 Ctrl 時命中區維持光碟加原本 12px，唔好因為標籤變大。標籤唔好疊住面板，標籤之間亦唔好重疊。撥開關只寫 `show_bot_names` 呢一個鍵；舊檔冇 `kanban_base_url` 就唔好順便寫出空字串。
 - 來源：Devon 2026-10-24，排喺 R-SY-09 之後。
 - 驗收：開關持久而且冇改過唔寫檔；標籤有渲染同截斷；冇 Ctrl 時命中矩形不變；字同底片對比 ≥4.5，唔係淺色 bot 色。
 - 狀態：❓ / ❓。
@@ -211,10 +211,10 @@
 
 設定有 Kanban server 位址。留空就用 gateway 嘅 host 加埠 9119。登入由 Devon 自己填：優先系統瀏覽器 PKCE（`GET /auth/native/authorize`、`POST /auth/native/token`、`POST /auth/native/refresh`）；帳號密碼一齊填就用 `POST /auth/password-login`（`provider: basic`）攞 session cookie。401 `invalid_or_expired_session` 先靜靜刷新或再登入一次。帳號、密碼、cookie、access、refresh 只放呢個程式自己嘅鑰匙圈（`com.freezemusic.hermes-overlay` 嘅 kanban 帳戶），唔寫 log、唔寫 config.json、唔讀寫 `dashboard-session-token`、`profile:*`，亦唔用其他程式嘅鑰匙圈。
 
-401 顯示平靜「要登入 Kanban」加登入掣，唔當錯誤、唔當未有看板、唔進入 R-SY-08。真正 404 先用 R-KB-04。連唔到或者逾時先用 R-SY-08。
+401 顯示平靜「要登入 Kanban」加登入掣，唔當錯誤、唔當未有看板、唔進入 R-SY-08。錯咗嘅已存密碼同樣係呢句，唔好顯示 API_SERVER_KEY 嘅 401 字，而且要清走看板上面嘅舊卡。錯密碼唔好每 5 秒再 POST `/auth/password-login`；記住呢組帳號密碼已經被拒，直至 Devon 改咗鑰匙圈入面嘅帳號或密碼先再試一次。真正 404 先用 R-KB-04。9119 連唔到、逾時、或者條閒置連線被 `hermes serve` 關掉（大約 5 秒），都只顯示喺看板，唔好觸發 R-SY-08，亦唔好出 gateway 嗰粒「連唔到 Hermes」膠囊。HTTP pool 嘅 idle timeout 係 2 秒，短過 5 秒，避免重用已經被伺服器關掉嘅 socket。
 
-- 來源：Devon（2026-10-22，Hermes 0.22.2，`http://10.10.24.33:9119`）。
-- 驗收（單元，假 9119）：401 之後刷新再 GET 到欄同卡片；密碼登入儲 cookie；404 仍然係 R-KB-04；閂咗嘅埠係連線錯誤；登入狀態唔當 404。金鑰唔入 config.json。
+- 來源：Devon（2026-10-22，Hermes 0.22.2，`http://10.10.24.33:9119`）。8cf5af4 盒：錯密碼出 API_SERVER_KEY 401 而且每 5 秒再登入；needsLogin 留低舊卡；閒置 socket 閃「連唔到 Hermes」並觸發重連。
+- 驗收（單元，假 9119）：401 之後刷新再 GET 到欄同卡片；密碼登入儲 cookie；錯密碼係登入狀態而且第二次讀唔再 POST 密碼；404 仍然係 R-KB-04；閂咗嘅埠係連線錯誤，看板文案唔含 Hermes gateway；登入狀態唔當 404。金鑰唔入 config.json。
 - 狀態：❓ / ❓。
 
 ---
@@ -347,8 +347,10 @@
 
 config.json 只有名單真係多咗 profile 先寫。冇變動嘅每一輪，檔案位元組保持一樣。已有 Bot 嘅 sessionId、enabled、顏色、次序、名稱、詳情都唔改。計時器唔刪走消失或者隱藏嘅 profile，亦唔因為今次搵唔到就標做不可用（一次讀取失敗唔可以隱藏晒所有人）。
 
-- 來源：Devon。而家 `sync_profiles` 只喺啟動 `connectHermes` 同 `recoverGateway` 跑。
-- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔。
+每次同步都要為新 profile 出一次金鑰提示，包括啟動 `connectHermes`、`recoverGateway` 同靜態計時。已經喺名單入面嘅唔再提示。光球位係前綴穩定：加一個 profile 唔好令已有光球換位。6 粒或以上唔好疊到看板、排程、設定。`profiles/` 入面以點開頭嘅目錄（例如 `.deleted`）唔算 profile。
+
+- 來源：Devon。8cf5af4 盒：恢復先跑同步，3 個新 profile 有 2 個冇金鑰提示；加光球會重排，6 粒時 researcher 疊住 cron；`.deleted` 被當成 profile。
+- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(5)` 係 `distributeEdges(6)` 嘅前綴，6 同 8 粒唔疊 chrome；點開頭目錄唔出現。
 - 狀態：❓ / ❓。
 
 ---

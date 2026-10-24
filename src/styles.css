@@ -1778,6 +1778,8 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   width: 100%;
 }
 
+.kanban[hidden] { display: none; }
+
 .kanban-col + .kanban-col { border-left: var(--hair); }
 
 .kanban-col-head {
@@ -2631,6 +2633,7 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   text-transform: none;
   white-space: nowrap;
   text-overflow: ellipsis;
+  text-align: center;
   pointer-events: none;
   transition: none;
 }

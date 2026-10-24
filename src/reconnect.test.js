@@ -206,6 +206,12 @@ test("the recover path only reads kanban, cron, profiles, and bot chat", () => {
   assert.match(css, /\.kanban-empty\.is-retry \{[^}]*color:\s*#14142b/s);
   assert.doesNotMatch(css, /\.kanban-empty\.is-retry \{[^}]*animation/s);
   assert.match(body, /kanbanUnavailable/);
+  assert.match(body, /announceNewKeys/);
+  const kanbanRead = body.slice(0, body.indexOf("claimProfiles"));
+  assert.doesNotMatch(kanbanRead, /return false/);
+  assert.doesNotMatch(kanbanRead, /noteGatewayDown/);
+  const refresh = main.slice(main.indexOf("async function refreshKanban"), main.indexOf("function commitKanban"));
+  assert.doesNotMatch(refresh, /noteGatewayDown/);
   assert.match(css, /\.kanban-empty\.is-unavailable \{[^}]*color:\s*#14142b/s);
   assert.doesNotMatch(css, /\.kanban-empty\.is-unavailable \{[^}]*animation/s);
   assert.match(css, /\.kanban-empty\.is-login \{[^}]*color:\s*#14142b/s);

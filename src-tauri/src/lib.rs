@@ -130,8 +130,10 @@ struct AppState {
 }
 
 fn http_client() -> reqwest::Client {
+    // `hermes serve` closes idle sockets after about 5s. Drop ours first.
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
+        .pool_idle_timeout(std::time::Duration::from_secs(2))
         .user_agent("hermes-overlay/0.1")
         .build()
         .expect("reqwest client")
@@ -1834,7 +1836,7 @@ async fn get_kanban_board(
     let (board, next, changed) =
         kanban_server::read_board(&state.http, &origin, &slug, secrets)
             .await
-            .map_err(|err| explain(&err))?;
+            .map_err(|err| kanban_server::explain_kanban(&err))?;
     if changed {
         let _ = store_kanban_secrets(&next);
     }
@@ -1910,8 +1912,11 @@ async fn sign_in_kanban(
         )
         .await
         .map_err(|err| match err {
-            HermesError::Http { status: 401 | 403, .. } => "帳號或密碼唔啱".into(),
-            other => explain(&other),
+            HermesError::Http { status: 401 | 403, .. } => {
+                kanban_server::note_rejected_password(input.username.trim(), &input.password);
+                "帳號或密碼唔啱".into()
+            }
+            other => kanban_server::explain_kanban(&other),
         })?;
         let mut secrets = load_kanban_secrets();
         secrets.username = input.username.trim().to_string();
@@ -1919,6 +1924,7 @@ async fn sign_in_kanban(
         secrets.session_cookie = cookie;
         secrets.access_token.clear();
         store_kanban_secrets(&secrets)?;
+        kanban_server::clear_rejected_password();
         return Ok("已登入 Kanban".into());
     }
     let tokens = kanban_server::native_pkce_login(
@@ -1928,11 +1934,12 @@ async fn sign_in_kanban(
         |url| open_system_browser(url),
     )
     .await
-    .map_err(|err| explain(&err))?;
+    .map_err(|err| kanban_server::explain_kanban(&err))?;
     let mut secrets = load_kanban_secrets();
     secrets.access_token = tokens.access_token;
     secrets.refresh_token = tokens.refresh_token;
     store_kanban_secrets(&secrets)?;
+    kanban_server::clear_rejected_password();
     Ok("已登入 Kanban".into())
 }
 
@@ -1984,14 +1991,7 @@ async fn get_kanban_task(
     let secrets = load_kanban_secrets();
     let (detail, next, changed) = kanban_server::read_task(&state.http, &origin, &id, secrets)
         .await
-        .map_err(|err| {
-            if matches!(err, HermesError::Protocol(ref message) if message == hermes::KANBAN_LOGIN)
-            {
-                hermes::KANBAN_LOGIN.to_string()
-            } else {
-                explain(&err)
-            }
-        })?;
+        .map_err(|err| kanban_server::explain_kanban(&err))?;
     if changed {
         let _ = store_kanban_secrets(&next);
     }
@@ -2624,6 +2624,26 @@ mod tests {
     fn tray_settings_label_shows_the_shortcut() {
         assert!(SETTINGS_TRAY_LABEL.starts_with("設定"));
         assert!(SETTINGS_TRAY_LABEL.contains(SETTINGS_SHORTCUT));
+    }
+
+    #[test]
+    fn http_pool_drops_idle_sockets_before_hermes_serve_closes_them() {
+        let src = include_str!("lib.rs");
+        let start = src.find("fn http_client()").expect("http_client");
+        let body = &src[start..start + 500];
+        assert!(body.contains("pool_idle_timeout"));
+        assert!(body.contains("from_secs(2)"));
+        let board = src
+            .find("async fn get_kanban_board")
+            .expect("get_kanban_board");
+        let task = src.find("async fn get_kanban_task").expect("get_kanban_task");
+        let board_body = &src[board..task];
+        assert!(board_body.contains("explain_kanban"));
+        assert!(!board_body.contains("explain("));
+        let after = src[task..].find("async fn patch_kanban_task").expect("patch");
+        let task_body = &src[task..task + after];
+        assert!(task_body.contains("explain_kanban"));
+        assert!(!task_body.contains("explain("));
     }
 
     fn invoke_commands() -> Vec<String> {

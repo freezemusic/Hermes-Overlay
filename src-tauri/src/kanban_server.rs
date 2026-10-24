@@ -9,8 +9,10 @@ use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 pub const LOGIN_MESSAGE: &str = KANBAN_LOGIN;
@@ -145,6 +147,64 @@ pub fn random_token(bytes: usize) -> String {
         }
     }
     base64url(&buf)
+}
+
+fn rejected_passwords() -> &'static Mutex<HashSet<String>> {
+    static CELL: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn credential_fingerprint(username: &str, password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(username.trim().as_bytes());
+    hasher.update([0]);
+    hasher.update(password.as_bytes());
+    base64url(&hasher.finalize())
+}
+
+fn password_is_rejected(username: &str, password: &str) -> bool {
+    let fp = credential_fingerprint(username, password);
+    rejected_passwords()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .contains(&fp)
+}
+
+/// A 401/403 password attempt. Later polls skip it until the stored pair changes.
+pub fn note_rejected_password(username: &str, password: &str) {
+    let fp = credential_fingerprint(username, password);
+    rejected_passwords()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .insert(fp);
+}
+
+fn forget_rejected_password(username: &str, password: &str) {
+    let fp = credential_fingerprint(username, password);
+    rejected_passwords()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .remove(&fp);
+}
+
+pub fn clear_rejected_password() {
+    rejected_passwords()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clear();
+}
+
+/// Kanban-port failures stay on the kanban surface. The words must not match `gatewayDown`.
+pub fn explain_kanban(err: &HermesError) -> String {
+    match err {
+        HermesError::Connect(_) | HermesError::Timeout(_) | HermesError::Transport(_) => {
+            "連唔到 Kanban。".into()
+        }
+        HermesError::Http { status: 401 | 403, .. } => LOGIN_MESSAGE.into(),
+        HermesError::Http { status, .. } => format!("Kanban 回應 {status}。"),
+        HermesError::Protocol(message) => message.clone(),
+        HermesError::Cancelled => "已停止呢次回覆。".into(),
+    }
 }
 
 fn map_reqwest(err: reqwest::Error) -> HermesError {
@@ -392,16 +452,23 @@ async fn renew(
         }
     }
     if !secrets.username.trim().is_empty() && !secrets.password.is_empty() {
-        let cookie = password_login(
-            http,
-            origin,
-            secrets.username.trim(),
-            &secrets.password,
-        )
-        .await?;
-        secrets.session_cookie = cookie;
-        secrets.access_token.clear();
-        return Ok(true);
+        let username = secrets.username.trim().to_string();
+        if password_is_rejected(&username, &secrets.password) {
+            return Ok(false);
+        }
+        match password_login(http, origin, &username, &secrets.password).await {
+            Ok(cookie) => {
+                forget_rejected_password(&username, &secrets.password);
+                secrets.session_cookie = cookie;
+                secrets.access_token.clear();
+                return Ok(true);
+            }
+            Err(HermesError::Http { status: 401 | 403, .. }) => {
+                note_rejected_password(&username, &secrets.password);
+                return Ok(false);
+            }
+            Err(err) => return Err(err),
+        }
     }
     Ok(false)
 }
@@ -826,6 +893,92 @@ mod tests {
         assert!(
             text.contains("連唔到") || text.contains("逾時") || text.contains("中斷"),
             "{text}"
+        );
+        let calm = explain_kanban(&err);
+        let lower = calm.to_ascii_lowercase();
+        assert!(!calm.contains("Hermes gateway"), "{calm}");
+        assert!(!calm.contains("API_SERVER_KEY"), "{calm}");
+        assert!(!lower.contains("timed out"), "{calm}");
+        assert!(!lower.contains("connection refused"), "{calm}");
+        assert!(!lower.contains("error sending request"), "{calm}");
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_is_login_and_is_not_posted_again() {
+        super::forget_rejected_password("box-user", "box-wrong");
+        super::forget_rejected_password("box-user", "box-next");
+        let posts = Arc::new(Mutex::new(0u32));
+        let posts2 = posts.clone();
+        let base = serve(move |head| {
+            let line = head.lines().next().unwrap_or("");
+            if line.starts_with("POST") && line.contains("/auth/password-login") {
+                *posts2.lock().unwrap() += 1;
+                return (401, "", r#"{"error":"unauthorized"}"#.into());
+            }
+            if line.starts_with("GET") && line.contains("/api/plugins/kanban/board") {
+                return (
+                    401,
+                    "",
+                    r#"{"error":"invalid_or_expired_session"}"#.into(),
+                );
+            }
+            (404, "", "{}".into())
+        });
+        let http = Client::new();
+        let secrets = KanbanSecrets {
+            username: "box-user".into(),
+            password: "box-wrong".into(),
+            ..KanbanSecrets::default()
+        };
+        let (board, _, changed) = read_board(&http, &base, "default", secrets.clone())
+            .await
+            .unwrap();
+        assert!(!changed);
+        assert!(board.needs_login);
+        assert!(!board.unavailable);
+        assert_eq!(board.message, LOGIN_MESSAGE);
+        assert!(!board.message.contains("API_SERVER_KEY"));
+        assert_eq!(*posts.lock().unwrap(), 1);
+        let (again, _, _) = read_board(&http, &base, "default", secrets.clone())
+            .await
+            .unwrap();
+        assert!(again.needs_login);
+        assert_eq!(again.message, LOGIN_MESSAGE);
+        assert_eq!(*posts.lock().unwrap(), 1);
+        let changed_pw = KanbanSecrets {
+            password: "box-next".into(),
+            ..secrets
+        };
+        let (third, _, _) = read_board(&http, &base, "default", changed_pw).await.unwrap();
+        assert!(third.needs_login);
+        assert_eq!(*posts.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn kanban_copy_does_not_match_gateway_down() {
+        for err in [
+            crate::hermes::HermesError::Connect("connection refused".into()),
+            crate::hermes::HermesError::Timeout("timed out".into()),
+            crate::hermes::HermesError::Transport("error sending request".into()),
+            crate::hermes::HermesError::Http {
+                status: 401,
+                body: String::new(),
+            },
+        ] {
+            let text = explain_kanban(&err);
+            let lower = text.to_ascii_lowercase();
+            assert!(!text.contains("Hermes gateway"), "{text}");
+            assert!(!text.contains("API_SERVER_KEY"), "{text}");
+            assert!(!lower.contains("timed out"), "{text}");
+            assert!(!lower.contains("connection refused"), "{text}");
+            assert!(!lower.contains("error sending request"), "{text}");
+        }
+        assert_eq!(
+            explain_kanban(&crate::hermes::HermesError::Http {
+                status: 401,
+                body: String::new(),
+            }),
+            LOGIN_MESSAGE
         );
     }
 }
