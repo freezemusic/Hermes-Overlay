@@ -124,6 +124,10 @@ test("the quiet tick claims roster, prompts for a new key, and does not write ke
   assert.doesNotMatch(hide, /keyPromptBots = \[\]/);
   const placed = main.slice(main.indexOf("function placeKeyBanner"), main.indexOf("function reconcileKeyPrompt"));
   assert.match(placed, /keyBannerSlot/);
+  assert.match(placed, /sticky !== "gateway"/);
+  const retry = main.slice(main.indexOf("function paintGatewayWait"), main.indexOf("function clearGatewayWait"));
+  assert.match(retry, /placeKeyBanner/);
+  assert.match(retry, /"gateway"/);
   assert.match(placed, /\.morph\[data-state='panel'\]:not\(\.is-collapsing\) \.center-panel/);
   assert.match(placed, /\.plan-hit-host/);
   assert.match(placed, /\.plan-window/);

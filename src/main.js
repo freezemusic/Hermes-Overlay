@@ -5359,6 +5359,7 @@ function paintGatewayWait() {
   if (banner && (banner.dataset.sticky !== "gateway" || banner.textContent !== text)) {
     setBanner(text, "info", "gateway");
   }
+  placeKeyBanner();
   if (!state.gatewayClock) {
     state.gatewayClock = window.setInterval(() => {
       if (!gateway.isDown("gateway")) {
@@ -5435,7 +5436,7 @@ function openPanelBox(node) {
 function placeKeyBanner() {
   const banner = $("#conn-banner");
   if (!banner) return;
-  if (banner.hidden || banner.dataset.sticky !== "keys") {
+  if (banner.hidden || (banner.dataset.sticky !== "keys" && banner.dataset.sticky !== "gateway")) {
     resetKeyBannerShift(banner);
     return;
   }

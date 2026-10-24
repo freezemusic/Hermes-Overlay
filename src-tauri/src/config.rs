@@ -198,11 +198,27 @@ pub fn save(path: &Path, cfg: &AppConfig) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("開唔到設定目錄：{e}"))?;
     }
-    let text = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &text).map_err(|e| format!("寫唔到設定：{e}"))?;
-    fs::rename(&tmp, path).map_err(|e| format!("寫唔到設定：{e}"))?;
-    Ok(())
+    let mut text = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    text = omit_absent_unchanged_keys(path, cfg, &text);
+    write_config_text(path, &text)
+}
+
+/// A full settings save rewrites the file. Keys the user did not change,
+/// and that were not already in the file, stay omitted. An empty
+/// `kanban_base_url` is the default, so a file that never had the key
+/// must not gain `"kanban_base_url": ""`.
+fn omit_absent_unchanged_keys(path: &Path, cfg: &AppConfig, text: &str) -> String {
+    if !cfg.kanban_base_url.is_empty() {
+        return text.to_string();
+    }
+    let previous = fs::read_to_string(path).unwrap_or_default();
+    if top_level_field(&previous, "kanban_base_url").is_some() {
+        return text.to_string();
+    }
+    let Some(span) = top_level_field(text, "kanban_base_url") else {
+        return text.to_string();
+    };
+    remove_top_level_field(text, &span)
 }
 
 /// Hermes `default` profile stores SOUL.md at the home root.
@@ -1307,6 +1323,60 @@ other:
                 < turned_off.find("\"gateway_base_url\"").unwrap()
         );
         assert!(load(&ordered).unwrap().gateway_base_url.contains("8642"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_omits_an_empty_kanban_base_url_that_was_not_in_the_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-kanban-url-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        fs::write(
+            &path,
+            r##"{
+  "version": 1,
+  "gateway_base_url": "http://10.10.24.33:8642",
+  "bots": [{
+    "profile": "mt-coder",
+    "display_name": "Coder",
+    "color": "#112233",
+    "session_id": "api_1792573589_f1c99a3b",
+    "enabled": true
+  }]
+}
+"##,
+        )
+        .unwrap();
+        let mut cfg = load(&path).unwrap();
+        assert!(cfg.kanban_base_url.is_empty());
+        save(&path, &cfg).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("kanban_base_url"), "{saved}");
+        serde_json::from_str::<serde_json::Value>(&saved).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.gateway_base_url, "http://10.10.24.33:8642");
+        assert_eq!(loaded.bots[0].session_id, "api_1792573589_f1c99a3b");
+        assert_eq!(loaded.bots[0].color, "#112233");
+
+        cfg.kanban_base_url = "http://10.10.24.33:9119".into();
+        save(&path, &cfg).unwrap();
+        let with_url = fs::read_to_string(&path).unwrap();
+        assert!(with_url.contains("\"kanban_base_url\": \"http://10.10.24.33:9119\""));
+
+        cfg.kanban_base_url.clear();
+        save(&path, &cfg).unwrap();
+        let kept = fs::read_to_string(&path).unwrap();
+        assert!(kept.contains("\"kanban_base_url\": \"\""));
+        serde_json::from_str::<serde_json::Value>(&kept).unwrap();
+        assert!(load(&path).unwrap().kanban_base_url.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }
