@@ -13,6 +13,19 @@ use std::time::Duration;
 
 const DEFAULT_SERVICE: &str = "com.freezemusic.hermes-overlay";
 const DASHBOARD_ACCOUNT: &str = "dashboard-session-token";
+pub const KANBAN_ACCESS_ACCOUNT: &str = "kanban-access-token";
+pub const KANBAN_REFRESH_ACCOUNT: &str = "kanban-refresh-token";
+pub const KANBAN_COOKIE_ACCOUNT: &str = "kanban-session-cookie";
+pub const KANBAN_USER_ACCOUNT: &str = "kanban-basic-username";
+pub const KANBAN_PASSWORD_ACCOUNT: &str = "kanban-basic-password";
+
+const KANBAN_ACCOUNTS: [&str; 5] = [
+    KANBAN_ACCESS_ACCOUNT,
+    KANBAN_REFRESH_ACCOUNT,
+    KANBAN_COOKIE_ACCOUNT,
+    KANBAN_USER_ACCOUNT,
+    KANBAN_PASSWORD_ACCOUNT,
+];
 
 static SERVICE_NAME: OnceLock<String> = OnceLock::new();
 
@@ -174,6 +187,39 @@ pub fn delete_dashboard_token() -> Result<(), String> {
     delete_account(DASHBOARD_ACCOUNT)
 }
 
+fn kanban_account(account: &str) -> Result<(), String> {
+    if KANBAN_ACCOUNTS.contains(&account) {
+        Ok(())
+    } else {
+        Err("唔可以改其他程式嘅鑰匙圈項目".into())
+    }
+}
+
+pub fn get_kanban_secret(account: &str) -> Result<Lookup, String> {
+    kanban_account(account)?;
+    let account = account.to_string();
+    run_keyring(KEYRING_TIMEOUT, move || read_password(&account))
+}
+
+pub fn set_kanban_secret(account: &str, value: &str) -> Result<(), String> {
+    kanban_account(account)?;
+    let value = value.trim();
+    if value.is_empty() {
+        return delete_kanban_secret(account);
+    }
+    if value.chars().any(|c| c == '\n' || c == '\r' || c == '\0') {
+        return Err("鑰匙圈內容唔可以有換行".into());
+    }
+    entry(account)?
+        .set_password(value)
+        .map_err(|e| format!("寫入鑰匙圈失敗：{e}"))
+}
+
+pub fn delete_kanban_secret(account: &str) -> Result<(), String> {
+    kanban_account(account)?;
+    delete_account(account)
+}
+
 /// `true` when this process is using keyring's in-memory mock store.
 /// That happens if the crate is built without a platform backend feature:
 /// `set_password` appears to work, then a later `Entry` cannot see the secret.
@@ -198,6 +244,18 @@ fn delete_account(account: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kanban_secrets_stay_on_overlay_accounts() {
+        assert!(set_kanban_secret(DASHBOARD_ACCOUNT, "nope").is_err());
+        assert!(set_kanban_secret("profile:default", "nope").is_err());
+        assert!(get_kanban_secret("login").is_err());
+        assert!(delete_kanban_secret("hermes").is_err());
+        for account in KANBAN_ACCOUNTS {
+            assert_ne!(account, DASHBOARD_ACCOUNT);
+            assert!(!account.starts_with("profile:"));
+        }
+    }
 
     #[test]
     fn keyring_service_follows_the_bundle_identifier() {

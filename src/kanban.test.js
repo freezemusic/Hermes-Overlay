@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   KANBAN_EMPTY,
+  KANBAN_LOGIN,
   KANBAN_UNAVAILABLE,
   kanbanUnavailable,
   KANBAN_STATUSES,
@@ -121,4 +122,15 @@ test("404 is an empty state and owner colour follows the bot", () => {
   );
   assert.equal(kanbanErrorText("看板拒絕呢次移動：已有人做"), "看板拒絕呢次移動：已有人做");
   assert.equal(kanbanErrorText("{not json"), "看板更新失敗。");
+  assert.equal(kanbanUnavailable(KANBAN_LOGIN), false);
+  const login = normalizeBoard({ needs_login: true });
+  assert.equal(login.needsLogin, true);
+  assert.equal(login.unavailable, false);
+  assert.equal(login.message, KANBAN_LOGIN);
+  assert.equal(login.columns.length, 0);
+  assert.equal(kanbanChangeLine({ columns: [] }, login), "");
+  assert.notEqual(
+    boardFingerprint({ unavailable: true, message: KANBAN_UNAVAILABLE, columns: [] }),
+    boardFingerprint(login),
+  );
 });

@@ -208,5 +208,7 @@ test("the recover path only reads kanban, cron, profiles, and bot chat", () => {
   assert.match(body, /kanbanUnavailable/);
   assert.match(css, /\.kanban-empty\.is-unavailable \{[^}]*color:\s*#14142b/s);
   assert.doesNotMatch(css, /\.kanban-empty\.is-unavailable \{[^}]*animation/s);
+  assert.match(css, /\.kanban-empty\.is-login \{[^}]*color:\s*#14142b/s);
+  assert.doesNotMatch(css, /\.kanban-empty\.is-login \{[^}]*animation/s);
   assert.match(main, /連唔到 Hermes，自動重試中…|RECONNECT_STATUS/);
 });

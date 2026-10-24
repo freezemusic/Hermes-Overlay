@@ -60,12 +60,13 @@ import {
   cronShellHeight,
   chatTailAction,
 } from "./morph.js";
-import { isProfileEnabled, profilesNeedingKeys } from "./roster.js";
+import { isProfileEnabled, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
 import { TUI_READ_ONLY_REASON, isTuiSource, orderSessions, previewLine, resolveSession, sessionLabel, unseenMessages } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_BOARD,
   KANBAN_EMPTY,
+  KANBAN_LOGIN,
   KANBAN_POLL_MS,
   KANBAN_UNAVAILABLE,
   boardFingerprint,
@@ -3749,7 +3750,8 @@ const state = {
   dragHitId: "",
   souls: new Map(),
   kanbanOpen: false,
-  kanban: { board: null, fingerprint: "", unread: false, saving: false, dragging: false },
+  kanban: { board: null, fingerprint: "", unread: false, saving: false, dragging: false, detailOpen: false },
+  rosterTimer: 0,
   prefetchDeferred: false,
   kanbanPaintDue: null,
   kanbanTimer: 0,
@@ -5294,6 +5296,15 @@ function paintGatewayWait() {
   const empty = $("#kanban-empty");
   const root = $("#kanban-board");
   const featureMissing = state.kanban.board?.unavailable && kanbanUnavailable(state.kanban.board.message);
+  const login = $("#kanban-login");
+  if (login) login.hidden = true;
+  const detail = $("#kanban-detail");
+  if (detail) {
+    detail.hidden = true;
+    detail.replaceChildren();
+  }
+  state.kanban.detailOpen = false;
+  if (root) root.hidden = false;
   if (empty && root && !featureMissing) {
     empty.hidden = false;
     empty.classList.remove("is-unavailable");
@@ -5377,10 +5388,12 @@ async function recoverGateway() {
   } catch (err) {
     const message = String(err);
     if (gatewayDown(message)) return false;
-    board = {
-      unavailable: true,
-      message: kanbanUnavailable(message) ? KANBAN_UNAVAILABLE : message,
-    };
+    board = message.includes(KANBAN_LOGIN)
+      ? { needs_login: true, message: KANBAN_LOGIN }
+      : {
+          unavailable: true,
+          message: kanbanUnavailable(message) ? KANBAN_UNAVAILABLE : message,
+        };
   } finally {
     probeGate.end("kanban");
   }
@@ -5433,6 +5446,50 @@ function applyRoster(synced) {
     state.bots = next;
   }
   renderBots();
+}
+
+function stopRosterSync() {
+  window.clearTimeout(state.rosterTimer);
+  state.rosterTimer = 0;
+}
+
+function armRosterSync() {
+  stopRosterSync();
+  const wait = rosterSyncDelayMs(Math.random);
+  state.rosterTimer = window.setTimeout(() => {
+    state.rosterTimer = 0;
+    void tickRoster().finally(() => {
+      if (state.mode === "hermes") armRosterSync();
+    });
+  }, wait);
+}
+
+async function tickRoster() {
+  if (state.mode !== "hermes" || !inTauri()) return;
+  const otherBusy = state.bots.some((bot) => probeGate.has(bot.id));
+  if (!rosterTickAllowed({
+    gatewayDown: gateway.isDown("gateway"),
+    rosterBusy: probeGate.has("roster"),
+    kanbanBusy: probeGate.has("kanban"),
+    otherBusy,
+  })) return;
+  let failedDown = false;
+  await claimProfiles(["roster"], async () => {
+    const before = state.settings?.bots || [];
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const synced = await invoke("sync_profiles", { quiet: true });
+      const added = profilesNeedingKeys(before, synced?.bots || []);
+      applyRoster(synced);
+      if (added.length && !synced.keyring_error) {
+        const names = added.map((bot) => bot.display_name || bot.profile).join("、");
+        setBanner(`${names} 未有 API 金鑰，請喺設定填寫。金鑰唔會自動產生。`, "info", "", "settings");
+      }
+    } catch (err) {
+      if (gatewayDown(String(err))) failedDown = true;
+    }
+  });
+  if (failedDown) noteGatewayDown();
 }
 
 async function refreshBotQuiet(id) {
@@ -6077,6 +6134,7 @@ async function sendClientCommand(id, text, action) {
 
 function useMock(reason, bannerAction = "") {
   cancelReconnect();
+  stopRosterSync();
   window.clearInterval(state.chatRefresh);
   state.chatRefresh = 0;
   state.mode = "mock";
@@ -6137,6 +6195,7 @@ function useHermes(settings) {
   renderBots();
   prefetchBotChats();
   armChatRefresh();
+  armRosterSync();
 }
 
 async function connectHermes(settings) {
@@ -6363,6 +6422,18 @@ function readInteractionForm() {
 
 function fillSettings(settings) {
   $("#gateway-url").value = settings?.gateway_base_url || "";
+  const kanbanUrl = $("#kanban-url");
+  if (kanbanUrl) {
+    kanbanUrl.value = settings?.kanban_base_url || "";
+    kanbanUrl.placeholder = settings?.kanban_server_url || "http://127.0.0.1:9119";
+  }
+  const kanbanPassword = $("#kanban-password");
+  if (kanbanPassword) {
+    kanbanPassword.value = "";
+    kanbanPassword.placeholder = settings?.has_kanban_login ? "已登入，留空代表保留" : "";
+  }
+  const kanbanUser = $("#kanban-user");
+  if (kanbanUser) kanbanUser.value = "";
   $("#dashboard-url").value = settings?.dashboard_base_url || "http://127.0.0.1:9119";
   $("#dashboard-token").value = "";
   $("#dashboard-token").placeholder = settings?.has_dashboard_token
@@ -6462,6 +6533,7 @@ async function saveSettings(event) {
     const settings = await invoke("save_settings", {
       input: {
         gateway_base_url: $("#gateway-url").value.trim(),
+        kanban_base_url: $("#kanban-url")?.value.trim() || "",
         dashboard_base_url: $("#dashboard-url").value.trim(),
         dashboard_token: $("#dashboard-token").value,
         clear_dashboard_token: false,
@@ -7034,6 +7106,13 @@ function setupComposer() {
   $("#btn-add-bot").addEventListener("click", () => $("#bot-editor").appendChild(rowFromBot()));
   $("#btn-probe").addEventListener("click", probeSaved);
   $("#btn-discover").addEventListener("click", discoverProfiles);
+  $("#btn-kanban-signin")?.addEventListener("click", () => {
+    void signInKanban();
+  });
+  $("#btn-kanban-login")?.addEventListener("click", () => {
+    openSettings();
+    $("#kanban-user")?.focus();
+  });
   $("#orb-menu-hide")?.addEventListener("click", () => {
     const id = $("#orb-menu")?.dataset.profile;
     if (id) void setProfileShown(id, false);
@@ -8690,6 +8769,14 @@ function openKanban() {
 
 function closeKanban() {
   state.kanbanOpen = false;
+  state.kanban.detailOpen = false;
+  const detail = $("#kanban-detail");
+  if (detail) {
+    detail.hidden = true;
+    detail.replaceChildren();
+  }
+  const board = $("#kanban-board");
+  if (board) board.hidden = false;
   if (kanbanDrag) {
     kanbanDrag.ghost?.remove();
     kanbanDrag.card?.classList.remove("is-dragging");
@@ -8744,7 +8831,9 @@ async function refreshKanban() {
       payload = await invoke("get_kanban_board", { board: KANBAN_BOARD });
     } catch (err) {
       const message = String(err);
-      if (kanbanUnavailable(message)) {
+      if (message.includes(KANBAN_LOGIN)) {
+        payload = { needs_login: true, message: KANBAN_LOGIN };
+      } else if (kanbanUnavailable(message)) {
         payload = { unavailable: true, message: KANBAN_UNAVAILABLE };
       } else if (gatewayDown(message)) {
         noteGatewayDown();
@@ -8790,6 +8879,31 @@ function mockKanban() {
   };
 }
 
+function hideKanbanLogin() {
+  const login = $("#kanban-login");
+  if (login) login.hidden = true;
+}
+
+function showKanbanLogin() {
+  const empty = $("#kanban-empty");
+  const root = $("#kanban-board");
+  const detail = $("#kanban-detail");
+  const login = $("#kanban-login");
+  state.kanban.detailOpen = false;
+  if (empty) {
+    empty.hidden = true;
+    empty.classList.remove("is-retry", "is-unavailable");
+  }
+  if (root) root.hidden = true;
+  if (detail) {
+    detail.hidden = true;
+    detail.replaceChildren();
+  }
+  if (login) login.hidden = false;
+  setKanbanError("");
+  scheduleHitSync();
+}
+
 function paintKanban(board) {
   if (backgroundBlocked()) {
     state.kanbanPaintDue = board;
@@ -8803,6 +8917,22 @@ function paintKanban(board) {
   const title = $("#kanban-title");
   if (title) title.textContent = board.board || "Board";
   if (!root || !empty) return;
+  if (board.needsLogin && !board.retry) {
+    showKanbanLogin();
+    return;
+  }
+  hideKanbanLogin();
+  if (state.kanban.detailOpen && !board.unavailable && !board.retry) {
+    scheduleHitSync();
+    return;
+  }
+  const detail = $("#kanban-detail");
+  if (detail) {
+    detail.hidden = true;
+    detail.replaceChildren();
+  }
+  state.kanban.detailOpen = false;
+  root.hidden = false;
   if (board.retry || (gateway.isDown("gateway") && board.unavailable && gatewayDown(board.message) && !kanbanUnavailable(board.message))) {
     empty.hidden = false;
     empty.classList.remove("is-unavailable");
@@ -8952,6 +9082,7 @@ function endKanbanPointer(event) {
   const drag = kanbanDrag;
   if (!drag || event.pointerId !== drag.pointerId) return;
   const drop = event.type !== "pointercancel" && drag.moved;
+  const openDetail = event.type === "pointerup" && !drag.moved;
   const col = drop ? columnAt(event.clientX, event.clientY) : null;
   const status = col?.dataset.status || "";
   const taskId = drag.id;
@@ -8973,8 +9104,129 @@ function endKanbanPointer(event) {
       dropKanban(taskId, status);
       resyncKanbanHover(point);
     });
+  } else if (openDetail) {
+    requestAnimationFrame(() => {
+      void openKanbanDetail(taskId);
+      resyncKanbanHover(point);
+    });
   } else {
     resyncKanbanHover(point);
+  }
+}
+
+async function openKanbanDetail(taskId) {
+  if (!taskId) return;
+  if (state.mode !== "hermes" || !inTauri()) {
+    const task = (state.kanban.board?.columns || [])
+      .flatMap((column) => column.tasks || [])
+      .find((item) => item.id === taskId);
+    if (!task) return;
+    paintKanbanDetail({ task, comments: [], events: [], runs: [] });
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const detail = await invoke("get_kanban_task", { id: taskId });
+    paintKanbanDetail(detail);
+  } catch (err) {
+    const message = String(err);
+    if (message.includes(KANBAN_LOGIN)) {
+      state.kanban.board = {
+        board: state.kanban.board?.board || KANBAN_BOARD,
+        columns: [],
+        unavailable: false,
+        needsLogin: true,
+        message: KANBAN_LOGIN,
+      };
+      state.kanban.fingerprint = boardFingerprint(state.kanban.board);
+      showKanbanLogin();
+      return;
+    }
+    setKanbanError(message);
+  }
+}
+
+function paintKanbanDetail(detail) {
+  const root = $("#kanban-detail");
+  const board = $("#kanban-board");
+  const empty = $("#kanban-empty");
+  if (!root) return;
+  state.kanban.detailOpen = true;
+  hideKanbanLogin();
+  if (empty) empty.hidden = true;
+  if (board) board.hidden = true;
+  setKanbanError("");
+  root.hidden = false;
+  root.replaceChildren();
+  const task = detail?.task || {};
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "icon-btn";
+  back.textContent = "返回";
+  back.addEventListener("click", () => {
+    state.kanban.detailOpen = false;
+    root.hidden = true;
+    root.replaceChildren();
+    if (board) board.hidden = false;
+    if (state.kanban.board) paintKanban(state.kanban.board);
+  });
+  const title = document.createElement("h2");
+  title.textContent = task.title || task.id || "";
+  const meta = document.createElement("p");
+  const bits = [task.assignee, task.status, task.priority].filter(Boolean);
+  meta.textContent = bits.join(" · ");
+  root.append(back, title, meta);
+  if (task.latest_summary) {
+    const summary = document.createElement("p");
+    summary.textContent = task.latest_summary;
+    root.append(summary);
+  }
+  if (task.body) {
+    const body = document.createElement("p");
+    body.textContent = task.body;
+    root.append(body);
+  }
+  const comments = Array.isArray(detail?.comments) ? detail.comments : [];
+  if (comments.length) {
+    const list = document.createElement("ul");
+    comments.forEach((comment) => {
+      const item = document.createElement("li");
+      const who = comment?.author ? `${comment.author}：` : "";
+      item.textContent = `${who}${comment?.body || ""}`;
+      list.append(item);
+    });
+    root.append(list);
+  }
+  scheduleHitSync();
+}
+
+async function signInKanban() {
+  if (!inTauri()) {
+    $("#settings-status").textContent = "瀏覽器預覽唔可以登入。";
+    return;
+  }
+  const username = $("#kanban-user")?.value.trim() || "";
+  const password = $("#kanban-password")?.value || "";
+  $("#settings-status").textContent = username || password ? "登入緊…" : "開緊瀏覽器登入…";
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const message = await invoke("sign_in_kanban", {
+      input: {
+        kanban_base_url: $("#kanban-url")?.value.trim() || "",
+        username,
+        password,
+      },
+    });
+    if ($("#kanban-password")) $("#kanban-password").value = "";
+    $("#settings-status").textContent = String(message || "已登入 Kanban");
+    if (state.kanban.board?.needsLogin) {
+      state.kanban.board = null;
+      state.kanban.fingerprint = "";
+    }
+    refreshKanban();
+  } catch (err) {
+    if ($("#kanban-password")) $("#kanban-password").value = "";
+    $("#settings-status").textContent = String(err);
   }
 }
 

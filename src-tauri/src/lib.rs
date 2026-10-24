@@ -1,6 +1,7 @@
 mod config;
 mod hermes;
 mod interaction;
+mod kanban_server;
 mod secrets;
 mod sse;
 
@@ -173,6 +174,9 @@ struct PublicSettings {
     mode: String,
     gateway_base_url: String,
     dashboard_base_url: String,
+    kanban_base_url: String,
+    kanban_server_url: String,
+    has_kanban_login: bool,
     has_dashboard_token: bool,
     keyring_error: Option<String>,
     interaction: PublicInteraction,
@@ -218,6 +222,8 @@ struct SaveSettings {
     gateway_base_url: String,
     #[serde(default)]
     dashboard_base_url: String,
+    #[serde(default)]
+    kanban_base_url: String,
     #[serde(default)]
     dashboard_token: String,
     #[serde(default)]
@@ -737,6 +743,18 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
             enabled: bot.enabled,
         });
     }
+    let has_kanban_login = [
+        secrets::KANBAN_ACCESS_ACCOUNT,
+        secrets::KANBAN_REFRESH_ACCOUNT,
+        secrets::KANBAN_COOKIE_ACCOUNT,
+    ]
+    .iter()
+    .any(|account| {
+        matches!(
+            secrets::get_kanban_secret(account),
+            Ok(Lookup::Value(value)) if !value.trim().is_empty()
+        )
+    });
     let has_dashboard_token = match secrets::get_dashboard_token() {
         Ok(Lookup::Value(token)) => !token.trim().is_empty(),
         Ok(Lookup::Missing) => false,
@@ -751,8 +769,11 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         .unwrap_or_else(interaction::platform_supports_global_input);
     Ok(PublicSettings {
         mode: cfg.mode().into(),
+        kanban_server_url: kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url),
+        kanban_base_url: cfg.kanban_base_url,
         gateway_base_url: cfg.gateway_base_url,
         dashboard_base_url: cfg.dashboard_base_url,
+        has_kanban_login,
         has_dashboard_token,
         keyring_error,
         interaction: PublicInteraction {
@@ -805,6 +826,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
             config::normalize_http_base(raw, false)?
         }
     };
+    let kanban_base_url = config::normalize_http_base(&input.kanban_base_url, true)?;
 
     let mut seen = std::collections::HashSet::new();
     let mut bots = Vec::new();
@@ -882,6 +904,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         version: 1,
         gateway_base_url,
         dashboard_base_url,
+        kanban_base_url,
         bots,
         interaction,
     };
@@ -1011,13 +1034,21 @@ async fn discover_profiles(
 async fn sync_profiles(
     app: AppHandle,
     state: State<'_, AppState>,
+    quiet: Option<bool>,
 ) -> Result<PublicSettings, String> {
+    let quiet = quiet.unwrap_or(false);
     let initial = load_config(&app)?;
     if initial.mode() != "hermes" {
         return load_public_settings(app);
     }
     let gateway = initial.gateway_base_url.clone();
     let dashboard = initial.dashboard_base_url.clone();
+    if quiet {
+        // A down gateway skips this tick. R-SY-08 owns the backoff.
+        hermes::require_gateway(&state.http, &gateway)
+            .await
+            .map_err(|err| explain(&err))?;
+    }
     // Discover outside the write lock. std::sync::MutexGuard is not Send,
     // so holding it across these awaits makes the command future unsendable.
     let mut hints = Vec::new();
@@ -1061,10 +1092,14 @@ async fn sync_profiles(
     let path = config_path(&app)?;
     let mut cfg = config::load(&path)?;
     if cfg.mode() == "hermes" {
-        let before = cfg.bots.clone();
-        config::merge_discovered_profiles(&mut cfg.bots, &hints);
-        if cfg.bots != before {
-            config::save(&path, &cfg)?;
+        if quiet {
+            config::apply_quiet_roster(&path, &hints)?;
+        } else {
+            let before = cfg.bots.clone();
+            config::merge_discovered_profiles(&mut cfg.bots, &hints);
+            if cfg.bots != before {
+                config::save(&path, &cfg)?;
+            }
         }
     }
     drop(guard);
@@ -1763,13 +1798,177 @@ async fn get_kanban_board(
             board: slug,
             columns: Vec::new(),
             unavailable: true,
+            needs_login: false,
             message: "未設定 gateway，而家係離線示範模式。".into(),
         });
     }
-    let (root, key) = kanban_auth(&cfg)?;
-    hermes::fetch_kanban_board(&state.http, &root, &key, &slug)
+    let origin = kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url);
+    let secrets = load_kanban_secrets();
+    let (board, next, changed) =
+        kanban_server::read_board(&state.http, &origin, &slug, secrets)
+            .await
+            .map_err(|err| explain(&err))?;
+    if changed {
+        let _ = store_kanban_secrets(&next);
+    }
+    Ok(board)
+}
+
+fn load_kanban_secrets() -> kanban_server::KanbanSecrets {
+    let read = |account| match secrets::get_kanban_secret(account) {
+        Ok(Lookup::Value(value)) => value,
+        _ => String::new(),
+    };
+    kanban_server::KanbanSecrets {
+        access_token: read(secrets::KANBAN_ACCESS_ACCOUNT),
+        refresh_token: read(secrets::KANBAN_REFRESH_ACCOUNT),
+        session_cookie: read(secrets::KANBAN_COOKIE_ACCOUNT),
+        username: read(secrets::KANBAN_USER_ACCOUNT),
+        password: read(secrets::KANBAN_PASSWORD_ACCOUNT),
+    }
+}
+
+fn store_kanban_secrets(secrets: &kanban_server::KanbanSecrets) -> Result<(), String> {
+    let write = |account: &str, value: &str| {
+        if value.trim().is_empty() {
+            secrets::delete_kanban_secret(account)
+        } else {
+            secrets::set_kanban_secret(account, value)
+        }
+    };
+    write(secrets::KANBAN_ACCESS_ACCOUNT, &secrets.access_token)?;
+    write(secrets::KANBAN_REFRESH_ACCOUNT, &secrets.refresh_token)?;
+    write(secrets::KANBAN_COOKIE_ACCOUNT, &secrets.session_cookie)?;
+    write(secrets::KANBAN_USER_ACCOUNT, &secrets.username)?;
+    write(secrets::KANBAN_PASSWORD_ACCOUNT, &secrets.password)?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct KanbanSignIn {
+    #[serde(default)]
+    kanban_base_url: String,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: String,
+}
+
+#[tauri::command]
+async fn sign_in_kanban(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: KanbanSignIn,
+) -> Result<String, String> {
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let typed = config::normalize_http_base(&input.kanban_base_url, true)?;
+    let origin = if typed.is_empty() {
+        kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url)
+    } else {
+        typed.clone()
+    };
+    if typed != cfg.kanban_base_url {
+        remember_kanban_url(&app, &typed)?;
+    }
+    if !input.username.trim().is_empty() || !input.password.is_empty() {
+        if input.username.trim().is_empty() || input.password.is_empty() {
+            return Err("帳號同密碼要一齊填".into());
+        }
+        let cookie = kanban_server::password_login(
+            &state.http,
+            &origin,
+            input.username.trim(),
+            &input.password,
+        )
         .await
-        .map_err(|err| explain(&err))
+        .map_err(|err| match err {
+            HermesError::Http { status: 401 | 403, .. } => "帳號或密碼唔啱".into(),
+            other => explain(&other),
+        })?;
+        let mut secrets = load_kanban_secrets();
+        secrets.username = input.username.trim().to_string();
+        secrets.password = input.password;
+        secrets.session_cookie = cookie;
+        secrets.access_token.clear();
+        store_kanban_secrets(&secrets)?;
+        return Ok("已登入 Kanban".into());
+    }
+    let tokens = kanban_server::native_pkce_login(
+        &state.http,
+        &origin,
+        std::time::Duration::from_secs(180),
+        |url| open_system_browser(url),
+    )
+    .await
+    .map_err(|err| explain(&err))?;
+    let mut secrets = load_kanban_secrets();
+    secrets.access_token = tokens.access_token;
+    secrets.refresh_token = tokens.refresh_token;
+    store_kanban_secrets(&secrets)?;
+    Ok("已登入 Kanban".into())
+}
+
+fn remember_kanban_url(app: &AppHandle, url: &str) -> Result<(), String> {
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(app)?;
+    let mut cfg = config::load(&path)?;
+    if cfg.kanban_base_url == url {
+        return Ok(());
+    }
+    cfg.kanban_base_url = url.to_string();
+    config::save(&path, &cfg)
+}
+
+fn open_system_browser(url: &str) -> Result<(), String> {
+    let result = if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(url).spawn()
+    };
+    result
+        .map(|_| ())
+        .map_err(|_| "開唔到系統瀏覽器。可以喺設定填帳號密碼。".into())
+}
+
+#[tauri::command]
+async fn get_kanban_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<kanban_server::KanbanTaskDetail, String> {
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Err("未揀卡片".into());
+    }
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let origin = kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url);
+    let secrets = load_kanban_secrets();
+    let (detail, next, changed) = kanban_server::read_task(&state.http, &origin, &id, secrets)
+        .await
+        .map_err(|err| {
+            if matches!(err, HermesError::Protocol(ref message) if message == hermes::KANBAN_LOGIN)
+            {
+                hermes::KANBAN_LOGIN.to_string()
+            } else {
+                explain(&err)
+            }
+        })?;
+    if changed {
+        let _ = store_kanban_secrets(&next);
+    }
+    Ok(detail)
 }
 
 #[derive(Deserialize)]
@@ -2345,6 +2544,8 @@ pub fn run() {
             list_commands,
             client_command,
             get_kanban_board,
+            get_kanban_task,
+            sign_in_kanban,
             patch_kanban_task,
             list_cron_jobs,
             debug_log_enabled,
@@ -2374,6 +2575,22 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{SETTINGS_SHORTCUT, SETTINGS_TRAY_LABEL};
+
+    #[test]
+    fn quiet_sync_appends_profiles_and_does_not_write_keys_or_sessions() {
+        let src = include_str!("lib.rs");
+        let start = src.find("async fn sync_profiles").expect("sync");
+        let rest = &src[start..];
+        let end = rest.find("async fn set_profile_enabled").expect("next");
+        let body = &rest[..end];
+        assert!(body.contains("quiet"));
+        assert!(body.contains("require_gateway"));
+        assert!(body.contains("apply_quiet_roster"));
+        assert!(!body.contains("set_profile_key"));
+        assert!(!body.contains("delete_profile_key"));
+        assert!(!body.contains("create_session"));
+        assert!(!body.contains("create_bot_chat"));
+    }
 
     #[test]
     fn tray_settings_label_shows_the_shortcut() {

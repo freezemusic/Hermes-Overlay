@@ -1852,6 +1852,45 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   color: #14142b;
 }
 
+/* R-KB-05: a 401 is a sign-in prompt. Same ink, no spinner. */
+.kanban-empty.is-login {
+  color: #14142b;
+}
+
+.kanban-login {
+  margin: var(--sp-6) var(--sp-2);
+}
+
+.kanban-login .icon-btn {
+  margin-top: var(--sp-3);
+}
+
+.kanban-detail {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 var(--sp-3) var(--sp-4);
+  color: #14142b;
+}
+
+.kanban-detail h2,
+.kanban-detail p,
+.kanban-detail li {
+  color: #14142b;
+}
+
+.kanban-detail h2 {
+  margin: 8px 0;
+  font: 500 var(--fs-hero)/1.15 var(--font-display);
+}
+
+.kanban-detail p,
+.kanban-detail li {
+  margin: 0 0 8px;
+  font: 400 var(--fs-body)/1.45 var(--font-body);
+  white-space: pre-wrap;
+}
+
 .kanban-error {
   margin: 0 var(--sp-3) var(--sp-2);
   padding: 6px 8px;

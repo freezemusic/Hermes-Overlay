@@ -71,6 +71,9 @@ pub struct AppConfig {
     pub gateway_base_url: String,
     #[serde(default = "default_dashboard")]
     pub dashboard_base_url: String,
+    /// Empty means the gateway host on port 9119. Not a secret.
+    #[serde(default)]
+    pub kanban_base_url: String,
     #[serde(default)]
     pub bots: Vec<BotConfig>,
     #[serde(default)]
@@ -129,6 +132,7 @@ impl Default for AppConfig {
             version: 1,
             gateway_base_url: String::new(),
             dashboard_base_url: default_dashboard(),
+            kanban_base_url: String::new(),
             bots: Vec::new(),
             interaction: InteractionConfig::default(),
         }
@@ -339,6 +343,50 @@ pub fn merge_discovered_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint
             enabled: true,
         });
     }
+}
+
+/// Appends profiles that are not already in the roster.
+/// Existing rows keep session id, enabled, colour, order, name, and detail.
+/// A profile missing from `found` stays. Returns true when a row was added.
+pub fn append_new_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint]) -> bool {
+    let mut added = false;
+    for hint in found {
+        if validate_profile(&hint.profile).is_err() {
+            continue;
+        }
+        if bots.iter().any(|bot| bot.profile == hint.profile) {
+            continue;
+        }
+        let name = hint.display_name.trim();
+        let display_name = if name.is_empty() {
+            hint.profile.clone()
+        } else {
+            name.to_string()
+        };
+        bots.push(BotConfig {
+            profile: hint.profile.clone(),
+            display_name,
+            color: parse_hermes_color(&hint.color).unwrap_or_else(|| color_for(&hint.profile)),
+            base_url: String::new(),
+            detail: hint.detail.trim().to_string(),
+            session_id: String::new(),
+            session_explicit: false,
+            session_anchor: 0.0,
+            enabled: true,
+        });
+        added = true;
+    }
+    added
+}
+
+/// Writes config.json only when a new profile was appended.
+pub fn apply_quiet_roster(path: &Path, found: &[ProfileHint]) -> Result<bool, String> {
+    let mut cfg = load(path)?;
+    let changed = append_new_profiles(&mut cfg.bots, found);
+    if changed {
+        save(path, &cfg)?;
+    }
+    Ok(changed)
 }
 
 pub fn set_bot_enabled(bots: &mut [BotConfig], profile: &str, enabled: bool) -> Result<(), String> {
@@ -813,5 +861,85 @@ other:
         );
         assert_eq!(bots[0].color, "#dd4b9e");
         assert_eq!(bots[1].color, "#aabbcc");
+    }
+
+    #[test]
+    fn quiet_roster_tick_keeps_bytes_until_a_new_profile_appears() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-roster-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let cfg = AppConfig {
+            bots: vec![BotConfig {
+                profile: "forex-forest".into(),
+                display_name: "Forest".into(),
+                color: "#112233".into(),
+                base_url: String::new(),
+                detail: "keep".into(),
+                session_id: "20261001_013827_25b1eb".into(),
+                session_explicit: true,
+                session_anchor: 12.5,
+                enabled: false,
+            }],
+            gateway_base_url: "http://10.10.24.33:8642".into(),
+            ..AppConfig::default()
+        };
+        save(&path, &cfg).unwrap();
+        let before = fs::read(&path).unwrap();
+        let same = [ProfileHint {
+            profile: "forex-forest".into(),
+            display_name: "Other".into(),
+            detail: "changed".into(),
+            color: "#abcdef".into(),
+        }];
+        assert_eq!(apply_quiet_roster(&path, &same).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.bots[0].color, "#112233");
+        assert_eq!(loaded.bots[0].session_id, "20261001_013827_25b1eb");
+        assert!(loaded.bots[0].session_explicit);
+        assert_eq!(loaded.bots[0].session_anchor, 12.5);
+        assert!(!loaded.bots[0].enabled);
+        assert_eq!(loaded.bots[0].display_name, "Forest");
+        assert_eq!(loaded.bots[0].detail, "keep");
+
+        let added = [
+            ProfileHint {
+                profile: "forex-forest".into(),
+                display_name: "Other".into(),
+                detail: "changed".into(),
+                color: "#abcdef".into(),
+            },
+            ProfileHint {
+                profile: "new-bot".into(),
+                display_name: "New".into(),
+                detail: String::new(),
+                color: String::new(),
+            },
+        ];
+        assert_eq!(apply_quiet_roster(&path, &added).unwrap(), true);
+        let with_new = fs::read(&path).unwrap();
+        assert_ne!(with_new, before);
+        let next = load(&path).unwrap();
+        assert_eq!(next.bots.len(), 2);
+        assert_eq!(next.bots[0].session_id, "20261001_013827_25b1eb");
+        assert_eq!(next.bots[0].color, "#112233");
+        assert!(!next.bots[0].enabled);
+        assert_eq!(next.bots[0].display_name, "Forest");
+        assert_eq!(next.bots[1].profile, "new-bot");
+        assert!(next.bots[1].session_id.is_empty());
+        assert!(next.bots[1].enabled);
+
+        assert_eq!(apply_quiet_roster(&path, &[]).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), with_new);
+        assert_eq!(load(&path).unwrap().bots.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

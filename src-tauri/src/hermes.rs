@@ -1075,7 +1075,10 @@ pub async fn fetch_overlay_commands(
 
 pub const KANBAN_EMPTY: &str = "未裝 overlay-slash kanban，看板唔會出現。";
 pub const KANBAN_UNAVAILABLE: &str = "呢部 Hermes 未有看板。伺服器冇提供看板功能。";
-pub const KANBAN_STATUSES: [&str; 6] = ["triage", "todo", "ready", "running", "blocked", "done"];
+pub const KANBAN_LOGIN: &str = "要登入 Kanban";
+pub const KANBAN_STATUSES: [&str; 8] = [
+    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
+];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct KanbanTask {
@@ -1090,6 +1093,18 @@ pub struct KanbanTask {
     pub priority: String,
     #[serde(default)]
     pub updated_at: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub latest_summary: String,
+    #[serde(default)]
+    pub comment_count: u64,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub started_at: String,
+    #[serde(default)]
+    pub completed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1103,6 +1118,7 @@ pub struct KanbanBoard {
     pub board: String,
     pub columns: Vec<KanbanColumn>,
     pub unavailable: bool,
+    pub needs_login: bool,
     pub message: String,
 }
 
@@ -1126,7 +1142,7 @@ fn json_string(value: &Value, key: &str) -> String {
     }
 }
 
-fn task_from(value: &Value, fallback_status: &str) -> Option<KanbanTask> {
+pub(crate) fn task_from(value: &Value, fallback_status: &str) -> Option<KanbanTask> {
     let id = json_string(value, "id");
     if id.is_empty() {
         return None;
@@ -1138,13 +1154,33 @@ fn task_from(value: &Value, fallback_status: &str) -> Option<KanbanTask> {
     if status == "archived" {
         return None;
     }
+    let created_at = json_time(value, "created_at");
+    let started_at = json_time(value, "started_at");
+    let completed_at = json_time(value, "completed_at");
+    let mut updated_at = json_string(value, "updated_at");
+    if updated_at.is_empty() {
+        updated_at = [&completed_at, &started_at, &created_at]
+            .into_iter()
+            .find(|item| !item.is_empty())
+            .cloned()
+            .unwrap_or_default();
+    }
     Some(KanbanTask {
         id,
         title: json_string(value, "title"),
         assignee: json_string(value, "assignee"),
         status,
         priority: json_string(value, "priority"),
-        updated_at: json_string(value, "updated_at"),
+        updated_at,
+        body: json_string(value, "body"),
+        latest_summary: json_string(value, "latest_summary"),
+        comment_count: value
+            .get("comment_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        created_at,
+        started_at,
+        completed_at,
     })
 }
 
@@ -1196,6 +1232,7 @@ pub fn parse_kanban_board(value: &Value, board: &str) -> KanbanBoard {
         board: board_name,
         columns,
         unavailable: false,
+        needs_login: false,
         message: String::new(),
     }
 }
@@ -1625,6 +1662,7 @@ pub async fn fetch_kanban_board(
             board: board.to_string(),
             columns: Vec::new(),
             unavailable: true,
+            needs_login: false,
             message: KANBAN_UNAVAILABLE.to_string(),
         });
     }
@@ -1834,6 +1872,25 @@ pub fn profiles_from_health_body(body: &str) -> Vec<DiscoveredProfile> {
         return Vec::new();
     }
     parse_dashboard_profiles(&value)
+}
+
+/// A failed health read means the gateway is down. Callers skip the roster write.
+pub async fn require_gateway(http: &Client, gateway: &str) -> Result<(), HermesError> {
+    let url = format!("{}/health", gateway.trim_end_matches('/'));
+    let resp = http
+        .get(url)
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+        .map_err(map_reqwest)?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(HermesError::Http {
+            status: resp.status().as_u16(),
+            body: String::new(),
+        })
+    }
 }
 
 pub async fn profiles_from_gateway_health(http: &Client, gateway: &str) -> Vec<DiscoveredProfile> {
@@ -2807,6 +2864,7 @@ mod tests {
             version: 1,
             gateway_base_url: "http://127.0.0.1:8642".into(),
             dashboard_base_url: "http://127.0.0.1:9119".into(),
+            kanban_base_url: String::new(),
             bots: vec![
                 bot("researcher", "20261015_researcher", true, 1792546080.05),
                 bot("writer", "20261015_writer", true, 1792546210.56),
@@ -3768,6 +3826,19 @@ data: {}\n\
         let seen = seen.lock().unwrap();
         assert!(matches!(seen[0], TurnEvent::Command(ref name) if name == "skill:arxiv"));
         assert!(matches!(seen[1], TurnEvent::Delta(ref text) if text == "計劃"));
+    }
+
+    #[tokio::test]
+    async fn a_closed_gateway_skips_the_quiet_roster_tick() {
+        let http = reqwest::Client::new();
+        let err = require_gateway(&http, "http://127.0.0.1:1")
+            .await
+            .expect_err("closed port");
+        let text = explain(&err);
+        assert!(
+            text.contains("連唔到") || text.contains("逾時") || text.contains("中斷"),
+            "{text}"
+        );
     }
 
     #[test]

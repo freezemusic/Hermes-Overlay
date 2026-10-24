@@ -120,6 +120,25 @@
           </label>
           <p class="hint">留空就用離線示範。有位址就連自架 Hermes API server（預設埠 8642，Bearer API_SERVER_KEY）。具名 profile 走 <code>/p/&lt;profile&gt;/</code>；<code>default</code> 用唔帶前綴嘅路徑。每個 profile 自己一埠嘅話，喺該 Bot 填專用位址。</p>
 
+          <fieldset>
+            <legend>Kanban server</legend>
+            <p class="hint">看板喺 hermes serve 嘅 9119，唔係 gateway 8642。預設用 gateway 嘅 host 加埠 9119。帳號密碼同登入資料只寫入呢個程式自己嘅鑰匙圈，唔會寫入設定檔，亦唔會改其他程式嘅登入。</p>
+            <label class="field">
+              <span>Kanban server</span>
+              <input id="kanban-url" type="url" placeholder="http://127.0.0.1:9119" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>帳號</span>
+              <input id="kanban-user" type="text" autocomplete="username" />
+            </label>
+            <label class="field">
+              <span>密碼</span>
+              <input id="kanban-password" type="password" autocomplete="current-password" />
+            </label>
+            <p class="hint">填帳號密碼就用密碼登入。兩格都留空就開系統瀏覽器登入。</p>
+            <button type="button" id="btn-kanban-signin" class="icon-btn">登入 Kanban</button>
+          </fieldset>
+
           <div class="roster-head">
             <h3>Bot 名單</h3>
             <button type="button" id="btn-add-bot" class="icon-btn">加入</button>
@@ -200,6 +219,11 @@
         </header>
         <p id="kanban-error" class="kanban-error" hidden></p>
         <p id="kanban-empty" class="kanban-empty" hidden></p>
+        <div id="kanban-login" class="kanban-login" hidden>
+          <p class="kanban-empty is-login">要登入 Kanban</p>
+          <button type="button" id="btn-kanban-login" class="icon-btn">登入</button>
+        </div>
+        <div id="kanban-detail" class="kanban-detail" hidden></div>
         <div id="kanban-board" class="kanban"></div>
       </aside>
 

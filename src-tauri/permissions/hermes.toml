@@ -50,8 +50,18 @@ commands.allow = ["client_command"]
 
 [[permission]]
 identifier = "allow-get-kanban-board"
-description = "Read an overlay-slash kanban board."
+description = "Read the kanban board from hermes serve on port 9119."
 commands.allow = ["get_kanban_board"]
+
+[[permission]]
+identifier = "allow-get-kanban-task"
+description = "Read one kanban card from hermes serve."
+commands.allow = ["get_kanban_task"]
+
+[[permission]]
+identifier = "allow-sign-in-kanban"
+description = "Sign in to the kanban server and store secrets in this app's keyring."
+commands.allow = ["sign_in_kanban"]
 
 [[permission]]
 identifier = "allow-patch-kanban-task"

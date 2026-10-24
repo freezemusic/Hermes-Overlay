@@ -188,7 +188,7 @@
 
 ## 6. 看板（R-KB）
 
-**R-KB-01** 看板有自己一粒光球（上緣正中，菱形），開出即時看板；欄序 triage、todo、ready、running、blocked、done，唔顯示 archived；拖卡改狀態寫返 Hermes。
+**R-KB-01** 看板有自己一粒光球（上緣正中，菱形），開出即時看板；欄序 triage、todo、ready、running、blocked、done，唔顯示 archived；拖卡改狀態寫返 Hermes。R-KB-05 把欄序擴成 triage、todo、scheduled、ready、running、blocked、review、done。
 - 來源：Devon；SPEC §8。驗收（盒）：拖卡後 `hermes kanban list` 顯示新狀態。狀態：❓ / ❓。
 
 **R-KB-02** 看板有變（新增、改狀態）而且面板未開，光球展開膠囊通知約 5 秒（「新增：標題」／「標題 → 狀態」／「看板有更新」）；第一次快照唔通知；面板開住唔通知。
@@ -199,6 +199,16 @@
 
 **R-KB-04** gateway 對看板路徑回 404（overlay-slash kanban route 唔喺呢部 Hermes）時，顯示「呢部 Hermes 未有看板。伺服器冇提供看板功能。」，字色 `#14142b`，靜態、冇動畫。唔好再寫「（404）」，以免全形括號自己跳一行。呢個係功能未提供，唔當逾時，唔進入 R-SY-08 嘅無限重試。
 - 來源：Devon（2026-10-22 手提：看板 endpoint 404）。驗收（單元＋盒）：404 回應之後看板停留喺上面嗰句，`gatewayDown` 係 false；真正連唔到或者逾時仍然行 R-SY-08。
+- 狀態：❓ / ❓。
+
+**R-KB-05** 看板讀 Devon 部機嘅 `hermes serve`（埠 9119，`/api/plugins/kanban`），唔係 gateway 8642。8642 嘅 `/api/jobs` 係排程；看板路徑 404 係預期。讀只用 GET：`/api/plugins/kanban/board` 同 `/api/plugins/kanban/tasks/{id}`。欄序 triage、todo、scheduled、ready、running、blocked、review、done。撳卡片開詳情（標題、內文、負責人、狀態、優先、latest_summary、留言）。拖卡仍然走原來嘅 overlay PATCH（R-KB-01），唔好對 9119 嘅看板路徑發 POST。
+
+設定有 Kanban server 位址。留空就用 gateway 嘅 host 加埠 9119。登入由 Devon 自己填：優先系統瀏覽器 PKCE（`GET /auth/native/authorize`、`POST /auth/native/token`、`POST /auth/native/refresh`）；帳號密碼一齊填就用 `POST /auth/password-login`（`provider: basic`）攞 session cookie。401 `invalid_or_expired_session` 先靜靜刷新或再登入一次。帳號、密碼、cookie、access、refresh 只放呢個程式自己嘅鑰匙圈（`com.freezemusic.hermes-overlay` 嘅 kanban 帳戶），唔寫 log、唔寫 config.json、唔讀寫 `dashboard-session-token`、`profile:*`，亦唔用其他程式嘅鑰匙圈。
+
+401 顯示平靜「要登入 Kanban」加登入掣，唔當錯誤、唔當未有看板、唔進入 R-SY-08。真正 404 先用 R-KB-04。連唔到或者逾時先用 R-SY-08。
+
+- 來源：Devon（2026-10-22，Hermes 0.22.2，`http://10.10.24.33:9119`）。
+- 驗收（單元，假 9119）：401 之後刷新再 GET 到欄同卡片；密碼登入儲 cookie；404 仍然係 R-KB-04；閂咗嘅埠係連線錯誤；登入狀態唔當 404。金鑰唔入 config.json。
 - 狀態：❓ / ❓。
 
 ---
@@ -323,6 +333,16 @@
 **R-SY-08** Hermes gateway 連唔到或者逾時，看板、排程、Bot 名單／profile、同每個 Bot 嘅對話都要自己接返，唔使重開程式、亦唔使人手撳。退避大約 5 秒、10 秒、20 秒，之後封頂 60 秒，每次上下 20%。網路恢復、系統由睡眠醒返、或者打開受影響嘅面板，即刻再試，而且唔好跳級：打開面板觸發嘅即時重試如果失敗，停留喺而家嗰級（例如 20 秒），唔好直接去 60 秒封頂。重試期間看板／光球顯示平靜狀態「連唔到 Hermes，自動重試中…」加下次再試時間，唔顯示原始錯誤；字色 `#14142b`，對比 ≥4.5:1（R-VS-01）。唔可以有閒置循環動畫（R-PN-08）：唔轉圈，靜態狀態加倒數文字就得。恢復之後每個消費者刷新一次並清走錯誤。重試同重連永遠唔建立 session、亦唔離開 Bot Chat（0 次建立，R-SS-01…04）。每個 profile 同時最多一個進行中嘅探測。v92 盒：打開面板失敗之後倒數顯示「49 秒」（+15s），跳過咗 20 秒級。
 - 來源：Devon（2026-10-22）。
 - 驗收：停掉假 gateway，面板出重試狀態；再開 gateway，喺退避窗口加 1 秒內看板同 Bot 自己出現；全程 0 次建立 session。CI／單元測試覆蓋假 gateway 由落到起。
+- 狀態：❓ / ❓。
+
+**R-SY-09** 連住 Hermes 時，大約每 60 秒（上下 20%）靜靜對一次 profile 名單，唔使重開程式。用 `claimProfiles(["roster"])`，同看板、排程、其他 Bot 嘅探測唔重疊。Gateway 落咗就跳過呢一輪，交給 R-SY-08。
+
+新 profile 出光球，然後用現有 `profilesNeedingKeys` 提示 Devon 自己填金鑰。唔自動填金鑰，唔改共用鑰匙圈項目。對 Hermes 只讀，唔建立 session。
+
+config.json 只有名單真係多咗 profile 先寫。冇變動嘅每一輪，檔案位元組保持一樣。已有 Bot 嘅 sessionId、enabled、顏色、次序、名稱、詳情都唔改。計時器唔刪走消失或者隱藏嘅 profile，亦唔因為今次搵唔到就標做不可用（一次讀取失敗唔可以隱藏晒所有人）。
+
+- 來源：Devon。而家 `sync_profiles` 只喺啟動 `connectHermes` 同 `recoverGateway` 跑。
+- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔。
 - 狀態：❓ / ❓。
 
 ---
