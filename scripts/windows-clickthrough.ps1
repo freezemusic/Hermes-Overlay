@@ -267,12 +267,45 @@ $orb = 44
 $settings = @{ x = [int]($w - $pad - 152 - $orb / 2); y = [int]($h - $pad - $orb / 2) }
 $kanban = @{ x = [int]($w / 2); y = [int]($pad + $orb / 2) }
 $cron = @{ x = [int]($w - $pad - $orb / 2); y = [int][Math]::Round($h * 0.38) }
-# One field bot sits on the top edge (distributeEdges weight, t=0.21).
+# One field bot uses the first distributeEdges slot. That slot does not
+# depend on the bot count, and it stays clear of kanban, cron, and settings.
+# On 1024x768 it is the right edge, not the old top-edge t=0.21.
 # Its open panel is 420x560 anchored on that orb. Settings is
 # min(680, 92vw) by min(86vh, 760), anchored on the settings orb.
 # The blank point has to miss both of those rects. On 1024x768,
 # (200, h/2) is inside settings, so it is not a pass-through sample.
-$field = @{ x = [int][Math]::Round($w * 0.08 + $w * 0.84 * 0.21); y = [int]($pad + $orb / 2) }
+function Slot-Point([string]$edge, [double]$t) {
+  $x0 = $w * 0.08
+  $y0 = $h * 0.08
+  $spanX = $w * 0.84
+  $spanY = $h * 0.84
+  if ($edge -eq "top") { return @{ x = ($x0 + $spanX * $t); y = ($pad + $orb / 2.0) } }
+  if ($edge -eq "bottom") { return @{ x = ($x0 + $spanX * $t); y = ($h - $pad - $orb / 2.0) } }
+  if ($edge -eq "left") { return @{ x = ($pad + $orb / 2.0); y = ($y0 + $spanY * $t) } }
+  return @{ x = ($w - $pad - $orb / 2.0); y = ($y0 + $spanY * $t) }
+}
+function Point-Dist($a, $b) {
+  $dx = [double]$a.x - [double]$b.x
+  $dy = [double]$a.y - [double]$b.y
+  return [Math]::Sqrt(($dx * $dx) + ($dy * $dy))
+}
+$chromeGap = $orb + 8
+$slotSpan = [Math]::Max(1.0, [Math]::Min([double]$w, [double]$h) * 0.84)
+$step = [Math]::Min(0.18, [Math]::Max(0.07, ($chromeGap + 4) / $slotSpan))
+$fieldPoint = $null
+for ($t = $step; -not $fieldPoint -and $t -le (1 - $step * 0.5 + 0.000001); $t += $step) {
+  $rounded = [Math]::Round($t * 1000) / 1000
+  foreach ($edge in @("right", "bottom", "left", "top")) {
+    $cand = Slot-Point $edge $rounded
+    $blocked = $false
+    foreach ($chrome in @($kanban, $cron, $settings)) {
+      if ((Point-Dist $cand $chrome) -le $chromeGap) { $blocked = $true; break }
+    }
+    if (-not $blocked) { $fieldPoint = $cand; break }
+  }
+}
+if (-not $fieldPoint) { throw "no field slot clear of kanban, cron, and settings" }
+$field = @{ x = [int][Math]::Round($fieldPoint.x); y = [int][Math]::Round($fieldPoint.y) }
 $settingsW = [Math]::Min(680.0, $w * 0.92)
 $settingsH = [Math]::Min($h * 0.86, 760.0)
 $orbR = $orb / 2.0
@@ -680,8 +713,8 @@ try {
       } else {
         Note-Ok "plan-close-on-screen" "$($closer.x),$($closer.y)"
       }
-      # Kanban's orb sits under the field panel on a 1024px runner.
-      # Ctrl+click must reach that orb (R-CT-02), not the window behind.
+      # Ctrl+click must reach the kanban orb while the field panel is open
+      # (R-CT-02), not the window behind.
       # The field plan seam keeps hit flushes deferred, so close:kanban is not
       # in the frozen announce. Click the centre of the measured 關閉 button.
       # seatKanbanClose moves that button clear of the plan's 預覽/原文 row.
