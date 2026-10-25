@@ -818,9 +818,18 @@ test("screen edge and slot centres keep the orb on that edge", () => {
   assert.equal(screenEdge(top.x, top.y, 1280, 800), "top");
   const taskbar = { bottom: 48 };
   const parked = slotPoint("bottom", 0.5, 1280, 800, 42, ORB, taskbar);
-  assert.equal(parked.y, 800 - 48 - 42 - ORB / 2);
+  assert.equal(parked.y, 800 - 48 - 12 - ORB / 2);
+  assert.equal(fixedOrbPoint("settings", 1280, 800, 42, ORB, taskbar).y, 800 - 48 - 12 - ORB / 2);
+  assert.equal(slotPoint("bottom", 0.5, 1280, 800).y, 800 - 12 - ORB / 2);
   const stillTop = slotPoint("top", 0.21, 1280, 800, 42, ORB, taskbar);
   assert.equal(stillTop.y, 42 + ORB / 2);
+  const probe = readFileSync(new URL("../scripts/windows-clickthrough.ps1", import.meta.url), "utf8");
+  assert.equal(
+    probe.includes("$field = @{ x = [int][Math]::Round($w * 0.08 + $w * 0.84 * 0.21); y = [int]($pad + $orb / 2) }"),
+    true,
+  );
+  assert.equal(probe.includes("$frameTop + $frameH - 12 - $orb / 2"), true);
+  assert.equal(probe.includes("$frameTop + $frameH - $pad - $orb / 2"), false);
   const covered = orbCoveredBy({ x: 500, y: 8, w: 44, h: 44 }, [{ x: 200, y: 40, w: 420, h: 80 }]);
   assert.equal(covered, true);
   assert.equal(orbCoveredBy({ x: 20, y: 700, w: 44, h: 44 }, [{ x: 200, y: 40, w: 420, h: 80 }]), false);

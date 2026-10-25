@@ -216,8 +216,12 @@ pub fn orb_near_opacity(min_opacity: f64) -> f64 {
     floor.clamp(0.05, 0.30)
 }
 
+/// Bottom reserve when no work area is reported. A reported full-screen work area stays 0.
+pub const WORK_AREA_FALLBACK_BOTTOM: u32 = 48;
+
 /// CSS-pixel insets of the work area inside the monitor.
-/// Rects are physical pixels: x, y, width, height. Returns top, right, bottom, left.
+/// Rects are in one pixel space: x, y, width, height. Returns top, right, bottom, left.
+/// A missing work rect becomes zeros here. Call `reported_work_insets` to tell that apart.
 pub fn work_area_insets(
     monitor_x: i32,
     monitor_y: i32,
@@ -229,8 +233,26 @@ pub fn work_area_insets(
     work_h: i32,
     scale: f64,
 ) -> (u32, u32, u32, u32) {
+    reported_work_insets(
+        monitor_x, monitor_y, monitor_w, monitor_h, work_x, work_y, work_w, work_h, scale,
+    )
+    .unwrap_or((0, 0, 0, 0))
+}
+
+/// `None` when the work rect was not reported. A work rect that matches the monitor is zeros.
+pub fn reported_work_insets(
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_w: i32,
+    monitor_h: i32,
+    work_x: i32,
+    work_y: i32,
+    work_w: i32,
+    work_h: i32,
+    scale: f64,
+) -> Option<(u32, u32, u32, u32)> {
     if monitor_w <= 0 || monitor_h <= 0 || work_w <= 0 || work_h <= 0 {
-        return (0, 0, 0, 0);
+        return None;
     }
     let scale = if scale.is_finite() && scale > 0.01 {
         scale
@@ -242,11 +264,327 @@ pub fn work_area_insets(
     let left = px(work_x - monitor_x);
     let right = px((monitor_x + monitor_w) - (work_x + work_w));
     let bottom = px((monitor_y + monitor_h) - (work_y + work_h));
-    (top, right, bottom, left)
+    Some((top, right, bottom, left))
 }
 
-/// Work-area insets in CSS pixels. Zero on every edge when the work area
-/// matches the monitor, which is the Linux and headless case.
+/// EWMH `_NET_WM_STRUT_PARTIAL`. Widths are pixels in from the X screen edges.
+#[derive(Clone, Copy, Debug)]
+pub struct WmStrut {
+    pub left: i32,
+    pub right: i32,
+    pub top: i32,
+    pub bottom: i32,
+    pub left_start: i32,
+    pub left_end: i32,
+    pub right_start: i32,
+    pub right_end: i32,
+    pub top_start: i32,
+    pub top_end: i32,
+    pub bottom_start: i32,
+    pub bottom_end: i32,
+}
+
+fn ranges_overlap(a0: i32, a1: i32, b0: i32, b1: i32) -> bool {
+    a0 <= b1 && b0 <= a1
+}
+
+fn strut_reserves(strut: &WmStrut) -> bool {
+    strut.left > 0 || strut.right > 0 || strut.top > 0 || strut.bottom > 0
+}
+
+/// Shrink the monitor by struts and by `_NET_WORKAREA` (x, y, w, h).
+/// `None` when neither source was reported. A full-screen work area is zeros.
+pub fn insets_from_struts(
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_w: i32,
+    monitor_h: i32,
+    screen_w: i32,
+    screen_h: i32,
+    struts: &[WmStrut],
+    workarea: Option<(i32, i32, i32, i32)>,
+    scale: f64,
+) -> Option<(u32, u32, u32, u32)> {
+    if monitor_w <= 0 || monitor_h <= 0 || screen_w <= 0 || screen_h <= 0 {
+        return None;
+    }
+    let reserved: Vec<&WmStrut> = struts.iter().filter(|strut| strut_reserves(strut)).collect();
+    if reserved.is_empty() && workarea.is_none() {
+        return None;
+    }
+    let mut x = monitor_x;
+    let mut y = monitor_y;
+    let mut right = monitor_x + monitor_w;
+    let mut bottom = monitor_y + monitor_h;
+    let mx1 = monitor_x + monitor_w - 1;
+    let my1 = monitor_y + monitor_h - 1;
+    for strut in reserved {
+        if strut.left > 0 && ranges_overlap(strut.left_start, strut.left_end, monitor_y, my1) {
+            x = x.max(strut.left);
+        }
+        if strut.right > 0 && ranges_overlap(strut.right_start, strut.right_end, monitor_y, my1) {
+            right = right.min(screen_w - strut.right);
+        }
+        if strut.top > 0 && ranges_overlap(strut.top_start, strut.top_end, monitor_x, mx1) {
+            y = y.max(strut.top);
+        }
+        if strut.bottom > 0 && ranges_overlap(strut.bottom_start, strut.bottom_end, monitor_x, mx1)
+        {
+            bottom = bottom.min(screen_h - strut.bottom);
+        }
+    }
+    if let Some((wx, wy, ww, wh)) = workarea {
+        if ww > 0 && wh > 0 {
+            x = x.max(wx);
+            y = y.max(wy);
+            right = right.min(wx + ww);
+            bottom = bottom.min(wy + wh);
+        }
+    }
+    let width = right - x;
+    let height = bottom - y;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    reported_work_insets(
+        monitor_x, monitor_y, monitor_w, monitor_h, x, y, width, height, scale,
+    )
+}
+
+fn inset_weight(insets: (u32, u32, u32, u32)) -> u32 {
+    insets
+        .0
+        .saturating_add(insets.1)
+        .saturating_add(insets.2)
+        .saturating_add(insets.3)
+}
+
+/// The largest reported inset wins, so a dock strut beats a zero GDK read.
+/// Every `None` means the work area was not reported: reserve the bottom.
+pub fn pick_reported_insets(reads: &[Option<(u32, u32, u32, u32)>]) -> (u32, u32, u32, u32) {
+    let mut best: Option<(u32, u32, u32, u32)> = None;
+    for read in reads {
+        let Some(insets) = *read else {
+            continue;
+        };
+        best = Some(match best {
+            None => insets,
+            Some(current) => {
+                if inset_weight(insets) > inset_weight(current) {
+                    insets
+                } else {
+                    current
+                }
+            }
+        });
+    }
+    best.unwrap_or((0, 0, WORK_AREA_FALLBACK_BOTTOM, 0))
+}
+
+#[cfg(target_os = "linux")]
+fn x_monitor_space(
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_w: i32,
+    monitor_h: i32,
+    screen_w: i32,
+    screen_h: i32,
+    scale: f64,
+) -> (i32, i32, i32, i32, f64) {
+    let inside = |x: i32, y: i32, w: i32, h: i32| {
+        w > 0 && h > 0 && x >= -1 && y >= -1 && x + w <= screen_w + 2 && y + h <= screen_h + 2
+    };
+    if inside(monitor_x, monitor_y, monitor_w, monitor_h) {
+        return (monitor_x, monitor_y, monitor_w, monitor_h, scale);
+    }
+    let scale = if scale.is_finite() && scale > 1.01 {
+        scale
+    } else {
+        1.0
+    };
+    let logical_x = (f64::from(monitor_x) / scale).round() as i32;
+    let logical_y = (f64::from(monitor_y) / scale).round() as i32;
+    let logical_w = (f64::from(monitor_w) / scale).round() as i32;
+    let logical_h = (f64::from(monitor_h) / scale).round() as i32;
+    if inside(logical_x, logical_y, logical_w, logical_h) {
+        return (logical_x, logical_y, logical_w, logical_h, 1.0);
+    }
+    let screen_scale = if (screen_h - monitor_h).abs() <= 2 {
+        scale
+    } else {
+        1.0
+    };
+    (0, 0, screen_w, screen_h, screen_scale)
+}
+
+#[cfg(target_os = "linux")]
+fn card_at(values: &[u32], index: usize) -> i32 {
+    values.get(index).copied().unwrap_or(0) as i32
+}
+
+#[cfg(target_os = "linux")]
+fn strut_from_partial(values: &[u32]) -> WmStrut {
+    WmStrut {
+        left: card_at(values, 0),
+        right: card_at(values, 1),
+        top: card_at(values, 2),
+        bottom: card_at(values, 3),
+        left_start: card_at(values, 4),
+        left_end: card_at(values, 5),
+        right_start: card_at(values, 6),
+        right_end: card_at(values, 7),
+        top_start: card_at(values, 8),
+        top_end: card_at(values, 9),
+        bottom_start: card_at(values, 10),
+        bottom_end: card_at(values, 11),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn strut_from_full(values: &[u32], screen_w: i32, screen_h: i32) -> WmStrut {
+    WmStrut {
+        left: card_at(values, 0),
+        right: card_at(values, 1),
+        top: card_at(values, 2),
+        bottom: card_at(values, 3),
+        left_start: 0,
+        left_end: screen_h.saturating_sub(1),
+        right_start: 0,
+        right_end: screen_h.saturating_sub(1),
+        top_start: 0,
+        top_end: screen_w.saturating_sub(1),
+        bottom_start: 0,
+        bottom_end: screen_w.saturating_sub(1),
+    }
+}
+
+/// X11 `_NET_WORKAREA` plus client and root-child struts. `None` when the display or the properties are missing.
+#[cfg(target_os = "linux")]
+fn x11_reported_insets(
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_w: i32,
+    monitor_h: i32,
+    scale: f64,
+) -> Option<(u32, u32, u32, u32)> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+
+    let (conn, screen_num) = x11rb::connect(None).ok()?;
+    let (root, screen_w, screen_h) = {
+        let screen = conn.setup().roots.get(screen_num)?;
+        (
+            screen.root,
+            screen.width_in_pixels as i32,
+            screen.height_in_pixels as i32,
+        )
+    };
+    let atom = |name: &[u8]| -> Option<u32> {
+        let reply = conn.intern_atom(true, name).ok()?.reply().ok()?;
+        if reply.atom == 0 {
+            None
+        } else {
+            Some(reply.atom)
+        }
+    };
+    let cards = |window: u32, prop: u32| -> Option<Vec<u32>> {
+        let reply = conn
+            .get_property(false, window, prop, AtomEnum::ANY, 0, 4096)
+            .ok()?
+            .reply()
+            .ok()?;
+        let values: Vec<u32> = reply.value32()?.collect();
+        Some(values)
+    };
+    let workarea = atom(b"_NET_WORKAREA").and_then(|prop| {
+        let values = cards(root, prop)?;
+        if values.len() < 4 {
+            return None;
+        }
+        let mut index = 0usize;
+        if let Some(desk_prop) = atom(b"_NET_CURRENT_DESKTOP") {
+            if let Some(desk) = cards(root, desk_prop) {
+                if let Some(current) = desk.first().copied() {
+                    let slot = current as usize;
+                    if slot.saturating_mul(4).saturating_add(4) <= values.len() {
+                        index = slot * 4;
+                    }
+                }
+            }
+        }
+        Some((
+            values[index] as i32,
+            values[index + 1] as i32,
+            values[index + 2] as i32,
+            values[index + 3] as i32,
+        ))
+    });
+    let mut windows = Vec::new();
+    if let Some(prop) = atom(b"_NET_CLIENT_LIST") {
+        if let Some(ids) = cards(root, prop) {
+            windows.extend(ids);
+        }
+    }
+    if let Ok(cookie) = conn.query_tree(root) {
+        if let Ok(tree) = cookie.reply() {
+            for child in tree.children {
+                if !windows.contains(&child) {
+                    windows.push(child);
+                }
+            }
+        }
+    }
+    let partial_atom = atom(b"_NET_WM_STRUT_PARTIAL");
+    let strut_atom = atom(b"_NET_WM_STRUT");
+    let mut struts = Vec::new();
+    for window in windows {
+        if let Some(prop) = partial_atom {
+            if let Some(values) = cards(window, prop) {
+                if values.len() >= 12 {
+                    struts.push(strut_from_partial(&values));
+                    continue;
+                }
+            }
+        }
+        if let Some(prop) = strut_atom {
+            if let Some(values) = cards(window, prop) {
+                if values.len() >= 4 {
+                    struts.push(strut_from_full(&values, screen_w, screen_h));
+                }
+            }
+        }
+    }
+    let (x, y, w, h, x_scale) = x_monitor_space(
+        monitor_x, monitor_y, monitor_w, monitor_h, screen_w, screen_h, scale,
+    );
+    insets_from_struts(x, y, w, h, screen_w, screen_h, &struts, workarea, x_scale)
+}
+
+/// GDK geometry and workarea share one pixel space, so the scale passed in is 1.
+#[cfg(target_os = "linux")]
+fn gdk_reported_insets() -> Option<(u32, u32, u32, u32)> {
+    use gtk::gdk::prelude::MonitorExt;
+
+    let display = gtk::gdk::Display::default()?;
+    let monitor = display.primary_monitor().or_else(|| display.monitor(0))?;
+    let geo = monitor.geometry();
+    let work = monitor.workarea();
+    reported_work_insets(
+        geo.x(),
+        geo.y(),
+        geo.width(),
+        geo.height(),
+        work.x(),
+        work.y(),
+        work.width(),
+        work.height(),
+        1.0,
+    )
+}
+
+/// Work-area insets in CSS pixels.
+/// Windows keeps `Monitor::work_area()`. Linux also reads GDK and X11 struts.
+/// No monitor, and on Linux no successful read, reserves 48px at the bottom.
 pub fn monitor_work_insets(window: &tauri::WebviewWindow) -> (u32, u32, u32, u32) {
     let Some(monitor) = window
         .current_monitor()
@@ -254,13 +592,13 @@ pub fn monitor_work_insets(window: &tauri::WebviewWindow) -> (u32, u32, u32, u32
         .flatten()
         .or_else(|| window.primary_monitor().ok().flatten())
     else {
-        return (0, 0, 0, 0);
+        return (0, 0, WORK_AREA_FALLBACK_BOTTOM, 0);
     };
     let scale = window.scale_factor().unwrap_or(1.0);
     let pos = monitor.position();
     let size = monitor.size();
     let work = monitor.work_area();
-    work_area_insets(
+    let tauri_insets = reported_work_insets(
         pos.x,
         pos.y,
         size.width as i32,
@@ -270,7 +608,17 @@ pub fn monitor_work_insets(window: &tauri::WebviewWindow) -> (u32, u32, u32, u32
         work.size.width as i32,
         work.size.height as i32,
         scale,
-    )
+    );
+    #[cfg(target_os = "linux")]
+    {
+        let x11 = x11_reported_insets(pos.x, pos.y, size.width as i32, size.height as i32, scale);
+        let gdk = gdk_reported_insets();
+        return pick_reported_insets(&[x11, gdk, tauri_insets]);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        tauri_insets.unwrap_or((0, 0, WORK_AREA_FALLBACK_BOTTOM, 0))
+    }
 }
 
 fn orb_visual_opacity(distance: f64, held: bool, min_opacity: f64) -> f64 {
@@ -3468,6 +3816,52 @@ mod tests {
 
     fn frame_of<'a>(frames: &'a [ElementFrame], id: &str) -> &'a ElementFrame {
         frames.iter().find(|item| item.id == id).unwrap()
+    }
+
+    fn bottom_dock(width: i32) -> WmStrut {
+        WmStrut {
+            left: 0,
+            right: 0,
+            top: 0,
+            bottom: width,
+            left_start: 0,
+            left_end: 0,
+            right_start: 0,
+            right_end: 0,
+            top_start: 0,
+            top_end: 0,
+            bottom_start: 0,
+            bottom_end: 1919,
+        }
+    }
+
+    #[test]
+    fn work_area_bottom_reserve_and_struts() {
+        assert_eq!(work_area_insets(0, 0, 1920, 1080, 0, 0, 1920, 1040, 1.0), (0, 0, 40, 0));
+        assert_eq!(work_area_insets(0, 0, 2560, 1440, 0, 0, 2560, 1400, 2.0), (0, 0, 20, 0));
+        assert_eq!(work_area_insets(0, 0, 1280, 800, 0, 0, 1280, 800, 1.0), (0, 0, 0, 0));
+        assert_eq!(reported_work_insets(0, 0, 1920, 1080, 0, 0, 0, 0, 1.0), None);
+        assert_eq!(WORK_AREA_FALLBACK_BOTTOM, 48);
+        let dock = insets_from_struts(0, 0, 1920, 1080, 1920, 1080, &[bottom_dock(56)], None, 1.0);
+        assert_eq!(dock, Some((0, 0, 56, 0)));
+        let scaled = insets_from_struts(0, 0, 1920, 1080, 1920, 1080, &[bottom_dock(80)], None, 2.0);
+        assert_eq!(scaled, Some((0, 0, 40, 0)));
+        let area = insets_from_struts(0, 0, 1920, 1080, 1920, 1080, &[], Some((0, 0, 1920, 1040)), 1.0);
+        assert_eq!(area, Some((0, 0, 40, 0)));
+        assert_eq!(insets_from_struts(0, 0, 1920, 1080, 1920, 1080, &[], None, 1.0), None);
+        assert_eq!(
+            insets_from_struts(0, 0, 1920, 1080, 1920, 1080, &[], Some((0, 0, 1920, 1080)), 1.0),
+            Some((0, 0, 0, 0))
+        );
+        assert_eq!(pick_reported_insets(&[None, None, None]), (0, 0, 48, 0));
+        assert_eq!(
+            pick_reported_insets(&[Some((0, 0, 56, 0)), Some((0, 0, 0, 0)), None]),
+            (0, 0, 56, 0)
+        );
+        assert_eq!(
+            pick_reported_insets(&[Some((0, 0, 0, 0)), Some((0, 0, 0, 0))]),
+            (0, 0, 0, 0)
+        );
     }
 
     #[test]

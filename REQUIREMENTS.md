@@ -180,11 +180,14 @@
 **R-AD-04** 設定面板密度（頁尾結束／儲存唔改）。說明最少 12px／1.5，`#14142b` 70%。欄位標籤 12px Barlow Condensed `#0000f2`。輸入 13px。標籤同行距 12px，組距 20px，legend 上面 24px。剔選係 14×14，包括每個 profile 嘅「顯示」，1px `rgba(0,0,242,.4)` 邊，圓角 2px；剔中填 `#0000f2` 加白 1.5px 剔。`.bot-row` 唔好再寫 16px。顏色格 20×20，圓角 2px，1px `rgba(20,20,43,.2)` 邊。「永遠顯示員工名」字唔改。
 - 驗收：設定面板用上述字級同自訂剔選；頁尾掣維持原樣。profile「顯示」剔選係 14×14。
 
-**R-AD-05** Windows 工作區。視窗仍然蓋滿成個螢幕。邊位光球放喺 work area 入面，`--edge-pad` 由工作區邊度起計。`fit_overlay` 交 `inset_top/right/bottom/left`（CSS px）。其他平台工作區等於螢幕時 insets 係 0，經典邊位唔郁。Windows 點擊穿透探測嘅頂邊 t=0.21 唔改。探測腳本用 WorkingArea 同 Bounds 嘅差做同一組 inset，設定、看板、排程跟住；頂邊 field 公式維持 `$w * 0.08 + $w * 0.84 * 0.21` 同 `pad + orb/2`。視窗同空白點仍然用成個 Bounds。
-- 驗收：底邊 inset 48px 時，底邊光球 y 係 `height - inset - pad - orb/2`；頂邊 t=0.21 嘅 y 仍然係 `pad + orb/2`。
+**R-AD-05** Windows 工作區。視窗仍然蓋滿成個螢幕。邊位光球放喺 work area 入面。頂、左、右嘅 `--edge-pad` 由工作區邊度起計。底邊光球中心係 `workArea.bottom - 12 - orb/2`：光暈可以蓋過工作列，44px 光碟唔可以。`fit_overlay` 交 `inset_top/right/bottom/left`（CSS px）。Windows 用 `Monitor::work_area()`（WorkingArea）。Linux 另外讀 GDK `gdk_monitor_get_workarea`，同 X11 `_NET_WORKAREA`、`_NET_WM_STRUT`、`_NET_WM_STRUT_PARTIAL`；幾個讀數用 inset 最大嗰組。工作區等於螢幕就係 0，頂邊 t=0.21 唔郁。讀唔到工作區（冇 monitor、連唔到顯示、屬性唔存在、work rect 冇尺寸）先將底邊當 48px。Windows 點擊穿透探測嘅頂邊 t=0.21 唔改。探測腳本用 WorkingArea 同 Bounds 嘅差做同一組 inset；設定光球 y 係 `frameTop + frameH - 12 - orb/2`，看板、排程跟住工作區；頂邊 field 公式維持 `$w * 0.08 + $w * 0.84 * 0.21` 同 `pad + orb/2`。視窗同空白點仍然用成個 Bounds。
+- 驗收：底邊 inset 48px 時，底邊光球 y 係 `height - inset - 12 - orb/2`；頂邊 t=0.21 嘅 y 仍然係 `pad + orb/2`。X11 底邊 strut 56px、scale 1 得出 bottom inset 56。三個讀數都係 `None` 先用底邊 48；讀到全螢幕工作區就維持 0。
 
-**R-AD-06** 金鑰橫額同連線膠囊。預設仍然 top 96px。呢個 home 都要避開每粒光球同佢 34px 光暈，再加 12px；冇面板開住、光暈擋到 home，就改放喺光暈外（頂邊看板光暈會將橫額同膠囊放到 y ≥ 132）。只係底邊面板開住、又冇碰到 home，唔好因為個面板搬走。撞到打開嘅面板就放喺面板外 12px、畫面中心嗰一側；放唔落先試其餘邊，再退到 header 行。唔好疊住光球或者佢 34px 光暈。金鑰橫額圓角 2px。膠囊仍然係唯一 999px 圓角。
-- 驗收：`keyBannerSlot` 預設 gap 12；光暈擋住中心側時改去另一邊。閒置橫額同膠囊唔疊住看板光暈。`#conn-banner[data-sticky="keys"]` 圓角 2px。
+**R-AD-06** 金鑰橫額同連線膠囊。預設仍然 top 96px。呢個 home 都要避開每粒光球同佢 34px 光暈，再加 12px；冇面板開住、光暈擋到 home，就改放喺光暈外（頂邊看板光暈會將橫額同膠囊放到 y ≥ 132）。只係底邊面板開住、又冇碰到 home，唔好因為個面板搬走。撞到打開嘅面板就放喺面板外 12px、畫面中心嗰一側；放唔落先試其餘邊，再退到 header 行。唔好疊住光球或者佢 34px 光暈。金鑰橫額圓角 2px。膠囊仍然係唯一 999px 圓角。底係 `rgba(248,248,252,.92)`，字 `#14142b` 12px/1.4 Noto Sans HK，唔好用文字透明度。連結部分 `#0000f2` 加底線，其餘句子保持 `#14142b`。邊 1px `rgb(0 0 242 / .35)`。padding `6px 12px`。字同連結對住橫額底 `#f8f8fc` 至少 7:1。
+- 驗收：`keyBannerSlot` 預設 gap 12；光暈擋住中心側時改去另一邊。閒置橫額同膠囊唔疊住看板光暈。`#conn-banner[data-sticky="keys"]` 圓角 2px。`.conn-banner.ok, .conn-banner.info` 圓角 999px。`.conn-banner` 用上面嘅底、字、邊、padding。`.banner-action` 係 `#0000f2` 底線，`.banner-copy` 係 `#14142b` 冇底線。
+
+**R-AD-07** 設定。Kanban server 只得欄位標籤，唔好再加一個 legend。說明放喺個標籤下面，12px/1.5 `#616191`。「Bot 名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，上面 24px。設定開住時金鑰橫額保持收起，`keyPromptBots` 唔清空。未有金鑰嘅 profile 喺金鑰欄下面顯示 12px `#e5484d` 提示「未有 API 金鑰」。
+- 驗收：設定 HTML 冇 `<legend>Kanban server</legend>`。`.kanban-server-hint` 係 12px/1.5 `#616191`。`.settings-panel .roster-head` margin-top 24px，`.roster-head h3::before` 係 `content: none`。`rowFromBot` 喺有 profile 而 `has_key` 係 false 時加 `.key-missing`。
 
 ---
 

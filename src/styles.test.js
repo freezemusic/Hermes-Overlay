@@ -8,6 +8,24 @@ import { applyOrbFadeFrame, opacityFramesMonotonic, opacityFramesToward } from "
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
+function channel(value) {
+  const c = value / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+function luminance(hex) {
+  const n = Number.parseInt(hex.slice(1), 16);
+  return 0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255);
+}
+
+function contrast(ink, paper) {
+  const a = luminance(ink);
+  const b = luminance(paper);
+  const hi = Math.max(a, b);
+  const lo = Math.min(a, b);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 function infiniteSelectors(source) {
   const found = [];
   const re = /([^{}@]+)\{([^{}]*)\}/g;
@@ -776,6 +794,28 @@ test("chat is the primary panel and the hover label does not stick", () => {
   assert.match(css, /#conn-banner \{[^}]*pointer-events:\s*none/s);
   assert.match(css, /\.conn-banner\.ok,\s*\.conn-banner\.info \{[^}]*border-radius:\s*999px/s);
   assert.match(css, /\.conn-banner \.banner-action \{[^}]*pointer-events:\s*auto/s);
+  assert.match(css, /\.conn-banner \{[^}]*rgba\(248,\s*248,\s*252,\s*\.92\)/s);
+  assert.match(css, /\.conn-banner \{[^}]*#14142b/s);
+  assert.match(css, /\.conn-banner \{[^}]*12px\/1\.4/s);
+  assert.match(css, /\.conn-banner \{[^}]*padding:\s*6px 12px/s);
+  assert.match(css, /\.conn-banner \{[^}]*rgb\(0 0 242 \/ \.35\)/s);
+  assert.match(css, /\.conn-banner \.banner-action \{[^}]*#0000f2/s);
+  assert.match(css, /\.conn-banner \.banner-action \{[^}]*text-decoration:\s*underline/s);
+  assert.match(css, /\.conn-banner \.banner-copy \{[^}]*#14142b/s);
+  assert.match(css, /\.conn-banner \.banner-copy \{[^}]*text-decoration:\s*none/s);
+  assert.ok(contrast("#14142b", "#f8f8fc") >= 7);
+  assert.ok(contrast("#0000f2", "#f8f8fc") >= 7);
+  assert.doesNotMatch(html, /<legend>Kanban server<\/legend>/);
+  assert.match(html, /class="hint kanban-server-hint"/);
+  assert.match(html, /<span>Kanban server<\/span>/);
+  assert.match(css, /\.settings-panel \.kanban-server-hint \{[^}]*12px\/1\.5/s);
+  assert.match(css, /\.settings-panel \.kanban-server-hint \{[^}]*#616191/s);
+  assert.match(css, /\.settings-panel \.roster-head \{[^}]*margin-top:\s*24px/s);
+  assert.match(css, /\.settings-panel \.roster-head h3 \{[^}]*12px\/1 /s);
+  assert.match(css, /\.settings-panel \.roster-head h3 \{[^}]*#0000f2/s);
+  assert.match(css, /\.settings-panel \.roster-head h3::before \{[^}]*content:\s*none/s);
+  assert.match(css, /\.settings-panel \.bot-row \.key-missing \{[^}]*#e5484d/s);
+  assert.match(css, /\.settings-panel \.bot-row \.key-missing \{[^}]*12px\/1\.5/s);
 });
 
 test("bot panels own SOUL and the settings orb owns the gateway", () => {

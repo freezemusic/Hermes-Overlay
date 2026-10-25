@@ -167,6 +167,10 @@ test("the quiet tick claims roster, prompts for a new key, and does not write ke
   const opened = main.slice(main.indexOf("function openSettings"), main.indexOf("function closeSettings"));
   assert.match(opened, /hideKeyPrompt/);
   assert.doesNotMatch(opened, /keyPromptBots = \[\]/);
+  const row = main.slice(main.indexOf("function rowFromBot"), main.indexOf("function readRows"));
+  assert.match(row, /bot\.profile && !bot\.has_key/);
+  assert.match(row, /key-missing/);
+  assert.match(row, /未有 API 金鑰/);
   const closed = main.slice(main.indexOf("function closeSettings"), main.indexOf("async function saveSettings"));
   assert.match(closed, /showKeyPrompt/);
   const saved = main.slice(main.indexOf("async function saveSettings"), main.indexOf("async function probeSaved"));

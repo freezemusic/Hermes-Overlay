@@ -264,8 +264,9 @@ $work = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $w = $bounds.Width
 $h = $bounds.Height
 # Same gap as interaction::work_area_insets. The window still covers Bounds.
-# Settings, kanban, and cron centres move into the work area. The field
-# probe stays on the full-monitor top edge at t=0.21 (R-AD-05).
+# Settings, kanban, and cron centres move into the work area. The bottom
+# disc centre is workArea.bottom - 12 - orb/2. The field probe stays on
+# the full-monitor top edge at t=0.21 (R-AD-05).
 $insetLeft = [Math]::Max(0, $work.X - $bounds.X)
 $insetTop = [Math]::Max(0, $work.Y - $bounds.Y)
 $insetRight = [Math]::Max(0, ($bounds.X + $bounds.Width) - ($work.X + $work.Width))
@@ -276,7 +277,7 @@ $frameW = $w - $insetLeft - $insetRight
 $frameH = $h - $insetTop - $insetBottom
 $pad = 42
 $orb = 44
-$settings = @{ x = [int]($frameLeft + $frameW - $pad - 152 - $orb / 2); y = [int]($frameTop + $frameH - $pad - $orb / 2) }
+$settings = @{ x = [int]($frameLeft + $frameW - $pad - 152 - $orb / 2); y = [int]($frameTop + $frameH - 12 - $orb / 2) }
 $kanban = @{ x = [int]($frameLeft + $frameW / 2); y = [int]($frameTop + $pad + $orb / 2) }
 $cron = @{ x = [int]($frameLeft + $frameW - $pad - $orb / 2); y = [int][Math]::Round($frameTop + $frameH * 0.38) }
 # One field bot sits on the top edge (distributeEdges weight, t=0.21).

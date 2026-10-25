@@ -628,6 +628,9 @@ export function workFrame(width, height, insets) {
   };
 }
 
+/** Disc edge stays this far above the work-area bottom. The halo may cross it. */
+export const ORB_WORK_CLEAR_PX = 12;
+
 export function slotPoint(edge, t, width, height, pad = 42, orb = ORB, insets) {
   const frame = workFrame(width, height, insets);
   const x0 = frame.left + frame.width * 0.08;
@@ -635,7 +638,7 @@ export function slotPoint(edge, t, width, height, pad = 42, orb = ORB, insets) {
   const spanX = frame.width * 0.84;
   const spanY = frame.height * 0.84;
   if (edge === "top") return { x: x0 + spanX * t, y: frame.top + pad + orb / 2, edge };
-  if (edge === "bottom") return { x: x0 + spanX * t, y: frame.top + frame.height - pad - orb / 2, edge };
+  if (edge === "bottom") return { x: x0 + spanX * t, y: frame.top + frame.height - ORB_WORK_CLEAR_PX - orb / 2, edge };
   if (edge === "left") return { x: frame.left + pad + orb / 2, y: y0 + spanY * t, edge };
   return { x: frame.left + frame.width - pad - orb / 2, y: y0 + spanY * t, edge };
 }
@@ -654,7 +657,7 @@ export function fixedOrbPoint(which, width, height, pad = 42, orb = ORB, insets)
   }
   return {
     x: frame.left + frame.width - pad - 152 - orb / 2,
-    y: frame.top + frame.height - pad - orb / 2,
+    y: frame.top + frame.height - ORB_WORK_CLEAR_PX - orb / 2,
     edge: "bottom",
   };
 }

@@ -3846,7 +3846,26 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
     button.type = "button";
     button.className = "banner-action";
     button.dataset.action = "settings";
-    button.textContent = text;
+    const link = "設定";
+    const linkAt = text.indexOf(link);
+    const paint = (value, copy) => {
+      if (!value) return;
+      if (!copy) {
+        button.appendChild(document.createTextNode(value));
+        return;
+      }
+      const span = document.createElement("span");
+      span.className = "banner-copy";
+      span.textContent = value;
+      button.appendChild(span);
+    };
+    if (linkAt >= 0) {
+      paint(text.slice(0, linkAt), true);
+      paint(link, false);
+      paint(text.slice(linkAt + link.length), true);
+    } else {
+      button.textContent = text;
+    }
     banner.appendChild(button);
     return;
   }
@@ -6511,6 +6530,12 @@ function rowFromBot(bot = {}) {
   const key = row.querySelector('[data-field="key"]');
   key.placeholder = bot.has_key ? "已儲存，留空代表保留" : "API 金鑰";
   key.dataset.hasKey = bot.has_key ? "1" : "0";
+  if (bot.profile && !bot.has_key) {
+    const missing = document.createElement("p");
+    missing.className = "key-missing";
+    missing.textContent = "未有 API 金鑰";
+    row.appendChild(missing);
+  }
   row.querySelector('[data-action="remove"]').addEventListener("click", () => row.remove());
   return row;
 }

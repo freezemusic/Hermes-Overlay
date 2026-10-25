@@ -1663,28 +1663,19 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 
 .conn-banner {
   margin: 0;
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-sm);
-  border: 1px solid rgb(242 0 0 / .45);
-  background: rgb(242 0 0 / .08);
+  padding: 6px 12px;
+  border-radius: 2px;
+  border: 1px solid rgb(0 0 242 / .35);
+  background: rgba(248, 248, 252, .92);
   color: #14142b;
-  font-size: var(--fs-meta);
-  line-height: 1.4;
+  font: 400 12px/1.4 "Noto Sans HK", var(--font-body);
 }
 
-.conn-banner.danger {
-  border-color: rgb(242 0 0 / .45);
-  background: rgb(242 0 0 / .08);
-}
-
-.conn-banner.ok {
-  border-color: rgb(0 242 121 / .5);
-  background: rgb(0 242 121 / .12);
-}
-
+.conn-banner.danger,
+.conn-banner.ok,
 .conn-banner.info {
-  border-color: #0000f2;
-  background: var(--bot-10);
+  border-color: rgb(0 0 242 / .35);
+  background: rgba(248, 248, 252, .92);
   color: #14142b;
 }
 
@@ -1704,13 +1695,21 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   padding: 0;
   border: 0;
   background: transparent;
-  color: inherit;
+  color: #0000f2;
   font: inherit;
+  line-height: inherit;
   text-align: left;
   cursor: pointer;
   pointer-events: auto;
   text-decoration: underline;
   text-underline-offset: 2px;
+  opacity: 1;
+}
+
+.conn-banner .banner-copy {
+  color: #14142b;
+  text-decoration: none;
+  opacity: 1;
 }
 
 .setup-hint { color: #0000f2; }
@@ -2011,6 +2010,28 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   margin: 8px 0 0;
   font: 400 12px/1.5 var(--font-body);
   color: rgb(20 20 43 / .7);
+}
+
+.settings-panel .kanban-server-hint {
+  margin: 0;
+  font: 400 12px/1.5 var(--font-body);
+  color: #616191;
+}
+
+.settings-panel .roster-head {
+  margin-top: 24px;
+}
+
+.settings-panel .roster-head h3 {
+  margin: 0;
+  font: 500 12px/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  color: #0000f2;
+}
+
+.settings-panel .roster-head h3::before {
+  content: none;
 }
 
 .settings-panel .field {
@@ -2771,6 +2792,13 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 .settings-panel .bot-row input[type="checkbox"] {
   width: 14px;
   height: 14px;
+}
+
+.settings-panel .bot-row .key-missing {
+  grid-column: 1 / -1;
+  margin: 0;
+  font: 400 12px/1.5 "Noto Sans HK", var(--font-body);
+  color: #e5484d;
 }
 
 .orb-names {
