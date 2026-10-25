@@ -108,7 +108,7 @@ fn default_fade_distance() -> f64 {
 }
 
 fn default_min_opacity() -> f64 {
-    0.18
+    0.25
 }
 
 pub fn normalize_modifier(raw: &str) -> String {
@@ -918,7 +918,7 @@ mod tests {
         assert_eq!(cfg.interaction.modifier, "ctrl");
         assert!(cfg.interaction.fade_enabled);
         assert_eq!(cfg.interaction.fade_distance, 120.0);
-        assert_eq!(cfg.interaction.min_opacity, 0.18);
+        assert_eq!(cfg.interaction.min_opacity, 0.25);
         assert_eq!(normalize_modifier("ALT"), "alt");
         assert_eq!(normalize_fade_distance(8.0), 24.0);
         assert_eq!(normalize_min_opacity(0.9), 0.6);

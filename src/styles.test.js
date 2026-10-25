@@ -169,7 +169,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph\.is-orb-docked:not\(\.is-collapsing\) \.morph-glow \{[^}]*opacity 160ms linear 320ms/s);
   assert.match(css, /\.morph\.is-collapsing \.morph-glow \{[^}]*opacity 80ms linear !important/s);
   assert.doesNotMatch(css, /(^|\n)\.morph-fill::after \{/);
-  assert.match(css, /\.morph\[data-state="orb"\] \.morph-fill::after \{[^}]*rgb\(var\(--bot-rgb\) \/ \.22\)/s);
+  assert.doesNotMatch(css, /\.morph\[data-state="orb"\] \.morph-fill::after/);
   assert.doesNotMatch(css, /\.morph\.is-orb-moving \.morph-glow \{[^}]*opacity:\s*0\.4/s);
   assert.match(mainSrc, /planEase\(/);
   assert.match(mainSrc, /PLAN_EASE/);
@@ -809,7 +809,7 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.bubble\.user \{[^}]*color:\s*#14142b/s);
   const panelCss = css.replace(/\.orb-glyph \{[^}]*\}/s, "");
   assert.doesNotMatch(panelCss, /(?:^|[^\w-])color:\s*var\(--bot\)/);
-  assert.match(css, /\.orb-glyph \{[^}]*color:\s*var\(--bot\)/s);
+  assert.match(css, /\.orb-glyph \{[^}]*color:\s*var\(--bot-ink, var\(--bot\)\)/s);
   assert.doesNotMatch(css, /(?:^|[^\w-])background:\s*var\(--bot\)/);
   assert.doesNotMatch(css, /(?:^|[^\w-])background-color:\s*var\(--bot\)/);
   assert.match(css, /\.bubble\.bot pre \{[^}]*background:\s*#000/s);
@@ -856,7 +856,7 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(css, /\.orb--cron \{[^}]*--bot-rgb:\s*97 97 145/s);
   assert.doesNotMatch(css, /\.bot-btn\.orb--cron::before,[\s\S]*?opacity:\s*0 !important/);
   assert.doesNotMatch(css, /\.morph\.is-morphing \.bot-btn\.orb--cron::before/);
-  assert.match(css, /\.bot-btn\.orb--cron::before \{[^}]*clip-path:\s*inset\(var\(--orb-glow-radius\) round 999px\)/s);
+  assert.doesNotMatch(css, /\.bot-btn\.orb--cron::before \{[^}]*clip-path/s);
   assert.doesNotMatch(css, /max\(var\(--hit-opacity,\s*0\.55\)/);
   assert.match(css, /\.cron-panel \{[^}]*width:\s*min\(320px, 86vw\)/s);
   assert.doesNotMatch(css, /transparent calc\(100% - 3px\)/);
@@ -1147,7 +1147,7 @@ test("idle cron orb matches another idle orb", () => {
   assert.match(wash(cronBtn, "background"), /rgb\(var\(--bot-rgb\) \/ \.55\)/);
   assert.equal(wash(cronBtn, "opacity"), "0.85");
   assert.equal(wash(otherBtn, "clip-path"), "");
-  assert.equal(wash(cronBtn, "clip-path"), "inset(var(--orb-glow-radius) round 999px)");
+  assert.equal(wash(cronBtn, "clip-path"), "");
   cron.classList.add("is-cron-live");
   assert.equal(getComputedStyle(cron).opacity, "1");
   assert.notEqual(getComputedStyle(other).opacity, "1");
@@ -1195,11 +1195,12 @@ test("failed cron ring and done ripple are outside the idle opacity", () => {
   assert.notEqual(getComputedStyle(cron.querySelector(".orb-core")).opacity, "0");
 });
 
-test("muted text is #14142b and the idle orb keeps the f8cb046 rim wash", () => {
+test("muted text is #14142b and an idle orb has no rim wash", () => {
   assert.match(css, /--text-muted:\s*#14142b/);
   assert.doesNotMatch(css, /--text-muted:\s*#616191/);
   assert.match(css, /\.plan-toggle \{[^}]*color:\s*#14142b/s);
-  assert.match(css, /\.morph\[data-state="orb"\] \.morph-fill::after \{[^}]*rgb\(var\(--bot-rgb\) \/ \.22\)/s);
+  assert.doesNotMatch(css, /\.morph\[data-state="orb"\] \.morph-fill::after/);
+  assert.match(css, /\.orb-glyph \{[^}]*color:\s*var\(--bot-ink, var\(--bot\)\)/s);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   assert.match(main, /dataset\.intent === "close"/);
   assert.match(main, /closeYieldsToOpen/);

@@ -32,18 +32,31 @@ function bannerOnScreen(slot, banner, screen) {
     && slot.y + banner.h <= screen.h;
 }
 
+const ORB_HALO_PX = 34;
+
+function haloBox(orb) {
+  return {
+    x: orb.x - ORB_HALO_PX,
+    y: orb.y - ORB_HALO_PX,
+    w: orb.w + ORB_HALO_PX * 2,
+    h: orb.h + ORB_HALO_PX * 2,
+  };
+}
+
 /**
- * Fixed slot for the key banner. The home position stays when it is `gap`
- * clear of every open panel. Otherwise the banner sits just outside the
- * panel edge (below, then above, then right, then left). The header row is
- * the last slot, so the banner never rests on panel content.
+ * Fixed slot for the key banner and the gateway pill. The home position
+ * stays when it is `gap` clear of every open panel and of every orb halo.
+ * Otherwise the banner sits 12px outside the panel, on the side that faces
+ * the screen centre. The header row is the last slot.
  */
-export function keyBannerSlot(banner, panels, screen, gap = 8) {
+export function keyBannerSlot(banner, panels, screen, gap = 12, orbs = []) {
   if (!banner) return { x: 0, y: 0 };
   const home = { x: banner.x, y: banner.y };
   const boxes = (panels || []).filter((box) => box && box.w >= 1 && box.h >= 1);
+  const halos = (orbs || []).filter((orb) => orb && orb.w >= 1 && orb.h >= 1).map(haloBox);
   const clear = (slot) => bannerOnScreen(slot, banner, screen)
-    && boxes.every((box) => !bannerHits(slot, banner, box, gap));
+    && boxes.every((box) => !bannerHits(slot, banner, box, gap))
+    && halos.every((box) => !bannerHits(slot, banner, box, 0));
   if (clear(home)) return home;
 
   const blocking = boxes.filter((box) => bannerHits(home, banner, box, gap));
@@ -58,14 +71,18 @@ export function keyBannerSlot(banner, panels, screen, gap = 8) {
     left = Math.min(left, box.x);
     right = Math.max(right, box.x + box.w);
   }
+  const scx = screen && screen.w > 0 ? screen.w / 2 : home.x;
+  const scy = screen && screen.h > 0 ? screen.h / 2 : home.y;
+  const pcx = (left + right) / 2;
+  const pcy = (top + bottom) / 2;
   const outside = [
-    { x: home.x, y: bottom + gap },
-    { x: home.x, y: top - banner.h - gap },
-    { x: right + gap, y: home.y },
-    { x: left - banner.w - gap, y: home.y },
-  ];
+    { x: home.x, y: bottom + gap, score: scy - pcy },
+    { x: home.x, y: top - banner.h - gap, score: pcy - scy },
+    { x: right + gap, y: home.y, score: scx - pcx },
+    { x: left - banner.w - gap, y: home.y, score: pcx - scx },
+  ].sort((a, b) => b.score - a.score);
   for (const slot of outside) {
-    if (clear(slot)) return slot;
+    if (clear(slot)) return { x: slot.x, y: slot.y };
   }
 
   for (const box of list) {
@@ -77,7 +94,8 @@ export function keyBannerSlot(banner, panels, screen, gap = 8) {
     const slot = { x: home.x, y };
     const bottomEdge = y + banner.h;
     const staysOnHeader = bottomEdge <= header.y + header.h + 0.01 && bottomEdge > header.y;
-    const othersClear = boxes.every((other) => other === box || !bannerHits(slot, banner, other, gap));
+    const othersClear = boxes.every((other) => other === box || !bannerHits(slot, banner, other, gap))
+      && halos.every((halo) => !bannerHits(slot, banner, halo, 0));
     if (staysOnHeader && bannerOnScreen(slot, banner, screen) && othersClear) return slot;
   }
   return home;

@@ -924,7 +924,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
             modifier: config::normalize_modifier(&raw.modifier),
             fade_enabled: raw.fade_enabled.unwrap_or(true),
             fade_distance: config::normalize_fade_distance(raw.fade_distance.unwrap_or(120.0)),
-            min_opacity: config::normalize_min_opacity(raw.min_opacity.unwrap_or(0.18)),
+            min_opacity: config::normalize_min_opacity(raw.min_opacity.unwrap_or(0.25)),
         },
         None => previous.interaction.clone(),
     };
@@ -2382,19 +2382,36 @@ fn fit_overlay(app: AppHandle) -> OverlayCssSize {
         return OverlayCssSize {
             width: 0,
             height: 0,
+            inset_top: 0,
+            inset_right: 0,
+            inset_bottom: 0,
+            inset_left: 0,
         };
     };
     #[cfg(target_os = "linux")]
     let _ = window.set_decorations(false);
     interaction::place_overlay(&window);
     let (width, height) = interaction::monitor_css_size(&window).unwrap_or((0, 0));
-    OverlayCssSize { width, height }
+    let (inset_top, inset_right, inset_bottom, inset_left) =
+        interaction::monitor_work_insets(&window);
+    OverlayCssSize {
+        width,
+        height,
+        inset_top,
+        inset_right,
+        inset_bottom,
+        inset_left,
+    }
 }
 
 #[derive(serde::Serialize)]
 struct OverlayCssSize {
     width: u32,
     height: u32,
+    inset_top: u32,
+    inset_right: u32,
+    inset_bottom: u32,
+    inset_left: u32,
 }
 
 /// Map without a visible frame when the hidden resize never reaches the

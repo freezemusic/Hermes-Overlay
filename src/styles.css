@@ -264,7 +264,7 @@ html, body {
   position: relative;
   z-index: 1;
   font: 500 18px/1 var(--font-display);
-  color: var(--bot);
+  color: var(--bot-ink, var(--bot));
   pointer-events: none;
   text-shadow: 0 0 4px #fff;
 }
@@ -334,12 +334,7 @@ html, body {
 
 .orb--cron { --bot: var(--nous-neutral); --bot-rgb: 97 97 145; }
 
-/* Status rings sit on ::after and the shell stays overflow:visible. Clip the
-   shared wash to the disc so an idle cron orb matches the other orbs. */
-.bot-btn.orb--cron::before {
-  clip-path: inset(var(--orb-glow-radius) round 999px);
-}
-
+/* Idle cron uses the same halo as the other orbs. Status rings stay on ::after. */
 .bot-btn.orb--cron {
   contain: none;
   overflow: visible;
@@ -1839,9 +1834,82 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 }
 
 .kanban-empty {
-  margin: var(--sp-6) var(--sp-2);
-  font: 500 var(--fs-hero)/1 var(--font-display);
-  color: var(--nous-blue);
+  margin: 0;
+  font: 500 22px/1.2 var(--font-display);
+  color: #14142b;
+  text-align: center;
+}
+
+.kanban-panel > .kanban-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kanban-panel > .kanban-empty[hidden] { display: none; }
+
+.kanban-crumb {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.kanban-crumb-name {
+  font: 500 var(--fs-title)/1 var(--font-display);
+  color: #0000f2;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.kanban-crumb-profile {
+  font: 400 11px/1 var(--font-mono);
+  color: #616191;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.kanban-crumb-profile::before {
+  content: "/ ";
+}
+
+.kanban-login {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.kanban-login[hidden] { display: none; }
+
+.kanban-login .kanban-empty-title {
+  margin: 0;
+  font: 500 22px/1 var(--font-display);
+  color: #14142b;
+}
+
+.kanban-empty-help {
+  margin: 8px 0 0;
+  font: 400 13px/1.5 var(--font-body);
+  color: rgb(20 20 43 / .7);
+}
+
+.kanban-login-btn {
+  margin-top: 16px;
+  height: 32px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 2px;
+  background: #0000f2;
+  color: #fff;
+  font: 500 13px/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
 }
 
 /* R-SY-08: calm retry ink on the glass. Static text, no animation. */
@@ -1857,14 +1925,6 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 /* R-KB-05: a 401 is a sign-in prompt. Same ink, no spinner. */
 .kanban-empty.is-login {
   color: #14142b;
-}
-
-.kanban-login {
-  margin: var(--sp-6) var(--sp-2);
-}
-
-.kanban-login .icon-btn {
-  margin-top: var(--sp-3);
 }
 
 .kanban-detail {
@@ -1937,6 +1997,92 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   font: 400 var(--fs-micro)/1 var(--font-label);
   letter-spacing: 0;
   color: var(--text-muted);
+}
+
+.settings-panel .hint {
+  margin: 8px 0 0;
+  font: 400 12px/1.5 var(--font-body);
+  color: rgb(20 20 43 / .7);
+}
+
+.settings-panel .field {
+  gap: 12px;
+  margin: 20px 0 0;
+  font: 500 12px/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  color: #0000f2;
+}
+
+.settings-panel .field input,
+.settings-panel .field select,
+.settings-panel .bot-row input:not([type="checkbox"]):not([type="color"]) {
+  font-size: 13px;
+}
+
+.settings-panel fieldset {
+  margin: 24px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-panel legend {
+  margin: 0;
+  padding: 0;
+  font: 500 12px/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  color: #0000f2;
+}
+
+.settings-panel input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 242, .4);
+  border-radius: 2px;
+  background: #fff;
+  display: grid;
+  place-items: center;
+  box-shadow: none;
+}
+
+.settings-panel input[type="checkbox"]:checked {
+  background: #0000f2;
+  border-color: #0000f2;
+}
+
+.settings-panel input[type="checkbox"]:checked::after {
+  content: "";
+  width: 7px;
+  height: 3px;
+  border: 1.5px solid #fff;
+  border-top: 0;
+  border-right: 0;
+  transform: translateY(-1px) rotate(-45deg);
+}
+
+.settings-panel .bot-row input[type="color"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(20, 20, 43, .2);
+  border-radius: 2px;
+  background: transparent;
+}
+
+.settings-panel .bot-row input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.settings-panel .bot-row input[type="color"]::-webkit-color-swatch {
+  border: 0;
+  border-radius: 1px;
 }
 
 .field-inline { flex-direction: row; align-items: center; }
@@ -2070,8 +2216,12 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   overflow: visible;
 }
 
-.morph[data-bot-id="cron"][data-state="orb"].is-cron-live[data-hit-id] {
+.morph[data-bot-id="cron"][data-state="orb"].is-cron-live[data-hit-id]:not([data-orb-covered="1"]) {
   opacity: 1 !important;
+}
+
+.morph[data-orb-covered="1"] {
+  pointer-events: none !important;
 }
 
 .morph[data-state="panel"] {
@@ -2210,20 +2360,6 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
     linear-gradient(90deg, var(--grid-line) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
     var(--noise),
     var(--glass-fog);
-}
-
-/* f8cb046 idle disc. The core is transparent past 80%, so this wash is the
-   rim at r≈20–22. The shell clip keeps it inside the orb (r24–48 stays put). */
-.morph[data-state="orb"] .morph-fill::after {
-  content: "";
-  position: absolute;
-  left: var(--ax, 22px);
-  top: var(--ay, 22px);
-  width: 140px;
-  height: 140px;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  background: radial-gradient(circle, rgb(var(--bot-rgb) / .22) 0%, transparent 70%);
 }
 
 .morph-glow {
@@ -2622,13 +2758,15 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 
 .orb-name {
   position: absolute;
+  height: 18px;
   max-width: 96px;
   overflow: hidden;
-  padding: 1px 4px;
+  padding: 0 6px;
+  border: 1px solid rgb(var(--bot-rgb) / .2);
   border-radius: 2px;
-  background: #f7f8f8;
+  background: rgba(248, 248, 252, .82);
   color: #14142b;
-  font: 500 var(--fs-micro)/1 var(--font-label);
+  font: 500 12px/18px var(--font-label);
   letter-spacing: 0;
   text-transform: none;
   white-space: nowrap;
@@ -2636,6 +2774,7 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   text-align: center;
   pointer-events: none;
   transition: none;
+  box-sizing: border-box;
 }
 
 .orb-name[hidden] { display: none; }

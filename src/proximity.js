@@ -88,12 +88,12 @@ export const ORB_PROXIMITY_PX = 72;
 
 /**
  * Opacity ramp while an orb enters or leaves ORB_PROXIMITY_PX.
- * 120ms ease-out reaches the ≤30% floor inside 250ms.
+ * 160ms cubic-bezier(.2,.8,.2,1) reaches the ≤30% floor inside 250ms.
  * The page writes one inline sample per frame. A CSS transition paints a
  * reversed frame when it finishes, so the shell sets transition to none.
  */
-export const ORB_FADE_MS = 120;
-export const ORB_FADE_EASE = "cubic-bezier(0, 0, .2, 1)";
+export const ORB_FADE_MS = 160;
+export const ORB_FADE_EASE = "cubic-bezier(.2,.8,.2,1)";
 
 function unitBezier(x1, y1, x2, y2) {
   const cx = 3 * x1;
@@ -121,7 +121,7 @@ function unitBezier(x1, y1, x2, y2) {
   };
 }
 
-const fadeEase = unitBezier(0, 0, 0.2, 1);
+const fadeEase = unitBezier(0.2, 0.8, 0.2, 1);
 
 /** CSS ease-out used by the orb opacity transition. */
 export function orbFadeEase(u) {
@@ -134,7 +134,7 @@ export function orbFadeEase(u) {
 export function orbFadeOpacity(elapsedMs, {
   delay = 0,
   from = 1,
-  to = 0.18,
+  to = 0.25,
   duration = ORB_FADE_MS,
 } = {}) {
   const t = Number(elapsedMs) - Number(delay);
@@ -378,12 +378,12 @@ export function orbDiscHit(shell, disc) {
   return { x, y, w: size, h: size };
 }
 
-/** Near-orb opacity never exceeds this, so the default 18% floor stays ≤30%. */
+/** Near-orb opacity never exceeds this, so the default 25% floor stays ≤30%. */
 export const ORB_NEAR_OPACITY_CAP = 0.3;
 
 /** Floor used when the cursor is inside ORB_PROXIMITY_PX and the modifier is up. */
-export function orbNearOpacity(minOpacity = 0.18) {
-  const floor = Number.isFinite(minOpacity) ? minOpacity : 0.18;
+export function orbNearOpacity(minOpacity = 0.25) {
+  const floor = Number.isFinite(minOpacity) ? minOpacity : 0.25;
   return Math.min(ORB_NEAR_OPACITY_CAP, Math.max(0.05, floor));
 }
 
@@ -392,7 +392,7 @@ export function orbNearOpacity(minOpacity = 0.18) {
  * the orb is opaque. Inside the radius with the modifier up it is the near floor.
  * An unknown distance stays opaque so a missing cursor sample does not flash.
  */
-export function orbProximityOpacity(distance, { held = false, minOpacity = 0.18 } = {}) {
+export function orbProximityOpacity(distance, { held = false, minOpacity = 0.25 } = {}) {
   if (!(distance >= 0) || distance > ORB_PROXIMITY_PX) return 1;
   if (held) return 1;
   return orbNearOpacity(minOpacity);

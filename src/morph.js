@@ -7,6 +7,8 @@
 import { ORB_PROXIMITY_PX } from "./proximity.js";
 
 export const ORB = 44;
+/** Halo past the disc. Coverage and the name gap are measured from this. */
+export const ORB_HALO_PX = 34;
 export const PILL_W = 320;
 export const PANEL_W = 420;
 export const PANEL_H = 560;
@@ -548,8 +550,8 @@ function discHitsRect(cx, cy, radius, rect) {
   return Math.hypot(dx, dy) <= radius;
 }
 
-function kanbanPanelRect(width, height, pad, orb) {
-  const anchor = fixedOrbPoint("kanban", width, height, pad, orb);
+function kanbanPanelRect(width, height, pad, orb, insets) {
+  const anchor = fixedOrbPoint("kanban", width, height, pad, orb, insets);
   const boxW = Math.min(960, width * 0.8);
   const boxH = Math.min(height * 0.8, 760);
   const placed = placeShell(anchor.x, anchor.y, boxW, boxH, width, height);
@@ -566,11 +568,12 @@ function freeEdgeSlots(need, homes, screen) {
   const height = screen.height || screen.h || 800;
   const pad = screen.pad ?? 42;
   const orb = screen.orb ?? ORB;
+  const insets = screen.insets;
   const occupied = [
-    ...homes.map((slot) => slotPoint(slot.edge, slot.t, width, height, pad, orb)),
-    ...["kanban", "cron", "settings"].map((id) => fixedOrbPoint(id, width, height, pad, orb)),
+    ...homes.map((slot) => slotPoint(slot.edge, slot.t, width, height, pad, orb, insets)),
+    ...["kanban", "cron", "settings"].map((id) => fixedOrbPoint(id, width, height, pad, orb, insets)),
   ];
-  const panel = kanbanPanelRect(width, height, pad, orb);
+  const panel = kanbanPanelRect(width, height, pad, orb, insets);
   const added = [];
   const edges = ["top", "right", "bottom", "left"];
   for (const edge of edges) {
@@ -578,7 +581,7 @@ function freeEdgeSlots(need, homes, screen) {
     const step = 8 / span;
     for (let raw = 0; raw <= 1 + 1e-9 && added.length < need; raw += step) {
       const slot = { edge, t: Math.round(Math.min(raw, 1) * 1000) / 1000 };
-      const point = slotPoint(edge, slot.t, width, height, pad, orb);
+      const point = slotPoint(edge, slot.t, width, height, pad, orb, insets);
       if (occupied.some((other) => sharesFade(point, other, orb))) continue;
       if (discHitsRect(point.x, point.y, orb / 2, panel)) continue;
       added.push(slot);
@@ -599,29 +602,66 @@ export function distributeEdges(count, screen = {}) {
   return homes.concat(freeEdgeSlots(wanted - homes.length, homes, screen));
 }
 
-export function slotPoint(edge, t, width, height, pad = 42, orb = ORB) {
-  const x0 = width * 0.08;
-  const y0 = height * 0.08;
-  const spanX = width * 0.84;
-  const spanY = height * 0.84;
-  if (edge === "top") return { x: x0 + spanX * t, y: pad + orb / 2, edge };
-  if (edge === "bottom") return { x: x0 + spanX * t, y: height - pad - orb / 2, edge };
-  if (edge === "left") return { x: pad + orb / 2, y: y0 + spanY * t, edge };
-  return { x: width - pad - orb / 2, y: y0 + spanY * t, edge };
+/** Work-area insets shrink the frame the edge pad is measured from. */
+export function workFrame(width, height, insets) {
+  const top = Math.max(0, Number(insets?.top) || 0);
+  const right = Math.max(0, Number(insets?.right) || 0);
+  const bottom = Math.max(0, Number(insets?.bottom) || 0);
+  const left = Math.max(0, Number(insets?.left) || 0);
+  return {
+    left,
+    top,
+    width: Math.max(1, width - left - right),
+    height: Math.max(1, height - top - bottom),
+  };
 }
 
-export function fixedOrbPoint(which, width, height, pad = 42, orb = ORB) {
+export function slotPoint(edge, t, width, height, pad = 42, orb = ORB, insets) {
+  const frame = workFrame(width, height, insets);
+  const x0 = frame.left + frame.width * 0.08;
+  const y0 = frame.top + frame.height * 0.08;
+  const spanX = frame.width * 0.84;
+  const spanY = frame.height * 0.84;
+  if (edge === "top") return { x: x0 + spanX * t, y: frame.top + pad + orb / 2, edge };
+  if (edge === "bottom") return { x: x0 + spanX * t, y: frame.top + frame.height - pad - orb / 2, edge };
+  if (edge === "left") return { x: frame.left + pad + orb / 2, y: y0 + spanY * t, edge };
+  return { x: frame.left + frame.width - pad - orb / 2, y: y0 + spanY * t, edge };
+}
+
+export function fixedOrbPoint(which, width, height, pad = 42, orb = ORB, insets) {
+  const frame = workFrame(width, height, insets);
   if (which === "kanban") {
-    return { x: width / 2, y: pad + orb / 2, edge: "top" };
+    return { x: frame.left + frame.width / 2, y: frame.top + pad + orb / 2, edge: "top" };
   }
   if (which === "cron") {
-    return { x: width - pad - orb / 2, y: Math.round(height * 0.38), edge: "right" };
+    return {
+      x: frame.left + frame.width - pad - orb / 2,
+      y: Math.round(frame.top + frame.height * 0.38),
+      edge: "right",
+    };
   }
   return {
-    x: width - pad - 152 - orb / 2,
-    y: height - pad - orb / 2,
+    x: frame.left + frame.width - pad - 152 - orb / 2,
+    y: frame.top + frame.height - pad - orb / 2,
     edge: "bottom",
   };
+}
+
+export function boxesIntersect(a, b) {
+  if (!a || !b) return false;
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/** Disc plus the 34px halo. An open panel that meets this box covers the orb. */
+export function orbCoveredBy(orb, panels, halo = ORB_HALO_PX) {
+  if (!orb || !(orb.w >= 1) || !(orb.h >= 1)) return false;
+  const box = {
+    x: orb.x - halo,
+    y: orb.y - halo,
+    w: orb.w + halo * 2,
+    h: orb.h + halo * 2,
+  };
+  return (panels || []).some((panel) => panel && panel.w >= 1 && panel.h >= 1 && boxesIntersect(box, panel));
 }
 
 /**

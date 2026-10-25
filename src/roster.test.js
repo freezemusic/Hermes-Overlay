@@ -44,22 +44,37 @@ test("an open plan parks the key banner outside the panel, clear of step 1 and t
   const bot = { x: 200, y: 48, w: 420, h: 620 };
   const plan = { x: 620, y: 48, w: 300, h: 620 };
   const slot = keyBannerSlot(banner, [bot, plan], screen);
-  assert.deepEqual(slot, { x: 360, y: 48 + 620 + 8 });
+  assert.deepEqual(slot, { x: 360, y: 48 + 620 + 12 });
   const step = { x: 640, y: 133, w: 260, h: 22 };
   const dropdown = { x: 400, y: 118, w: 200, h: 28 };
-  assert.ok(slot.y >= step.y + step.h + 8);
-  assert.ok(slot.y >= dropdown.y + dropdown.h + 8);
+  assert.ok(slot.y >= step.y + step.h + 12);
+  assert.ok(slot.y >= dropdown.y + dropdown.h + 12);
   assert.notEqual(slot.y, 133);
 });
 
-test("a logged-in kanban board parks the key banner 8px outside the panel border", () => {
+test("a logged-in kanban board parks the key banner 12px outside the panel border", () => {
   const banner = { x: 360, y: 96, w: 560, h: 36 };
   const screen = { w: 1280, h: 900 };
   const panel = { x: 160, y: 41, w: 960, h: 760 };
   assert.equal(panel.y + panel.h, 801);
   const slot = keyBannerSlot(banner, [panel], screen);
-  assert.deepEqual(slot, { x: 360, y: 801 + 8 });
-  assert.ok(slot.y >= 801 + 8);
+  assert.deepEqual(slot, { x: 360, y: 801 + 12 });
+  assert.ok(slot.y >= 801 + 12);
+});
+
+test("the key banner leaves the screen-centre side when an orb halo is there", () => {
+  const banner = { x: 360, y: 96, w: 200, h: 36 };
+  const screen = { w: 1280, h: 900 };
+  const panel = { x: 200, y: 80, w: 880, h: 280 };
+  const below = keyBannerSlot(banner, [panel], screen);
+  assert.deepEqual(below, { x: 360, y: 80 + 280 + 12 });
+  const orb = { x: 360, y: 360, w: 44, h: 44 };
+  const moved = keyBannerSlot(banner, [panel], screen, 12, [orb]);
+  assert.deepEqual(moved, { x: 360, y: 80 - banner.h - 12 });
+  const halo = { x: orb.x - 34, y: orb.y - 34, w: orb.w + 68, h: orb.h + 68 };
+  const hits = moved.x < halo.x + halo.w && moved.x + banner.w > halo.x
+    && moved.y < halo.y + halo.h && moved.y + banner.h > halo.y;
+  assert.equal(hits, false);
 });
 
 test("the key banner uses the header row when no outside edge fits on screen", () => {

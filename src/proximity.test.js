@@ -140,8 +140,9 @@ test("orbs stay faded and click-through until the modifier is held over one", ()
 
 test("an orb fades only while the cursor is inside the proximity radius", () => {
   assert.equal(ORB_PROXIMITY_PX, 72);
-  assert.equal(ORB_FADE_MS, 120);
-  assert.equal(ORB_FADE_EASE, "cubic-bezier(0, 0, .2, 1)");
+  assert.equal(ORB_FADE_MS, 160);
+  assert.equal(ORB_FADE_EASE, "cubic-bezier(.2,.8,.2,1)");
+  assert.equal(orbNearOpacity(), 0.25);
   assert.equal(orbNearOpacity(0.18), 0.18);
   assert.equal(orbNearOpacity(0.5), 0.3);
   assert.equal(orbProximityOpacity(80, { held: false, minOpacity: 0.18 }), 1);
@@ -210,7 +211,7 @@ test("orb fade frames stay monotonic and reach the floor inside 250ms", () => {
 
   assert.ok(orbFadeOpacity(250, { delay: 16, to: 0.18 }) <= 0.3);
   assert.ok(orbFadeOpacity(250, { delay: 80, to: 0.18 }) <= 0.3);
-  assert.ok(orbFadeOpacity(120, { delay: 0, from: 0.18, to: 1 }) >= 0.99);
+  assert.ok(orbFadeOpacity(160, { delay: 0, from: 0.18, to: 1 }) >= 0.99);
   const same = commitOrbOpacity({ target: 0.18, generation: 1 }, 0.18);
   assert.equal(same.wrote, false);
   assert.equal(same.generation, 1);
@@ -235,7 +236,7 @@ test("orb fade frames stay monotonic and reach the floor inside 250ms", () => {
   assert.doesNotMatch(apply, /style\.transition/);
   assert.doesNotMatch(apply, /requestAnimationFrame/);
   assert.doesNotMatch(apply, /paintOrbOpacity\(el, value\)/);
-  const orbWrite = apply.slice(apply.indexOf("else if (orbShell)"), apply.indexOf("else if (!panelShell"));
+  const orbWrite = apply.slice(apply.indexOf("else if (orbShell"), apply.indexOf("else if (!panelShell"));
   assert.match(orbWrite, /applyOrbFadeFrame\(/);
   assert.doesNotMatch(orbWrite, /setProperty\("--hit-opacity"/);
   const painter = paintOrbOpacity.toString();

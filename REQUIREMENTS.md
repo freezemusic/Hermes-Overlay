@@ -141,7 +141,7 @@
 
 ## 4. 光球外觀（R-OB）
 
-**R-OB-01** 光球外觀要同 Devon 鍾意嗰版一樣：參考 build 係 **f8cb046**（Devon 2026-10-21 確認）。要改外觀，一定要美術監督**同** Devon 都批准。開合一次之後，閒置光球（包括看板同設定）要同未開過一樣，1px 藍邊要留低。
+**R-OB-01** 光球外觀要同 Devon 鍾意嗰版一樣：參考 build 係 **f8cb046**（Devon 2026-10-21 確認）。要改外觀，一定要美術監督**同** Devon 都批准。開合一次之後，閒置光球（包括看板同設定）要同未開過一樣。v104（美術監督同 Devon）：閒置圓形光球冇邊、冇圈、冇 `box-shadow` 環；顏色只來自 34px 光暈。狀態環（排程進度、運行、失敗、完成）先可以畫圈。看板菱形保留 1px `#616191` 邊。
 - 來源：Devon（2026-10-21「上一次的版本比較好看」；同日確認參考 build = f8cb046，C-02）；ORB-REVERT-SPEC。
 - 驗收（盒 T-REF，淺色＋深色桌布）：每粒閒置光球 r0–48px 同 f8cb046 逐像素比較，r0–24 平均差 ≤2、r24–48 平均差 0；glyph 色一樣。Windows 手提目測並排截圖。
 - 狀態：✅（參考）/ ⚠️(盒：bot 光球 ≈ 一樣，1px 邊緣淡少少藍；排程光球差 48 級 ❌)。3437ddd：全部平均差 ≤2 ✅。
@@ -157,16 +157,34 @@
 **R-OB-04** 光球核心只得近白眩光，冇實色粗藍圈；思考圈係 1px `--bot-60` 弧，等候時唔轉，思考中先轉。
 - 來源：美術監督 v20（DESIGN-REVIEW）；SPEC §10.5–10.6。驗收（盒）：1:1 截圖；思考完弧即刻消失。狀態：❓ / ❓。
 
-**R-OB-05** 光球近距淡出。游標唔近、又冇揸 Ctrl 時，光球實色、完全睇到。游標進入該粒光球嘅命中圓再加 `ORB_PROXIMITY_PX`（72px，光暈／命中半徑加一個 60–80px 以內嘅邊）時，只有嗰粒（或同樣近嘅幾粒）用 120ms ease-out 淡到靜止透明度（預設 18%，上限 30%）。游標離開就用同一段淡返實色。淡出由腳本逐幀寫殼嘅 inline opacity（120ms ease-out），`transition: none`，唔靠 CSS transition 播完。第一格用而家嘅 computed opacity 做起點，之後每一格向目標行，唔好停喺 `from`=1.00。近距輪詢喺目標改變之後繼續送約 168ms，視窗未聚焦、rAF 停咗都推到時鐘；到埗之後同一目標唔再寫 style，亦唔重設起點。`--hit-opacity` 唔可以同時驅動光球，亦唔好用 `opacity: 1 !important` 釘實光球。殼保持 `will-change: opacity`。transitionend 唔改 class 或者其他 style。每一幀 computed opacity 向目標單調，包括最後一格。透明度只跟全域輪詢嘅游標距離同 Ctrl，唔跟鍵盤事件或者焦點；游標遠一定係 1。Esc 關面板之後放開 overlay 嘅鍵盤焦點。儲存設定要保留已有嘅 `fade_enabled` 同 `fade_distance`。設定表單冇呢兩個欄，唔好寫死 `fade_enabled: false`。穿透唔變：預設穿透，只有揸住 Ctrl 而且游標喺 12px 命中邊內先可以撳（R-CT-*）。Ctrl 揸住而且游標喺 72px 淡出範圍內，嗰粒用同一段 120ms 返實色；可以撳仍然只係 12px 命中邊，而且命中圓對齊可見光碟（底部 footer slack 唔好拉高 orb 嘅 hit，令圓心跌低）。Ctrl+C／Ctrl+V 唔閃（R-CT-06），就算 overlay 仲有焦點都唔好把遠方光球留喺 0.18。面板唔變：預設實色可撳，Ctrl 揸住先透明同穿透。穿透視窗要靠全域游標輪詢（Windows `GetCursorPos`、Linux `XQueryPointer`，經 `device_query`），唔好靠 DOM mouse。`prefers-reduced-motion` 縮到 1ms。冇閒置循環動畫（R-PN-08）。2026-10-22 早段「約 180ms、淡出 150–200ms」**已取代**（v92 盒：180ms linear 加輪詢，6/21 次過唔到 250ms 內 ≤30%）。5dac6e2 嘅 250ms 目標 21/21 已過，但 15/84 次尾段仍有一格反向。2da217e 將反向減到 11/84。e301d99 改用腳本逐幀之後光球完全唔淡（21/21 近距樣本仍係 1）：輪詢每個目標只送一次，時鐘冇再推。改返由 compositor 嘅 CSS transition 播去 inline 目標，而且唔再同時寫 `--hit-opacity`。ae88559 一次 inline 目標加 CSS transition 令淡出 21/21 恢復，但尾段反向返到 29/125：完結嗰格畫咗中間值或舊值。CSS transition 完結會補一格，所以改返腳本逐幀，輪詢喺淡出期間持續送樣，到埗就停寫。
+**R-OB-05** 光球近距淡出。游標唔近、又冇揸 Ctrl 時，光球實色、完全睇到。游標進入該粒光球嘅命中圓再加 `ORB_PROXIMITY_PX`（72px，光暈／命中半徑加一個 60–80px 以內嘅邊）時，只有嗰粒（或同樣近嘅幾粒）用 160ms `cubic-bezier(.2,.8,.2,1)` 淡到靜止透明度（預設 25%，上限 30%）。游標離開就用同一段淡返實色。淡出由腳本逐幀寫殼嘅 inline opacity（160ms `cubic-bezier(.2,.8,.2,1)`），`transition: none`，唔靠 CSS transition 播完。第一格用而家嘅 computed opacity 做起點，之後每一格向目標行，唔好停喺 `from`=1.00。近距輪詢喺目標改變之後繼續送約 168ms，視窗未聚焦、rAF 停咗都推到時鐘；到埗之後同一目標唔再寫 style，亦唔重設起點。`--hit-opacity` 唔可以同時驅動光球，亦唔好用 `opacity: 1 !important` 釘實光球。殼保持 `will-change: opacity`。transitionend 唔改 class 或者其他 style。每一幀 computed opacity 向目標單調，包括最後一格。透明度跟全域輪詢嘅游標距離同 Ctrl，另加一個例外：打開嘅面板或者計劃（包括收合未完、`data-state` 仍然係 panel）蓋住光球嘅 44px 光碟再加 34px 光暈時，嗰粒用同一段 160ms 淡到 0，`pointer-events: none`，而且唔發佈 hit rect；收合完、面板唔再係 panel，先淡返。光球位置唔郁。名稱片跟住淡，蓋實就收埋。其餘情況唔跟鍵盤事件或者焦點；游標遠一定係 1。Esc 關面板之後放開 overlay 嘅鍵盤焦點。儲存設定要保留已有嘅 `fade_enabled` 同 `fade_distance`。設定表單冇呢兩個欄，唔好寫死 `fade_enabled: false`。穿透唔變：預設穿透，只有揸住 Ctrl 而且游標喺 12px 命中邊內先可以撳（R-CT-*）。Ctrl 揸住而且游標喺 72px 淡出範圍內，嗰粒用同一段 160ms 返實色；可以撳仍然只係 12px 命中邊，而且命中圓對齊可見光碟（底部 footer slack 唔好拉高 orb 嘅 hit，令圓心跌低）。Ctrl+C／Ctrl+V 唔閃（R-CT-06），就算 overlay 仲有焦點都唔好把遠方光球留喺 0.18。面板唔變：預設實色可撳，Ctrl 揸住先透明同穿透。穿透視窗要靠全域游標輪詢（Windows `GetCursorPos`、Linux `XQueryPointer`，經 `device_query`），唔好靠 DOM mouse。`prefers-reduced-motion` 縮到 1ms。冇閒置循環動畫（R-PN-08）。2026-10-22 早段「約 180ms、淡出 150–200ms」**已取代**（v92 盒：180ms linear 加輪詢，6/21 次過唔到 250ms 內 ≤30%）。5dac6e2 嘅 250ms 目標 21/21 已過，但 15/84 次尾段仍有一格反向。2da217e 將反向減到 11/84。e301d99 改用腳本逐幀之後光球完全唔淡（21/21 近距樣本仍係 1）：輪詢每個目標只送一次，時鐘冇再推。改返由 compositor 嘅 CSS transition 播去 inline 目標，而且唔再同時寫 `--hit-opacity`。ae88559 一次 inline 目標加 CSS transition 令淡出 21/21 恢復，但尾段反向返到 29/125：完結嗰格畫咗中間值或舊值。CSS transition 完結會補一格，所以改返腳本逐幀，輪詢喺淡出期間持續送樣，到埗就停寫。
 - 來源：Devon 2026-10-08 原規則；2026-10-22 恢復（整合 REQUIREMENTS.md 時漏咗）。見 C-16。取代 R-CT-02／R-CT-03 嘅「預設半透明」。
 - 驗收（兩邊）：游標遠時光球實色；進入 72px 後 250ms 內透明度 ≤30%；離開返實色；Ctrl 揸住近光球時實色而且 12px 內可撳；Ctrl 放開，喺淡出範圍內撳仍然穿透；Ctrl+C／V 冇閃。
 - 狀態：❓ / ❓。
 
 **R-OB-06** 設定有開關「永遠顯示員工名」，預設關。關住時光球同而家一樣。值係 config.json 嘅 `show_bot_names`；關住唔寫出呢個欄。只有 Devon 撥個開關先寫檔。啟動、重連、靜態名單同步（R-SY-09）唔好為咗呢個值改 config.json。
-開咗之後，每粒光球（Bot、設定、看板、排程，同之後嘅子光球）喺光球下面顯示 `display_name`；下面會撞到面板、其他名、或者連線膠囊先擺側面。長名截斷加省略號，tooltip 同 aria-label 保留全名。名稱片置中喺光球下面。字唔可以用淺色 bot 色（黃 `#f2f200`、青 `#00f2f2`），對住背後至少 4.5:1；用淺色底片，字用 `#14142b`。標籤屬於嗰粒光球：跟 R-OB-05 一齊淡，預設穿透，只有揸住 Ctrl 先可以撳同喺近距返實色（R-CT-01、R-CT-03）。冇揸 Ctrl 時命中區維持光碟加原本 12px，唔好因為標籤變大。標籤唔好疊住面板，標籤之間亦唔好重疊。撥開關只寫 `show_bot_names` 呢一個鍵；舊檔冇 `kanban_base_url` 就唔好順便寫出空字串，亦唔好把其他鍵按字母重排。設定撳「儲存」同樣只寫用戶改過、或者檔案已經有嘅鍵：舊檔冇 `kanban_base_url` 而且仍然留空，就唔好寫出 `"kanban_base_url": ""`；用戶填咗網址就寫入；個鍵已經喺檔案入面就照寫。名稱片嘅底片跟字嘅闊度，置中仍然對齊光球中心。
+開咗之後，每粒光球（Bot、設定、看板、排程，同之後嘅子光球）喺畫面中心嗰一側顯示 `display_name`，離開光碟邊 10px，同光球垂直置中。嗰側撞到面板、其他名、或者連線膠囊，先試對面同上下。長名截斷加省略號，tooltip 同 aria-label 保留全名。名稱片高 18px、左右 padding 6px、圓角 2px；字 Barlow Condensed 12px/18px `#14142b`；底 `rgba(248,248,252,.82)`；1px `rgb(var(--bot-rgb) / .2)` 邊。中文唔好大階或者加字距。字唔可以用淺色 bot 色（黃 `#f2f200`、青 `#00f2f2`），對住淺色底至少 4.5:1。淺色 bot（黃、青）嘅 glyph 用深色 `--bot-ink`（黃 `#6b6b00`、青 `#006b6b`），光暈保持純 bot 色。標籤屬於嗰粒光球：跟 R-OB-05 一齊淡，被面板蓋住就收埋，預設穿透，只有揸住 Ctrl 先可以撳同喺近距返實色（R-CT-01、R-CT-03）。冇揸 Ctrl 時命中區維持光碟加原本 12px，唔好因為標籤變大。標籤唔好疊住面板，標籤之間亦唔好重疊。撥開關只寫 `show_bot_names` 呢一個鍵；舊檔冇 `kanban_base_url` 就唔好順便寫出空字串，亦唔好把其他鍵按字母重排。設定撳「儲存」同樣只寫用戶改過、或者檔案已經有嘅鍵：舊檔冇 `kanban_base_url` 而且仍然留空，就唔好寫出 `"kanban_base_url": ""`；用戶填咗網址就寫入；個鍵已經喺檔案入面就照寫。名稱片嘅底片跟字嘅闊度，置中仍然對齊光球中心。
 - 來源：Devon 2026-10-24，排喺 R-SY-09 之後。
 - 驗收：開關持久而且冇改過唔寫檔；標籤有渲染同截斷；冇 Ctrl 時命中矩形不變；字同底片對比 ≥4.5，唔係淺色 bot 色。儲存唔會為咗仍然留空、而且舊檔冇有嘅 `kanban_base_url` 新增個鍵。
 - 狀態：❓ / ❓。
+
+**R-AD-01** v104 閒置光球。`.bot-btn::before` 光暈：`inset: calc(-1 * var(--orb-glow-radius))`，`--orb-glow-radius: 34px`，`radial-gradient(circle, rgb(var(--bot-rgb) / .55) 0%, rgb(var(--bot-rgb) / .22) 42%, transparent 72%)`，opacity `.85`；hover opacity `1` 同 `scale(1.08)`。`.orb-core` 係近白眩光，`box-shadow: none`。`--bot-size: 44px`。glyph `500 18px/1`，`color: var(--bot-ink, var(--bot))`，`text-shadow: 0 0 4px #fff`。黃 `#f2f200` 嘅 `--bot-ink` 係 `#6b6b00`，青 `#00f2f2` 係 `#006b6b`。閒置圓形光球唔畫邊。打開面板嘅 `.morph-glow` 維持 96px、alpha `.12`。
+- 驗收：閒置光球冇 `.morph-fill::after` 圈洗，閒置排程光暈冇 clip 走光暈；黃、青 glyph 用深色墨。
+
+**R-AD-02** 被打開面板或者計劃蓋住嘅光球（44px 光碟加 34px 光暈相交）用 R-OB-05 同一段 160ms 淡到 0，而且唔留 hit rect。收合完先返。位置唔郁。
+- 驗收：面板開住時，光暈撞到面板嘅光球 opacity 去 0，hit 清單冇佢；收合完淡返。
+
+**R-AD-03** 看板空狀態同登入。Header 係 `KANBAN /` 加 profile 名；profile 用 JetBrains Mono 11px `#616191`。登入塊上下左右置中：標題 22px，一行 13px 說明（`#14142b` 70%），實心 `#0000f2` 掣，白字，高 32px，padding `0 16px`，圓角 2px，掣上面 16px。「要登入 Kanban」留喺標題。面板尺寸唔改。
+- 驗收：登入畫面見到「要登入 Kanban」同實心登入掣；看板面板仍然係 `min(960px, 80vw)` × `min(80vh, 760px)`。
+
+**R-AD-04** 設定面板密度（頁尾結束／儲存唔改）。說明最少 12px／1.5，`#14142b` 70%。欄位標籤 12px Barlow Condensed `#0000f2`。輸入 13px。標籤同行距 12px，組距 20px，legend 上面 24px。剔選係 14×14，1px `rgba(0,0,242,.4)` 邊，圓角 2px；剔中填 `#0000f2` 加白 1.5px 剔。顏色格 20×20，圓角 2px，1px `rgba(20,20,43,.2)` 邊。「永遠顯示員工名」字唔改。
+- 驗收：設定面板用上述字級同自訂剔選；頁尾掣維持原樣。
+
+**R-AD-05** Windows 工作區。視窗仍然蓋滿成個螢幕。邊位光球放喺 work area 入面，`--edge-pad` 由工作區邊度起計。`fit_overlay` 交 `inset_top/right/bottom/left`（CSS px）。其他平台工作區等於螢幕時 insets 係 0，經典邊位唔郁。Windows 點擊穿透探測嘅頂邊 t=0.21 唔改。
+- 驗收：底邊 inset 48px 時，底邊光球 y 係 `height - inset - pad - orb/2`；頂邊 t=0.21 嘅 y 仍然係 `pad + orb/2`。
+
+**R-AD-06** 金鑰橫額同連線膠囊。預設仍然 top 96px。撞到打開嘅面板就放喺面板外 12px、畫面中心嗰一側；放唔落先試其餘邊，再退到 header 行。唔好疊住光球或者佢 34px 光暈。膠囊仍然係唯一 999px 圓角。
+- 驗收：`keyBannerSlot` 預設 gap 12；光暈擋住中心側時改去另一邊。
 
 ---
 
@@ -338,7 +356,7 @@
 
 **R-SY-08** Hermes gateway 連唔到或者逾時，看板、排程、Bot 名單／profile、同每個 Bot 嘅對話都要自己接返，唔使重開程式、亦唔使人手撳。退避大約 5 秒、10 秒、20 秒，之後封頂 60 秒，每次上下 20%。網路恢復、系統由睡眠醒返、或者打開受影響嘅面板，即刻再試，而且唔好跳級：打開面板觸發嘅即時重試如果失敗，停留喺而家嗰級（例如 20 秒），唔好直接去 60 秒封頂。重試期間看板／光球顯示平靜狀態「連唔到 Hermes，自動重試中…」加下次再試時間，唔顯示原始錯誤；字色 `#14142b`，對比 ≥4.5:1（R-VS-01）。唔可以有閒置循環動畫（R-PN-08）：唔轉圈，靜態狀態加倒數文字就得。恢復之後每個消費者刷新一次並清走錯誤。重試同重連永遠唔建立 session、亦唔離開 Bot Chat（0 次建立，R-SS-01…04）。每個 profile 同時最多一個進行中嘅探測。v92 盒：打開面板失敗之後倒數顯示「49 秒」（+15s），跳過咗 20 秒級。重試膠囊同金鑰橫額用同一個面板外固定槽，bot 面板開住時唔好壓住計劃嘅 Goal: 行。ddd908c 盒：重試膠囊壓住 Goal: 行。
 - 來源：Devon（2026-10-22）。
-- 驗收：停掉假 gateway，面板出重試狀態；再開 gateway，喺退避窗口加 1 秒內看板同 Bot 自己出現；全程 0 次建立 session。CI／單元測試覆蓋假 gateway 由落到起。重試膠囊經 `placeKeyBanner` 放喺面板外緣。
+- 驗收：停掉假 gateway，面板出重試狀態；再開 gateway，喺退避窗口加 1 秒內看板同 Bot 自己出現；全程 0 次建立 session。CI／單元測試覆蓋假 gateway 由落到起。重試膠囊經 `placeKeyBanner` 放喺面板外 12px、畫面中心嗰一側，而且唔好疊住光球或者佢 34px 光暈。
 - 狀態：❓ / ❓。
 
 **R-SY-09** 連住 Hermes 時，大約每 60 秒（上下 20%）靜靜對一次 profile 名單，唔使重開程式。用 `claimProfiles(["roster"])`，同看板、排程、其他 Bot 嘅探測唔重疊。Gateway 落咗就跳過呢一輪，交給 R-SY-08。
@@ -347,12 +365,12 @@
 
 config.json 只有名單真係多咗 profile 先寫。冇變動嘅每一輪，檔案位元組保持一樣。已有 Bot 嘅 sessionId、enabled、顏色、次序、名稱、詳情都唔改。計時器唔刪走消失或者隱藏嘅 profile，亦唔因為今次搵唔到就標做不可用（一次讀取失敗唔可以隱藏晒所有人）。
 
-每次同步都要為新 profile 出一次金鑰提示，包括啟動 `connectHermes`、`recoverGateway` 同靜態計時。已經喺名單入面嘅唔再提示。提示用 sticky kind `keys`：第一次載入歷史、`clearConnectionBanner()`、同 4 秒計時都唔好清走。Gateway 膠囊顯示期間記住呢句，膠囊收起之後再出，而且要更新 hit rect。金鑰橫額跟面板：平常點擊打開設定；揸住 Ctrl 就穿透，同其他面板一樣。打開設定先收起橫額，名單留住。儲存之後只留仍然未有金鑰嘅 profile，再出橫額。金鑰橫額預設停喺 top 96px。打開咗嘅面板（主面板同貼住嘅計劃，包括 `.plan-hit-host`）外緣 8px 之內，就改放喺面板外緣外面：優先面板底邊之下，畫面放唔落先試頂邊同左右邊，再退到該面板 header 行入面。唔好逐行內容向下推。橫額唔好壓住計劃步驟、Bot Chat 下拉、看板內容，亦唔好疊住面板底邊。
+每次同步都要為新 profile 出一次金鑰提示，包括啟動 `connectHermes`、`recoverGateway` 同靜態計時。已經喺名單入面嘅唔再提示。提示用 sticky kind `keys`：第一次載入歷史、`clearConnectionBanner()`、同 4 秒計時都唔好清走。Gateway 膠囊顯示期間記住呢句，膠囊收起之後再出，而且要更新 hit rect。金鑰橫額跟面板：平常點擊打開設定；揸住 Ctrl 就穿透，同其他面板一樣。打開設定先收起橫額，名單留住。儲存之後只留仍然未有金鑰嘅 profile，再出橫額。金鑰橫額預設停喺 top 96px。打開咗嘅面板（主面板同貼住嘅計劃，包括 `.plan-hit-host`）外緣 12px 之內，就改放喺面板外 12px、畫面中心嗰一側；嗰側放唔落先試其餘邊，再退到該面板 header 行入面。唔好逐行內容向下推。橫額唔好壓住計劃步驟、Bot Chat 下拉、看板內容，亦唔好疊住面板、光球或者光球 34px 光暈。
 
 頭四粒光球用經典邊位（一粒喺頂邊 t=0.21；四粒係頂、右、底、左），加 profile 唔好郁呢四粒。第五粒起放入空位：中心距要大過光碟直徑加兩個 72px 淡出半徑，72px 淡出先唔會同時捉到兩粒；新位亦唔好落入打開咗嘅看板面板。6 粒或以上唔好疊到看板、排程、設定光球。`profiles/` 入面以點開頭嘅目錄（例如 `.deleted`）唔算 profile。
 
 - 來源：Devon。8cf5af4 盒：恢復先跑同步，3 個新 profile 有 2 個冇金鑰提示；加光球會重排，6 粒時 researcher 疊住 cron；`.deleted` 被當成 profile。f1ebd03 盒：金鑰提示約 60ms／340ms 就被歷史載入或 gateway 膠囊清走；穩定槽把原有四粒推去角落，新粒相距約 70px 一齊淡，打開看板蓋住預設光球。afb21e2 盒：平常點擊橫額開到設定；Ctrl+click 穿透係面板規則，`interaction.rs` 維持只放行光球同 `pill:`。eafdd1e 盒：計劃打開之後 Goal 行搬入 `.plan-hit-host`，橫額 y 109–142 仍然蓋住 Goal y 110–118。fbcb44c 盒：橫額 y=133 蓋住計劃步驟 1 同 Bot Chat 下拉右緣；已登入看板橫額 top y=794 疊住面板底邊 y=801 約 7px。
-- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額預設 top 96px，打開面板就放喺外緣外面至少 8px（優先底邊），放唔落先用 header 行，唔好壓住計劃步驟、Bot Chat 下拉或者看板底邊；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
+- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額預設 top 96px，打開面板就放喺外緣外面至少 12px（優先畫面中心嗰側），光暈擋住就換邊，放唔落先用 header 行，唔好壓住計劃步驟、Bot Chat 下拉、看板底邊或者光球光暈；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
 - 狀態：❓ / ❓。
 
 ---

@@ -51,6 +51,7 @@ import {
   restoreHostedPlan,
   sameChatSnapshot,
   slotPoint,
+  orbCoveredBy,
   FRAME_BLEED,
   HAIRLINE,
   STACK_GAP,
@@ -311,16 +312,18 @@ function anchorPoint(id) {
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
   const pad = edgePadPx();
-  if (id === "settings" || id === "kanban" || id === "cron") return fixedOrbPoint(id, vw, vh, pad, ORB);
+  const insets = state.workInsets;
+  if (id === "settings" || id === "kanban" || id === "cron") return fixedOrbPoint(id, vw, vh, pad, ORB, insets);
   const index = Math.max(0, state.bots.findIndex((bot) => bot.id === id));
   const slots = distributeEdges(Math.max(state.bots.length, 1), {
     width: vw,
     height: vh,
     pad,
     orb: ORB,
+    insets,
   });
   const slot = slots[index] || { edge: "left", t: ((index % 7) + 1) / 8 };
-  return slotPoint(slot.edge, slot.t, vw, vh, pad, ORB);
+  return slotPoint(slot.edge, slot.t, vw, vh, pad, ORB, insets);
 }
 
 /** Room outside a live or failed cron orb for the status ring and the running glow. */
@@ -3729,7 +3732,7 @@ const state = {
     modifier: "ctrl",
     fadeEnabled: true,
     fadeDistance: 120,
-    minOpacity: 0.18,
+    minOpacity: 0.25,
     supported: true,
   },
   pointerHitId: "",
@@ -3737,6 +3740,7 @@ const state = {
   osModifierDown: false,
   modifierHeld: false,
   showBotNames: false,
+  workInsets: { top: 0, right: 0, bottom: 0, left: 0 },
   latchedOrbId: "",
   pressFrozen: false,
   latchedIds: [],
@@ -4181,7 +4185,7 @@ function renderBots(tag = "renderBots") {
   schedulePlanRehearsal();
 }
 
-/** Button keeps the swatch. The shell colour tints `.morph-fill::after`, so an
+/** Button keeps the swatch. The shell colour tints the halo, so an
  *  idle kanban or settings shell must not keep the open-panel channels. */
 function paintIdleChromeColor(shell, btn, hex) {
   applyBotColor(btn, hex);
@@ -5450,7 +5454,14 @@ function placeKeyBanner() {
     if (panel) panels.push(panel);
   });
   const home = { x: box.x, y: box.y, w: box.width, h: box.height };
-  const slot = keyBannerSlot(home, panels, { w: window.innerWidth, h: window.innerHeight });
+  const orbs = [];
+  document.querySelectorAll(".morph[data-state='orb'] .morph-orb").forEach((node) => {
+    const disc = node.getBoundingClientRect();
+    if (disc.width >= 1 && disc.height >= 1) {
+      orbs.push({ x: disc.x, y: disc.y, w: disc.width, h: disc.height });
+    }
+  });
+  const slot = keyBannerSlot(home, panels, { w: window.innerWidth, h: window.innerHeight }, 12, orbs);
   if (Math.abs(slot.y - home.y) > 0.5) banner.style.top = `${Math.round(slot.y)}px`;
   if (Math.abs(slot.x - home.x) > 0.5) {
     banner.style.left = `${Math.round(slot.x)}px`;
@@ -6524,7 +6535,7 @@ function applyInteraction(raw) {
     modifier: interaction.modifier || "ctrl",
     fadeEnabled: interaction.fade_enabled !== false && interaction.fadeEnabled !== false,
     fadeDistance: Number(interaction.fade_distance ?? interaction.fadeDistance ?? 120),
-    minOpacity: Number(interaction.min_opacity ?? interaction.minOpacity ?? 0.18),
+    minOpacity: Number(interaction.min_opacity ?? interaction.minOpacity ?? 0.25),
     supported: interaction.supported !== false,
   };
   document.querySelectorAll(".interact-hint").forEach((hint) => {
@@ -6568,7 +6579,7 @@ function fillSettings(settings) {
   bots.forEach((bot) => editor.appendChild(rowFromBot(bot)));
   const interaction = settings?.interaction || state.interaction;
   $("#interaction-modifier").value = interaction.modifier || "ctrl";
-  const min = interaction.min_opacity ?? interaction.minOpacity ?? 0.18;
+  const min = interaction.min_opacity ?? interaction.minOpacity ?? 0.25;
   $("#interaction-min-opacity").value = String(Math.round(Number(min) * 100));
   const showNames = $("#show-bot-names");
   if (showNames) showNames.checked = !!settings?.show_bot_names;
@@ -7413,8 +7424,36 @@ function orbNameHitBox(id) {
   return { x: box.x, y: box.y, w: box.width, h: box.height };
 }
 
+function openCoverBoxes() {
+  const rects = [];
+  const push = (node) => {
+    if (!node || node.hidden || node.closest?.("[hidden]")) return;
+    if (node.classList?.contains("is-plan-parked")) return;
+    const box = node.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) return;
+    rects.push({ x: box.x, y: box.y, w: box.width, h: box.height });
+  };
+  document.querySelectorAll(".morph[data-state='panel']").forEach((shell) => {
+    push(shell);
+    if (shell._planHost) push(shell._planHost);
+  });
+  document.querySelectorAll(".plan-hit-host").forEach(push);
+  return rects;
+}
+
+function discBox(shell) {
+  const btn = shell.querySelector?.(".morph-orb");
+  const box = btn?.getBoundingClientRect?.();
+  if (box && box.width >= 1 && box.height >= 1) {
+    return { x: box.x, y: box.y, w: box.width, h: box.height };
+  }
+  const host = shell.getBoundingClientRect();
+  return { x: host.x, y: host.y, w: host.width, h: host.height };
+}
+
 function collectHits() {
   const rects = [];
+  const coverBoxes = openCoverBoxes();
   const push = (id, el, z = 0, round = false) => {
     // [hidden] drops the rect even before layout. display:none makes the box empty too.
     if (!el || el.hidden || el.closest("[hidden]")) return;
@@ -7470,6 +7509,8 @@ function collectHits() {
         z: 0,
         round: true,
       });
+    } else if (shell.dataset.state === "orb" && orbCoveredBy(discBox(shell), coverBoxes)) {
+      shell.dataset.orbCovered = "1";
     } else if (shell.dataset.rehearsal === "1" && shell._rehearsalHit) {
       const hit = shell._rehearsalHit;
       rects.push({
@@ -7507,6 +7548,7 @@ function collectHits() {
         round: shell.dataset.state === "orb",
       };
       if (shell.dataset.state === "orb") {
+        delete shell.dataset.orbCovered;
         const button = shell.querySelector(".morph-orb")?.getBoundingClientRect();
         const disc = button && button.width >= 1 && button.height >= 1
           ? { x: button.x, y: button.y, w: button.width, h: button.height }
@@ -8182,8 +8224,42 @@ function releaseCollapseGate(shell) {
 
 let hitDeferLogged = false;
 
+function noteOrbCover() {
+  const covers = openCoverBoxes();
+  let running = false;
+  document.querySelectorAll('.morph[data-state="orb"]').forEach((el) => {
+    const covered = orbCoveredBy(discBox(el), covers);
+    const was = el.dataset.orbCovered === "1";
+    if (covered) el.dataset.orbCovered = "1";
+    else delete el.dataset.orbCovered;
+    if (covered === was) return;
+    const live = el.classList.contains("is-cron-live");
+    if (!covered && live) {
+      delete el.dataset.orbFade;
+      orbFadeClocks.delete(el);
+      if (el.style.opacity) el.style.removeProperty("opacity");
+      if (el.style.getPropertyValue("--hit-opacity")) el.style.removeProperty("--hit-opacity");
+      return;
+    }
+    const aim = covered ? 0 : Number(el.dataset.orbAim || 1);
+    const stepped = applyOrbFadeFrame(
+      el,
+      orbFadeClocks.get(el) || null,
+      performance.now(),
+      aim,
+      reducedMotion() ? 1 : ORB_FADE_MS,
+      readOrbOpacity(el),
+    );
+    orbFadeClocks.set(el, stepped.clock);
+    if (stepped.running) running = true;
+  });
+  if (running) scheduleOrbFade();
+  paintOrbNames();
+}
+
 function scheduleHitSync(tag = "schedule") {
   placeKeyBanner();
+  noteOrbCover();
   const blocked = hitBlockReason();
   if (blocked) {
     if (!hitDeferLogged) {
@@ -8247,7 +8323,7 @@ function paintOpenedHeldLook() {
 
 function paintHeldPanels(down) {
   const floor = Number(state.interaction?.minOpacity);
-  const next = down ? String(Number.isFinite(floor) ? floor : 0.18) : "1";
+  const next = down ? String(Number.isFinite(floor) ? floor : 0.25) : "1";
   const panels = document.querySelectorAll('.morph[data-state="panel"]');
   panels.forEach((shell) => {
     // Inline opacity on the shell. The plan stays at 1 so the two layers
@@ -8326,6 +8402,7 @@ let orbFadeFrame = 0;
 
 function applyFrames(frames, interactiveAll = false) {
   const map = new Map((frames || []).map((item) => [item.id, item]));
+  const covers = openCoverBoxes();
   document.querySelectorAll("[data-hit-id]").forEach((el) => {
     const known = map.get(el.dataset.hitId);
     const nested = !!el.parentElement?.closest?.("[data-hit-id]");
@@ -8339,27 +8416,33 @@ function applyFrames(frames, interactiveAll = false) {
       anim.cancel();
     });
     const panelShell = el.classList?.contains("morph") && el.dataset.state === "panel";
-    const liveCron = el.classList?.contains("morph")
-      && el.dataset.state === "orb"
-      && el.classList.contains("is-cron-live");
-    const orbShell = el.classList?.contains("morph")
-      && (el.dataset.state === "orb" || el.dataset.visual === "orb")
-      && !el.classList.contains("is-cron-live");
-    if (liveCron) {
+    const orbLike = el.classList?.contains("morph")
+      && (el.dataset.state === "orb" || el.dataset.visual === "orb");
+    const liveCron = orbLike && el.classList.contains("is-cron-live");
+    const orbShell = orbLike && !el.classList.contains("is-cron-live");
+    if (orbLike && el.dataset.state === "orb") {
+      const covered = orbCoveredBy(discBox(el), covers);
+      if (covered) el.dataset.orbCovered = "1";
+      else delete el.dataset.orbCovered;
+      el.dataset.orbAim = String(value);
+    }
+    if (liveCron && el.dataset.orbCovered !== "1") {
       // A running disc stays at the stylesheet's 1. Drop the fade number
       // so it cannot keep a near-cursor sample on screen.
       delete el.dataset.orbFade;
       orbFadeClocks.delete(el);
       if (el.style.opacity) el.style.removeProperty("opacity");
       if (el.style.getPropertyValue("--hit-opacity")) el.style.removeProperty("--hit-opacity");
-    } else if (orbShell) {
+    } else if (orbShell || liveCron) {
       // One sample of the scripted fade. Repeated polls of the same target
       // keep this clock. A settled target does not write again.
+      // A panel that meets the disc plus its halo fades this orb to 0.
+      const aim = el.dataset.orbCovered === "1" ? 0 : value;
       const stepped = applyOrbFadeFrame(
         el,
         orbFadeClocks.get(el) || null,
         performance.now(),
-        value,
+        aim,
         reducedMotion() ? 1 : ORB_FADE_MS,
         readOrbOpacity(el),
       );
@@ -8434,9 +8517,12 @@ function syncOrbNameFade() {
       label.hidden = true;
       continue;
     }
-    const next = shell.style.opacity || "1";
+    const covered = shell.dataset.orbCovered === "1";
+    const next = shell.style.opacity || (covered ? "0.00" : "1");
     if (label.style.opacity !== next) label.style.opacity = next;
-    if (state.modifierHeld === true) label.dataset.hitCapture = "1";
+    const settled = covered && Number.parseFloat(next) <= 0.01;
+    if (settled) label.hidden = true;
+    if (state.modifierHeld === true && !covered) label.dataset.hitCapture = "1";
     else delete label.dataset.hitCapture;
   }
 }
@@ -8510,18 +8596,34 @@ function paintOrbNames() {
       host.appendChild(node);
     }
     applyOrbName(node, item.title);
+    const shell = byId.get(item.id)?.shell;
     const centered = item.align !== "side";
-    const left = centered ? `${Math.round(item.anchorX)}px` : `${Math.round(item.x)}px`;
-    const top = `${Math.round(item.y)}px`;
-    const transform = centered ? "translateX(-50%)" : "";
+    const place = item.place || (centered ? "below" : "right");
+    let left = `${Math.round(item.x)}px`;
+    let top = `${Math.round(item.y)}px`;
+    let transform = "";
+    if (place === "left") {
+      left = `${Math.round(item.x + item.w)}px`;
+      transform = "translateX(-100%)";
+    } else if (place === "above") {
+      left = `${Math.round(item.anchorX)}px`;
+      top = `${Math.round(item.y + item.h)}px`;
+      transform = "translate(-50%, -100%)";
+    } else if (place === "below" || centered) {
+      left = `${Math.round(item.anchorX)}px`;
+      transform = "translateX(-50%)";
+    }
     if (node.style.left !== left) node.style.left = left;
     if (node.style.top !== top) node.style.top = top;
     if (node.style.width) node.style.width = "";
     if (node.style.transform !== transform) node.style.transform = transform;
-    const shell = byId.get(item.id)?.shell;
-    const opacity = shell?.style.opacity || "1";
+    const channels = shell?.style.getPropertyValue("--bot-rgb")?.trim();
+    if (channels) node.style.setProperty("--bot-rgb", channels);
+    const covered = shell?.dataset.orbCovered === "1";
+    const opacity = shell?.style.opacity || (covered ? "0.00" : "1");
     if (node.style.opacity !== opacity) node.style.opacity = opacity;
-    if (state.modifierHeld === true) node.dataset.hitCapture = "1";
+    if (covered && Number.parseFloat(opacity) <= 0.01) node.hidden = true;
+    if (state.modifierHeld === true && !covered) node.dataset.hitCapture = "1";
     else delete node.dataset.hitCapture;
   }
 }
@@ -8565,7 +8667,7 @@ function tickOrbFades() {
   const duration = reducedMotion() ? 1 : ORB_FADE_MS;
   let running = false;
   document.querySelectorAll('.morph[data-state="orb"][data-hit-id]').forEach((el) => {
-    if (el.classList.contains("is-cron-live")) return;
+    if (el.classList.contains("is-cron-live") && el.dataset.orbCovered !== "1") return;
     const clock = orbFadeClocks.get(el);
     if (!clock || clock.settled) return;
     const stepped = applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el));
@@ -9221,7 +9323,8 @@ function paintKanban(board) {
   const empty = $("#kanban-empty");
   const root = $("#kanban-board");
   const title = $("#kanban-title");
-  if (title) title.textContent = board.board || "Board";
+  const crumb = document.getElementById("kanban-crumb-profile");
+  if (crumb) crumb.textContent = board.board || "default";
   if (!root || !empty) return;
   if (board.needsLogin && !board.retry) {
     showKanbanLogin();
@@ -10236,10 +10339,24 @@ function afterNextPaint() {
   });
 }
 
+function rememberWorkInsets(size) {
+  if (!size) return;
+  state.workInsets = {
+    top: Number(size.inset_top) || 0,
+    right: Number(size.inset_right) || 0,
+    bottom: Number(size.inset_bottom) || 0,
+    left: Number(size.inset_left) || 0,
+  };
+}
+
 function fitOverlay() {
   if (!inTauri()) return Promise.resolve(null);
   return import("@tauri-apps/api/core")
     .then(({ invoke }) => invoke("fit_overlay"))
+    .then((size) => {
+      rememberWorkInsets(size);
+      return size;
+    })
     .catch(() => null);
 }
 

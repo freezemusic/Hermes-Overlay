@@ -4,10 +4,10 @@ import { contrastRatio, INK } from "./botcolor.js";
 
 export const ORB_NAME_MAX_CHARS = 8;
 export const ORB_NAME_MAX_W = 96;
-export const ORB_NAME_H = 16;
-export const ORB_NAME_GAP = 4;
+export const ORB_NAME_H = 18;
+export const ORB_NAME_GAP = 10;
 export const NAME_LABEL_FG = INK;
-export const NAME_LABEL_BG = "#f7f8f8";
+export const NAME_LABEL_BG = "#f8f8fc";
 
 const LIGHT_BOT = new Set(["#f2f200", "#00f2f2", "#79f200", "#edff45", "#f27900"]);
 
@@ -68,9 +68,26 @@ function clampBox(box, viewport) {
   };
 }
 
+function nameSpots(orb, w, h, viewport) {
+  const width = viewport?.width || 1280;
+  const height = viewport?.height || 800;
+  const cx = orb.x + orb.w / 2;
+  const cy = orb.y + orb.h / 2;
+  const dx = width / 2 - cx;
+  const dy = height / 2 - cy;
+  const right = { x: orb.x + orb.w + ORB_NAME_GAP, y: cy - h / 2, align: "side", place: "right" };
+  const left = { x: orb.x - w - ORB_NAME_GAP, y: cy - h / 2, align: "side", place: "left" };
+  const below = { x: cx - w / 2, y: orb.y + orb.h + ORB_NAME_GAP, align: "center", place: "below" };
+  const above = { x: cx - w / 2, y: orb.y - h - ORB_NAME_GAP, align: "center", place: "above" };
+  const side = dx >= 0 ? [right, left] : [left, right];
+  if (Math.abs(dx) >= Math.abs(dy)) return [...side, dy >= 0 ? below : above, dy >= 0 ? above : below];
+  const vertical = dy >= 0 ? [below, above] : [above, below];
+  return [...vertical, ...side];
+}
+
 /**
- * Prefer a chip under the orb. If that covers a panel or another name, try
- * the right, the left, then above.
+ * The chip sits on the screen-centre side of the orb, 10px out from the disc,
+ * and lines up with the disc's middle. A panel or another name moves it.
  */
 export function layoutOrbNames(orbs, panels = [], viewport = { width: 1280, height: 800 }) {
   const placed = [];
@@ -78,36 +95,37 @@ export function layoutOrbNames(orbs, panels = [], viewport = { width: 1280, heig
   for (const orb of orbs) {
     const title = String(orb.name || "").trim();
     const text = truncateOrbName(title);
-    const w = Math.min(ORB_NAME_MAX_W, Math.max(28, Array.from(text).length * 12));
+    const w = Math.min(ORB_NAME_MAX_W, Math.max(28, Array.from(text).length * 12 + 12));
     const h = ORB_NAME_H;
     const cx = orb.x + orb.w / 2;
-    const spots = [
-      { x: cx - w / 2, y: orb.y + orb.h + ORB_NAME_GAP, align: "center" },
-      { x: orb.x + orb.w + ORB_NAME_GAP, y: orb.y + (orb.h - h) / 2, align: "side" },
-      { x: orb.x - w - ORB_NAME_GAP, y: orb.y + (orb.h - h) / 2, align: "side" },
-      { x: cx - w / 2, y: orb.y - h - ORB_NAME_GAP, align: "center" },
-    ];
+    const spots = nameSpots(orb, w, h, viewport);
     let choice = null;
     let align = "center";
+    let place = "below";
+    const blocked = (box) => [...panels, ...placed].some((other) => overlaps(box, other));
     for (const spot of spots) {
       const box = clampBox({ x: spot.x, y: spot.y, w, h }, viewport);
-      const blocked = [...panels, ...placed].some((other) => overlaps(box, other));
-      if (!blocked) {
+      if (!blocked(box)) {
         choice = box;
         align = spot.align;
+        place = spot.place;
         break;
       }
     }
     if (!choice) {
-      align = "center";
-      let box = clampBox({ x: cx - w / 2, y: orb.y + orb.h + ORB_NAME_GAP, w, h }, viewport);
-      for (let step = 0; step < 6 && [...panels, ...placed].some((other) => overlaps(box, other)); step += 1) {
-        box = clampBox({ ...box, y: box.y + h + 2 }, viewport);
+      const primary = spots[0];
+      align = primary.align;
+      place = primary.place;
+      let box = clampBox({ x: primary.x, y: primary.y, w, h }, viewport);
+      const stepX = place === "right" ? w + 2 : place === "left" ? -(w + 2) : 0;
+      const stepY = place === "below" ? h + 2 : place === "above" ? -(h + 2) : 0;
+      for (let step = 0; step < 8 && blocked(box); step += 1) {
+        box = clampBox({ ...box, x: box.x + stepX, y: box.y + stepY }, viewport);
       }
       choice = box;
     }
     placed.push(choice);
-    out.push({ id: orb.id, ...choice, text, title, align, anchorX: cx });
+    out.push({ id: orb.id, ...choice, text, title, align, place, anchorX: cx });
   }
   return out;
 }

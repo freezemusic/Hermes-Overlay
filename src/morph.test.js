@@ -74,6 +74,7 @@ import {
   separateStackedPanels,
   screenEdge,
   slotPoint,
+  orbCoveredBy,
   tighten,
   visibleSize,
 } from "./morph.js";
@@ -801,6 +802,14 @@ test("screen edge and slot centres keep the orb on that edge", () => {
   const top = slotPoint("top", 0.5, 1280, 800, 42, ORB);
   assert.equal(top.y, 42 + ORB / 2);
   assert.equal(screenEdge(top.x, top.y, 1280, 800), "top");
+  const taskbar = { bottom: 48 };
+  const parked = slotPoint("bottom", 0.5, 1280, 800, 42, ORB, taskbar);
+  assert.equal(parked.y, 800 - 48 - 42 - ORB / 2);
+  const stillTop = slotPoint("top", 0.21, 1280, 800, 42, ORB, taskbar);
+  assert.equal(stillTop.y, 42 + ORB / 2);
+  const covered = orbCoveredBy({ x: 500, y: 8, w: 44, h: 44 }, [{ x: 200, y: 40, w: 420, h: 80 }]);
+  assert.equal(covered, true);
+  assert.equal(orbCoveredBy({ x: 20, y: 700, w: 44, h: 44 }, [{ x: 200, y: 40, w: 420, h: 80 }]), false);
 });
 
 test("collapse drops a dragged park so the orb can return to its edge", () => {

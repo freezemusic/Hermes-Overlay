@@ -108,15 +108,30 @@ export function textPairsForBot(hex) {
   ];
 }
 
+/** Glyph ink for the two light swatches. The halo keeps the pure bot colour. */
+const BOT_INK = {
+  "#f2f200": "#6b6b00",
+  "#00f2f2": "#006b6b",
+};
+
+export function botInk(hex) {
+  return BOT_INK[String(hex || "").trim().toLowerCase()] || "";
+}
+
 /** Sets --bot and the rgb fallback channels old WebKitGTK can paint. */
 export function applyBotColor(el, hex) {
   if (!el) return;
   const color = /^#[0-9a-fA-F]{6}$/.test(String(hex || "").trim()) ? hex : NOUS.blue;
   const channels = botChannels(color);
-  if (el.style.getPropertyValue("--bot") === color
+  const ink = botInk(color);
+  const same = el.style.getPropertyValue("--bot") === color
     && el.style.getPropertyValue("--bot-rgb").trim() === channels
-    && el.style.getPropertyValue("--bot-color") === color) return;
+    && el.style.getPropertyValue("--bot-color") === color
+    && el.style.getPropertyValue("--bot-ink") === ink;
+  if (same) return;
   el.style.setProperty("--bot", color);
   el.style.setProperty("--bot-rgb", channels);
   el.style.setProperty("--bot-color", color);
+  if (ink) el.style.setProperty("--bot-ink", ink);
+  else el.style.removeProperty("--bot-ink");
 }

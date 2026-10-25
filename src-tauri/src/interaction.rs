@@ -184,7 +184,7 @@ pub const HIT_MARGIN_PX: f64 = 12.0;
 pub const ORB_PROXIMITY_PX: f64 = 72.0;
 
 /// How long a proximity publish keeps repeating after the target changes.
-/// The fade is 120ms. The page samples inline opacity from these publishes,
+/// The fade is 160ms. The page samples inline opacity from these publishes,
 /// so one edge is not enough and a paused animation frame must not stall it.
 pub const ORB_FADE_EMIT: Duration = Duration::from_millis(168);
 
@@ -206,14 +206,71 @@ pub fn proximity_emit_hold(
     }
 }
 
-/// Near-orb opacity. The settings floor defaults to 0.18 and never exceeds 0.30.
+/// Near-orb opacity. The settings floor defaults to 0.25 and never exceeds 0.30.
 pub fn orb_near_opacity(min_opacity: f64) -> f64 {
     let floor = if min_opacity.is_finite() {
         min_opacity
     } else {
-        0.18
+        0.25
     };
     floor.clamp(0.05, 0.30)
+}
+
+/// CSS-pixel insets of the work area inside the monitor.
+/// Rects are physical pixels: x, y, width, height. Returns top, right, bottom, left.
+pub fn work_area_insets(
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_w: i32,
+    monitor_h: i32,
+    work_x: i32,
+    work_y: i32,
+    work_w: i32,
+    work_h: i32,
+    scale: f64,
+) -> (u32, u32, u32, u32) {
+    if monitor_w <= 0 || monitor_h <= 0 || work_w <= 0 || work_h <= 0 {
+        return (0, 0, 0, 0);
+    }
+    let scale = if scale.is_finite() && scale > 0.01 {
+        scale
+    } else {
+        1.0
+    };
+    let px = |delta: i32| ((f64::from(delta) / scale).round().max(0.0)) as u32;
+    let top = px(work_y - monitor_y);
+    let left = px(work_x - monitor_x);
+    let right = px((monitor_x + monitor_w) - (work_x + work_w));
+    let bottom = px((monitor_y + monitor_h) - (work_y + work_h));
+    (top, right, bottom, left)
+}
+
+/// Work-area insets in CSS pixels. Zero on every edge when the work area
+/// matches the monitor, which is the Linux and headless case.
+pub fn monitor_work_insets(window: &tauri::WebviewWindow) -> (u32, u32, u32, u32) {
+    let Some(monitor) = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+    else {
+        return (0, 0, 0, 0);
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let pos = monitor.position();
+    let size = monitor.size();
+    let work = monitor.work_area();
+    work_area_insets(
+        pos.x,
+        pos.y,
+        size.width as i32,
+        size.height as i32,
+        work.position.x,
+        work.position.y,
+        work.size.width as i32,
+        work.size.height as i32,
+        scale,
+    )
 }
 
 fn orb_visual_opacity(distance: f64, held: bool, min_opacity: f64) -> f64 {
@@ -3430,7 +3487,11 @@ mod tests {
         assert!(!done.0);
         assert!(done.1.is_none());
         assert!((orb_near_opacity(0.18) - 0.18).abs() < 0.001);
+        assert!((orb_near_opacity(f64::NAN) - 0.25).abs() < 0.001);
         assert!((orb_near_opacity(0.5) - 0.30).abs() < 0.001);
+        assert_eq!(work_area_insets(0, 0, 1920, 1080, 0, 0, 1920, 1040, 1.0), (0, 0, 40, 0));
+        assert_eq!(work_area_insets(0, 0, 2560, 1440, 0, 0, 2560, 1400, 2.0), (0, 0, 20, 0));
+        assert_eq!(work_area_insets(0, 0, 1280, 800, 0, 0, 1280, 800, 1.0), (0, 0, 0, 0));
         let cfg = fade_cfg();
         let orb = HitRect {
             id: "bot:a".into(),

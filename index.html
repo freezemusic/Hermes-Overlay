@@ -177,7 +177,7 @@
             </p>
             <label class="field">
               <span>按住修飾鍵時面板透明度（%），亦係光球平時嘅透明度</span>
-              <input id="interaction-min-opacity" type="number" min="5" max="60" step="1" value="18" />
+              <input id="interaction-min-opacity" type="number" min="5" max="60" step="1" value="25" />
             </label>
             <p id="interaction-support" class="hint"></p>
             <label class="show-toggle" for="show-bot-names">
@@ -218,14 +218,18 @@
         <span class="hud-corner bl" aria-hidden="true"></span>
         <span class="hud-corner br" aria-hidden="true"></span>
         <header class="panel-header">
-          <h1 id="kanban-title" class="panel-title" lang="en">Board</h1>
+          <h1 id="kanban-title" class="panel-title kanban-crumb">
+            <span class="kanban-crumb-name">KANBAN</span>
+            <span class="kanban-crumb-profile" id="kanban-crumb-profile">default</span>
+          </h1>
           <button type="button" id="btn-kanban-close" class="icon-btn">關閉</button>
         </header>
         <p id="kanban-error" class="kanban-error" hidden></p>
         <p id="kanban-empty" class="kanban-empty" hidden></p>
         <div id="kanban-login" class="kanban-login" hidden>
-          <p class="kanban-empty is-login">要登入 Kanban</p>
-          <button type="button" id="btn-kanban-login" class="icon-btn">登入</button>
+          <p class="kanban-empty is-login kanban-empty-title">要登入 Kanban</p>
+          <p class="kanban-empty-help">登入之後先睇到呢塊板。</p>
+          <button type="button" id="btn-kanban-login" class="kanban-login-btn">登入</button>
         </div>
         <div id="kanban-detail" class="kanban-detail" hidden></div>
         <div id="kanban-board" class="kanban"></div>
