@@ -15,8 +15,9 @@ import {
 test("a long orb name truncates and keeps the full name on the chip", () => {
   const full = "計劃助手超長名稱測試";
   assert.equal(truncateOrbName("計劃助手"), "計劃助手");
-  assert.equal(truncateOrbName(full), "計劃助手超長名…");
+  assert.equal(truncateOrbName("Hermes 主機"), "Hermes 主機");
   assert.ok(truncateOrbName(full).endsWith("…"));
+  assert.ok(truncateOrbName(full).length < Array.from(full).length);
   const dom = new JSDOM("<!doctype html><span id='n'></span>");
   const el = dom.window.document.getElementById("n");
   const painted = applyOrbName(el, full);
@@ -70,6 +71,11 @@ test("name ink clears 4.5 on the chip and is not a light bot colour", () => {
   assert.equal(nameInkIsDark(fg), true);
   assert.equal(nameInkIsDark("#f2f200"), false);
   assert.equal(nameInkIsDark("#00f2f2"), false);
+  assert.equal(nameInkIsDark("#edff45"), false);
+  assert.equal(nameInkIsDark("#79f200"), false);
+  assert.equal(nameInkIsDark("#f27900"), false);
+  assert.equal(nameInkIsDark("#ff8442"), false);
+  assert.equal(nameInkIsDark("#0000f2"), true);
   assert.equal(nameInkIsDark(bg) || bg === "#f8f8fc", true);
   const css = fs.readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   const rule = css.slice(css.indexOf(".orb-name {"), css.indexOf(".orb-name[hidden]"));

@@ -257,6 +257,18 @@ export function tighten(insets, px = HAIRLINE) {
   };
 }
 
+/** Resting orb clip: the 44px disc plus the 34px halo on every side, still a circle. */
+export function orbHaloInsets(insets, bleed = ORB_HALO_PX) {
+  const pad = Math.max(0, Number(bleed) || 0);
+  return {
+    top: insets.top - pad,
+    right: insets.right - pad,
+    bottom: insets.bottom - pad,
+    left: insets.left - pad,
+    radius: 999,
+  };
+}
+
 export function clipPath(insets) {
   const n = (value) => (Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100));
   return `inset(${n(insets.top)}px ${n(insets.right)}px ${n(insets.bottom)}px ${n(insets.left)}px round ${n(insets.radius)}px)`;

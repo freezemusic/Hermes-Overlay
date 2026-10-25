@@ -163,28 +163,28 @@
 - 狀態：❓ / ❓。
 
 **R-OB-06** 設定有開關「永遠顯示員工名」，預設關。關住時光球同而家一樣。值係 config.json 嘅 `show_bot_names`；關住唔寫出呢個欄。只有 Devon 撥個開關先寫檔。啟動、重連、靜態名單同步（R-SY-09）唔好為咗呢個值改 config.json。
-開咗之後，每粒光球（Bot、設定、看板、排程，同之後嘅子光球）喺畫面中心嗰一側顯示 `display_name`，離開光碟邊 10px，同光球垂直置中。嗰側撞到面板、其他名、或者連線膠囊，先試對面同上下。長名截斷加省略號，tooltip 同 aria-label 保留全名。名稱片高 18px、左右 padding 6px、圓角 2px；字 Barlow Condensed 12px/18px `#14142b`；底 `rgba(248,248,252,.82)`；1px `rgb(var(--bot-rgb) / .2)` 邊。中文唔好大階或者加字距。字唔可以用淺色 bot 色（黃 `#f2f200`、青 `#00f2f2`），對住淺色底至少 4.5:1。淺色 bot（黃、青）嘅 glyph 用深色 `--bot-ink`（黃 `#6b6b00`、青 `#006b6b`），光暈保持純 bot 色。標籤屬於嗰粒光球：跟 R-OB-05 一齊淡，被面板蓋住就收埋，預設穿透，只有揸住 Ctrl 先可以撳同喺近距返實色（R-CT-01、R-CT-03）。冇揸 Ctrl 時命中區維持光碟加原本 12px，唔好因為標籤變大。標籤唔好疊住面板，標籤之間亦唔好重疊。撥開關只寫 `show_bot_names` 呢一個鍵；舊檔冇 `kanban_base_url` 就唔好順便寫出空字串，亦唔好把其他鍵按字母重排。設定撳「儲存」同樣只寫用戶改過、或者檔案已經有嘅鍵：舊檔冇 `kanban_base_url` 而且仍然留空，就唔好寫出 `"kanban_base_url": ""`；用戶填咗網址就寫入；個鍵已經喺檔案入面就照寫。名稱片嘅底片跟字嘅闊度，置中仍然對齊光球中心。
+開咗之後，每粒光球（Bot、設定、看板、排程，同之後嘅子光球）喺畫面中心嗰一側顯示 `display_name`，離開光碟邊 10px，同光球垂直置中。嗰側撞到面板、其他名、或者連線膠囊，先試對面同上下。長名按名稱片 96px 闊度截斷加省略號，「Hermes 主機」留全名，tooltip 同 aria-label 保留全名。名稱片高 18px、左右 padding 6px、圓角 2px；字 Barlow Condensed 12px/18px `#14142b`；底 `rgba(248,248,252,.82)`；1px `rgb(var(--bot-rgb) / .2)` 邊。中文唔好大階或者加字距。字唔可以用淺色 bot 色（黃 `#f2f200`、青 `#00f2f2`），對住淺色底至少 4.5:1。淺色 bot 嘅 glyph 用深色 `--bot-ink`（黃 `#f2f200` 係 `#6b6b00`，青 `#00f2f2` 係 `#006b6b`；白底對比低過 3:1 嘅其他色，包括 `#edff45`、`#79f200`、`#f27900`、`#ff8442`，用加深咗嘅同色墨），光暈保持純 bot 色。標籤屬於嗰粒光球：跟 R-OB-05 一齊淡，被面板蓋住就收埋，預設穿透，只有揸住 Ctrl 先可以撳同喺近距返實色（R-CT-01、R-CT-03）。冇揸 Ctrl 時命中區維持光碟加原本 12px，唔好因為標籤變大。標籤唔好疊住面板，標籤之間亦唔好重疊。撥開關只寫 `show_bot_names` 呢一個鍵；舊檔冇 `kanban_base_url` 就唔好順便寫出空字串，亦唔好把其他鍵按字母重排。設定撳「儲存」同樣只寫用戶改過、或者檔案已經有嘅鍵：舊檔冇 `kanban_base_url` 而且仍然留空，就唔好寫出 `"kanban_base_url": ""`；用戶填咗網址就寫入；個鍵已經喺檔案入面就照寫。名稱片嘅底片跟字嘅闊度，置中仍然對齊光球中心。
 - 來源：Devon 2026-10-24，排喺 R-SY-09 之後。
 - 驗收：開關持久而且冇改過唔寫檔；標籤有渲染同截斷；冇 Ctrl 時命中矩形不變；字同底片對比 ≥4.5，唔係淺色 bot 色。儲存唔會為咗仍然留空、而且舊檔冇有嘅 `kanban_base_url` 新增個鍵。
 - 狀態：❓ / ❓。
 
-**R-AD-01** v104 閒置光球。`.bot-btn::before` 光暈：`inset: calc(-1 * var(--orb-glow-radius))`，`--orb-glow-radius: 34px`，`radial-gradient(circle, rgb(var(--bot-rgb) / .55) 0%, rgb(var(--bot-rgb) / .22) 42%, transparent 72%)`，opacity `.85`；hover opacity `1` 同 `scale(1.08)`。`.orb-core` 係近白眩光，`box-shadow: none`。`--bot-size: 44px`。glyph `500 18px/1`，`color: var(--bot-ink, var(--bot))`，`text-shadow: 0 0 4px #fff`。黃 `#f2f200` 嘅 `--bot-ink` 係 `#6b6b00`，青 `#00f2f2` 係 `#006b6b`。閒置圓形光球唔畫邊。打開面板嘅 `.morph-glow` 維持 96px、alpha `.12`。
-- 驗收：閒置光球冇 `.morph-fill::after` 圈洗，閒置排程光暈冇 clip 走光暈；黃、青 glyph 用深色墨。
+**R-AD-01** v104 閒置光球。`.bot-btn::before` 光暈：`inset: calc(-1 * var(--orb-glow-radius))`，`--orb-glow-radius: 34px`，`radial-gradient(circle, rgb(var(--bot-rgb) / .55) 0%, rgb(var(--bot-rgb) / .22) 42%, transparent 72%)`，opacity `.85`；hover opacity `1` 同 `scale(1.08)`。`.orb-core` 係近白眩光，`box-shadow: none`。`--bot-size: 44px`。glyph `500 18px/1`，`color: var(--bot-ink, var(--bot))`，`text-shadow: 0 0 4px #fff`。黃 `#f2f200` 嘅 `--bot-ink` 係 `#6b6b00`，青 `#00f2f2` 係 `#006b6b`。其餘喺白底對比低過 3:1 嘅 bot 色（包括 `#edff45`、`#79f200`、`#f27900`、`#ff8442`）用同一條對比規則加深成自己嘅墨，墨對白至少 4.5:1。光暈保持純 bot 色。閒置圓形光球唔畫邊。打開面板嘅 `.morph-glow` 維持 96px、alpha `.12`。Orb 狀態嘅殼 clip 每邊闊 34px（`round 999px`），殼同 `.morph-orb` 都係 `overflow: visible`。殼背景同 `.morph-fill` 喺閒置 orb 透明。命中矩形仍然係 44px 光碟，唔包括光暈。
+- 驗收：要睇渲染像素，唔可以只對 computed style。閒置光球嘅光暈要畫出 44px 光碟之外（光碟邊再外仍然有 bot 色），光碟冇實白貼紙，亦冇 1px 色環。閒置光球冇 `.morph-fill::after` 圈洗。黃 `#f2f200`、青 `#00f2f2` glyph 用上面兩隻墨；`#edff45` 嘅 glyph 唔可以係原色。
 
-**R-AD-02** 被打開面板或者計劃蓋住嘅光球（44px 光碟加 34px 光暈相交）用 R-OB-05 同一段 160ms 淡到 0，DOM `pointer-events: none`。hit rect 照發，Ctrl+click 仍然開到嗰粒（R-CT-02）。收合完先返。位置唔郁。
-- 驗收：面板開住時，光暈撞到面板嘅光球 opacity 去 0，hit 清單仍然有佢；收合完淡返。
+**R-AD-02** 被打開面板或者計劃蓋住嘅光球（44px 光碟加 34px 光暈相交）用 R-OB-05 同一段 160ms 淡到 0。殼同 `.morph-orb` 都係 `pointer-events: none`。hit rect 照發，而且仍然係 44px 光碟，Ctrl+click 仍然開到嗰粒（R-CT-02）。殼離開 orb 狀態要清 `data-orb-covered`。收合完先返。位置唔郁。
+- 驗收：面板開住時，光暈撞到面板嘅光球 opacity 去 0，hit 清單仍然有佢，而且係 44×44；收合完淡返。打開之後個面板冇 `data-orb-covered="1"`。
 
-**R-AD-03** 看板空狀態同登入。Header 係 `KANBAN /` 加 profile 名；profile 用 JetBrains Mono 11px `#616191`。登入塊上下左右置中：標題 22px，一行 13px 說明（`#14142b` 70%），實心 `#0000f2` 掣，白字，高 32px，padding `0 16px`，圓角 2px，掣上面 16px。「要登入 Kanban」留喺標題。面板尺寸唔改。
-- 驗收：登入畫面見到「要登入 Kanban」同實心登入掣；看板面板仍然係 `min(960px, 80vw)` × `min(80vh, 760px)`。
+**R-AD-03** 看板空狀態同登入。Header 係 `KANBAN /` 加 profile 名；profile 用 JetBrains Mono 11px `#616191`（有呢個字體先用，否則跟 `--font-mono`）。登入塊上下左右置中：標題 22px，一行 13px 說明（`#14142b` 70%），實心 `#0000f2` 掣，白字，高 32px，padding `0 16px`，圓角 2px，掣上面 16px。「要登入 Kanban」留喺標題。「連唔到 Kanban。」同其他空狀態顯示期間，`#kanban-board` 收起，句子喺面板置中。面板尺寸唔改。
+- 驗收：登入畫面見到「要登入 Kanban」同實心登入掣；看板面板仍然係 `min(960px, 80vw)` × `min(80vh, 760px)`。「連唔到 Kanban。」嘅中心貼近面板中心。
 
-**R-AD-04** 設定面板密度（頁尾結束／儲存唔改）。說明最少 12px／1.5，`#14142b` 70%。欄位標籤 12px Barlow Condensed `#0000f2`。輸入 13px。標籤同行距 12px，組距 20px，legend 上面 24px。剔選係 14×14，1px `rgba(0,0,242,.4)` 邊，圓角 2px；剔中填 `#0000f2` 加白 1.5px 剔。顏色格 20×20，圓角 2px，1px `rgba(20,20,43,.2)` 邊。「永遠顯示員工名」字唔改。
-- 驗收：設定面板用上述字級同自訂剔選；頁尾掣維持原樣。
+**R-AD-04** 設定面板密度（頁尾結束／儲存唔改）。說明最少 12px／1.5，`#14142b` 70%。欄位標籤 12px Barlow Condensed `#0000f2`。輸入 13px。標籤同行距 12px，組距 20px，legend 上面 24px。剔選係 14×14，包括每個 profile 嘅「顯示」，1px `rgba(0,0,242,.4)` 邊，圓角 2px；剔中填 `#0000f2` 加白 1.5px 剔。`.bot-row` 唔好再寫 16px。顏色格 20×20，圓角 2px，1px `rgba(20,20,43,.2)` 邊。「永遠顯示員工名」字唔改。
+- 驗收：設定面板用上述字級同自訂剔選；頁尾掣維持原樣。profile「顯示」剔選係 14×14。
 
 **R-AD-05** Windows 工作區。視窗仍然蓋滿成個螢幕。邊位光球放喺 work area 入面，`--edge-pad` 由工作區邊度起計。`fit_overlay` 交 `inset_top/right/bottom/left`（CSS px）。其他平台工作區等於螢幕時 insets 係 0，經典邊位唔郁。Windows 點擊穿透探測嘅頂邊 t=0.21 唔改。探測腳本用 WorkingArea 同 Bounds 嘅差做同一組 inset，設定、看板、排程跟住；頂邊 field 公式維持 `$w * 0.08 + $w * 0.84 * 0.21` 同 `pad + orb/2`。視窗同空白點仍然用成個 Bounds。
 - 驗收：底邊 inset 48px 時，底邊光球 y 係 `height - inset - pad - orb/2`；頂邊 t=0.21 嘅 y 仍然係 `pad + orb/2`。
 
-**R-AD-06** 金鑰橫額同連線膠囊。預設仍然 top 96px。撞到打開嘅面板就放喺面板外 12px、畫面中心嗰一側；放唔落先試其餘邊，再退到 header 行。唔好疊住光球或者佢 34px 光暈。膠囊仍然係唯一 999px 圓角。
-- 驗收：`keyBannerSlot` 預設 gap 12；光暈擋住中心側時改去另一邊。
+**R-AD-06** 金鑰橫額同連線膠囊。預設仍然 top 96px。呢個 home 都要避開每粒光球同佢 34px 光暈，再加 12px；冇面板開住、光暈擋到 home，就改放喺光暈外（頂邊看板光暈會將橫額同膠囊放到 y ≥ 132）。只係底邊面板開住、又冇碰到 home，唔好因為個面板搬走。撞到打開嘅面板就放喺面板外 12px、畫面中心嗰一側；放唔落先試其餘邊，再退到 header 行。唔好疊住光球或者佢 34px 光暈。金鑰橫額圓角 2px。膠囊仍然係唯一 999px 圓角。
+- 驗收：`keyBannerSlot` 預設 gap 12；光暈擋住中心側時改去另一邊。閒置橫額同膠囊唔疊住看板光暈。`#conn-banner[data-sticky="keys"]` 圓角 2px。
 
 ---
 

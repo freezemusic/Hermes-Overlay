@@ -1,21 +1,40 @@
 /** R-OB-06: persistent orb names. Default off. Ink on a paper chip, never a light bot colour. */
 
-import { contrastRatio, INK } from "./botcolor.js";
+import { contrastRatio, INK, lightBotColor } from "./botcolor.js";
 
-export const ORB_NAME_MAX_CHARS = 8;
 export const ORB_NAME_MAX_W = 96;
 export const ORB_NAME_H = 18;
 export const ORB_NAME_GAP = 10;
 export const NAME_LABEL_FG = INK;
 export const NAME_LABEL_BG = "#f8f8fc";
+const NAME_CHROME = 14;
 
-const LIGHT_BOT = new Set(["#f2f200", "#00f2f2", "#79f200", "#edff45", "#f27900"]);
+function charWidth(ch) {
+  const code = ch.codePointAt(0) || 0;
+  if (code <= 0x20) return 4;
+  if (code < 0x80) return 7;
+  return 12;
+}
 
-export function truncateOrbName(name, maxChars = ORB_NAME_MAX_CHARS) {
+/** Border-box width of a name at 12px Barlow, including the 6px pad and 1px border. */
+export function measureOrbName(text) {
+  let width = NAME_CHROME;
+  for (const ch of String(text || "")) width += charWidth(ch);
+  return width;
+}
+
+export function truncateOrbName(name, maxWidth = ORB_NAME_MAX_W) {
   const chars = Array.from(String(name || "").trim());
-  if (chars.length <= maxChars) return chars.join("");
-  if (maxChars <= 1) return "…";
-  return `${chars.slice(0, maxChars - 1).join("")}…`;
+  const full = chars.join("");
+  if (measureOrbName(full) <= maxWidth) return full;
+  const ellipsis = "…";
+  let kept = "";
+  for (const ch of chars) {
+    const next = kept + ch;
+    if (measureOrbName(next + ellipsis) > maxWidth) break;
+    kept = next;
+  }
+  return kept ? `${kept}${ellipsis}` : ellipsis;
 }
 
 export function applyOrbName(el, name) {
@@ -39,7 +58,8 @@ export function nameLabelContrast() {
 
 export function nameInkIsDark(hex = NAME_LABEL_FG) {
   const color = String(hex || "").trim().toLowerCase();
-  return !LIGHT_BOT.has(color) && color !== "#ffffff";
+  if (color === "#ffffff") return false;
+  return !lightBotColor(color);
 }
 
 /** Disc hit stays the disc until Ctrl is held. Then the label can join it. */
@@ -95,7 +115,7 @@ export function layoutOrbNames(orbs, panels = [], viewport = { width: 1280, heig
   for (const orb of orbs) {
     const title = String(orb.name || "").trim();
     const text = truncateOrbName(title);
-    const w = Math.min(ORB_NAME_MAX_W, Math.max(28, Array.from(text).length * 12 + 12));
+    const w = Math.min(ORB_NAME_MAX_W, Math.max(28, measureOrbName(text)));
     const h = ORB_NAME_H;
     const cx = orb.x + orb.w / 2;
     const spots = nameSpots(orb, w, h, viewport);

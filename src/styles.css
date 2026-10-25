@@ -1693,6 +1693,10 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   border-radius: 999px;
 }
 
+#conn-banner[data-sticky="keys"] {
+  border-radius: 2px;
+}
+
 .conn-banner .banner-action {
   display: block;
   width: 100%;
@@ -1849,6 +1853,10 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 
 .kanban-panel > .kanban-empty[hidden] { display: none; }
 
+.kanban-panel:has(> .kanban-empty:not([hidden])) > .kanban {
+  display: none;
+}
+
 .kanban-crumb {
   display: inline-flex;
   align-items: baseline;
@@ -1864,7 +1872,7 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 }
 
 .kanban-crumb-profile {
-  font: 400 11px/1 var(--font-mono);
+  font: 400 11px/1 "JetBrains Mono", var(--font-mono);
   color: #616191;
   letter-spacing: 0;
   text-transform: none;
@@ -2199,11 +2207,10 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   will-change: opacity;
 }
 
-/* The 12px hit pad and the ::before glow sit outside the disc. A resting
-   settings orb was the one that still showed them after Esc. Cron keeps
-   the status ring outside the button. */
-.morph[data-state="orb"] .morph-orb:not(.orb--cron) {
-  overflow: hidden;
+/* The halo sits 34px outside the disc. The shell clip is widened by that
+   radius; the button must not clip ::before back to 44px. */
+.morph[data-state="orb"] .morph-orb {
+  overflow: visible;
 }
 
 .morph[data-state="orb"] .morph-orb:focus,
@@ -2220,7 +2227,8 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   opacity: 1 !important;
 }
 
-.morph[data-orb-covered="1"] {
+.morph[data-orb-covered="1"],
+.morph[data-orb-covered="1"] .morph-orb {
   pointer-events: none !important;
 }
 
@@ -2255,6 +2263,19 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
     linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
     var(--noise),
     rgba(248, 248, 252, .92);
+}
+
+/* Idle orb: no paper sticker and no shell colour at the clip edge.
+   The core gradient fades to the desktop, and the halo paints past 44px. */
+.morph[data-state="orb"]:not(.is-morphing):not(.is-collapsing),
+.morph[data-kind="bot"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) {
+  background: transparent;
+  overflow: visible;
+}
+
+.morph[data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-fill,
+.morph[data-kind="bot"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-fill {
+  background: transparent;
 }
 
 .morph[data-kind="bot"][data-state="panel"] {
@@ -2743,10 +2764,13 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 }
 
 .bot-row input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
   padding: 0;
   box-shadow: none;
+}
+
+.settings-panel .bot-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
 }
 
 .orb-names {

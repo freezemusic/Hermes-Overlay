@@ -52,6 +52,8 @@ import {
   sameChatSnapshot,
   slotPoint,
   orbCoveredBy,
+  orbHaloInsets,
+  ORB_HALO_PX,
   FRAME_BLEED,
   HAIRLINE,
   STACK_GAP,
@@ -333,15 +335,10 @@ function paintClip(shell, insets, visual = shell.dataset.visual || shell.dataset
   const cronBleed = shell.dataset.botId === "cron"
     && visual === "orb"
     && (shell.classList.contains("is-cron-live") || shell.classList.contains("is-cron-fail"));
-  const outer = cronBleed
-    ? {
-      top: insets.top - CRON_ORB_BLEED,
-      right: insets.right - CRON_ORB_BLEED,
-      bottom: insets.bottom - CRON_ORB_BLEED,
-      left: insets.left - CRON_ORB_BLEED,
-      radius: insets.radius + CRON_ORB_BLEED,
-    }
-    : null;
+  // The resting clip includes the 34px halo. Dataset insets stay the 44px
+  // disc; hit rects read the button, not this wider circle.
+  const bleed = visual === "orb" ? Math.max(ORB_HALO_PX, cronBleed ? CRON_ORB_BLEED : 0) : 0;
+  const outer = bleed > 0 ? orbHaloInsets(insets, bleed) : null;
   if (visual === "panel") {
     // The open clip stays where the morph left it. Clearing it here drops
     // the layer and the compositor paints one blank frame.
@@ -350,10 +347,9 @@ function paintClip(shell, insets, visual = shell.dataset.visual || shell.dataset
     const next = outer ? clipPath(outer) : revealClip(visual, shellGeom(shell));
     const px = clipPath(insets);
     const held = shell.style.clipPath;
-    // A live or failed cron orb still writes: its bleed is wider than the disc.
-    // Idle cron keeps the same disc clip as the other orbs.
-    // An identical px or calc clip must stay. Swapping the collapse's px
-    // clip for revealClip's calc rebuilds the orb about a second later.
+    // Every orb writes the halo circle. An identical clip stays put.
+    // Swapping the collapse's px clip for revealClip's calc rebuilds the
+    // orb about a second later.
     if (!outer && held && (held === next || held === px)) {
       /* resting clip already matches */
     } else if (held !== next) {
@@ -413,6 +409,7 @@ function markVisual(shell, visual) {
   shell.dataset.visual = visual;
   shell.dataset.state = next;
   shell.dataset.hitId = hitFor(shell.dataset.botId, shell.dataset.state);
+  if (next !== "orb") delete shell.dataset.orbCovered;
   if (wasPanel && next !== "panel") {
     shell.style.removeProperty("opacity");
     planNode(shell)?.style.removeProperty("opacity");
@@ -639,6 +636,13 @@ function readInsets(shell) {
 }
 
 function visibleBox(shell) {
+  if (shell?.dataset?.state === "orb") {
+    const btn = shell.querySelector?.(".morph-orb");
+    const disc = btn?.getBoundingClientRect?.();
+    if (disc && disc.width >= 1 && disc.height >= 1) {
+      return { x: disc.x, y: disc.y, w: disc.width, h: disc.height };
+    }
+  }
   const box = shell.getBoundingClientRect();
   const insets = readInsets(shell);
   return {
@@ -5328,13 +5332,13 @@ function paintGatewayWait() {
     detail.replaceChildren();
   }
   state.kanban.detailOpen = false;
-  if (root) root.hidden = false;
   if (empty && root && !featureMissing) {
     empty.hidden = false;
     empty.classList.remove("is-unavailable");
     if (!empty.classList.contains("is-retry")) root.replaceChildren();
     empty.classList.add("is-retry");
     empty.textContent = text;
+    root.hidden = true;
     if (!state.kanban.board?.retry) {
       state.kanban.board = {
         board: KANBAN_BOARD,
@@ -7489,6 +7493,8 @@ function collectHits() {
       // published so Ctrl+click still opens an orb under a panel (R-CT-02).
       if (orbCoveredBy(discBox(shell), coverBoxes)) shell.dataset.orbCovered = "1";
       else delete shell.dataset.orbCovered;
+    } else {
+      delete shell.dataset.orbCovered;
     }
     if (id === state.dragHitId) {
       rects.push({
@@ -9344,12 +9350,12 @@ function paintKanban(board) {
     detail.replaceChildren();
   }
   state.kanban.detailOpen = false;
-  root.hidden = false;
   if (board.retry || (gateway.isDown("gateway") && board.unavailable && gatewayDown(board.message) && !kanbanUnavailable(board.message))) {
     empty.hidden = false;
     empty.classList.remove("is-unavailable");
     empty.classList.add("is-retry");
     empty.textContent = gateway.status("gateway") || RECONNECT_STATUS;
+    root.hidden = true;
     root.replaceChildren();
     scheduleHitSync();
     return;
@@ -9359,11 +9365,13 @@ function paintKanban(board) {
     empty.hidden = false;
     empty.textContent = board.message || KANBAN_EMPTY;
     empty.classList.toggle("is-unavailable", kanbanUnavailable(empty.textContent));
+    root.hidden = true;
     root.replaceChildren();
     scheduleHitSync();
     return;
   }
   empty.hidden = true;
+  root.hidden = false;
   empty.classList.remove("is-unavailable");
   root.replaceChildren();
   board.columns.forEach((column) => {

@@ -77,6 +77,22 @@ test("the key banner leaves the screen-centre side when an orb halo is there", (
   assert.equal(hits, false);
 });
 
+test("an idle banner clears the kanban halo, and a distant bottom panel stays out of it", () => {
+  const banner = { x: 786, y: 96, w: 349, h: 33 };
+  const screen = { w: 1920, h: 1200 };
+  const kanban = { x: 938, y: 42, w: 44, h: 44 };
+  const idle = keyBannerSlot(banner, [], screen, 12, [kanban]);
+  assert.deepEqual(idle, { x: 786, y: 132 });
+  const halo = { x: kanban.x - 34, y: kanban.y - 34, w: kanban.w + 68, h: kanban.h + 68 };
+  const overlaps = idle.x < halo.x + halo.w && idle.x + banner.w > halo.x
+    && idle.y < halo.y + halo.h && idle.y + banner.h > halo.y;
+  assert.equal(overlaps, false);
+  const bottom = { x: 400, y: 760, w: 680, h: 400 };
+  assert.deepEqual(keyBannerSlot(banner, [bottom], screen, 12, [kanban]), idle);
+  const pill = { x: 846, y: 96, w: 229, h: 33 };
+  assert.deepEqual(keyBannerSlot(pill, [], screen, 12, [kanban]), { x: 846, y: 132 });
+});
+
 test("the key banner uses the header row when no outside edge fits on screen", () => {
   const banner = { x: 360, y: 96, w: 560, h: 36 };
   const screen = { w: 1280, h: 820 };

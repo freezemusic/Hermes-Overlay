@@ -75,6 +75,7 @@ import {
   screenEdge,
   slotPoint,
   orbCoveredBy,
+  orbHaloInsets,
   tighten,
   visibleSize,
 } from "./morph.js";
@@ -711,6 +712,19 @@ test("clip-path is inset() round and the hairline sits one pixel inside", () => 
   assert.equal(inner.radius, outer.radius - 1);
   assert.equal(containsPoint(inner, PANEL_W, PANEL_H, g.ax, g.ay), true);
   assert.equal(clipPath(insetsFor("panel", g)), "inset(0px 0px 0px 0px round 3px)");
+  const halo = orbHaloInsets(outer);
+  assert.equal(halo.radius, 999);
+  assert.equal(halo.top, outer.top - 34);
+  assert.equal(halo.right, outer.right - 34);
+  assert.equal(halo.bottom, outer.bottom - 34);
+  assert.equal(halo.left, outer.left - 34);
+  assert.match(clipPath(halo), /round 999px/);
+  const disc = visibleSize(outer, PANEL_W, PANEL_H);
+  const glow = visibleSize(halo, PANEL_W, PANEL_H);
+  assert.equal(disc.w, ORB);
+  assert.equal(disc.h, ORB);
+  assert.equal(glow.w, ORB + 68);
+  assert.equal(glow.h, ORB + 68);
 });
 
 test("the header slot is the orb centre and the orb does not fly", () => {

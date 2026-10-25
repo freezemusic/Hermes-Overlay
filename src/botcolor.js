@@ -108,14 +108,56 @@ export function textPairsForBot(hex) {
   ];
 }
 
-/** Glyph ink for the two light swatches. The halo keeps the pure bot colour. */
+/** Named swatches keep the art-director ink. Other light colours darken. */
 const BOT_INK = {
   "#f2f200": "#6b6b00",
   "#00f2f2": "#006b6b",
 };
 
+const GLYPH_PAPER = "#ffffff";
+const GLYPH_INK_FLOOR = 3;
+const GLYPH_INK_TARGET = 4.5;
+
+function scaleHex(hex, factor) {
+  const color = parseHex(hex);
+  const byte = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0");
+  return `#${byte(color.r * factor)}${byte(color.g * factor)}${byte(color.b * factor)}`;
+}
+
+/** Same hue, lightest scale that still clears 4.5:1 on white. */
+function darkenedInk(hex) {
+  let lo = 0;
+  let hi = 1;
+  let best = "#000000";
+  for (let i = 0; i < 18; i += 1) {
+    const mid = (lo + hi) / 2;
+    const ink = scaleHex(hex, mid);
+    if (contrastRatio(ink, GLYPH_PAPER) >= GLYPH_INK_TARGET) {
+      best = ink;
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return best;
+}
+
+/**
+ * Glyph ink. The halo keeps the pure bot colour. A colour whose contrast
+ * on white is below 3:1 gets a darkened ink of itself. #f2f200 and #00f2f2
+ * keep the named swatches.
+ */
 export function botInk(hex) {
-  return BOT_INK[String(hex || "").trim().toLowerCase()] || "";
+  const color = String(hex || "").trim().toLowerCase();
+  if (BOT_INK[color]) return BOT_INK[color];
+  if (!parseHex(color)) return "";
+  if (contrastRatio(color, GLYPH_PAPER) >= GLYPH_INK_FLOOR) return "";
+  return darkenedInk(color);
+}
+
+/** True when the glyph needs dark ink. Shared with the name-plate light list. */
+export function lightBotColor(hex) {
+  return botInk(hex) !== "";
 }
 
 /** Sets --bot and the rgb fallback channels old WebKitGTK can paint. */

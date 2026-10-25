@@ -433,6 +433,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(layout, /dataset\.rehearsal === "1"/);
   const paintClipFn = mainSrc.slice(mainSrc.indexOf("function paintClip"), mainSrc.indexOf("function shellGeom"));
   assert.match(paintClipFn, /held === next \|\| held === px/);
+  assert.match(paintClipFn, /orbHaloInsets/);
   assert.match(css, /\.seam-tick \{[^}]*width:\s*1px/s);
   assert.match(css, /\.seam-tick \{[^}]*height:\s*1px/s);
   assert.match(css, /\.seam-tick \{[^}]*background:\s*#fff/s);
@@ -478,7 +479,16 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.kanban-error \{[^}]*color:\s*#14142b/s);
   assert.doesNotMatch(css, /\.kanban-error \{[^}]*color:\s*var\(--nous-red\)/s);
   assert.match(css, /\.kanban-error \{[^}]*border-left:[^;]*var\(--nous-red\)/s);
-  assert.match(css, /\.morph\[data-state="orb"\] \.morph-orb:not\(\.orb--cron\) \{[^}]*overflow:\s*hidden/s);
+  assert.match(css, /\.morph\[data-state="orb"\] \.morph-orb \{[^}]*overflow:\s*visible/s);
+  assert.doesNotMatch(css, /\.morph\[data-state="orb"\] \.morph-orb:not\(\.orb--cron\) \{[^}]*overflow:\s*hidden/s);
+  assert.match(css, /\.morph\[data-state="orb"\]:not\(\.is-morphing\):not\(\.is-collapsing\)[^{]*\{[^}]*background:\s*transparent/s);
+  assert.match(css, /\.morph\[data-state="orb"\]:not\(\.is-morphing\):not\(\.is-collapsing\) \.morph-fill[^{]*\{[^}]*background:\s*transparent/s);
+  assert.match(css, /#conn-banner\[data-sticky="keys"\] \{[^}]*border-radius:\s*2px/s);
+  assert.match(css, /\.morph\[data-orb-covered="1"\] \.morph-orb \{[^}]*pointer-events:\s*none !important/s);
+  assert.match(css, /\.kanban-panel:has\(> \.kanban-empty:not\(\[hidden\]\)\) > \.kanban \{[^}]*display:\s*none/s);
+  assert.match(css, /\.kanban-crumb-profile \{[^}]*JetBrains Mono/s);
+  assert.match(css, /\.settings-panel \.bot-row input\[type="checkbox"\] \{[^}]*width:\s*14px/s);
+  assert.doesNotMatch(css, /\.bot-row input\[type="checkbox"\] \{[^}]*width:\s*16px/s);
   assert.match(css, /\.alt-warning::before \{[^}]*background:\s*var\(--nous-orange\)/s);
   assert.match(css, /\.morph\[data-header="bottom"\] \.settings-head \{\s*position:\s*static;/);
   assert.match(html, /<div class="settings-scroll">/);

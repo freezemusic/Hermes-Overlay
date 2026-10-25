@@ -46,7 +46,9 @@ function haloBox(orb) {
 /**
  * Fixed slot for the key banner and the gateway pill. The home position
  * stays when it is `gap` clear of every open panel and of every orb halo.
- * Otherwise the banner sits 12px outside the panel, on the side that faces
+ * A halo that meets home is a blocker on its own, so an idle top orb moves
+ * the slot below its glow. A panel that does not meet home is not a blocker.
+ * Otherwise the banner sits 12px outside the blocker, on the side that faces
  * the screen centre. The header row is the last slot.
  */
 export function keyBannerSlot(banner, panels, screen, gap = 12, orbs = []) {
@@ -56,11 +58,14 @@ export function keyBannerSlot(banner, panels, screen, gap = 12, orbs = []) {
   const halos = (orbs || []).filter((orb) => orb && orb.w >= 1 && orb.h >= 1).map(haloBox);
   const clear = (slot) => bannerOnScreen(slot, banner, screen)
     && boxes.every((box) => !bannerHits(slot, banner, box, gap))
-    && halos.every((box) => !bannerHits(slot, banner, box, 0));
+    && halos.every((box) => !bannerHits(slot, banner, box, gap));
   if (clear(home)) return home;
 
-  const blocking = boxes.filter((box) => bannerHits(home, banner, box, gap));
-  const list = blocking.length ? blocking : boxes;
+  const blockingPanels = boxes.filter((box) => bannerHits(home, banner, box, gap));
+  const blockingHalos = halos.filter((box) => bannerHits(home, banner, box, gap));
+  const list = blockingPanels.length || blockingHalos.length
+    ? [...blockingPanels, ...blockingHalos]
+    : boxes;
   let top = Infinity;
   let bottom = -Infinity;
   let left = Infinity;
@@ -95,7 +100,7 @@ export function keyBannerSlot(banner, panels, screen, gap = 12, orbs = []) {
     const bottomEdge = y + banner.h;
     const staysOnHeader = bottomEdge <= header.y + header.h + 0.01 && bottomEdge > header.y;
     const othersClear = boxes.every((other) => other === box || !bannerHits(slot, banner, other, gap))
-      && halos.every((halo) => !bannerHits(slot, banner, halo, 0));
+      && halos.every((halo) => !bannerHits(slot, banner, halo, gap));
     if (staysOnHeader && bannerOnScreen(slot, banner, screen) && othersClear) return slot;
   }
   return home;
