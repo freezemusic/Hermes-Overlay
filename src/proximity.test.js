@@ -305,6 +305,10 @@ test("orb fade frames stay monotonic and reach the floor inside 250ms", () => {
   const collect = main.slice(main.indexOf("function collectHits"), main.indexOf("let hitFrame"));
   assert.match(collect, /orbDiscHit/);
   assert.match(collect, /dataset\.state !== "orb"\) coverBottomFooter/);
+  assert.match(collect, /orbCoveredBy\(discBox\(shell\), coverBoxes\)/);
+  assert.match(collect, /dataset\.orbCovered = "1"/);
+  assert.match(collect, /rects\.push\(rect\)/);
+  assert.doesNotMatch(collect, /dataset\.state === "orb" && orbCoveredBy\(discBox\(shell\), coverBoxes\)/);
 });
 
 test("scripted orb fades stay monotonic when retargeted at random times", () => {

@@ -7484,6 +7484,12 @@ function collectHits() {
         : shell.dataset.state === "panel"
           ? 1
           : 0;
+    if (shell.dataset.state === "orb") {
+      // Fade and name plates follow this flag. The OS rect below stays
+      // published so Ctrl+click still opens an orb under a panel (R-CT-02).
+      if (orbCoveredBy(discBox(shell), coverBoxes)) shell.dataset.orbCovered = "1";
+      else delete shell.dataset.orbCovered;
+    }
     if (id === state.dragHitId) {
       rects.push({
         id,
@@ -7509,8 +7515,6 @@ function collectHits() {
         z: 0,
         round: true,
       });
-    } else if (shell.dataset.state === "orb" && orbCoveredBy(discBox(shell), coverBoxes)) {
-      shell.dataset.orbCovered = "1";
     } else if (shell.dataset.rehearsal === "1" && shell._rehearsalHit) {
       const hit = shell._rehearsalHit;
       rects.push({
@@ -7548,7 +7552,6 @@ function collectHits() {
         round: shell.dataset.state === "orb",
       };
       if (shell.dataset.state === "orb") {
-        delete shell.dataset.orbCovered;
         const button = shell.querySelector(".morph-orb")?.getBoundingClientRect();
         const disc = button && button.width >= 1 && button.height >= 1
           ? { x: button.x, y: button.y, w: button.width, h: button.height }

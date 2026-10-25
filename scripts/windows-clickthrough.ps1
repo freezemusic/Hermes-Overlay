@@ -260,13 +260,25 @@ public static class ClickProbe {
 [ClickProbe]::SetProcessDPIAware() | Out-Null
 Add-Type -AssemblyName System.Windows.Forms
 $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$work = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $w = $bounds.Width
 $h = $bounds.Height
+# Same gap as interaction::work_area_insets. The window still covers Bounds.
+# Settings, kanban, and cron centres move into the work area. The field
+# probe stays on the full-monitor top edge at t=0.21 (R-AD-05).
+$insetLeft = [Math]::Max(0, $work.X - $bounds.X)
+$insetTop = [Math]::Max(0, $work.Y - $bounds.Y)
+$insetRight = [Math]::Max(0, ($bounds.X + $bounds.Width) - ($work.X + $work.Width))
+$insetBottom = [Math]::Max(0, ($bounds.Y + $bounds.Height) - ($work.Y + $work.Height))
+$frameLeft = $insetLeft
+$frameTop = $insetTop
+$frameW = $w - $insetLeft - $insetRight
+$frameH = $h - $insetTop - $insetBottom
 $pad = 42
 $orb = 44
-$settings = @{ x = [int]($w - $pad - 152 - $orb / 2); y = [int]($h - $pad - $orb / 2) }
-$kanban = @{ x = [int]($w / 2); y = [int]($pad + $orb / 2) }
-$cron = @{ x = [int]($w - $pad - $orb / 2); y = [int][Math]::Round($h * 0.38) }
+$settings = @{ x = [int]($frameLeft + $frameW - $pad - 152 - $orb / 2); y = [int]($frameTop + $frameH - $pad - $orb / 2) }
+$kanban = @{ x = [int]($frameLeft + $frameW / 2); y = [int]($frameTop + $pad + $orb / 2) }
+$cron = @{ x = [int]($frameLeft + $frameW - $pad - $orb / 2); y = [int][Math]::Round($frameTop + $frameH * 0.38) }
 # One field bot sits on the top edge (distributeEdges weight, t=0.21).
 # Its open panel is 420x560 anchored on that orb. Settings is
 # min(680, 92vw) by min(86vh, 760), anchored on the settings orb.
@@ -325,6 +337,7 @@ foreach ($cand in $emptyCands) {
   }
 }
 if (-not $empty) { throw "no blank point outside the settings and field panels" }
+Write-Host "work insets L=$insetLeft T=$insetTop R=$insetRight B=$insetBottom settings $($settings.x),$($settings.y) kanban $($kanban.x),$($kanban.y) cron $($cron.x),$($cron.y)"
 Write-Host "blank point $($empty.x),$($empty.y) outside settings $([int]$settingsPanel.left),$([int]$settingsPanel.top) $([int]$settingsPanel.w)x$([int]$settingsPanel.h) and field $([int]$fieldPanel.left),$([int]$fieldPanel.top) $([int]$fieldPanel.w)x$([int]$fieldPanel.h) field-orb $($field.x),$($field.y)"
 
 $script:sampleNotes = New-Object System.Collections.Generic.List[string]
