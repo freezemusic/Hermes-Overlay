@@ -799,10 +799,12 @@ test("chat is the primary panel and the hover label does not stick", () => {
   assert.match(css, /\.conn-banner \{[^}]*12px\/1\.4/s);
   assert.match(css, /\.conn-banner \{[^}]*padding:\s*6px 12px/s);
   assert.match(css, /\.conn-banner \{[^}]*rgb\(0 0 242 \/ \.35\)/s);
-  assert.match(css, /\.conn-banner \.banner-action \{[^}]*#0000f2/s);
-  assert.match(css, /\.conn-banner \.banner-action \{[^}]*text-decoration:\s*underline/s);
+  assert.match(css, /\.conn-banner \.banner-action \{[^}]*text-decoration:\s*none/s);
+  assert.match(css, /\.conn-banner \.banner-link \{[^}]*#0000f2/s);
+  assert.match(css, /\.conn-banner \.banner-link \{[^}]*text-decoration:\s*underline/s);
   assert.match(css, /\.conn-banner \.banner-copy \{[^}]*#14142b/s);
   assert.match(css, /\.conn-banner \.banner-copy \{[^}]*text-decoration:\s*none/s);
+  assert.match(main, /banner-link/);
   assert.ok(contrast("#14142b", "#f8f8fc") >= 7);
   assert.ok(contrast("#0000f2", "#f8f8fc") >= 7);
   assert.doesNotMatch(html, /<legend>Kanban server<\/legend>/);

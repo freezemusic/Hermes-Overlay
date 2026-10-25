@@ -3848,21 +3848,17 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
     button.dataset.action = "settings";
     const link = "設定";
     const linkAt = text.indexOf(link);
-    const paint = (value, copy) => {
+    const paint = (value, kind) => {
       if (!value) return;
-      if (!copy) {
-        button.appendChild(document.createTextNode(value));
-        return;
-      }
       const span = document.createElement("span");
-      span.className = "banner-copy";
+      span.className = kind === "link" ? "banner-link" : "banner-copy";
       span.textContent = value;
       button.appendChild(span);
     };
     if (linkAt >= 0) {
-      paint(text.slice(0, linkAt), true);
-      paint(link, false);
-      paint(text.slice(linkAt + link.length), true);
+      paint(text.slice(0, linkAt), "copy");
+      paint(link, "link");
+      paint(text.slice(linkAt + link.length), "copy");
     } else {
       button.textContent = text;
     }

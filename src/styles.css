@@ -1695,15 +1695,20 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   padding: 0;
   border: 0;
   background: transparent;
-  color: #0000f2;
+  color: #14142b;
   font: inherit;
   line-height: inherit;
   text-align: left;
   cursor: pointer;
   pointer-events: auto;
+  text-decoration: none;
+  opacity: 1;
+}
+
+.conn-banner .banner-link {
+  color: #0000f2;
   text-decoration: underline;
   text-underline-offset: 2px;
-  opacity: 1;
 }
 
 .conn-banner .banner-copy {

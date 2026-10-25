@@ -359,6 +359,17 @@ fn inset_weight(insets: (u32, u32, u32, u32)) -> u32 {
         .saturating_add(insets.3)
 }
 
+/// Linux bottom clearance. A dock that reports no strut still keeps 48px.
+/// Top, left, and right stay as reported. Windows does not call this.
+pub fn floor_bottom_inset(insets: (u32, u32, u32, u32)) -> (u32, u32, u32, u32) {
+    (
+        insets.0,
+        insets.1,
+        insets.2.max(WORK_AREA_FALLBACK_BOTTOM),
+        insets.3,
+    )
+}
+
 /// The largest reported inset wins, so a dock strut beats a zero GDK read.
 /// Every `None` means the work area was not reported: reserve the bottom.
 pub fn pick_reported_insets(reads: &[Option<(u32, u32, u32, u32)>]) -> (u32, u32, u32, u32) {
@@ -583,8 +594,8 @@ fn gdk_reported_insets() -> Option<(u32, u32, u32, u32)> {
 }
 
 /// Work-area insets in CSS pixels.
-/// Windows keeps `Monitor::work_area()`. Linux also reads GDK and X11 struts.
-/// No monitor, and on Linux no successful read, reserves 48px at the bottom.
+/// Windows keeps `Monitor::work_area()` with no extra floor.
+/// Linux reads GDK and X11, then uses max(reported bottom, 48).
 pub fn monitor_work_insets(window: &tauri::WebviewWindow) -> (u32, u32, u32, u32) {
     let Some(monitor) = window
         .current_monitor()
@@ -613,7 +624,7 @@ pub fn monitor_work_insets(window: &tauri::WebviewWindow) -> (u32, u32, u32, u32
     {
         let x11 = x11_reported_insets(pos.x, pos.y, size.width as i32, size.height as i32, scale);
         let gdk = gdk_reported_insets();
-        return pick_reported_insets(&[x11, gdk, tauri_insets]);
+        return floor_bottom_inset(pick_reported_insets(&[x11, gdk, tauri_insets]));
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -3862,6 +3873,10 @@ mod tests {
             pick_reported_insets(&[Some((0, 0, 0, 0)), Some((0, 0, 0, 0))]),
             (0, 0, 0, 0)
         );
+        assert_eq!(floor_bottom_inset((0, 0, 0, 0)), (0, 0, 48, 0));
+        assert_eq!(floor_bottom_inset((0, 0, 40, 0)), (0, 0, 48, 0));
+        assert_eq!(floor_bottom_inset((0, 0, 56, 0)), (0, 0, 56, 0));
+        assert_eq!(floor_bottom_inset((8, 4, 0, 6)), (8, 4, 48, 6));
     }
 
     #[test]
