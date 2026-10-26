@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import { createProbeGate } from "./reconnect.js";
-import { isProfileEnabled, keyBannerSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
+import { isProfileEnabled, keyBannerSlot, panelErrorSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
 
 test("missing enabled stays visible and false hides", () => {
   assert.equal(isProfileEnabled({ profile: "a" }), true);
@@ -26,6 +26,22 @@ test("only newly discovered profiles without a key are prompted", () => {
     profilesNeedingKeys(before, after).map((bot) => bot.profile),
     ["research"],
   );
+});
+
+test("an error toast stays inside the open panel and under the header", () => {
+  const panel = { x: 860, y: 48, w: 420, h: 560, headerTop: 64, headerBottom: 112 };
+  const slot = panelErrorSlot(panel);
+  assert.equal(slot.inside, true);
+  assert.ok(slot.x >= panel.x);
+  assert.ok(slot.x + slot.w <= panel.x + panel.w);
+  assert.ok(slot.y >= panel.headerBottom);
+  assert.ok(slot.y < panel.y + panel.h);
+  const bottomHeader = { x: 40, y: 80, w: 420, h: 560, headerTop: 560, headerBottom: 620 };
+  const parked = panelErrorSlot(bottomHeader);
+  assert.equal(parked.inside, true);
+  assert.ok(parked.y < bottomHeader.headerTop);
+  assert.ok(parked.x + parked.w <= bottomHeader.x + bottomHeader.w);
+  assert.equal(panelErrorSlot(null), null);
 });
 
 test("the key banner keeps its home slot when open panels are clear", () => {
@@ -155,6 +171,7 @@ test("the quiet tick claims roster, prompts for a new key, and does not write ke
   assert.doesNotMatch(hide, /keyPromptBots = \[\]/);
   const placed = main.slice(main.indexOf("function placeKeyBanner"), main.indexOf("function reconcileKeyPrompt"));
   assert.match(placed, /keyBannerSlot/);
+  assert.match(placed, /placePanelErrorBanner/);
   assert.match(placed, /sticky !== "gateway"/);
   const retry = main.slice(main.indexOf("function paintGatewayWait"), main.indexOf("function clearGatewayWait"));
   assert.match(retry, /placeKeyBanner/);

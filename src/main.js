@@ -64,7 +64,7 @@ import {
   cronShellHeight,
   chatTailAction,
 } from "./morph.js";
-import { isProfileEnabled, keyBannerSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
+import { isProfileEnabled, keyBannerSlot, panelErrorSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
 import {
   approvalFailure,
   approvalPending,
@@ -84,6 +84,7 @@ import {
   KANBAN_POLL_MS,
   KANBAN_UNAVAILABLE,
   boardFingerprint,
+  boardOptionLabel,
   columnCollapsed,
   kanbanChangeLine,
   kanbanErrorText,
@@ -3870,6 +3871,7 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
   delete banner.dataset.hitId;
   if (!text) {
     banner.hidden = true;
+    placeKeyBanner();
     return;
   }
   banner.hidden = false;
@@ -3898,6 +3900,7 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
       button.textContent = text;
     }
     banner.appendChild(button);
+    placeKeyBanner();
     return;
   }
   banner.textContent = text;
@@ -3909,6 +3912,7 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
       setBanner("");
     }, BANNER_OK_MS);
   }
+  placeKeyBanner();
 }
 
 function clearConnectionBanner() {
@@ -5499,7 +5503,52 @@ function resetKeyBannerShift(banner) {
   if (!banner) return;
   banner.style.top = "";
   banner.style.left = "";
+  banner.style.width = "";
+  banner.style.maxWidth = "";
   banner.style.transform = "";
+  delete banner.dataset.parked;
+}
+
+function errorToastPanelBox() {
+  const shells = [];
+  const preferred = shellFor(state.activeId);
+  if (preferred) shells.push(preferred);
+  document.querySelectorAll(".morph[data-state='panel']:not(.is-collapsing)").forEach((node) => {
+    if (node !== preferred) shells.push(node);
+  });
+  for (const shell of shells) {
+    if (!shell || shell.classList.contains("is-collapsing")) continue;
+    if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel") continue;
+    const panel = shell.querySelector(".center-panel");
+    if (!panel || panel.hidden || panel.closest("[hidden]")) continue;
+    const rect = panel.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) continue;
+    const header = panel.querySelector(".panel-header, .settings-head");
+    const band = header && !header.hidden ? header.getBoundingClientRect() : null;
+    return {
+      x: rect.x,
+      y: rect.y,
+      w: rect.width,
+      h: rect.height,
+      headerTop: band && band.height >= 1 ? band.top : rect.top,
+      headerBottom: band && band.height >= 1 ? band.bottom : rect.top,
+    };
+  }
+  return null;
+}
+
+function placePanelErrorBanner(banner) {
+  const slot = panelErrorSlot(errorToastPanelBox());
+  if (!slot?.inside) {
+    resetKeyBannerShift(banner);
+    return;
+  }
+  banner.dataset.parked = "panel";
+  banner.style.top = `${Math.round(slot.y)}px`;
+  banner.style.left = `${Math.round(slot.x)}px`;
+  banner.style.width = `${Math.round(slot.w)}px`;
+  banner.style.maxWidth = `${Math.round(slot.w)}px`;
+  banner.style.transform = "none";
 }
 
 function hideKeyPrompt() {
@@ -5527,8 +5576,13 @@ function openPanelBox(node) {
 function placeKeyBanner() {
   const banner = $("#conn-banner");
   if (!banner) return;
-  if (banner.hidden || (banner.dataset.sticky !== "keys" && banner.dataset.sticky !== "gateway")) {
+  const sticky = banner.dataset.sticky || "";
+  if (banner.hidden || sticky === "keyring") {
     resetKeyBannerShift(banner);
+    return;
+  }
+  if (sticky !== "keys" && sticky !== "gateway") {
+    placePanelErrorBanner(banner);
     return;
   }
   resetKeyBannerShift(banner);
@@ -7209,6 +7263,7 @@ function restoreComposer() {
 }
 
 function insertComposerKey(field, key) {
+  if (!field || field.disabled) return;
   const start = field.selectionStart ?? field.value.length;
   const end = field.selectionEnd ?? start;
   field.value = `${field.value.slice(0, start)}${key}${field.value.slice(end)}`;
@@ -9626,7 +9681,15 @@ function paintKanban(board) {
     name.textContent = column.name;
     const count = document.createElement("small");
     count.textContent = String(column.tasks.length);
-    head.append(name, count);
+    if (column.name === "done") {
+      const chevron = document.createElement("span");
+      chevron.className = "kanban-done-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      chevron.textContent = collapsed ? "▸" : "▾";
+      head.append(chevron, name, count);
+    } else {
+      head.append(name, count);
+    }
     if (column.name === "done") {
       head.addEventListener("click", () => {
         state.kanban.doneOpen = !state.kanban.doneOpen;
@@ -9657,14 +9720,18 @@ function paintKanbanPicker(board) {
   state.kanban.paintingPick = true;
   try {
     if (pick && slugs.length) {
+      const current = kanbanRequestSlug(state.kanban.current);
       const same = pick.options.length === slugs.length
-        && slugs.every((slug, index) => pick.options[index]?.value === slug);
+        && slugs.every((slug, index) => {
+          const option = pick.options[index];
+          return option?.value === slug && option.textContent === boardOptionLabel(slug, current);
+        });
       if (!same) {
         pick.replaceChildren();
         for (const slug of slugs) {
           const option = document.createElement("option");
           option.value = slug;
-          option.textContent = slug;
+          option.textContent = boardOptionLabel(slug, current);
           pick.append(option);
         }
       }

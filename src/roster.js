@@ -106,6 +106,32 @@ export function keyBannerSlot(banner, panels, screen, gap = 12, orbs = []) {
   return home;
 }
 
+/**
+ * Non-sticky error toast inside an open panel. It sits under a top header
+ * (clear of 關閉) and inset from both edges. A bottom header keeps the
+ * toast at the top of the panel so it still stays inside.
+ */
+export function panelErrorSlot(panel, pad = 16, gap = 8) {
+  if (!panel || !(panel.w > 0) || !(panel.h > 0)) return null;
+  const inset = Math.max(0, pad);
+  const x = panel.x + inset;
+  const w = Math.max(0, panel.w - inset * 2);
+  const headerTop = Number.isFinite(panel.headerTop) ? panel.headerTop : panel.y;
+  const headerBottom = Number.isFinite(panel.headerBottom) ? panel.headerBottom : panel.y;
+  const headerInBottomHalf = headerTop > panel.y + panel.h * 0.5;
+  const y = headerInBottomHalf ? panel.y + gap : Math.max(panel.y + gap, headerBottom + gap);
+  const bottomLimit = panel.y + panel.h;
+  return {
+    x,
+    y,
+    w,
+    inside: x >= panel.x - 0.01
+      && x + w <= panel.x + panel.w + 0.01
+      && y >= panel.y - 0.01
+      && y < bottomLimit,
+  };
+}
+
 /** Profiles added by this sync that still have no API key. */
 export function profilesNeedingKeys(before, after) {
   const known = new Set((before || []).map((bot) => bot.profile));

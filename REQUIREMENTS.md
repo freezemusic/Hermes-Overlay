@@ -264,10 +264,10 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（單元，假 9119）：過期 access 加 refresh token，board GET 401 之後只 POST 一次 `/auth/native/refresh`，寫低新 access 同新 refresh，再 GET 一次就有欄同卡片；refresh 401 先係「要登入 Kanban」，第二次讀唔再 POST 該 refresh token，回應亦唔包含 token 字；密碼登入儲 cookie；錯密碼係登入狀態而且第二次讀唔再 POST 密碼；404 仍然係 R-KB-04；閂咗嘅埠係連線錯誤，看板文案唔含 Hermes gateway；登入狀態唔當 404。金鑰唔入 config.json。`get_kanban_board` 同 `get_kanban_task` 喺 secrets 有變時寫返鑰匙圈，而且唔 log token。
 - 狀態：❓ / ❓。
 
-**R-KB-06** 看板唔再寫死 `board=default`。未有人手揀過嘅板時，`GET /api/plugins/kanban/board` 唔帶 `board` 參數，伺服器回 current board（Devon 部 Hermes 0.22.5 係 `mt4`；`default` 同 `deskrpg` 可以係空）。另外 `GET /api/plugins/kanban/boards`，用佢嘅 `current` 填 header 嘅細揀板器。只有用戶親手揀過先記住：記憶體即時用，並用 splice 寫 `kanban_board` 入 config.json。跟 current、開面板、輪詢、quiet roster 都唔寫呢個鍵；舊檔冇 `kanban_board` 就保持逐個位元組不變。DONE 欄用原有欄頭樣式，預設收起只顯示張數，撳欄頭先展開卡片。archived 繼續隱藏，唔好傳 `include_archived`。呢啲讀全部 GET，唔好對 9119 看板路徑 POST。空狀態、登入、「連唔到 Kanban。」同 R-AD-03 嘅置中版面唔改。
+**R-KB-06** 看板唔再寫死 `board=default`。未有人手揀過嘅板時，`GET /api/plugins/kanban/board` 唔帶 `board` 參數，伺服器回 current board（Devon 部 Hermes 0.22.5 係 `mt4`；`default` 同 `deskrpg` 可以係空）。另外 `GET /api/plugins/kanban/boards`，用佢嘅 `current` 填 header 嘅細揀板器。清單入面伺服器 current 嗰項標「（目前）」，例如 `mt4（目前）`。`.kanban-board-pick` 用 `appearance: none` 同 overlay 箭咀，唔好用原生灰盒同黑箭。只有用戶親手揀過先記住：記憶體即時用，並用 splice 寫 `kanban_board` 入 config.json。跟 current、開面板、輪詢、quiet roster 都唔寫呢個鍵；舊檔冇 `kanban_board` 就保持逐個位元組不變。DONE 欄用原有欄頭樣式，預設收起，欄頭有 chevron 同張數，表示撳開先展開卡片。archived 繼續隱藏，唔好傳 `include_archived`。呢啲讀全部 GET，唔好對 9119 看板路徑 POST。空狀態、登入、「連唔到 Kanban。」同 R-AD-03 嘅置中版面唔改。
 
 - 來源：Devon（2026-10-26，Hermes 0.22.5，`http://10.10.24.33:9119`，85 張卡全部喺 current board `mt4`：72 done、4 todo、3 triage、6 archived；`default` 同 `deskrpg` 係空）。
-- 驗收（單元，假 9119）：空 slug 嘅 board URL 冇 `?board=`，亦唔含 `default`；唔帶 query 回 `mt4` 嘅卡，`?board=default` 同 `?board=deskrpg` 係空板；`/boards` 嘅 `current` 係 `mt4`；archived 唔出現；done 欄在；`columnCollapsed("done", false)` 係收起。`store_kanban_board` 未呼叫、或者 slug 係空，config.json 位元組不變；揀咗 `mt4` 先多 `kanban_board`。`get_kanban_board` 唔寫呢個鍵。
+- 驗收（單元，假 9119）：空 slug 嘅 board URL 冇 `?board=`，亦唔含 `default`；唔帶 query 回 `mt4` 嘅卡，`?board=default` 同 `?board=deskrpg` 係空板；`/boards` 嘅 `current` 係 `mt4`；archived 唔出現；done 欄在；`columnCollapsed("done", false)` 係收起，收起欄頭有 `▸` 同張數。`boardOptionLabel("mt4", "mt4")` 係 `mt4（目前）`。`.kanban-board-pick` 有 `appearance: none`。`store_kanban_board` 未呼叫、或者 slug 係空，config.json 位元組不變；揀咗 `mt4` 先多 `kanban_board`。`get_kanban_board` 唔寫呢個鍵。
 - 狀態：❓ / ❓。
 
 ---
@@ -315,8 +315,10 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：Devon（2026-10-21）。狀態：— / —（PR #3 唔包）。
 
 **R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），畫面顯示同一句，唔顯示原始錯誤，唔重試，亦唔建立 session。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。新 session 按鈕仍然留喺 sub-orb（R-SS-07／R-SO），呢條唔加。
-- 來源：Devon 手提真用（Hermes gateway 0.22.5，CLI oneshot `source=oneshot`）。
-- 驗收（盒）：`oneshot`／`desktop`／`tui`／`cli`／空 source 係只讀而且 id 不變；`api_server`／`bot_room` 可寫；explicit desktop `20261015_011713_2242f9` 仍然開嗰條而且只讀；`failure_detail`／`explain` 見到 `RuntimeStoreError('permission_denied')` 只剩嗰句；`send_chat` 喺 `status: 404` 之前唔呼叫 `ensure_bot_chat`、`create_session`、`persist_pin`。呢條唔寫 config.json。
+
+**SS-08-a** 只讀 session 開住時，鍵盤轉發唔好寫入已停用嘅輸入：`insertComposerKey` 見到 `field.disabled` 就返回。停用輸入要睇得出係停用（Nous `#616191` 嘅暗底同 placeholder），唔好保持白底。只讀／錯誤橫額留喺開住嘅面板入面、關閉下面，唔好疊出預設面板右緣。金鑰同 gateway 橫額仍然用 `keyBannerSlot`。
+- 來源：Devon 手提真用（Hermes gateway 0.22.5，CLI oneshot `source=oneshot`）。盒測 a76c65d、6a0973e 之後。
+- 驗收（盒）：`oneshot`／`desktop`／`tui`／`cli`／空 source 係只讀而且 id 不變；`api_server`／`bot_room` 可寫；explicit desktop `20261015_011713_2242f9` 仍然開嗰條而且只讀；`failure_detail`／`explain` 見到 `RuntimeStoreError('permission_denied')` 只剩嗰句；`send_chat` 喺 `status: 404` 之前唔呼叫 `ensure_bot_chat`、`create_session`、`persist_pin`。呢條唔寫 config.json。SS-08-a：停用輸入撳字唔會入去；錯誤橫額嘅左右緣都喺面板入面。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
 ---

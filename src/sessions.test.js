@@ -410,6 +410,11 @@ test("foreign session sources stay readable and permission_denied stays plain", 
   const paint = main.slice(main.indexOf("const note = role(panel, \"readonly\")"), main.indexOf("if (send) send.disabled"));
   assert.match(paint, /input\.disabled = locked/);
   assert.match(paint, /SESSION_READ_ONLY_REASON/);
+  const insert = main.slice(main.indexOf("function insertComposerKey"), main.indexOf("function composerShellSettling"));
+  assert.match(insert, /field\.disabled\) return/);
+  const parked = main.slice(main.indexOf("function placePanelErrorBanner"), main.indexOf("function hideKeyPrompt"));
+  assert.match(parked, /panelErrorSlot/);
+  assert.match(parked, /dataset\.parked = "panel"/);
   const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   const rustSend = lib.slice(lib.indexOf("async fn send_chat"), lib.indexOf("fn dispatch_turn"));
   const head = rustSend.slice(0, rustSend.indexOf("status: 404"));

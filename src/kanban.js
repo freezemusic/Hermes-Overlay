@@ -16,6 +16,13 @@ export function columnCollapsed(name, doneOpen) {
   return String(name || "") === "done" && !doneOpen;
 }
 
+/** Mark the server's current board in the picker. Other slugs stay plain. */
+export function boardOptionLabel(slug, current) {
+  const name = kanbanRequestSlug(slug);
+  if (!name) return "";
+  return name === kanbanRequestSlug(current) ? `${name}（目前）` : name;
+}
+
 /** An explicit pick wins. Otherwise show the server current board. */
 export function pickerSelection(explicit, current, shown) {
   const pick = kanbanRequestSlug(explicit);

@@ -10,6 +10,7 @@ import {
   boardFingerprint,
   kanbanChangeLine,
   kanbanRequestSlug,
+  boardOptionLabel,
   columnCollapsed,
   pickerSelection,
   columnsFromTasks,
@@ -169,6 +170,10 @@ test("an omitted slug follows the current board and done starts collapsed", () =
   assert.equal(pickerSelection("", "mt4", ""), "mt4");
   assert.equal(pickerSelection("", "", "mt4"), "mt4");
   assert.equal(pickerSelection("deskrpg", "mt4", "mt4"), "deskrpg");
+  assert.equal(boardOptionLabel("mt4", "mt4"), "mt4（目前）");
+  assert.equal(boardOptionLabel("default", "mt4"), "default");
+  assert.equal(boardOptionLabel(" mt4 ", "mt4"), "mt4（目前）");
+  assert.equal(boardOptionLabel("", "mt4"), "");
   assert.equal(normalizeBoard({ columns: [{ name: "todo", tasks: [] }] }).board, "");
   assert.equal(normalizeBoard({ unavailable: true }).board, "");
   const main = fs.readFileSync(new URL("./main.js", import.meta.url), "utf8");
@@ -191,6 +196,10 @@ test("an omitted slug follows the current board and done starts collapsed", () =
   const paint = main.slice(main.indexOf("function paintKanban"), main.indexOf("function kanbanCard"));
   assert.match(paint, /columnCollapsed/);
   assert.match(paint, /is-collapsed/);
+  assert.match(paint, /kanban-done-chevron/);
+  assert.match(paint, /▸/);
+  assert.match(paint, /boardOptionLabel/);
+  assert.doesNotMatch(paint, /option\.textContent = slug/);
   assert.doesNotMatch(paint, /set_kanban_board/);
   assert.doesNotMatch(main, /include_archived/);
 });

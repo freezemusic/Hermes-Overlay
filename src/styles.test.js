@@ -507,6 +507,12 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.kanban-crumb-profile \{[^}]*JetBrains Mono/s);
   assert.match(css, /\.kanban-board-pick \{[^}]*JetBrains Mono/s);
   assert.match(css, /\.kanban-board-pick \{[^}]*#616191/s);
+  assert.match(css, /\.kanban-board-pick \{[^}]*appearance:\s*none/s);
+  assert.match(css, /\.kanban-done-chevron \{[^}]*var\(--nous-blue\)/s);
+  assert.match(css, /\.composer input:disabled \{[^}]*#616191/s);
+  assert.match(css, /\.composer input:disabled::placeholder \{[^}]*#616191/s);
+  assert.doesNotMatch(css, /\.composer input:disabled \{[^}]*rgb\(255 255 255/s);
+  assert.match(css, /#conn-banner\[data-parked="panel"\] \{[^}]*overflow-wrap:\s*anywhere/s);
   assert.match(css, /\.kanban-col\[data-status="done"\] > \.kanban-col-head \{[^}]*cursor:\s*pointer/s);
   assert.match(css, /\.settings-panel \.bot-row input\[type="checkbox"\] \{[^}]*width:\s*14px/s);
   assert.doesNotMatch(css, /\.bot-row input\[type="checkbox"\] \{[^}]*width:\s*16px/s);
