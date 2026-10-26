@@ -219,6 +219,20 @@ export function noteRunSession(thread) {
   return thread;
 }
 
+/**
+ * Keep streaming into the open bot bubble. A steered or queued line sits in
+ * the thread without splitting that reply into a second bubble.
+ * A finished turn (`live` cleared) starts the next bubble.
+ */
+export function continueLiveTurn(messages) {
+  const list = messages || [];
+  const live = [...list].reverse().find((message) => message?.role === "bot" && message.live);
+  if (live) return { message: live, created: false };
+  const message = { role: "bot", text: "", live: true };
+  list.push(message);
+  return { message, created: true };
+}
+
 export function clearRunSession(thread) {
   if (thread) thread.liveSessionId = "";
   return thread;

@@ -54,4 +54,6 @@ test("switching session while a bot is replying is not a dead end", () => {
   assert.ok(guard > 0 && guard < idle);
   const selectBot = main.slice(main.indexOf("async function selectBot"), main.indexOf("function openBotPanel"));
   assert.doesNotMatch(selectBot, /state\.busy/);
+  const live = main.slice(main.indexOf("function ensureLiveBubble"), main.indexOf("function paintLiveNow"));
+  assert.match(live, /continueLiveTurn/);
 });

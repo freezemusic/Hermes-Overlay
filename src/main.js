@@ -78,7 +78,7 @@ import {
   APPROVAL_WAIT_LABEL,
   EXECUTE_CODE_BLOCKED_LINE,
 } from "./approval.js";
-import { SESSION_READ_ONLY_REASON, catchUpMessages, clearRunSession, isPermissionDeniedText, noteRunSession, orderSessions, permissionDeniedMessage, previewLine, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, unseenMessages, viewingRun } from "./sessions.js";
+import { SESSION_READ_ONLY_REASON, catchUpMessages, clearRunSession, continueLiveTurn, isPermissionDeniedText, noteRunSession, orderSessions, permissionDeniedMessage, previewLine, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, unseenMessages, viewingRun } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -6213,12 +6213,10 @@ function presentMessage(m) {
 }
 
 function ensureLiveBubble(id) {
-  const thread = threadFor(id);
   const messages = runMessages(id);
-  let live = messages[messages.length - 1];
-  if (!live || live.role !== "bot" || !live.live) {
-    live = { role: "bot", text: "", live: true };
-    messages.push(live);
+  const turn = continueLiveTurn(messages);
+  const live = turn.message;
+  if (turn.created) {
     if (!runIsOnScreen(id)) return live;
     const shell = shellFor(id);
     if (shell && (deferShellWork(shell) || presentationBusy())) {

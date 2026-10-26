@@ -24,7 +24,7 @@
 
 Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattended_mode: approve`，畫面、設定、註解都唔好建議開啟。
 
-**R-AP-01** `POST /p/{profile}/api/sessions/{id}/chat/stream` 嘅 SSE 如果出 `approval.request`，面板入面即刻出一張卡。卡有小標題「要你批准」，並顯示 `description` 同 gateway 已經遮罩嘅 `command`。只有兩個掣：「批准（一次）」（body `choice` = `once`，主掣，實色藍）同「拒絕」（`deny`，次掣）。等緊批准時狀態係「等緊批准」，唔係「思考中…」；批完如果嗰輪仲忙，先返「思考中…」。撳一次之後兩個掣停用。`approval.responded` 或者 POST 成功之後顯示「已批准」或「已拒絕」。HTTP 409 顯示「呢個批准已經過時」。唔自動重試，唔自動批准，唔送 `session`、`always`、`all` 或 `resolve_all`。
+**R-AP-01** `POST /p/{profile}/api/sessions/{id}/chat/stream` 嘅 SSE 如果出 `approval.request`，面板入面即刻出一張卡。卡有小標題「要你批准」，並顯示 `description` 同 gateway 已經遮罩嘅 `command`。只有兩個掣：「批准（一次）」（body `choice` = `once`，主掣，實色藍）同「拒絕」（`deny`，次掣）。小標題至少 11px。等緊批准時狀態係「等緊批准」，唔係「思考中…」；批完如果嗰輪仲忙，先返「思考中…」。撳一次之後兩個掣停用。`approval.responded` 或者 POST 成功之後顯示「已批准」或「已拒絕」。HTTP 409 顯示「呢個批准已經過時」。唔自動重試，唔自動批准，唔送 `session`、`always`、`all` 或 `resolve_all`。
 - 來源：Devon（2026-10-26，Hermes gateway 0.22.5）。`approval.request` 喺 `gateway/platforms/api_server.py`；回覆係 `POST /p/{profile}/v1/runs/{run_id}/approval`，body `{"choice","request_id"}`，用同一個 profile prefix 同 api_server Bearer。`run_id` 亦出現喺同一條串流嘅 `run.started`。
 - 驗收（盒）：模擬 `approval.request` 出卡；POST 路徑包含 profile prefix、`run_id`，body 有對應 `request_id` 同 `once` 或 `deny`。409 只顯示「呢個批准已經過時」，而且只 POST 一次。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
@@ -58,7 +58,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：mock gateway 見到一次 `POST /p/mt-coder/v1/runs/run_abc/stop`、冇 body；409 當未在行；使用者停止唔會設 reader abort。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
-**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常 `POST /api/sessions/{id}/chat/stream`。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。`sendActive` 唔可以靜默返回。Chat HTTP 409 顯示「個 bot 仲忙，呢句未送出。」。
+**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常 `POST /api/sessions/{id}/chat/stream`。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 顯示「個 bot 仲忙，呢句未送出。」。
 - 來源：Devon（2026-10-26）。真用：訊息排咗 admission seq 8，約一分鐘後先答，畫面冇排隊狀態。
 - 驗收（盒）：steer 路徑同 body 只有 `input`；409 變排隊句；忙碌發送唔再係直接 `return`。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
@@ -345,7 +345,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 **R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），畫面顯示同一句，唔顯示原始錯誤，唔重試，亦唔建立 session。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。新 session 按鈕仍然留喺 sub-orb（R-SS-07／R-SO），呢條唔加。
 
-**SS-08-a** 只讀 session 開住時，鍵盤轉發唔好寫入已停用嘅輸入：`insertComposerKey` 見到 `field.disabled` 就返回。停用輸入要睇得出係停用（Nous `#616191` 嘅暗底同 placeholder），唔好保持白底。停用嘅「傳送」同樣要睇得出係停用（同一套 `#616191` 暗底，唔好只係半透明藍掣）。只讀／錯誤橫額留喺開住嘅面板入面，而且喺分頁同 session 列下面，唔好蓋住佢哋，亦唔好疊出預設面板右緣。金鑰同 gateway 橫額仍然用 `keyBannerSlot`。
+**SS-08-a** 只讀 session 開住時，鍵盤轉發唔好寫入已停用嘅輸入：`insertComposerKey` 見到 `field.disabled` 就返回。停用輸入要睇得出係停用（Nous `#616191` 嘅暗底同 placeholder），唔好保持白底。停用嘅「傳送」同樣要睇得出係停用（`#616191` 暗底，唔好只係半透明藍掣）。字用 `#3a3a68`，對住暗底至少 4.5:1，而且仍然唔係實色藍掣。只讀／錯誤橫額留喺開住嘅面板入面，而且喺分頁同 session 列下面，唔好蓋住佢哋，亦唔好疊出預設面板右緣。金鑰同 gateway 橫額仍然用 `keyBannerSlot`。
 - 來源：Devon 手提真用（Hermes gateway 0.22.5，CLI oneshot `source=oneshot`）。盒測 a76c65d、6a0973e 之後。
 - 驗收（盒）：`oneshot`／`desktop`／`tui`／`cli`／空 source 係只讀而且 id 不變；`api_server`／`bot_room` 可寫；explicit desktop `20261015_011713_2242f9` 仍然開嗰條而且只讀；`failure_detail`／`explain` 見到 `RuntimeStoreError('permission_denied')` 只剩嗰句；`send_chat` 喺 `status: 404` 之前唔呼叫 `ensure_bot_chat`、`create_session`、`persist_pin`。呢條唔寫 config.json。SS-08-a：停用輸入撳字唔會入去；錯誤橫額嘅左右緣都喺面板入面。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
@@ -432,18 +432,18 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 **R-SY-09** 連住 Hermes 時，大約每 60 秒（上下 20%）靜靜對一次 profile 名單，唔使重開程式。用 `claimProfiles(["roster"])`，同看板、排程、其他 Bot 嘅探測唔重疊。Gateway 落咗就跳過呢一輪，交給 R-SY-08。
 
-遠端機冇本機 `~/.hermes`、gateway `GET /health` 又冇 `profiles` 陣列、亦冇 dashboard session token 時，用 Kanban 同一個 origin（設咗嘅 Kanban 位址，否則 gateway host 埠 9119）打 `GET /api/profiles`。認證係鑰匙圈入面嘅 Kanban native access token，`Authorization: Bearer`（Hermes 0.22.5 gated dashboard middleware 收呢種 bearer；唔係 `X-Hermes-Session-Token`）。GET 回 401 就用同一條 refresh token `POST /auth/native/refresh` 一次，寫返新 access 同新 refresh，然後同一個 GET 再試一次。已拒嘅 refresh 唔好每個輪詢再 POST。呢下對 `/api/profiles` 只可以 GET。已經喺名單入面嘅 `enabled` 唔改。
+遠端機冇本機 `~/.hermes`、gateway `GET /health` 又冇 `profiles` 陣列、亦冇 dashboard session token 時，用 Kanban 同一個 origin（設咗嘅 Kanban 位址，否則 gateway host 埠 9119）打 `GET /api/profiles`。認證係鑰匙圈入面嘅 Kanban native access token，`Authorization: Bearer`（Hermes 0.22.5 gated dashboard middleware 收呢種 bearer；唔係 `X-Hermes-Session-Token`）。GET 回 401 就用同一條 refresh token `POST /auth/native/refresh` 一次，寫返新 access 同新 refresh，然後同一個 GET 再試一次。已拒嘅 refresh 唔好每個輪詢再 POST。呢下對 `/api/profiles` 只可以 GET。已經喺名單入面嘅 `enabled` 唔改。`description`（冇就用 `detail`）抄入名單嘅詳情：新列直接寫，已有列只喺詳情仍然空白時先填，已寫嘅詳情唔改。
 
 新 profile 出光球，然後用現有 `profilesNeedingKeys` 提示 Devon 自己填金鑰。唔自動填金鑰，唔改共用鑰匙圈項目。對 Hermes 只讀，唔建立 session。
 
-config.json 只有名單真係多咗 profile 先寫。冇變動嘅每一輪，檔案位元組保持一樣。已有 Bot 嘅 sessionId、enabled、顏色、次序、名稱、詳情都唔改。計時器唔刪走消失或者隱藏嘅 profile，亦唔因為今次搵唔到就標做不可用（一次讀取失敗唔可以隱藏晒所有人）。
+config.json 只有名單真係多咗 profile，或者空白詳情抄到 description，先寫。冇變動嘅每一輪，檔案位元組保持一樣。已有 Bot 嘅 sessionId、enabled、顏色、次序、名稱，同已寫嘅詳情都唔改。計時器唔刪走消失或者隱藏嘅 profile，亦唔因為今次搵唔到就標做不可用（一次讀取失敗唔可以隱藏晒所有人）。
 
 每次同步都要為新 profile 出一次金鑰提示，包括啟動 `connectHermes`、`recoverGateway` 同靜態計時。已經喺名單入面嘅唔再提示。提示用 sticky kind `keys`：第一次載入歷史、`clearConnectionBanner()`、同 4 秒計時都唔好清走。Gateway 膠囊顯示期間記住呢句，膠囊收起之後再出，而且要更新 hit rect。金鑰橫額跟面板：平常點擊打開設定；揸住 Ctrl 就穿透，同其他面板一樣。打開設定先收起橫額，名單留住。儲存之後只留仍然未有金鑰嘅 profile，再出橫額。金鑰橫額預設停喺 top 96px。打開咗嘅面板（主面板同貼住嘅計劃，包括 `.plan-hit-host`）外緣 12px 之內，就改放喺面板外 12px、畫面中心嗰一側；嗰側放唔落先試其餘邊，再退到該面板 header 行入面。唔好逐行內容向下推。橫額唔好壓住計劃步驟、Bot Chat 下拉、看板內容，亦唔好疊住面板、光球或者光球 34px 光暈。
 
 頭四粒光球用經典邊位（一粒喺頂邊 t=0.21；四粒係頂、右、底、左），加 profile 唔好郁呢四粒。第五粒起放入空位：中心距要大過光碟直徑加兩個 72px 淡出半徑，72px 淡出先唔會同時捉到兩粒；新位亦唔好落入打開咗嘅看板面板。6 粒或以上唔好疊到看板、排程、設定光球。`profiles/` 入面以點開頭嘅目錄（例如 `.deleted`）唔算 profile。
 
 - 來源：Devon。8cf5af4 盒：恢復先跑同步，3 個新 profile 有 2 個冇金鑰提示；加光球會重排，6 粒時 researcher 疊住 cron；`.deleted` 被當成 profile。f1ebd03 盒：金鑰提示約 60ms／340ms 就被歷史載入或 gateway 膠囊清走；穩定槽把原有四粒推去角落，新粒相距約 70px 一齊淡，打開看板蓋住預設光球。afb21e2 盒：平常點擊橫額開到設定；Ctrl+click 穿透係面板規則，`interaction.rs` 維持只放行光球同 `pill:`。eafdd1e 盒：計劃打開之後 Goal 行搬入 `.plan-hit-host`，橫額 y 109–142 仍然蓋住 Goal y 110–118。fbcb44c 盒：橫額 y=133 蓋住計劃步驟 1 同 Bot Chat 下拉右緣；已登入看板橫額 top y=794 疊住面板底邊 y=801 約 7px。
-- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；`GET /api/profiles` 帶 `Authorization: Bearer`，401 只 `POST /auth/native/refresh` 一次然後再 GET 一次，`/api/profiles` 冇 POST，已有列嘅 `enabled` 保持原值；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額預設 top 96px，打開面板就放喺外緣外面至少 12px（優先畫面中心嗰側），光暈擋住就換邊，放唔落先用 header 行，唔好壓住計劃步驟、Bot Chat 下拉、看板底邊或者光球光暈；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
+- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；`GET /api/profiles` 帶 `Authorization: Bearer`，401 只 `POST /auth/native/refresh` 一次然後再 GET 一次，`/api/profiles` 冇 POST，已有列嘅 `enabled` 保持原值，空白詳情抄 `description`，已有詳情保持原值；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額預設 top 96px，打開面板就放喺外緣外面至少 12px（優先畫面中心嗰側），光暈擋住就換邊，放唔落先用 header 行，唔好壓住計劃步驟、Bot Chat 下拉、看板底邊或者光球光暈；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
 - 狀態：❓ / ❓。
 
 ---

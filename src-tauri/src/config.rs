@@ -737,14 +737,36 @@ pub fn store_show_bot_names(path: &Path, enabled: bool) -> Result<bool, String> 
     Ok(true)
 }
 
-/// Writes config.json only when a new profile was appended.
+/// Copies a discovered description into a roster row whose detail is still blank.
+/// A written detail, `enabled`, name, colour, order, and session stay as they are.
+pub fn fill_empty_details(bots: &mut [BotConfig], found: &[ProfileHint]) -> bool {
+    let mut filled = false;
+    for hint in found {
+        let detail = hint.detail.trim();
+        if detail.is_empty() {
+            continue;
+        }
+        let Some(existing) = bots.iter_mut().find(|bot| bot.profile == hint.profile) else {
+            continue;
+        };
+        if !existing.detail.trim().is_empty() {
+            continue;
+        }
+        existing.detail = detail.to_string();
+        filled = true;
+    }
+    filled
+}
+
+/// Writes config.json when a profile is appended or a blank detail is filled.
 pub fn apply_quiet_roster(path: &Path, found: &[ProfileHint]) -> Result<bool, String> {
     let mut cfg = load(path)?;
-    let changed = append_new_profiles(&mut cfg.bots, found);
-    if changed {
+    let added = append_new_profiles(&mut cfg.bots, found);
+    let filled = fill_empty_details(&mut cfg.bots, found);
+    if added || filled {
         save(path, &cfg)?;
     }
-    Ok(changed)
+    Ok(added || filled)
 }
 
 pub fn set_bot_enabled(bots: &mut [BotConfig], profile: &str, enabled: bool) -> Result<(), String> {
@@ -1299,6 +1321,62 @@ other:
         assert_eq!(apply_quiet_roster(&path, &[]).unwrap(), false);
         assert_eq!(fs::read(&path).unwrap(), with_new);
         assert_eq!(load(&path).unwrap().bots.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quiet_roster_copies_a_blank_description_and_keeps_enabled() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-joyce-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let cfg = AppConfig {
+            bots: vec![BotConfig {
+                profile: "joyce".into(),
+                display_name: "Joyce".into(),
+                color: "#f20079".into(),
+                base_url: String::new(),
+                detail: String::new(),
+                session_id: "keep-session".into(),
+                session_explicit: true,
+                session_anchor: 3.0,
+                enabled: false,
+            }],
+            ..AppConfig::default()
+        };
+        save(&path, &cfg).unwrap();
+        let hint = [ProfileHint {
+            profile: "joyce".into(),
+            display_name: "Joyce".into(),
+            detail: "文稿同回覆".into(),
+            color: "#0000f2".into(),
+        }];
+        assert_eq!(apply_quiet_roster(&path, &hint).unwrap(), true);
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.bots[0].detail, "文稿同回覆");
+        assert!(!loaded.bots[0].enabled);
+        assert_eq!(loaded.bots[0].display_name, "Joyce");
+        assert_eq!(loaded.bots[0].color, "#f20079");
+        assert_eq!(loaded.bots[0].session_id, "keep-session");
+        assert!(loaded.bots[0].session_explicit);
+        let filled = fs::read(&path).unwrap();
+        assert_eq!(apply_quiet_roster(&path, &hint).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), filled);
+        let keep = [ProfileHint {
+            profile: "joyce".into(),
+            display_name: "Other".into(),
+            detail: "唔好覆蓋".into(),
+            color: String::new(),
+        }];
+        assert_eq!(apply_quiet_roster(&path, &keep).unwrap(), false);
+        assert_eq!(load(&path).unwrap().bots[0].detail, "文稿同回覆");
         let _ = fs::remove_dir_all(&dir);
     }
 

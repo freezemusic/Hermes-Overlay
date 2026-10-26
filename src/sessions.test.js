@@ -16,6 +16,7 @@ import {
   storedPinAfterResolve,
   catchUpMessages,
   clearRunSession,
+  continueLiveTurn,
   noteRunSession,
   rememberView,
   runTranscript,
@@ -490,4 +491,26 @@ test("a running reply stays on its session while another session is open", () =>
   assert.equal(viewingRun(thread), true);
   showSession(thread, "other", [{ role: "bot", text: "另一個對話" }]);
   assert.equal(thread.messages[0].text, "另一個對話");
+});
+
+test("a steered or queued line does not split the live reply", () => {
+  const messages = [
+    { role: "user", text: "第一句" },
+    { role: "bot", text: "一半", live: true },
+    { role: "user", text: "跟住" },
+    { role: "commentary", text: "排隊中，等佢講完就會行" },
+  ];
+  const first = continueLiveTurn(messages);
+  assert.equal(first.created, false);
+  first.message.text += "完成";
+  assert.equal(messages.filter((message) => message.role === "bot").length, 1);
+  assert.equal(messages[1].text, "一半完成");
+  assert.equal(messages[2].text, "跟住");
+  messages[1].live = false;
+  const next = continueLiveTurn(messages);
+  assert.equal(next.created, true);
+  assert.equal(messages.filter((message) => message.role === "bot").length, 2);
+  assert.equal(next.message, messages.at(-1));
+  next.message.text = "下一輪";
+  assert.equal(messages[1].text, "一半完成");
 });

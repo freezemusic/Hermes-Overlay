@@ -2077,12 +2077,20 @@ pub fn parse_dashboard_profiles(value: &Value) -> Vec<DiscoveredProfile> {
         } else {
             profile.clone()
         };
-        let detail = item
+        let described = item
             .get("description")
             .and_then(Value::as_str)
             .unwrap_or("")
-            .trim()
-            .to_string();
+            .trim();
+        let detail = if described.is_empty() {
+            item.get("detail")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        } else {
+            described.to_string()
+        };
         out.push(DiscoveredProfile {
             profile,
             display_name,
@@ -3825,6 +3833,12 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].display_name, "資料搜查");
         assert_eq!(found[0].detail, "搜尋");
+        let joyce = parse_dashboard_profiles(&json!({"profiles":[
+            {"name":"joyce","display_name":"Joyce","description":"文稿同回覆"},
+            {"name":"fallback","detail":"只用 detail"}
+        ]}));
+        assert_eq!(joyce[0].detail, "文稿同回覆");
+        assert_eq!(joyce[1].detail, "只用 detail");
         assert_eq!(found[0].color, "");
         assert!(profiles_from_health_body("ok").is_empty());
         assert!(profiles_from_health_body(r#"{"status":"ok"}"#).is_empty());

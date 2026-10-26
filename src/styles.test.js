@@ -26,6 +26,17 @@ function contrast(ink, paper) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+function mix(ink, paper, alpha) {
+  const parse = (hex) => {
+    const n = Number.parseInt(hex.slice(1), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  const fg = parse(ink);
+  const bg = parse(paper);
+  const channels = fg.map((value, index) => Math.round(bg[index] * (1 - alpha) + value * alpha));
+  return `#${channels.map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
 function infiniteSelectors(source) {
   const found = [];
   const re = /([^{}@]+)\{([^{}]*)\}/g;
@@ -515,6 +526,10 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.send-btn:disabled[^{]*\{[^}]*rgb\(97 97 145 \/ \.16\)/s);
   assert.doesNotMatch(css, /\.send-btn:disabled[^{]*\{[^}]*#0000f2/s);
   assert.match(css, /\.approval-heading \{[^}]*#0000f2/s);
+  assert.match(css, /\.approval-heading \{[^}]*font:[^;]*11px/s);
+  assert.doesNotMatch(css, /\.approval-heading \{[^}]*--fs-micro/s);
+  assert.match(css, /\.send-btn:disabled[^{]*\{[^}]*#3a3a68/s);
+  assert.ok(contrast("#3a3a68", mix("#616191", "#f8f8fc", 0.16)) >= 4.5);
   assert.match(css, /\.approval-actions button\.approval-primary \{[^}]*#0000f2/s);
   assert.match(css, /\.approval-actions button\.approval-secondary \{[^}]*#616191/s);
   assert.doesNotMatch(css, /\.composer input:disabled \{[^}]*rgb\(255 255 255/s);

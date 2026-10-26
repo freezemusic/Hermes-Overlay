@@ -852,8 +852,8 @@ html, body {
 .send-btn:disabled,
 .send-btn:disabled:hover {
   background: rgb(97 97 145 / .16);
-  border-color: rgb(97 97 145 / .45);
-  color: #616191;
+  border-color: #616191;
+  color: #3a3a68;
   box-shadow: none;
   opacity: 1;
   cursor: default;
@@ -1538,7 +1538,7 @@ html, body {
 .approval-heading {
   margin: 0;
   color: #0000f2;
-  font: 500 var(--fs-micro)/1 var(--font-label);
+  font: 500 11px/1.2 var(--font-label);
 }
 
 .approval-description,
