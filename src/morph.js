@@ -269,6 +269,33 @@ export function orbHaloInsets(insets, bleed = ORB_HALO_PX) {
   };
 }
 
+/**
+ * Collapse ends on the 44px disc, and that WAAPI clip stays fill:forwards.
+ * The used value beats a later inline style, so the halo stays clipped
+ * until the next open. Pin the disc, drop those clip animations, then
+ * widen to the idle circle. Dataset insets stay the disc.
+ */
+export function restoreIdleOrbClip(shell, insets, bleed = ORB_HALO_PX) {
+  if (!shell?.style || !insets) return "";
+  const disc = clipPath(insets);
+  const halo = clipPath(orbHaloInsets(insets, bleed));
+  const fill = shell.querySelector?.(".morph-fill") || null;
+  const stroke = shell.querySelector?.(".morph-stroke") || null;
+  shell.style.clipPath = disc;
+  const dropClip = (el) => {
+    el?.getAnimations?.().forEach((anim) => {
+      if (anim?.id === "orb-idle") return;
+      try { anim.cancel(); } catch { /* already idle */ }
+    });
+  };
+  dropClip(shell);
+  dropClip(fill);
+  dropClip(stroke);
+  shell.style.clipPath = halo;
+  if (fill) fill.style.clipPath = clipPath(tighten(insets));
+  return halo;
+}
+
 export function clipPath(insets) {
   const n = (value) => (Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100));
   return `inset(${n(insets.top)}px ${n(insets.right)}px ${n(insets.bottom)}px ${n(insets.left)}px round ${n(insets.radius)}px)`;

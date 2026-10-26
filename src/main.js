@@ -53,6 +53,7 @@ import {
   slotPoint,
   orbCoveredBy,
   orbHaloInsets,
+  restoreIdleOrbClip,
   ORB_HALO_PX,
   FRAME_BLEED,
   HAIRLINE,
@@ -519,8 +520,14 @@ function layoutShell(shell) {
   if (shell.dataset.intent === "close" || shell._motion === "collapse") return;
   const visual = shell.dataset.visual || "orb";
   // collapse-release lays the resting orb out again. An identical box with
-  // a clip already set must not rewrite it: that rebuilds the orb tile.
-  if (shell._geomHeld && visual !== "panel" && shell.dataset.botId !== "cron" && shell.style.clipPath) return;
+  // the halo clip already set must not rewrite it: that rebuilds the orb tile.
+  // A collapse that stopped on the 44px disc still has to widen, or the halo
+  // stays clipped for the rest of the idle period.
+  if (shell._geomHeld && visual !== "panel" && shell.dataset.botId !== "cron" && shell.style.clipPath) {
+    if (visual !== "orb") return;
+    const idle = insetsFor("orb", shellGeom(shell));
+    if (shell.style.clipPath === clipPath(orbHaloInsets(idle))) return;
+  }
   paintClip(shell, insetsFor(visual, {
     boxW: placed.width,
     boxH: placed.height,
@@ -1097,7 +1104,11 @@ function commitClosedShell(shell) {
     shell.style.removeProperty("--bot-color");
   }
   const idle = insetsFor("orb", shellGeom(shell));
+  // writeClip pins the 44px disc (and the dataset hit insets) so cancelling
+  // the collapse's fill:forwards clip cannot flash the full panel. The next
+  // line widens that same clip to the 34px halo circle.
   writeClip(shell, idle);
+  restoreIdleOrbClip(shell, idle);
   const floor = String(idleOrbOpacity(shell));
   if (shell.style.getPropertyValue("--hit-opacity") !== floor) {
     shell.style.setProperty("--hit-opacity", floor);

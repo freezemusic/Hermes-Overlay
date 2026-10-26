@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { seamClipStillClosed } from "./morph.js";
-import { applyOrbFadeFrame, opacityFramesMonotonic, opacityFramesToward } from "./proximity.js";
+import { clipPath, insetsFor, ORB, orbHaloInsets, restoreIdleOrbClip, seamClipStillClosed } from "./morph.js";
+import { applyOrbFadeFrame, opacityFramesMonotonic, opacityFramesToward, orbDiscHit } from "./proximity.js";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -1279,4 +1279,165 @@ test("muted text is #14142b and an idle orb has no rim wash", () => {
   assert.doesNotMatch(paint, /removeProperty\("clip-path"\)/);
   assert.match(main, /state\.modifierHeld === true/);
   assert.match(main, /function noteChordKey/);
+});
+
+test("open then close restores the same idle orb halo", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const commit = main.slice(main.indexOf("function commitClosedShell"), main.indexOf("function restingTransform"));
+  const restoreAt = commit.indexOf("restoreIdleOrbClip(shell, idle)");
+  assert.ok(restoreAt > commit.indexOf('"is-morphing"'));
+  assert.ok(restoreAt > commit.indexOf("writeClip(shell, idle)"));
+  assert.match(main, /function finishClose[\s\S]*runShellMorph\(shell, "orb"\)/);
+  assert.match(main, /function closeSettings[\s\S]*runShellMorph\(shell, "orb"\)/);
+  assert.match(main, /function closeKanban[\s\S]*runShellMorph\(shell, "orb"\)/);
+  assert.match(main, /function closeCron[\s\S]*runShellMorph\(shell, "orb"\)/);
+  assert.match(main, /closeOpenPanel\(action\.id\)/);
+  const dom = new JSDOM(`<!doctype html><style>${css}</style><body>
+    <div class="morph" data-kind="bot" data-bot-id="writer" data-state="orb" data-visual="orb" data-hit-id="bot:writer" style="width:360px;height:520px">
+      <div class="morph-stroke"></div>
+      <div class="morph-fill"></div>
+      <button class="bot-btn morph-orb" style="--bot:#f2f200;--bot-rgb:242 242 0">
+        <span class="orb-core"></span>
+        <span class="orb-glyph">寫</span>
+      </button>
+    </div>
+  </body>`);
+  const { document, getComputedStyle } = dom.window;
+  const shell = document.querySelector(".morph");
+  const fill = shell.querySelector(".morph-fill");
+  const btn = shell.querySelector(".morph-orb");
+  shell.dataset.ax = String(ORB / 2);
+  shell.dataset.ay = String(ORB / 2);
+  const geom = {
+    boxW: 360,
+    boxH: 520,
+    ax: ORB / 2,
+    ay: ORB / 2,
+  };
+  const disc = insetsFor("orb", geom);
+  const halo = clipPath(orbHaloInsets(disc));
+  const tight = clipPath(disc);
+  const declared = (el, prop) => {
+    let value = "";
+    for (const sheet of document.styleSheets) {
+      for (const rule of sheet.cssRules) {
+        const text = rule.selectorText || "";
+        if (!text.includes("::before") || !rule.style) continue;
+        const hit = text.split(",").some((part) => {
+          if (!part.includes("::before")) return false;
+          const selector = part.replace(/::before/g, "").trim();
+          if (!selector) return false;
+          try { return el.matches(selector); } catch { return false; }
+        });
+        if (!hit) continue;
+        const next = rule.style.getPropertyValue(prop);
+        if (next) value = next;
+      }
+    }
+    return value;
+  };
+  const usedClip = (el) => {
+    const anims = typeof el.getAnimations === "function" ? el.getAnimations() : [];
+    for (const anim of anims) {
+      if (anim.id === "orb-idle" || anim.playState === "idle") continue;
+      const frames = anim.effect?.getKeyframes?.() || [];
+      const last = [...frames].reverse().find((frame) => frame.clipPath);
+      if (last?.clipPath) return last.clipPath;
+    }
+    return el.style.clipPath;
+  };
+  const snap = () => ({
+    state: shell.dataset.state,
+    visual: shell.dataset.visual,
+    morphing: shell.classList.contains("is-morphing"),
+    collapsing: shell.classList.contains("is-collapsing"),
+    docked: shell.classList.contains("is-orb-docked"),
+    open: shell.classList.contains("open"),
+    usedClip: usedClip(shell),
+    fillClip: fill.style.clipPath,
+    shellOverflow: getComputedStyle(shell).overflow,
+    shellBg: getComputedStyle(shell).backgroundColor,
+    fillBg: getComputedStyle(fill).backgroundColor,
+    btnOverflow: getComputedStyle(btn).overflow,
+    btnTransform: getComputedStyle(btn).transform,
+    btnW: getComputedStyle(btn).width,
+    btnH: getComputedStyle(btn).height,
+    inlineOverflow: shell.style.overflow,
+    inlineBg: shell.style.backgroundColor,
+    willChange: shell.style.willChange,
+    clipRadius: shell.dataset.clipRadius,
+    haloOpacity: declared(btn, "opacity"),
+    haloInset: declared(btn, "inset"),
+    haloBg: declared(btn, "background"),
+    haloHit: declared(btn, "pointer-events"),
+    haloTransition: declared(btn, "transition"),
+  });
+  shell.dataset.clipTop = String(disc.top);
+  shell.dataset.clipRight = String(disc.right);
+  shell.dataset.clipBottom = String(disc.bottom);
+  shell.dataset.clipLeft = String(disc.left);
+  shell.dataset.clipRadius = String(disc.radius);
+  shell.getAnimations = () => [];
+  fill.getAnimations = () => [];
+  restoreIdleOrbClip(shell, disc);
+  const idle = snap();
+  assert.equal(idle.usedClip, halo);
+  assert.equal(idle.shellOverflow, "visible");
+  assert.equal(idle.btnOverflow, "visible");
+  assert.equal(getComputedStyle(document.documentElement).getPropertyValue("--bot-size").trim(), "44px");
+  assert.equal(idle.btnW, "var(--bot-size)");
+  assert.equal(idle.btnH, "var(--bot-size)");
+  assert.equal(idle.clipRadius, "22");
+  assert.equal(idle.haloOpacity, "0.85");
+  assert.equal(idle.haloInset, "calc(-1 * var(--orb-glow-radius))");
+  assert.equal(idle.haloHit, "none");
+  assert.match(idle.haloBg, /radial-gradient/);
+  assert.equal(idle.shellBg, "rgba(0, 0, 0, 0)");
+  assert.equal(idle.fillBg, "rgba(0, 0, 0, 0)");
+  const hit = orbDiscHit({ x: 0, y: 0, w: 112, h: 112 }, { x: 12, y: 20, w: 44, h: 44 });
+  assert.deepEqual(hit, { x: 12, y: 20, w: 44, h: 44 });
+  for (const gesture of ["close", "escape", "other-orb"]) {
+    const anim = {
+      id: "panel-collapse",
+      playState: "finished",
+      effect: { getKeyframes: () => [{ clipPath: tight }, { clipPath: tight }] },
+      cancel() { this.playState = "idle"; },
+    };
+    const dim = {
+      id: "orb-idle",
+      playState: "finished",
+      effect: { getKeyframes: () => [{ opacity: 1 }, { opacity: 1 }] },
+      cancel() { this.playState = "idle"; },
+    };
+    shell.dataset.state = "panel";
+    shell.dataset.visual = "panel";
+    shell.classList.add("is-morphing", "is-collapsing", "is-orb-docked", "open");
+    shell.style.setProperty("overflow", "hidden", "important");
+    shell.style.backgroundColor = "#f8f8fc";
+    shell.style.willChange = "clip-path, transform, opacity";
+    shell.style.clipPath = tight;
+    fill.style.backgroundColor = "#f8f8fc";
+    fill.style.clipPath = "inset(0px 0px 0px 0px round 3px)";
+    btn.style.transform = "scale(0.636364)";
+    shell.getAnimations = () => [anim, dim].filter((item) => item.playState !== "idle");
+    fill.getAnimations = () => [];
+    const mid = snap();
+    assert.notDeepEqual(mid, idle, gesture);
+    assert.equal(mid.usedClip, tight, gesture);
+    shell.dataset.state = "orb";
+    shell.dataset.visual = "orb";
+    shell.classList.remove("is-morphing", "is-collapsing", "is-orb-docked", "is-orb-moving", "open", "is-growing-panel", "is-growing-pill");
+    for (const el of [shell, fill, btn]) {
+      el.style.removeProperty("will-change");
+      el.style.removeProperty("background");
+      el.style.removeProperty("background-color");
+      el.style.removeProperty("overflow");
+      el.style.removeProperty("transform");
+    }
+    shell.dataset.clipRadius = String(disc.radius);
+    restoreIdleOrbClip(shell, disc);
+    assert.equal(anim.playState, "idle", gesture);
+    assert.equal(dim.playState, "finished", gesture);
+    assert.deepEqual(snap(), idle, gesture);
+  }
 });

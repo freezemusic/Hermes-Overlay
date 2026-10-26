@@ -169,7 +169,7 @@
 - 狀態：❓ / ❓。
 
 **R-AD-01** v104 閒置光球。`.bot-btn::before` 光暈：`inset: calc(-1 * var(--orb-glow-radius))`，`--orb-glow-radius: 34px`，`radial-gradient(circle, rgb(var(--bot-rgb) / .55) 0%, rgb(var(--bot-rgb) / .22) 42%, transparent 72%)`，opacity `.85`；hover opacity `1` 同 `scale(1.08)`。`.orb-core` 係近白眩光，`box-shadow: none`。`--bot-size: 44px`。glyph `500 18px/1`，`color: var(--bot-ink, var(--bot))`，`text-shadow: 0 0 4px #fff`。黃 `#f2f200` 嘅 `--bot-ink` 係 `#6b6b00`，青 `#00f2f2` 係 `#006b6b`。其餘喺白底對比低過 3:1 嘅 bot 色（包括 `#edff45`、`#79f200`、`#f27900`、`#ff8442`）用同一條對比規則加深成自己嘅墨，墨對白至少 4.5:1。光暈保持純 bot 色。閒置圓形光球唔畫邊。打開面板嘅 `.morph-glow` 維持 96px、alpha `.12`。Orb 狀態嘅殼 clip 每邊闊 34px（`round 999px`），殼同 `.morph-orb` 都係 `overflow: visible`。殼背景同 `.morph-fill` 喺閒置 orb 透明。命中矩形仍然係 44px 光碟，唔包括光暈。
-- 驗收：要睇渲染像素，唔可以只對 computed style。閒置光球嘅光暈要畫出 44px 光碟之外（光碟邊再外仍然有 bot 色），光碟冇實白貼紙，亦冇 1px 色環。閒置光球冇 `.morph-fill::after` 圈洗。黃 `#f2f200`、青 `#00f2f2` glyph 用上面兩隻墨；`#edff45` 嘅 glyph 唔可以係原色。
+- 驗收：要睇渲染像素，唔可以只對 computed style。閒置光球嘅光暈要畫出 44px 光碟之外（光碟邊再外仍然有 bot 色），光碟冇實白貼紙，亦冇 1px 色環。閒置光球冇 `.morph-fill::after` 圈洗。黃 `#f2f200`、青 `#00f2f2` glyph 用上面兩隻墨；`#edff45` 嘅 glyph 唔可以係原色。打開之後再收合（關閉掣、Esc、再撳另一粒光球，以及重複開關）要返到同打開之前一樣嘅閒置渲染：殼 clip 每邊闊 34px、`round 999px`，殼同 `.morph-orb` `overflow: visible`，殼背景同 `.morph-fill` 透明，`.bot-btn::before` 光暈恢復，冇留低 `is-morphing`、`is-collapsing`、`is-orb-docked`，亦冇 fill:forwards 鎖住嘅 44px clip。命中矩形仍然係 44px 光碟，光暈穿透。
 
 **R-AD-02** 被打開面板或者計劃蓋住嘅光球（44px 光碟加 34px 光暈相交）用 R-OB-05 同一段 160ms 淡到 0。殼同 `.morph-orb` 都係 `pointer-events: none`。hit rect 照發，而且仍然係 44px 光碟，Ctrl+click 仍然開到嗰粒（R-CT-02）。殼離開 orb 狀態要清 `data-orb-covered`。收合完先返。位置唔郁。
 - 驗收：面板開住時，光暈撞到面板嘅光球 opacity 去 0，hit 清單仍然有佢，而且係 44×44；收合完淡返。打開之後個面板冇 `data-orb-covered="1"`。
