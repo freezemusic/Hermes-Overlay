@@ -15,7 +15,13 @@ import {
   sessionReadOnly,
   storedPinAfterResolve,
   catchUpMessages,
+  clearRunSession,
+  noteRunSession,
+  rememberView,
+  runTranscript,
+  showSession,
   unseenMessages,
+  viewingRun,
 } from "./sessions.js";
 
 const sessions = [
@@ -448,4 +454,40 @@ test("catch-up keeps an unseen reply and does not copy the live bubble", () => {
     incoming,
   );
   assert.deepEqual(again.fresh, [{ role: "user", text: "第二句", tool_name: "" }]);
+});
+
+test("a running reply stays on its session while another session is open", () => {
+  const thread = {
+    sessionId: "live",
+    liveSessionId: "",
+    messages: [
+      { role: "user", text: "做緊" },
+      { role: "bot", text: "一半", live: true },
+    ],
+    bySession: new Map(),
+  };
+  noteRunSession(thread);
+  assert.equal(thread.liveSessionId, "live");
+  assert.equal(viewingRun(thread), true);
+  rememberView(thread);
+  showSession(thread, "other", [{ role: "bot", text: "另一個對話" }]);
+  assert.equal(thread.sessionId, "other");
+  assert.equal(thread.messages[0].text, "另一個對話");
+  assert.equal(viewingRun(thread), false);
+  const parked = runTranscript(thread);
+  parked[1].text += "完成";
+  parked[1].live = false;
+  parked.push({ role: "commentary", text: "已停止呢次回覆。" });
+  assert.equal(thread.messages.map((message) => message.text).join("\n"), "另一個對話");
+  showSession(thread, "live", [
+    { role: "user", text: "做緊" },
+    { role: "bot", text: "一半完成" },
+  ]);
+  assert.equal(thread.messages[1].text, "一半完成");
+  assert.equal(thread.messages[2].text, "已停止呢次回覆。");
+  clearRunSession(thread);
+  assert.equal(thread.liveSessionId, "");
+  assert.equal(viewingRun(thread), true);
+  showSession(thread, "other", [{ role: "bot", text: "另一個對話" }]);
+  assert.equal(thread.messages[0].text, "另一個對話");
 });

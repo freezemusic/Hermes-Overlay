@@ -2996,6 +2996,21 @@ mod tests {
     }
 
     #[test]
+    fn select_session_does_not_stop_the_running_turn() {
+        let src = include_str!("lib.rs");
+        let start = src.find("async fn select_session").expect("select");
+        let rest = &src[start..];
+        let end = rest.find("async fn send_chat").expect("send");
+        let body = &rest[..end];
+        assert!(body.contains("fetch_messages"));
+        assert!(!body.contains("stop_run"));
+        assert!(!body.contains("begin_stream"));
+        assert!(!body.contains("request_stream_stop"));
+        assert!(!body.contains("println"));
+        assert!(!body.contains("eprintln"));
+    }
+
+    #[test]
     fn stop_and_steer_keep_the_reader_and_do_not_log() {
         let src = include_str!("lib.rs");
         let stop = src.find("async fn request_stop").expect("request_stop");

@@ -212,6 +212,74 @@ export function unseenMessages(existing, incoming) {
   };
 }
 
+/** The session a live run is writing. Empty until a send or `run.started`. */
+export function noteRunSession(thread) {
+  const id = String(thread?.sessionId || "");
+  if (id) thread.liveSessionId = id;
+  return thread;
+}
+
+export function clearRunSession(thread) {
+  if (thread) thread.liveSessionId = "";
+  return thread;
+}
+
+export function viewingRun(thread) {
+  const live = String(thread?.liveSessionId || "");
+  return !live || live === String(thread?.sessionId || "");
+}
+
+/** Messages the open run should mutate. Another visible session stays untouched. */
+export function runTranscript(thread) {
+  const live = String(thread?.liveSessionId || "");
+  if (!live || live === String(thread?.sessionId || "")) return thread.messages;
+  if (!thread.bySession) thread.bySession = new Map();
+  let stored = thread.bySession.get(live);
+  if (!stored) {
+    stored = [];
+    thread.bySession.set(live, stored);
+  }
+  return stored;
+}
+
+/** Keep the visible transcript under its session id before showing another one. */
+export function rememberView(thread) {
+  if (!thread.bySession) thread.bySession = new Map();
+  const id = String(thread?.sessionId || "");
+  if (id) thread.bySession.set(id, thread.messages);
+  return thread;
+}
+
+/**
+ * Show `sessionId`. The running session keeps its local transcript, including
+ * a reply that arrived while another session was on screen.
+ */
+export function showSession(thread, sessionId, incoming) {
+  const next = String(sessionId || "");
+  if (!thread.bySession) thread.bySession = new Map();
+  const parked = thread.bySession.get(next);
+  if (parked && (String(thread.liveSessionId || "") === next || parked.some((message) => message?.live))) {
+    thread.messages = parked;
+  } else if (parked && parked.length) {
+    const { fresh, settled } = catchUpMessages(parked, incoming || []);
+    const view = parked.map((message) => ({ ...message }));
+    if (settled) {
+      const last = [...view].reverse().find((message) => message.live && message.role === "bot");
+      if (last) {
+        last.text = settled.text;
+        last.live = false;
+      }
+    }
+    for (const message of fresh) view.push({ ...message });
+    thread.messages = view;
+    thread.bySession.set(next, view);
+  } else {
+    thread.messages = (incoming || []).map((message) => ({ ...message }));
+  }
+  thread.sessionId = next;
+  return thread;
+}
+
 /**
  * Session rows the open thread has not shown. Tool rows stay with the stream.
  * A live bot bubble that is a prefix of the stored reply is returned as `settled`

@@ -4056,6 +4056,91 @@ data: {\"completed\":true}\n\
     }
 
     #[tokio::test]
+    async fn another_session_read_does_not_stop_the_open_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let saw_stop = Arc::new(AtomicBool::new(false));
+        let flag = saw_stop.clone();
+        thread::spawn(move || {
+            let mut pending = None;
+            for _ in 0..2 {
+                let (mut sock, _) = listener.accept().unwrap();
+                sock.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                if head.contains("/v1/runs/") && head.contains("/stop") {
+                    flag.store(true, Ordering::SeqCst);
+                }
+                let line = head.lines().next().unwrap_or("");
+                if line.starts_with("GET") && line.contains("/api/sessions/other/messages") {
+                    let body = r#"{"data":[{"role":"assistant","content":"另一個對話"}]}"#;
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(header.as_bytes());
+                    let _ = sock.write_all(body.as_bytes());
+                } else if line.starts_with("POST") && line.contains("/api/sessions/live/chat/stream") {
+                    pending = Some(sock);
+                } else {
+                    let body = "{}";
+                    let header = format!(
+                        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(header.as_bytes());
+                    let _ = sock.write_all(body.as_bytes());
+                }
+            }
+            let Some(mut sock) = pending else {
+                return;
+            };
+            let body = "\
+event: assistant.delta\n\
+data: {\"delta\":\"仍然收到\"}\n\
+\n\
+event: run.completed\n\
+data: {\"completed\":true}\n\
+\n";
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(body.as_bytes());
+        });
+        let http = Client::new();
+        let base = format!("http://{addr}");
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let stream = stream_turn(
+            &http,
+            &base,
+            "k",
+            "live",
+            "hello",
+            &stop,
+            &stop_requested,
+            move |ev| {
+                seen2.lock().unwrap().push(ev);
+            },
+        );
+        let messages = fetch_messages(&http, &base, "k", "other");
+        let (streamed, listed) = tokio::join!(stream, messages);
+        streamed.unwrap();
+        let listed = listed.unwrap();
+        assert_eq!(listed[0].text, "另一個對話");
+        let seen = seen.lock().unwrap();
+        assert!(matches!(seen.first(), Some(TurnEvent::Delta(text)) if text == "仍然收到"));
+        assert!(matches!(seen.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
+        assert!(!saw_stop.load(Ordering::SeqCst));
+        assert!(!stop.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
     async fn failed_turn_uses_provider_text_not_a_normal_reply() {
         let body = "\
 event: assistant.completed\n\

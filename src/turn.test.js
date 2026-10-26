@@ -40,3 +40,18 @@ test("stop waits for the gateway and a reopened panel still catches up", () => {
   assert.match(rustStop, /stop_run/);
   assert.doesNotMatch(rustStop, /abort\.store/);
 });
+
+test("switching session while a bot is replying is not a dead end", () => {
+  assert.doesNotMatch(main, /停咗先至轉對話/);
+  const pick = main.slice(main.indexOf("async function pickSession"), main.indexOf("function noteHistoryError"));
+  assert.match(pick, /select_session/);
+  assert.match(pick, /rememberView/);
+  assert.match(pick, /showSession/);
+  assert.doesNotMatch(pick, /state\.busy\.has\(id\)\) \{/);
+  const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
+  const guard = opened.indexOf("if (running)");
+  const idle = opened.indexOf('setBotStatus(id, "閒置", "idle")');
+  assert.ok(guard > 0 && guard < idle);
+  const selectBot = main.slice(main.indexOf("async function selectBot"), main.indexOf("function openBotPanel"));
+  assert.doesNotMatch(selectBot, /state\.busy/);
+});

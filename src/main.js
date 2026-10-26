@@ -78,7 +78,7 @@ import {
   APPROVAL_WAIT_LABEL,
   EXECUTE_CODE_BLOCKED_LINE,
 } from "./approval.js";
-import { SESSION_READ_ONLY_REASON, catchUpMessages, isPermissionDeniedText, orderSessions, permissionDeniedMessage, previewLine, resolveSession, sessionLabel, sessionReadOnly, unseenMessages } from "./sessions.js";
+import { SESSION_READ_ONLY_REASON, catchUpMessages, clearRunSession, isPermissionDeniedText, noteRunSession, orderSessions, permissionDeniedMessage, previewLine, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, unseenMessages, viewingRun } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -4218,7 +4218,7 @@ function renderBots(tag = "renderBots") {
     if (motion === "wait") classes.push("is-waiting");
     if (thread.unread) classes.push("has-unread");
     const panelOpen = state.openIds.includes(bot.id) || shell.dataset.state === "panel";
-    if (showApprovalBadge(panelOpen, thread.messages.some(approvalPending))) classes.push("has-approval");
+    if (showApprovalBadge(panelOpen, thread.messages.some(approvalPending) || parkedApproval(thread))) classes.push("has-approval");
     if (thread.statusState === "error") classes.push("error");
     if (bot.id === pulseId || keepEnter) classes.push("orb-enter");
     const nextClass = classes.join(" ");
@@ -5095,17 +5095,44 @@ function restickOpenChats() {
   });
 }
 
+function runMessages(id) {
+  return runTranscript(threadFor(id));
+}
+
+function runIsOnScreen(id) {
+  return viewingRun(threadFor(id));
+}
+
+function parkedApproval(thread) {
+  const parked = thread?.liveSessionId && thread.bySession?.get(thread.liveSessionId);
+  return !!(parked && parked !== thread.messages && parked.some(approvalPending));
+}
+
 function settleBlockedCopies(id) {
   const thread = threadFor(id);
-  const next = omitRepeatedBlockedLine(thread.messages);
-  if (next.length === thread.messages.length) return false;
-  thread.messages = next;
+  const messages = runMessages(id);
+  const next = omitRepeatedBlockedLine(messages);
+  if (next.length === messages.length) return false;
+  if (messages === thread.messages) thread.messages = next;
+  if (thread.liveSessionId) {
+    if (!thread.bySession) thread.bySession = new Map();
+    const parked = thread.bySession.get(thread.liveSessionId);
+    if (parked === messages || messages === thread.messages) {
+      thread.bySession.set(thread.liveSessionId, messages === thread.messages ? thread.messages : next);
+    }
+  }
   return true;
 }
 
 function appendOnce(id, message) {
-  if (message?.text === EXECUTE_CODE_BLOCKED_LINE && threadFor(id).messages.some((item) => item.text === EXECUTE_CODE_BLOCKED_LINE)) {
-    if (settleBlockedCopies(id) && panelFor(id)) renderChat(id);
+  const thread = threadFor(id);
+  const messages = runMessages(id);
+  if (message?.text === EXECUTE_CODE_BLOCKED_LINE && messages.some((item) => item.text === EXECUTE_CODE_BLOCKED_LINE)) {
+    if (settleBlockedCopies(id) && runIsOnScreen(id) && panelFor(id)) renderChat(id);
+    return;
+  }
+  if (!runIsOnScreen(id)) {
+    messages.push(message);
     return;
   }
   appendMessage(id, message);
@@ -5130,7 +5157,7 @@ function appendMessage(id, message) {
 
 function setBotStatus(id, text, statusState) {
   const thread = threadFor(id);
-  if (String(text).includes("思考中") && thread.messages.some(approvalPending)) text = APPROVAL_WAIT_LABEL;
+  if (String(text).includes("思考中") && (thread.messages.some(approvalPending) || parkedApproval(thread))) text = APPROVAL_WAIT_LABEL;
   thread.status = text;
   thread.statusState = statusState;
   if (statusState === "busy") state.busy.add(id);
@@ -5161,32 +5188,42 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   const thread = threadFor(id);
   const messages = (opened.messages || []).map(presentMessage);
   const sessions = opened.sessions || [];
-  const keptApprovals = thread.sessionId === (opened.session_id || "")
+  const nextId = opened.session_id || "";
+  const running = state.busy.has(id);
+  const switching = running && thread.sessionId && nextId && thread.sessionId !== nextId;
+  if (switching) {
+    if (!thread.liveSessionId) noteRunSession(thread);
+    rememberView(thread);
+    showSession(thread, nextId, messages);
+  }
+  const keptApprovals = !switching && thread.sessionId === nextId
     ? thread.messages.filter(approvalPending)
     : [];
-  if (quiet && sameChatSnapshot({
-    sessionId: thread.sessionId,
-    sessionExplicit: thread.sessionExplicit,
-    sessionReadOnly: thread.sessionReadOnly,
-    messages: thread.messages,
-    sessions: thread.sessions,
-  }, {
-    sessionId: opened.session_id || "",
-    sessionExplicit: !!opened.session_explicit,
-    sessionReadOnly: !!opened.read_only,
-    messages,
-    sessions,
-  }) && thread.statusState !== "busy") {
-    return;
-  }
-  thread.messages = messages;
-  for (const card of keptApprovals) {
-    if (!thread.messages.some((message) => message.role === "approval" && message.requestId === card.requestId)) {
-      thread.messages.push(card);
+  if (!switching && !(running && thread.messages.some((message) => message.live))) {
+    if (quiet && sameChatSnapshot({
+      sessionId: thread.sessionId,
+      sessionExplicit: thread.sessionExplicit,
+      sessionReadOnly: thread.sessionReadOnly,
+      messages: thread.messages,
+      sessions: thread.sessions,
+    }, {
+      sessionId: nextId,
+      sessionExplicit: !!opened.session_explicit,
+      sessionReadOnly: !!opened.read_only,
+      messages,
+      sessions,
+    }) && thread.statusState !== "busy") {
+      return;
+    }
+    thread.messages = messages;
+    for (const card of keptApprovals) {
+      if (!thread.messages.some((message) => message.role === "approval" && message.requestId === card.requestId)) {
+        thread.messages.push(card);
+      }
     }
   }
   thread.loaded = true;
-  thread.sessionId = opened.session_id || "";
+  thread.sessionId = nextId || thread.sessionId;
   thread.sessionExplicit = !!opened.session_explicit;
   thread.sessionAnchor = Number(opened.session_anchor) || 0;
   thread.sessionReadOnly = !!opened.read_only;
@@ -5197,6 +5234,12 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   clearConnectionBanner();
   const shell = shellFor(id);
   const openPanel = shell?.dataset.state === "panel" && !shell.classList.contains("is-collapsing");
+  if (running) {
+    if (openPanel) renderChat(id, { force: true, tag: "session-switch" });
+    else if (shell) shell.dataset.chatDirty = "1";
+    renderBots();
+    return;
+  }
   if (openPanel) {
     setBotStatus(id, "閒置", "idle");
     renderChat(id, { force: true, tag: "session-switch" });
@@ -5375,26 +5418,21 @@ async function pickSession(id, sessionId) {
   const thread = threadFor(id);
   const select = role(panelFor(id), "session");
   if (!sessionId || sessionId === thread.sessionId) return;
-  if (state.busy.has(id)) {
-    if (select) select.value = thread.sessionId;
-    showActionError("呢個 Bot 仲喺度回覆，停咗先至轉對話。");
-    return;
-  }
   if (state.mode !== "hermes" || !inTauri()) {
-    if (!thread.bySession) thread.bySession = new Map();
-    thread.bySession.set(thread.sessionId, thread.messages.map((message) => ({ ...message })));
+    if (state.busy.has(id) && !thread.liveSessionId) noteRunSession(thread);
+    rememberView(thread);
     const anchor = Math.max(0, ...(thread.sessions || []).map((session) => Number(session.last_active) || 0));
-    thread.sessionId = sessionId;
+    const picked = (thread.sessions || []).find((session) => session.id === sessionId);
+    const stored = thread.bySession?.get(sessionId);
+    showSession(thread, sessionId, (stored || [{ role: "bot", text: "（舊對話）" }]).map((message) => ({ ...message })));
     thread.sessionExplicit = true;
     thread.sessionAnchor = anchor;
-    const picked = (thread.sessions || []).find((session) => session.id === sessionId);
     thread.sessionReadOnly = sessionReadOnly(picked?.source);
     thread.sessionReadOnlyReason = thread.sessionReadOnly ? SESSION_READ_ONLY_REASON : "";
-    const stored = thread.bySession.get(sessionId);
-    thread.messages = (stored || [{ role: "bot", text: "（舊對話）" }]).map((message) => ({ ...message }));
     thread.loaded = true;
     if (select) delete select.dataset.key;
     renderChat(id);
+    renderBots();
     return;
   }
   try {
@@ -6176,10 +6214,12 @@ function presentMessage(m) {
 
 function ensureLiveBubble(id) {
   const thread = threadFor(id);
-  let live = thread.messages[thread.messages.length - 1];
+  const messages = runMessages(id);
+  let live = messages[messages.length - 1];
   if (!live || live.role !== "bot" || !live.live) {
     live = { role: "bot", text: "", live: true };
-    thread.messages.push(live);
+    messages.push(live);
+    if (!runIsOnScreen(id)) return live;
     const shell = shellFor(id);
     if (shell && (deferShellWork(shell) || presentationBusy())) {
       shell.dataset.chatDirty = "1";
@@ -6279,14 +6319,14 @@ function panelIsOpen(id) {
 
 function releaseApprovalWait(id) {
   const thread = threadFor(id);
-  if (thread.messages.some(approvalPending)) return;
+  if (thread.messages.some(approvalPending) || parkedApproval(thread)) return;
   if (!state.busy.has(id) || thread.status !== APPROVAL_WAIT_LABEL) return;
   setBotStatus(id, "思考中…", "busy");
 }
 
 function paintApprovalBadge(id) {
   const thread = threadFor(id);
-  const show = showApprovalBadge(panelIsOpen(id), thread.messages.some(approvalPending));
+  const show = showApprovalBadge(panelIsOpen(id), thread.messages.some(approvalPending) || parkedApproval(thread));
   const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
   btn?.classList.toggle("has-approval", show);
 }
@@ -6340,6 +6380,7 @@ function handleHermes(payload) {
       if (!thread.runId || !state.busy.has(id) || thread.runId === incoming) thread.runId = incoming;
       else thread.nextRunId = incoming;
     }
+    if (!thread.liveSessionId) noteRunSession(thread);
     thread.stopNoted = false;
     setBotStatus(id, "思考中…", "busy");
     noteActivity(id, { type: "run.started" });
@@ -6348,24 +6389,27 @@ function handleHermes(payload) {
   if (payload.type === "approval.request") {
     const thread = threadFor(id);
     const requestId = String(payload.request_id || "");
-    const existing = thread.messages.find((message) => message.role === "approval" && message.requestId === requestId);
+    const messages = runMessages(id);
+    const existing = messages.find((message) => message.role === "approval" && message.requestId === requestId);
+    const card = {
+      role: "approval",
+      runId: payload.run_id || thread.runId || "",
+      requestId,
+      description: payload.description || "",
+      command: payload.command || "",
+      status: "pending",
+    };
     if (!existing) {
-      appendMessage(id, {
-        role: "approval",
-        runId: payload.run_id || thread.runId || "",
-        requestId,
-        description: payload.description || "",
-        command: payload.command || "",
-        status: "pending",
-      });
+      if (runIsOnScreen(id)) appendMessage(id, card);
+      else messages.push(card);
     }
     setBotStatus(id, APPROVAL_WAIT_LABEL, "busy");
-    if (panelFor(id)) renderChat(id);
+    if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
     paintApprovalBadge(id);
     return;
   }
   if (payload.type === "approval.responded") {
-    const card = threadFor(id).messages.find((message) => message.role === "approval" && message.requestId === payload.request_id);
+    const card = runMessages(id).find((message) => message.role === "approval" && message.requestId === payload.request_id);
     const next = statusAfterResponded(payload.choice);
     if (card && next && card.status !== "stale") card.status = next;
     releaseApprovalWait(id);
@@ -6379,24 +6423,24 @@ function handleHermes(payload) {
     live.text += plainToolText(payload.text || "");
     if (textIsExecuteCodeBlocked(live.text)) live.text = EXECUTE_CODE_BLOCKED_LINE;
     if (settleBlockedCopies(id)) {
-      if (panelFor(id)) renderChat(id);
+      if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
       return;
     }
-    patchLive(id);
+    if (runIsOnScreen(id)) patchLive(id);
     return;
   }
   if (payload.type === "command") {
-    const user = [...threadFor(id).messages].reverse().find((item) => item.role === "user");
+    const user = [...runMessages(id)].reverse().find((item) => item.role === "user");
     if (user && payload.command) {
       user.command = payload.command;
-      if (panelFor(id)) renderChat(id);
+      if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
     }
     return;
   }
   if (payload.type === "commentary") {
     const text = plainToolText(payload.text || "");
     appendOnce(id, { role: "commentary", text: text === EXECUTE_CODE_BLOCKED_LINE ? text : `過程：${text}` });
-    if (panelFor(id)) renderChat(id);
+    if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
     return;
   }
   if (payload.type === "tool") {
@@ -6411,7 +6455,7 @@ function handleHermes(payload) {
     noteActivity(id, { type: "tool" });
     const phase = payload.phase === "completed" ? "完成" : payload.phase === "failed" ? "失敗" : "開始";
     appendOnce(id, { role: "tool", text: blocked ? EXECUTE_CODE_BLOCKED_LINE : `${phase} ${text}` });
-    if (panelFor(id)) renderChat(id);
+    if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
     return;
   }
   if (payload.type === "status") {
@@ -6428,7 +6472,7 @@ function handleHermes(payload) {
   }
   if (payload.type === "done") {
     const thread = threadFor(id);
-    const live = [...thread.messages].reverse().find((m) => m.live);
+    const live = [...runMessages(id)].reverse().find((m) => m.live);
     painterFor(id).flush();
     if (live) {
       live.live = false;
@@ -6441,7 +6485,7 @@ function handleHermes(payload) {
         thread.nextRunId = "";
       }
       if (payload.outcome === "cancelled") noteStopped(id, { keepBusy: true });
-      else if (panelFor(id)) renderChat(id);
+      else if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
       return;
     }
     if (thread.nextRunId) {
@@ -6450,7 +6494,7 @@ function handleHermes(payload) {
     } else {
       thread.runId = "";
     }
-    if (panelFor(id)) renderChat(id);
+    if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
     const detail = payload.detail || "";
     const blocked = textIsExecuteCodeBlocked(detail) || detail === EXECUTE_CODE_BLOCKED_LINE;
@@ -6468,6 +6512,7 @@ function handleHermes(payload) {
       void catchUpSession(id);
       return;
     }
+    clearRunSession(thread);
     if (payload.outcome === "completed") {
       thread.queued = false;
       thread.watchReply = false;
@@ -6485,6 +6530,7 @@ function handleHermes(payload) {
     const message = lockIfPermissionDenied(id, payload.message || "未知錯誤");
     noteActivity(id, { type: "failed", text: message });
     appendOnce(id, { role: "commentary", text: message });
+    clearRunSession(threadFor(id));
     setBotStatus(id, isPermissionDeniedText(message) ? SESSION_READ_ONLY_REASON : "連線錯誤", "error");
     setBanner(message, "error");
   }
@@ -6538,6 +6584,7 @@ async function sendActive(id = state.activeId) {
     }, 350);
     return;
   }
+  noteRunSession(threadFor(sentId));
   setBotStatus(sentId, "思考中…", "busy");
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -6546,6 +6593,7 @@ async function sendActive(id = state.activeId) {
     const message = lockIfPermissionDenied(sentId, String(err));
     noteActivity(sentId, { type: "failed", text: message });
     appendMessage(sentId, { role: "commentary", text: message });
+    clearRunSession(threadFor(sentId));
     setBotStatus(sentId, isPermissionDeniedText(message) ? SESSION_READ_ONLY_REASON : "連線錯誤", "error");
     setBanner(message, "error");
   }
@@ -7177,10 +7225,15 @@ function noteStopped(id, { keepBusy = false } = {}) {
   const thread = threadFor(id);
   if (!thread.stopNoted) {
     thread.stopNoted = true;
-    appendMessage(id, { role: "commentary", text: "已停止呢次回覆。" });
+    const note = { role: "commentary", text: "已停止呢次回覆。" };
+    if (runIsOnScreen(id)) appendMessage(id, note);
+    else runMessages(id).push(note);
   }
-  if (!keepBusy) setBotStatus(id, "已停止", "idle");
-  if (panelFor(id)) renderChat(id);
+  if (!keepBusy) {
+    clearRunSession(thread);
+    setBotStatus(id, "已停止", "idle");
+  }
+  if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
 }
 
 function mergeCaughtUp(id, opened) {
@@ -7207,10 +7260,13 @@ function mergeCaughtUp(id, opened) {
   thread.loaded = true;
   const gotReply = additions.some((message) => message.role === "bot" || message.role === "failure")
     || (!!settled && !busy);
-  if (gotReply) {
+  if (gotReply && viewingRun(thread)) {
     thread.queued = false;
     thread.watchReply = false;
-    if (!thread.messages.some((message) => message.live)) setBotStatus(id, "閒置", "idle");
+    if (!thread.messages.some((message) => message.live)) {
+      clearRunSession(thread);
+      setBotStatus(id, "閒置", "idle");
+    }
   }
   if ((settled || additions.length) && panelFor(id)) renderChat(id);
   return gotReply;
