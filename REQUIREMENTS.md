@@ -24,7 +24,7 @@
 
 Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattended_mode: approve`，畫面、設定、註解都唔好建議開啟。
 
-**R-AP-01** `POST /p/{profile}/api/sessions/{id}/chat/stream` 嘅 SSE 如果出 `approval.request`，面板入面即刻出一張卡。卡顯示 `description` 同 gateway 已經遮罩嘅 `command`。只有兩個掣：「批准（一次）」（body `choice` = `once`）同「拒絕」（`deny`）。撳一次之後兩個掣停用。`approval.responded` 或者 POST 成功之後顯示「已批准」或「已拒絕」。HTTP 409 顯示「呢個批准已經過時」。唔自動重試，唔自動批准，唔送 `session`、`always`、`all` 或 `resolve_all`。
+**R-AP-01** `POST /p/{profile}/api/sessions/{id}/chat/stream` 嘅 SSE 如果出 `approval.request`，面板入面即刻出一張卡。卡有小標題「要你批准」，並顯示 `description` 同 gateway 已經遮罩嘅 `command`。只有兩個掣：「批准（一次）」（body `choice` = `once`，主掣，實色藍）同「拒絕」（`deny`，次掣）。等緊批准時狀態係「等緊批准」，唔係「思考中…」；批完如果嗰輪仲忙，先返「思考中…」。撳一次之後兩個掣停用。`approval.responded` 或者 POST 成功之後顯示「已批准」或「已拒絕」。HTTP 409 顯示「呢個批准已經過時」。唔自動重試，唔自動批准，唔送 `session`、`always`、`all` 或 `resolve_all`。
 - 來源：Devon（2026-10-26，Hermes gateway 0.22.5）。`approval.request` 喺 `gateway/platforms/api_server.py`；回覆係 `POST /p/{profile}/v1/runs/{run_id}/approval`，body `{"choice","request_id"}`，用同一個 profile prefix 同 api_server Bearer。`run_id` 亦出現喺同一條串流嘅 `run.started`。
 - 驗收（盒）：模擬 `approval.request` 出卡；POST 路徑包含 profile prefix、`run_id`，body 有對應 `request_id` 同 `once` 或 `deny`。409 只顯示「呢個批准已經過時」，而且只 POST 一次。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
@@ -34,7 +34,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：面板未開時 `has-approval` 先出現；打開面板之後標記收起；命中區仍然係光球本身。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
-**R-AP-03** `execute_code` 喺 api_server session 唔會出 `approval.request`（gateway 早已拒絕）。串流或工具結果如果係 BLOCKED `execute_code`，顯示「呢個 bot 想行 Python（execute_code），經 Overlay 唔允許，叫佢改用 terminal 指令」，唔顯示原始錯誤。
+**R-AP-03** `execute_code` 喺 api_server session 唔會出 `approval.request`（gateway 早已拒絕）。串流或工具結果如果係 BLOCKED `execute_code`，顯示「呢個 bot 想行 Python（execute_code），經 Overlay 唔允許，叫佢改用 terminal 指令」，唔顯示原始錯誤。同一句只出一次：工具氣泡同 bot 氣泡唔好各出一次。
 - 來源：Devon（2026-10-26，gateway 0.22.5）。
 - 驗收（盒）：含 `execute_code` 同 `BLOCKED` 嘅工具結果只剩嗰句。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
@@ -43,6 +43,11 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：Devon（2026-10-26）；R-SS-02。
 - 驗收（盒）：`submit_approval`／`respond_approval` 冇 `println`、`eprintln`、`config::save`，錯誤 body 唔留低。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
+
+**R-AP-05** 面板收埋期間如果已經有一張未批嘅卡，再開面板要把卡捲到睇到（貼底）。唔好恢復收埋前嘅 scroll，令張卡留喺輸入框下面。
+- 來源：Devon 盒測（2026-10-26，AP-a）。卡大約低 94px，撳「批准」嘅位置打中輸入框。
+- 驗收（盒）：收埋時有 pending approval，再開之後張卡喺對話底、輸入框上面。之後用戶自己捲上唔好被拉返底。
+- 狀態：❓ / ❓。
 
 ---
 
@@ -283,7 +288,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（單元，假 9119）：過期 access 加 refresh token，board GET 401 之後只 POST 一次 `/auth/native/refresh`，寫低新 access 同新 refresh，再 GET 一次就有欄同卡片；refresh 401 先係「要登入 Kanban」，第二次讀唔再 POST 該 refresh token，回應亦唔包含 token 字；密碼登入儲 cookie；錯密碼係登入狀態而且第二次讀唔再 POST 密碼；404 仍然係 R-KB-04；閂咗嘅埠係連線錯誤，看板文案唔含 Hermes gateway；登入狀態唔當 404。金鑰唔入 config.json。`get_kanban_board` 同 `get_kanban_task` 喺 secrets 有變時寫返鑰匙圈，而且唔 log token。
 - 狀態：❓ / ❓。
 
-**R-KB-06** 看板唔再寫死 `board=default`。未有人手揀過嘅板時，`GET /api/plugins/kanban/board` 唔帶 `board` 參數，伺服器回 current board（Devon 部 Hermes 0.22.5 係 `mt4`；`default` 同 `deskrpg` 可以係空）。另外 `GET /api/plugins/kanban/boards`，用佢嘅 `current` 填 header 嘅細揀板器。清單入面伺服器 current 嗰項標「（目前）」，例如 `mt4（目前）`。`.kanban-board-pick` 用 `appearance: none` 同 overlay 箭咀，唔好用原生灰盒同黑箭。只有用戶親手揀過先記住：記憶體即時用，並用 splice 寫 `kanban_board` 入 config.json。跟 current、開面板、輪詢、quiet roster 都唔寫呢個鍵；舊檔冇 `kanban_board` 就保持逐個位元組不變。DONE 欄用原有欄頭樣式，預設收起，欄頭有 chevron 同張數，表示撳開先展開卡片。archived 繼續隱藏，唔好傳 `include_archived`。呢啲讀全部 GET，唔好對 9119 看板路徑 POST。空狀態、登入、「連唔到 Kanban。」同 R-AD-03 嘅置中版面唔改。
+**R-KB-06** 看板唔再寫死 `board=default`。未有人手揀過嘅板時，`GET /api/plugins/kanban/board` 唔帶 `board` 參數，伺服器回 current board（Devon 部 Hermes 0.22.5 係 `mt4`；`default` 同 `deskrpg` 可以係空）。另外 `GET /api/plugins/kanban/boards`，用佢嘅 `current` 填 header 嘅細揀板器。清單入面伺服器 current 嗰項標「（目前）」，例如 `mt4（目前）`。`.kanban-board-pick` 用 `appearance: none` 同 overlay 箭咀，唔好用原生灰盒同黑箭。Linux WebKitGTK 打開嘅清單仍然係原生 GTK menu：`option` 樣式改唔到個 popup，自製 listbox 會掂命中區（R-CT），所以開住嘅清單保持原生。收起嗰陣嘅揀板器繼續用 overlay 樣式。只有用戶親手揀過先記住：記憶體即時用，並用 splice 寫 `kanban_board` 入 config.json。跟 current、開面板、輪詢、quiet roster 都唔寫呢個鍵；舊檔冇 `kanban_board` 就保持逐個位元組不變。DONE 欄用原有欄頭樣式，預設收起，欄頭有 chevron 同張數，表示撳開先展開卡片。archived 繼續隱藏，唔好傳 `include_archived`。呢啲讀全部 GET，唔好對 9119 看板路徑 POST。空狀態、登入、「連唔到 Kanban。」同 R-AD-03 嘅置中版面唔改。
 
 - 來源：Devon（2026-10-26，Hermes 0.22.5，`http://10.10.24.33:9119`，85 張卡全部喺 current board `mt4`：72 done、4 todo、3 triage、6 archived；`default` 同 `deskrpg` 係空）。
 - 驗收（單元，假 9119）：空 slug 嘅 board URL 冇 `?board=`，亦唔含 `default`；唔帶 query 回 `mt4` 嘅卡，`?board=default` 同 `?board=deskrpg` 係空板；`/boards` 嘅 `current` 係 `mt4`；archived 唔出現；done 欄在；`columnCollapsed("done", false)` 係收起，收起欄頭有 `▸` 同張數。`boardOptionLabel("mt4", "mt4")` 係 `mt4（目前）`。`.kanban-board-pick` 有 `appearance: none`。`store_kanban_board` 未呼叫、或者 slug 係空，config.json 位元組不變；揀咗 `mt4` 先多 `kanban_board`。`get_kanban_board` 唔寫呢個鍵。
@@ -335,7 +340,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 **R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），畫面顯示同一句，唔顯示原始錯誤，唔重試，亦唔建立 session。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。新 session 按鈕仍然留喺 sub-orb（R-SS-07／R-SO），呢條唔加。
 
-**SS-08-a** 只讀 session 開住時，鍵盤轉發唔好寫入已停用嘅輸入：`insertComposerKey` 見到 `field.disabled` 就返回。停用輸入要睇得出係停用（Nous `#616191` 嘅暗底同 placeholder），唔好保持白底。只讀／錯誤橫額留喺開住嘅面板入面、關閉下面，唔好疊出預設面板右緣。金鑰同 gateway 橫額仍然用 `keyBannerSlot`。
+**SS-08-a** 只讀 session 開住時，鍵盤轉發唔好寫入已停用嘅輸入：`insertComposerKey` 見到 `field.disabled` 就返回。停用輸入要睇得出係停用（Nous `#616191` 嘅暗底同 placeholder），唔好保持白底。停用嘅「傳送」同樣要睇得出係停用（同一套 `#616191` 暗底，唔好只係半透明藍掣）。只讀／錯誤橫額留喺開住嘅面板入面，而且喺分頁同 session 列下面，唔好蓋住佢哋，亦唔好疊出預設面板右緣。金鑰同 gateway 橫額仍然用 `keyBannerSlot`。
 - 來源：Devon 手提真用（Hermes gateway 0.22.5，CLI oneshot `source=oneshot`）。盒測 a76c65d、6a0973e 之後。
 - 驗收（盒）：`oneshot`／`desktop`／`tui`／`cli`／空 source 係只讀而且 id 不變；`api_server`／`bot_room` 可寫；explicit desktop `20261015_011713_2242f9` 仍然開嗰條而且只讀；`failure_detail`／`explain` 見到 `RuntimeStoreError('permission_denied')` 只剩嗰句；`send_chat` 喺 `status: 404` 之前唔呼叫 `ensure_bot_chat`、`create_session`、`persist_pin`。呢條唔寫 config.json。SS-08-a：停用輸入撳字唔會入去；錯誤橫額嘅左右緣都喺面板入面。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。

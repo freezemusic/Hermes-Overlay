@@ -42,6 +42,11 @@ test("an error toast stays inside the open panel and under the header", () => {
   assert.ok(parked.y < bottomHeader.headerTop);
   assert.ok(parked.x + parked.w <= bottomHeader.x + bottomHeader.w);
   assert.equal(panelErrorSlot(null), null);
+  const underChrome = panelErrorSlot({ ...panel, chromeBottom: 188 });
+  assert.equal(underChrome.inside, true);
+  assert.ok(underChrome.y >= 188);
+  assert.ok(underChrome.y < panel.y + panel.h);
+  assert.ok(underChrome.y > panel.headerBottom);
 });
 
 test("the key banner keeps its home slot when open panels are clear", () => {

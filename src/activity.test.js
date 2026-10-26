@@ -62,6 +62,7 @@ test("thinking follows send, tools, tokens, and terminal events", () => {
   assert.equal(reasoning.toast, null);
   assert.equal(reasoning.unread, false);
   assert.equal(statusAfterWatchdog("思考中…"), "等候中");
+  assert.equal(statusAfterWatchdog("等緊批准"), "等緊批准");
   assert.equal(statusAfterWatchdog("閒置"), "閒置");
 
   assert.equal(orbMotion(reduceActivity(emptyActivity(), { type: "send" }, 0).state, "busy"), "spin");

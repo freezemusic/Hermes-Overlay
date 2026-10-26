@@ -847,8 +847,17 @@ html, body {
 
 .send-btn:hover { background: #0000f2; box-shadow: var(--glow-sm); }
 
-.send-btn:disabled,
 .icon-btn:disabled { opacity: 0.45; cursor: default; }
+
+.send-btn:disabled,
+.send-btn:disabled:hover {
+  background: rgb(97 97 145 / .16);
+  border-color: rgb(97 97 145 / .45);
+  color: #616191;
+  box-shadow: none;
+  opacity: 1;
+  cursor: default;
+}
 
 .section-label,
 .roster-head h3,
@@ -1526,6 +1535,12 @@ html, body {
   color: #14142b;
 }
 
+.approval-heading {
+  margin: 0;
+  color: #0000f2;
+  font: 500 var(--fs-micro)/1 var(--font-label);
+}
+
 .approval-description,
 .approval-result {
   margin: 0;
@@ -1557,9 +1572,25 @@ html, body {
   font: 400 var(--fs-body) var(--font-body);
 }
 
-.approval-actions button:disabled {
+.approval-actions button.approval-primary {
+  background: #0000f2;
+  border-color: #0000f2;
+  color: #fff;
+}
+
+.approval-actions button.approval-secondary {
+  background: #fff;
+  border-color: #616191;
+  color: #616191;
+}
+
+.approval-actions button:disabled,
+.approval-actions button.approval-primary:disabled,
+.approval-actions button.approval-secondary:disabled {
   background: #eee;
+  border-color: #616191;
   color: #14142b;
+  box-shadow: none;
 }
 
 .composer {

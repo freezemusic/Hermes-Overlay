@@ -69,11 +69,13 @@ import {
   approvalFailure,
   approvalPending,
   approvalPost,
+  omitRepeatedBlockedLine,
   plainToolText,
   renderApprovalCard,
   showApprovalBadge,
   statusAfterResponded,
   textIsExecuteCodeBlocked,
+  APPROVAL_WAIT_LABEL,
   EXECUTE_CODE_BLOCKED_LINE,
 } from "./approval.js";
 import { SESSION_READ_ONLY_REASON, catchUpMessages, isPermissionDeniedText, orderSessions, permissionDeniedMessage, previewLine, resolveSession, sessionLabel, sessionReadOnly, unseenMessages } from "./sessions.js";
@@ -5093,6 +5095,22 @@ function restickOpenChats() {
   });
 }
 
+function settleBlockedCopies(id) {
+  const thread = threadFor(id);
+  const next = omitRepeatedBlockedLine(thread.messages);
+  if (next.length === thread.messages.length) return false;
+  thread.messages = next;
+  return true;
+}
+
+function appendOnce(id, message) {
+  if (message?.text === EXECUTE_CODE_BLOCKED_LINE && threadFor(id).messages.some((item) => item.text === EXECUTE_CODE_BLOCKED_LINE)) {
+    if (settleBlockedCopies(id) && panelFor(id)) renderChat(id);
+    return;
+  }
+  appendMessage(id, message);
+}
+
 function appendMessage(id, message) {
   const thread = threadFor(id);
   thread.messages.push(message);
@@ -5112,6 +5130,7 @@ function appendMessage(id, message) {
 
 function setBotStatus(id, text, statusState) {
   const thread = threadFor(id);
+  if (String(text).includes("思考中") && thread.messages.some(approvalPending)) text = APPROVAL_WAIT_LABEL;
   thread.status = text;
   thread.statusState = statusState;
   if (statusState === "busy") state.busy.add(id);
@@ -5513,6 +5532,12 @@ function resetKeyBannerShift(banner) {
   delete banner.dataset.parked;
 }
 
+function visibleBandBottom(node) {
+  if (!node || node.hidden || node.closest("[hidden]")) return 0;
+  const box = node.getBoundingClientRect();
+  return box.height >= 1 ? box.bottom : 0;
+}
+
 function errorToastPanelBox() {
   const shells = [];
   const preferred = shellFor(state.activeId);
@@ -5529,13 +5554,20 @@ function errorToastPanelBox() {
     if (rect.width < 1 || rect.height < 1) continue;
     const header = panel.querySelector(".panel-header, .settings-head");
     const band = header && !header.hidden ? header.getBoundingClientRect() : null;
+    const headerBottom = band && band.height >= 1 ? band.bottom : rect.top;
+    const chromeBottom = Math.max(
+      headerBottom,
+      visibleBandBottom(panel.querySelector(".panel-switch")),
+      visibleBandBottom(panel.querySelector(".chat-head")),
+    );
     return {
       x: rect.x,
       y: rect.y,
       w: rect.width,
       h: rect.height,
       headerTop: band && band.height >= 1 ? band.top : rect.top,
-      headerBottom: band && band.height >= 1 ? band.bottom : rect.top,
+      headerBottom,
+      chromeBottom,
     };
   }
   return null;
@@ -5875,6 +5907,8 @@ function openBotPanel(id) {
   shell.dataset.intent = "open";
   raisePanel(shell);
   void runShellMorph(shell, "panel");
+  // The card painted while closed is below the restored scroll, under the composer.
+  if (thread.messages.some(approvalPending)) pinChat(id);
   void loadSoul(id);
   scheduleHitSync();
   if (gateway.isDown("gateway")) gateway.kick("gateway");
@@ -6243,6 +6277,13 @@ function panelIsOpen(id) {
   return shell?.dataset.state === "panel";
 }
 
+function releaseApprovalWait(id) {
+  const thread = threadFor(id);
+  if (thread.messages.some(approvalPending)) return;
+  if (!state.busy.has(id) || thread.status !== APPROVAL_WAIT_LABEL) return;
+  setBotStatus(id, "思考中…", "busy");
+}
+
 function paintApprovalBadge(id) {
   const thread = threadFor(id);
   const show = showApprovalBadge(panelIsOpen(id), thread.messages.some(approvalPending));
@@ -6259,6 +6300,7 @@ async function answerApproval(id, message, choice) {
   paintApprovalBadge(id);
   if (state.mode !== "hermes" || !inTauri()) {
     message.status = choice === "deny" ? "denied" : "approved";
+    releaseApprovalWait(id);
     if (panelFor(id)) renderChat(id);
     paintApprovalBadge(id);
     return;
@@ -6279,6 +6321,7 @@ async function answerApproval(id, message, choice) {
       message.notice = failed.notice;
     }
   }
+  releaseApprovalWait(id);
   if (panelFor(id)) renderChat(id);
   paintApprovalBadge(id);
 }
@@ -6316,6 +6359,7 @@ function handleHermes(payload) {
         status: "pending",
       });
     }
+    setBotStatus(id, APPROVAL_WAIT_LABEL, "busy");
     if (panelFor(id)) renderChat(id);
     paintApprovalBadge(id);
     return;
@@ -6324,6 +6368,7 @@ function handleHermes(payload) {
     const card = threadFor(id).messages.find((message) => message.role === "approval" && message.requestId === payload.request_id);
     const next = statusAfterResponded(payload.choice);
     if (card && next && card.status !== "stale") card.status = next;
+    releaseApprovalWait(id);
     if (panelFor(id)) renderChat(id);
     paintApprovalBadge(id);
     return;
@@ -6333,6 +6378,10 @@ function handleHermes(payload) {
     const live = ensureLiveBubble(id);
     live.text += plainToolText(payload.text || "");
     if (textIsExecuteCodeBlocked(live.text)) live.text = EXECUTE_CODE_BLOCKED_LINE;
+    if (settleBlockedCopies(id)) {
+      if (panelFor(id)) renderChat(id);
+      return;
+    }
     patchLive(id);
     return;
   }
@@ -6346,7 +6395,7 @@ function handleHermes(payload) {
   }
   if (payload.type === "commentary") {
     const text = plainToolText(payload.text || "");
-    appendMessage(id, { role: "commentary", text: text === EXECUTE_CODE_BLOCKED_LINE ? text : `過程：${text}` });
+    appendOnce(id, { role: "commentary", text: text === EXECUTE_CODE_BLOCKED_LINE ? text : `過程：${text}` });
     if (panelFor(id)) renderChat(id);
     return;
   }
@@ -6361,13 +6410,20 @@ function handleHermes(payload) {
     }
     noteActivity(id, { type: "tool" });
     const phase = payload.phase === "completed" ? "完成" : payload.phase === "failed" ? "失敗" : "開始";
-    appendMessage(id, { role: "tool", text: blocked ? EXECUTE_CODE_BLOCKED_LINE : `${phase} ${text}` });
+    appendOnce(id, { role: "tool", text: blocked ? EXECUTE_CODE_BLOCKED_LINE : `${phase} ${text}` });
     if (panelFor(id)) renderChat(id);
     return;
   }
   if (payload.type === "status") {
-    const label = payload.detail || (payload.state === "busy" ? "思考中…" : "閒置");
-    setBotStatus(id, label, payload.state === "busy" ? "busy" : payload.state === "error" ? "error" : "idle");
+    const pending = threadFor(id).messages.some(approvalPending);
+    const errored = payload.state === "error";
+    let label = payload.detail || (payload.state === "busy" ? "思考中…" : "閒置");
+    let statusState = payload.state === "busy" ? "busy" : errored ? "error" : "idle";
+    if (pending && !errored) {
+      label = APPROVAL_WAIT_LABEL;
+      statusState = "busy";
+    }
+    setBotStatus(id, label, statusState);
     return;
   }
   if (payload.type === "done") {
@@ -6378,6 +6434,7 @@ function handleHermes(payload) {
       live.live = false;
       if (textIsExecuteCodeBlocked(live.text)) live.text = EXECUTE_CODE_BLOCKED_LINE;
     }
+    settleBlockedCopies(id);
     if (payload.keep_busy) {
       if (thread.nextRunId) {
         thread.runId = thread.nextRunId;
@@ -6403,7 +6460,7 @@ function handleHermes(payload) {
       ? (isPermissionDeniedText(detail) ? lockIfPermissionDenied(id, detail) : plainToolText(detail))
       : "";
     if (payload.outcome === "failed" && failedText) {
-      appendMessage(id, { role: "failure", text: failedText });
+      appendOnce(id, { role: "failure", text: failedText });
     }
     if (payload.outcome === "cancelled") {
       noteStopped(id);
@@ -6427,7 +6484,7 @@ function handleHermes(payload) {
   if (payload.type === "error") {
     const message = lockIfPermissionDenied(id, payload.message || "未知錯誤");
     noteActivity(id, { type: "failed", text: message });
-    appendMessage(id, { role: "commentary", text: message });
+    appendOnce(id, { role: "commentary", text: message });
     setBotStatus(id, isPermissionDeniedText(message) ? SESSION_READ_ONLY_REASON : "連線錯誤", "error");
     setBanner(message, "error");
   }

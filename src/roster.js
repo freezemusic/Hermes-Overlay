@@ -108,8 +108,9 @@ export function keyBannerSlot(banner, panels, screen, gap = 12, orbs = []) {
 
 /**
  * Non-sticky error toast inside an open panel. It sits under a top header
- * (clear of 關閉) and inset from both edges. A bottom header keeps the
- * toast at the top of the panel so it still stays inside.
+ * (clear of 關閉) and, when chromeBottom is set, under the tabs and session
+ * row. A bottom header keeps the toast at the top of the panel so it still
+ * stays inside.
  */
 export function panelErrorSlot(panel, pad = 16, gap = 8) {
   if (!panel || !(panel.w > 0) || !(panel.h > 0)) return null;
@@ -118,8 +119,9 @@ export function panelErrorSlot(panel, pad = 16, gap = 8) {
   const w = Math.max(0, panel.w - inset * 2);
   const headerTop = Number.isFinite(panel.headerTop) ? panel.headerTop : panel.y;
   const headerBottom = Number.isFinite(panel.headerBottom) ? panel.headerBottom : panel.y;
+  const chromeBottom = Number.isFinite(panel.chromeBottom) ? panel.chromeBottom : headerBottom;
   const headerInBottomHalf = headerTop > panel.y + panel.h * 0.5;
-  const y = headerInBottomHalf ? panel.y + gap : Math.max(panel.y + gap, headerBottom + gap);
+  const y = headerInBottomHalf ? panel.y + gap : Math.max(panel.y + gap, chromeBottom + gap);
   const bottomLimit = panel.y + panel.h;
   return {
     x,

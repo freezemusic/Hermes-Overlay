@@ -4,6 +4,8 @@ export const EXECUTE_CODE_BLOCKED_LINE = "呢個 bot 想行 Python（execute_cod
 export const APPROVAL_STALE = "呢個批准已經過時";
 export const APPROVAL_APPROVED = "已批准";
 export const APPROVAL_DENIED = "已拒絕";
+export const APPROVAL_HEADING = "要你批准";
+export const APPROVAL_WAIT_LABEL = "等緊批准";
 export const APPROVE_ONCE_LABEL = "批准（一次）";
 export const DENY_LABEL = "拒絕";
 
@@ -15,6 +17,20 @@ export function textIsExecuteCodeBlocked(text) {
 export function plainToolText(text) {
   const value = String(text ?? "");
   return textIsExecuteCodeBlocked(value) ? EXECUTE_CODE_BLOCKED_LINE : value;
+}
+
+/** Keep the first exact blocked sentence. A later tool or bot bubble must not repeat it. */
+export function omitRepeatedBlockedLine(messages) {
+  let seen = false;
+  const kept = [];
+  for (const message of messages || []) {
+    if (message?.text === EXECUTE_CODE_BLOCKED_LINE) {
+      if (seen) continue;
+      seen = true;
+    }
+    kept.push(message);
+  }
+  return kept;
 }
 
 export function approvalPost(profile, runId, requestId, choice) {
@@ -59,6 +75,10 @@ export function approvalResultText(message) {
 export function renderApprovalCard(doc, message, onChoice) {
   const root = doc.createElement("div");
   root.className = "approval-card";
+  const heading = doc.createElement("p");
+  heading.className = "approval-heading";
+  heading.textContent = APPROVAL_HEADING;
+  root.appendChild(heading);
   const description = doc.createElement("p");
   description.className = "approval-description";
   description.textContent = message?.description || "";
@@ -75,6 +95,7 @@ export function renderApprovalCard(doc, message, onChoice) {
     for (const [choice, label] of [["once", APPROVE_ONCE_LABEL], ["deny", DENY_LABEL]]) {
       const button = doc.createElement("button");
       button.type = "button";
+      button.className = choice === "once" ? "approval-primary" : "approval-secondary";
       button.dataset.choice = choice;
       button.textContent = label;
       button.disabled = message.status !== "pending";
