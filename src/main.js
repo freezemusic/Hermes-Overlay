@@ -65,7 +65,7 @@ import {
   chatTailAction,
 } from "./morph.js";
 import { isProfileEnabled, keyBannerSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
-import { TUI_READ_ONLY_REASON, isTuiSource, orderSessions, previewLine, resolveSession, sessionLabel, unseenMessages } from "./sessions.js";
+import { SESSION_READ_ONLY_REASON, isPermissionDeniedText, orderSessions, permissionDeniedMessage, previewLine, resolveSession, sessionLabel, sessionReadOnly, unseenMessages } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -4644,7 +4644,7 @@ function renderChat(id = state.activeId, options = {}) {
   const locked = !!thread.sessionReadOnly && !!thread.sessionId;
   if (note) {
     note.hidden = !locked;
-    note.textContent = locked ? (thread.sessionReadOnlyReason || TUI_READ_ONLY_REASON) : "";
+    note.textContent = locked ? (thread.sessionReadOnlyReason || SESSION_READ_ONLY_REASON) : "";
   }
   if (input) {
     input.disabled = locked;
@@ -5317,8 +5317,8 @@ async function pickSession(id, sessionId) {
     thread.sessionExplicit = true;
     thread.sessionAnchor = anchor;
     const picked = (thread.sessions || []).find((session) => session.id === sessionId);
-    thread.sessionReadOnly = isTuiSource(picked?.source);
-    thread.sessionReadOnlyReason = thread.sessionReadOnly ? TUI_READ_ONLY_REASON : "";
+    thread.sessionReadOnly = sessionReadOnly(picked?.source);
+    thread.sessionReadOnlyReason = thread.sessionReadOnly ? SESSION_READ_ONLY_REASON : "";
     const stored = thread.bySession.get(sessionId);
     thread.messages = (stored || [{ role: "bot", text: "（舊對話）" }]).map((message) => ({ ...message }));
     thread.loaded = true;
@@ -6123,6 +6123,15 @@ function deliverCron(id, payload) {
   showToast(id, { kind: "message", text });
 }
 
+function lockIfPermissionDenied(id, raw) {
+  const text = permissionDeniedMessage(raw);
+  if (!isPermissionDeniedText(raw)) return text;
+  const thread = threadFor(id);
+  thread.sessionReadOnly = true;
+  thread.sessionReadOnlyReason = SESSION_READ_ONLY_REASON;
+  return SESSION_READ_ONLY_REASON;
+}
+
 function handleHermes(payload) {
   if (!payload || !payload.profile) return;
   const id = payload.profile;
@@ -6181,21 +6190,25 @@ function handleHermes(payload) {
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
     noteActivity(id, { type: outcome, text: outcome === "completed" ? live?.text || "" : payload.detail || "" });
     if (payload.outcome === "completed") clearConnectionBanner();
-    if (payload.outcome === "failed" && payload.detail) {
-      appendMessage(id, { role: "failure", text: payload.detail });
+    const failedText = payload.outcome === "failed" ? lockIfPermissionDenied(id, payload.detail || "") : "";
+    if (payload.outcome === "failed" && failedText) {
+      appendMessage(id, { role: "failure", text: failedText });
     }
     setBotStatus(
       id,
-      payload.outcome === "failed" ? "回覆失敗" : payload.outcome === "cancelled" ? "已停止" : "閒置",
+      payload.outcome === "failed"
+        ? (isPermissionDeniedText(failedText) ? SESSION_READ_ONLY_REASON : "回覆失敗")
+        : payload.outcome === "cancelled" ? "已停止" : "閒置",
       payload.outcome === "failed" ? "error" : "idle",
     );
     return;
   }
   if (payload.type === "error") {
-    noteActivity(id, { type: "failed", text: payload.message || "未知錯誤" });
-    appendMessage(id, { role: "commentary", text: payload.message || "未知錯誤" });
-    setBotStatus(id, "連線錯誤", "error");
-    setBanner(payload.message || "連線錯誤", "error");
+    const message = lockIfPermissionDenied(id, payload.message || "未知錯誤");
+    noteActivity(id, { type: "failed", text: message });
+    appendMessage(id, { role: "commentary", text: message });
+    setBotStatus(id, isPermissionDeniedText(message) ? SESSION_READ_ONLY_REASON : "連線錯誤", "error");
+    setBanner(message, "error");
   }
 }
 
@@ -6206,7 +6219,7 @@ async function sendActive(id = state.activeId) {
   if (!text || !id) return;
   const thread = threadFor(id);
   if (thread.sessionReadOnly) {
-    showActionError(thread.sessionReadOnlyReason || TUI_READ_ONLY_REASON);
+    showActionError(thread.sessionReadOnlyReason || SESSION_READ_ONLY_REASON);
     return;
   }
   state.activeId = id;
@@ -6243,10 +6256,10 @@ async function sendActive(id = state.activeId) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("send_chat", { profile: sentId, text });
   } catch (err) {
-    const message = String(err);
+    const message = lockIfPermissionDenied(sentId, String(err));
     noteActivity(sentId, { type: "failed", text: message });
     appendMessage(sentId, { role: "commentary", text: message });
-    setBotStatus(sentId, "連線錯誤", "error");
+    setBotStatus(sentId, isPermissionDeniedText(message) ? SESSION_READ_ONLY_REASON : "連線錯誤", "error");
     setBanner(message, "error");
   }
 }
@@ -6333,6 +6346,8 @@ function useMock(reason, bannerAction = "") {
     thread.sessionId = choice.id;
     thread.sessionExplicit = false;
     thread.sessionAnchor = choice.anchor;
+    thread.sessionReadOnly = !!choice.readOnly;
+    thread.sessionReadOnlyReason = choice.readOnly ? SESSION_READ_ONLY_REASON : "";
     thread.messages = bot.messages.map((m) => ({ ...m }));
     thread.bySession = new Map([
       [choice.id, thread.messages.map((m) => ({ ...m }))],

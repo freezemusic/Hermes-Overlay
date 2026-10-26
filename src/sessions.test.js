@@ -2,14 +2,17 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
-  TUI_READ_ONLY_REASON,
+  SESSION_READ_ONLY_REASON,
   canonicalBotChat,
+  isPermissionDeniedText,
   mostRecentBotChat,
   mostRecentSession,
   orderSessions,
+  permissionDeniedMessage,
   previewLine,
   resolveSession,
   sessionLabel,
+  sessionReadOnly,
   storedPinAfterResolve,
   unseenMessages,
 } from "./sessions.js";
@@ -50,7 +53,9 @@ test("Bot Chat is the default even when another session is newer", () => {
   const desk = { id: "desk-chat", title: "Bot Chat", source: "desktop", last_active: 40 };
   const mixed = [tui, desk, { id: "notes", title: "Notes", source: "cli", last_active: 900 }];
   assert.equal(mostRecentBotChat(mixed).id, "desk-chat");
-  assert.equal(resolveSession(mixed, {}).id, "desk-chat");
+  const deskOpen = resolveSession(mixed, {});
+  assert.equal(deskOpen.id, "desk-chat");
+  assert.equal(deskOpen.readOnly, true);
   assert.equal(resolveSession(mixed, { id: "tui-chat", explicit: true, anchor: 1 }).id, "tui-chat");
   assert.equal(mostRecentBotChat([tui]).id, "tui-chat");
   assert.equal(resolveSession([tui], {}).readOnly, true);
@@ -70,7 +75,8 @@ test("Devon Bot Chats: the hidden titled row wins, including an empty one", () =
   const forest = resolveSession(forex, { id: "saved-other", explicit: true, anchor: 1 });
   assert.equal(forest.id, "20261001_013827_25b1eb");
   assert.equal(forest.readOnly, true);
-  assert.equal(TUI_READ_ONLY_REASON.includes("permission_denied"), true);
+  assert.equal(forest.id, "20261001_013827_25b1eb");
+  assert.equal(SESSION_READ_ONLY_REASON, "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢");
 
   for (const [profile, emptyId] of [
     ["mt-coder", "api_1792573589_f1c99a3b"],
@@ -162,6 +168,7 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
   const orchOpen = resolveSession(orch, { id: "20261015_011713_2242f9", explicit: true, anchor: 1791910000 });
   assert.equal(orchOpen.id, "20261015_011713_2242f9");
   assert.equal(orchOpen.explicit, true);
+  assert.equal(orchOpen.readOnly, true);
   assert.equal(orchOpen.anchor, 1791910000);
   assert.equal(storedPinAfterResolve(
     { id: "20261015_011713_2242f9", explicit: true, anchor: 1791910000 },
@@ -308,6 +315,7 @@ test("desktop Bot Chat stays on the titled row and does not follow a continuatio
   const picked = resolveSession(explicit, { id: "20261015_011713_2242f9", explicit: true, anchor: 3 });
   assert.equal(picked.id, "20261015_011713_2242f9");
   assert.equal(picked.explicit, true);
+  assert.equal(picked.readOnly, true);
   assert.equal(picked.anchor, 3);
   assert.equal(resolveSession(
     [{ id: "only-latest", title: "System Architect", last_active: 9 }],
@@ -352,4 +360,60 @@ test("the panel pins Bot Chat and applies cron on the open transcript", () => {
   assert.match(main, /orderSessions\(/);
   assert.match(main, /title: "Bot Chat"/);
   assert.match(main, /shellBlocksPreview\(shell\)/);
+});
+
+test("foreign session sources stay readable and permission_denied stays plain", () => {
+  const reason = "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢";
+  assert.equal(SESSION_READ_ONLY_REASON, reason);
+  for (const source of ["oneshot", "desktop", "tui", "cli", "", "CLI"]) {
+    const row = { id: `row-${source || "empty"}`, title: "Bot Chat", source };
+    const opened = resolveSession([row], {});
+    assert.equal(opened.id, row.id, source);
+    assert.equal(opened.readOnly, true, source);
+    assert.equal(sessionReadOnly(source), true, source);
+  }
+  for (const source of ["api_server", "API_Server", "bot_room", "Bot_Room"]) {
+    const opened = resolveSession([{ id: "writable", title: "Bot Chat", source }], {});
+    assert.equal(opened.id, "writable", source);
+    assert.equal(opened.readOnly, false, source);
+    assert.equal(sessionReadOnly(source), false, source);
+  }
+  const explicit = resolveSession(
+    [
+      { id: "api_1792573589_f1c99a3b", title: "Bot Chat", source: "api_server" },
+      { id: "20261015_011713_2242f9", title: "Bot Chat", source: "desktop" },
+    ],
+    { id: "20261015_011713_2242f9", explicit: true, anchor: 3 },
+  );
+  assert.equal(explicit.id, "20261015_011713_2242f9");
+  assert.equal(explicit.readOnly, true);
+  const canonical = resolveSession(
+    [
+      { id: "shot", title: "oneshot", source: "oneshot", last_active: 99 },
+      { id: "api_1792573589_0c14ed12", title: "Bot Chat", source: "api_server", hidden: true },
+    ],
+    { id: "shot", explicit: false, anchor: 1 },
+  );
+  assert.equal(canonical.id, "api_1792573589_0c14ed12");
+  assert.equal(canonical.readOnly, false);
+
+  assert.equal(permissionDeniedMessage("RuntimeStoreError('permission_denied')"), reason);
+  assert.equal(permissionDeniedMessage("permission denied"), reason);
+  assert.equal(permissionDeniedMessage("Gateway 回應 500。busy"), "Gateway 回應 500。busy");
+  assert.equal(isPermissionDeniedText(reason), true);
+  assert.equal(isPermissionDeniedText("回覆失敗"), false);
+
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("function botsFromSettings"));
+  assert.match(send, /lockIfPermissionDenied/);
+  assert.doesNotMatch(send, /create_session|create_bot_chat/);
+  const paint = main.slice(main.indexOf("const note = role(panel, \"readonly\")"), main.indexOf("if (send) send.disabled"));
+  assert.match(paint, /input\.disabled = locked/);
+  assert.match(paint, /SESSION_READ_ONLY_REASON/);
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const rustSend = lib.slice(lib.indexOf("async fn send_chat"), lib.indexOf("fn dispatch_turn"));
+  const head = rustSend.slice(0, rustSend.indexOf("status: 404"));
+  assert.match(head, /turn_is_permission_denied/);
+  assert.doesNotMatch(head, /ensure_bot_chat|create_session|create_bot_chat|persist_pin/);
+  assert.doesNotMatch(rustSend, /create_session|create_bot_chat/);
 });

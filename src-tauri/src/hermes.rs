@@ -166,21 +166,44 @@ pub fn is_overlay_bot_chat(session: &SessionSummary) -> bool {
     is_bot_chat_title(&session.title) && is_overlay_chat_source(&session.source)
 }
 
-/// `POST /api/sessions/{id}/chat` into a `tui` row is refused.
-/// `session_api_turn` raises `permission_denied` unless the source is
-/// `api_server` or `bot_room`. The Bot Chat door then refuses an unbound
-/// `tui` title (`bot_chat_unbound`) or moves it aside and mints another chat.
-/// Reading the transcript still works. Do not POST.
+/// Narrow `tui` check. The write gate is `session_accepts_send`.
 pub fn is_tui_source(source: &str) -> bool {
     source.trim().eq_ignore_ascii_case("tui")
 }
 
-pub fn tui_read_only_reason() -> &'static str {
-    "呢個 Bot Chat 來源係 tui。API 唔接受寫入 tui session（permission_denied），只可以睇。"
+/// Gateway 0.22.5 `session_api_turn` allows a send only for these sources.
+pub fn session_accepts_send(source: &str) -> bool {
+    matches!(
+        source.trim().to_ascii_lowercase().as_str(),
+        "api_server" | "bot_room"
+    )
+}
+
+pub fn session_read_only(source: &str) -> bool {
+    !session_accepts_send(source)
+}
+
+pub fn session_read_only_reason() -> &'static str {
+    "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢"
+}
+
+pub fn text_is_permission_denied(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("permission_denied")
+        || lower.contains("permission denied")
+        || lower.contains("permission-denied")
+}
+
+pub fn turn_is_permission_denied(result: &Result<(), HermesError>) -> bool {
+    match result {
+        Err(HermesError::Http { body, .. }) => text_is_permission_denied(body),
+        Err(HermesError::Protocol(msg)) => text_is_permission_denied(msg),
+        _ => false,
+    }
 }
 
 fn finish_resolved(session: &SessionSummary, explicit: bool, anchor: f64) -> ResolvedSession {
-    let read_only = is_tui_source(&session.source);
+    let read_only = session_read_only(&session.source);
     ResolvedSession {
         id: session.id.clone(),
         explicit,
@@ -188,7 +211,7 @@ fn finish_resolved(session: &SessionSummary, explicit: bool, anchor: f64) -> Res
         source: session.source.clone(),
         read_only,
         read_only_reason: if read_only {
-            tui_read_only_reason().to_string()
+            session_read_only_reason().to_string()
         } else {
             String::new()
         },
@@ -862,13 +885,13 @@ pub struct BotChatPick {
 
 impl BotChatPick {
     pub fn from_session(session: &SessionSummary) -> Self {
-        let read_only = is_tui_source(&session.source);
+        let read_only = session_read_only(&session.source);
         Self {
             id: session.id.clone(),
             source: session.source.clone(),
             read_only,
             read_only_reason: if read_only {
-                tui_read_only_reason().to_string()
+                session_read_only_reason().to_string()
             } else {
                 String::new()
             },
@@ -2186,7 +2209,7 @@ where
                 .unwrap_or_else(|| event.data.clone());
             on_event(TurnEvent::Finished {
                 outcome: "failed".into(),
-                detail: clip(&detail, 400),
+                detail: plain_permission_detail(clip(&detail, 400)),
             });
             true
         }
@@ -2247,7 +2270,15 @@ fn failure_detail(payload: &Value, prior: Option<&str>) -> String {
             parts.push(fallback.to_string());
         }
     }
-    clip(&parts.join("\n\n"), 2000)
+    plain_permission_detail(clip(&parts.join("\n\n"), 2000))
+}
+
+fn plain_permission_detail(text: String) -> String {
+    if text_is_permission_denied(&text) {
+        session_read_only_reason().to_string()
+    } else {
+        text
+    }
 }
 
 fn json_error_reason(body: &str) -> String {
@@ -2318,6 +2349,12 @@ pub fn kanban_move_error(err: &HermesError) -> String {
 
 pub fn explain(err: &HermesError) -> String {
     match err {
+        HermesError::Http { body, .. } if text_is_permission_denied(body) => {
+            session_read_only_reason().into()
+        }
+        HermesError::Protocol(msg) if text_is_permission_denied(msg) => {
+            session_read_only_reason().into()
+        }
         HermesError::Http { status: 401, .. } => {
             "Gateway 拒絕金鑰（401）。請核對呢個 profile 嘅 API_SERVER_KEY。".into()
         }
@@ -2673,10 +2710,10 @@ mod tests {
             summary_source("notes", "Notes", 900.0, "cli"),
         ];
         assert_eq!(most_recent_bot_chat(&mixed).unwrap().id, "desk-chat");
-        assert_eq!(
-            resolve_session(&mixed, "", false, 0.0).unwrap().id,
-            "desk-chat"
-        );
+        let desk_open = resolve_session(&mixed, "", false, 0.0).unwrap();
+        assert_eq!(desk_open.id, "desk-chat");
+        assert!(desk_open.read_only);
+        assert_eq!(desk_open.read_only_reason, session_read_only_reason());
         let picked_tui = resolve_session(&mixed, "tui-chat", true, 1.0).unwrap();
         assert_eq!(picked_tui.id, "tui-chat");
         assert!(picked_tui.explicit);
@@ -2892,10 +2929,16 @@ mod tests {
         let opened = session_for_startup(&forex, "saved-other", true, 0.0).unwrap();
         assert_eq!(opened.id, "20261001_013827_25b1eb");
         assert!(opened.read_only);
-        assert_eq!(opened.read_only_reason, tui_read_only_reason());
+        assert_eq!(opened.read_only_reason, session_read_only_reason());
+        assert_eq!(
+            session_read_only_reason(),
+            "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢"
+        );
         assert!(is_tui_source("tui"));
         assert!(!is_tui_source("api_server"));
         assert!(!is_tui_source("desktop"));
+        assert!(session_read_only("desktop"));
+        assert!(!session_read_only("api_server"));
 
         for (profile, empty_id) in [
             ("mt-coder", "api_1792573589_f1c99a3b"),
@@ -3125,6 +3168,8 @@ mod tests {
             session_for_startup(&orch, "20261015_011713_2242f9", true, 1791910000.0).unwrap();
         assert_eq!(orch_open.id, "20261015_011713_2242f9");
         assert!(orch_open.explicit);
+        assert!(orch_open.read_only);
+        assert_eq!(orch_open.read_only_reason, session_read_only_reason());
         assert_eq!(orch_open.anchor, 1791910000.0);
         assert!(stored_pin_after_resolve(
             "20261015_011713_2242f9",
@@ -3681,6 +3726,148 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
             }
             other => panic!("expected failed finish, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn oneshot_and_other_foreign_sources_are_read_only() {
+        let reason = session_read_only_reason();
+        for source in ["oneshot", "desktop", "tui", "cli", "", "CLI", "Desktop"] {
+            assert!(session_read_only(source), "{source}");
+            assert!(!session_accepts_send(source), "{source}");
+        }
+        for source in ["api_server", "API_Server", "bot_room", "Bot_Room"] {
+            assert!(!session_read_only(source), "{source}");
+            assert!(session_accepts_send(source), "{source}");
+        }
+        let detail = failure_detail(
+            &json!({"error": "RuntimeStoreError('permission_denied')"}),
+            None,
+        );
+        assert_eq!(detail, reason);
+        let with_prior = failure_detail(
+            &json!({
+                "messages": [{
+                    "content": "RuntimeStoreError('permission_denied')",
+                    "display_kind": "failed_turn"
+                }]
+            }),
+            Some("partial reply"),
+        );
+        assert_eq!(with_prior, reason);
+        assert_eq!(
+            explain(&HermesError::Http {
+                status: 500,
+                body: "RuntimeStoreError('permission_denied')".into(),
+            }),
+            reason
+        );
+        assert_eq!(
+            explain(&HermesError::Http {
+                status: 403,
+                body: "permission denied".into(),
+            }),
+            reason
+        );
+        assert_eq!(
+            explain(&HermesError::Http {
+                status: 500,
+                body: "busy".into(),
+            }),
+            "Gateway 回應 500。busy"
+        );
+        assert_eq!(
+            explain(&HermesError::Http {
+                status: 403,
+                body: String::new(),
+            }),
+            "Gateway 拒絕存取（403）。"
+        );
+        let mut pick = devon_chat(
+            "20261015_011713_2242f9",
+            "desktop",
+            1.0,
+            2.0,
+            40,
+            "pick",
+        );
+        pick.title = "Bot Chat".into();
+        let api = devon_chat("api_1792573589_f1c99a3b", "api_server", 3.0, 4.0, 1, "");
+        let opened =
+            session_for_startup(&[api.clone(), pick], "20261015_011713_2242f9", true, 1.0)
+                .unwrap();
+        assert_eq!(opened.id, "20261015_011713_2242f9");
+        assert!(opened.read_only);
+        assert_eq!(opened.read_only_reason, reason);
+        let writable = session_for_startup(&[api], "", false, 0.0).unwrap();
+        assert!(!writable.read_only);
+        assert!(writable.read_only_reason.is_empty());
+        let shot = session_for_startup(
+            &[summary_source("shot", "CLI oneshot", 9.0, "oneshot")],
+            "shot",
+            true,
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(shot.id, "shot");
+        assert!(shot.read_only);
+        assert_eq!(shot.read_only_reason, reason);
+        let room = session_for_startup(
+            &[summary_source("room", "Bot Chat", 4.0, "bot_room")],
+            "",
+            false,
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(room.id, "room");
+        assert!(!room.read_only);
+
+        let lib = include_str!("lib.rs");
+        let send_start = lib.find("async fn send_chat").expect("send_chat");
+        let send_end = lib.find("fn dispatch_turn").expect("dispatch_turn");
+        let send = &lib[send_start..send_end];
+        let head = &send[..send.find("status: 404").expect("404")];
+        assert!(head.contains("turn_is_permission_denied"));
+        assert!(!head.contains("ensure_bot_chat"));
+        assert!(!head.contains("create_session"));
+        assert!(!head.contains("create_bot_chat"));
+        assert!(!head.contains("persist_pin"));
+        assert!(!send.contains("create_session"));
+        assert!(!send.contains("create_bot_chat"));
+    }
+
+    #[tokio::test]
+    async fn permission_denied_stream_is_the_plain_sentence() {
+        let body = "\
+event: run.failed\n\
+data: {\"error\":\"RuntimeStoreError('permission_denied')\"}\n\
+\n";
+        let base = oneshot("200 OK", "text/event-stream", body);
+        let http = Client::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let stop = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, |ev| {
+            seen2.lock().unwrap().push(ev);
+        })
+        .await
+        .unwrap();
+        let seen = seen.lock().unwrap();
+        match seen.last() {
+            Some(TurnEvent::Finished { outcome, detail }) => {
+                assert_eq!(outcome, "failed");
+                assert_eq!(detail, session_read_only_reason());
+            }
+            other => panic!("expected failed finish, got {other:?}"),
+        }
+
+        let denied = oneshot(
+            "500 Internal Server Error",
+            "text/plain",
+            "RuntimeStoreError('permission_denied')",
+        );
+        let err = stream_turn(&http, &denied, "k", "sid", "hello", &stop, |_| {}).await;
+        assert!(turn_is_permission_denied(&err));
+        assert!(matches!(err, Err(HermesError::Http { status: 500, .. })));
     }
 
     #[test]

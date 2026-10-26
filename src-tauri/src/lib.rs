@@ -1301,9 +1301,9 @@ async fn select_session(
     let Some(chosen) = sessions.iter().find(|session| session.id == session_id) else {
         return Err("搵唔到呢個對話".into());
     };
-    let read_only = hermes::is_tui_source(&chosen.source);
+    let read_only = hermes::session_read_only(&chosen.source);
     let read_only_reason = if read_only {
-        hermes::tui_read_only_reason().to_string()
+        hermes::session_read_only_reason().to_string()
     } else {
         String::new()
     };
@@ -1364,9 +1364,9 @@ async fn send_chat(
     let session_id = if pin.explicit && !pin.id.trim().is_empty() {
         if sessions
             .iter()
-            .any(|session| session.id == pin.id && hermes::is_tui_source(&session.source))
+            .any(|session| session.id == pin.id && hermes::session_read_only(&session.source))
         {
-            return Err(hermes::tui_read_only_reason().into());
+            return Err(hermes::session_read_only_reason().into());
         }
         pin.id
     } else {
@@ -1386,6 +1386,11 @@ async fn send_chat(
                     dispatch_turn(&app, &profile, event)
                 })
                 .await;
+            if hermes::turn_is_permission_denied(&first) {
+                return Err(HermesError::Protocol(
+                    hermes::session_read_only_reason().to_string(),
+                ));
+            }
             if matches!(first, Err(HermesError::Http { status: 404, .. })) {
                 persist_pin(
                     &app,
@@ -1485,13 +1490,25 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
             }),
         ),
         TurnEvent::Finished { outcome, detail } => {
-            let state_name = if outcome == "failed" { "error" } else { "idle" };
-            let label = match outcome.as_str() {
-                "failed" => "回覆失敗",
-                "cancelled" => "已停止",
-                _ => "閒置",
+            let denied = hermes::text_is_permission_denied(&detail)
+                || detail == hermes::session_read_only_reason();
+            let detail = if denied {
+                hermes::session_read_only_reason().to_string()
+            } else {
+                detail
             };
-            emit_status(app, profile, state_name, label);
+            let state_name = if outcome == "failed" { "error" } else { "idle" };
+            let label = if denied {
+                detail.clone()
+            } else {
+                match outcome.as_str() {
+                    "failed" => "回覆失敗",
+                    "cancelled" => "已停止",
+                    _ => "閒置",
+                }
+                .to_string()
+            };
+            emit_status(app, profile, state_name, &label);
             emit(
                 app,
                 serde_json::json!({

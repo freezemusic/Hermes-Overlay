@@ -259,10 +259,10 @@
 3. 永遠唔自動轉去最新 session，亦唔新建 session。冇 Bot Chat 時，先至可以留喺一條仍然存在、而且唔係「標題已清、archived、hidden」嘅舊列。
 4. 啟動、打開或關閉面板、同 gateway 重連之後，config.json 位元組保持不變。喺記憶解析，唔好把過時嘅 sessionId 寫返檔。explicit 旗唔可以自動清走。anchor 唔跟最新訊息時間改寫。只有設定畫面改動，或者人手揀 session，先可以寫檔。
 
-`POST /api/sessions/{id}/chat` 寫入 `tui` 會 `permission_denied`，所以 `tui` 照打開、顯示只讀，並講明 API 唔接受寫入。啟動同打開都**唔新建** session。「永遠唔開 0 訊息 `api_` 重複」**已取代**：mt-coder、mt-tester、mt-reviewer 嘅 `api_1792573589_*` 而家就係 Desktop 嘅 Bot Chat。
+`POST /api/sessions/{id}/chat` 寫入唔係 `api_server`／`bot_room` 嘅 session 會 `permission_denied`。邊條開邊條仍然跟上面次序，`source` 唔影響揀邊條。只讀提示同發送失敗嘅說法見 R-SS-08。「只有 `tui` 時輸入同傳送停用」**已取代**（R-SS-08）。啟動同打開都**唔新建** session。「永遠唔開 0 訊息 `api_` 重複」**已取代**：mt-coder、mt-tester、mt-reviewer 嘅 `api_1792573589_*` 而家就係 Desktop 嘅 Bot Chat。
 
 - 來源：Devon（2026-10-22，SESSIONS-desktop）。Desktop：`CANONICAL_CHAT_TITLE`、`hidden=1`、`idx_sessions_title_unique`。標題查已經係最新 child。清單係 `GET /api/sessions?limit=200&title=Bot%20Chat&include_hidden=true&include_archived=true`，再同一般清單合併；兩條請求都不加 `include_children`。
-- 驗收（兩邊）：forex-forest 開 `20261001_013827_25b1eb`（tui，只讀）。ff-daily 開 `api_1792573589_0c14ed12`（config 係 `20261013_180130_88f994`，唔係 explicit，唔寫返檔）。mt-orch 開 explicit `20261015_011713_2242f9`，旗保留。mt-coder 開 `api_1792573589_f1c99a3b`。mt-tester 開 `api_1792573589_257658b2`。mt-reviewer 開 `api_1792573589_b1b8ccc5`。單元測試覆蓋：過時 archived config id、非 explicit 而且唔等於 Bot Chat 嘅 config id、explicit 贏、壓縮譜系、空 Bot Chat。gateway 返嚟之後 config 位元組同重連之前一樣。只有 `tui` 時輸入同傳送停用。
+- 驗收（兩邊）：forex-forest 開 `20261001_013827_25b1eb`（tui，只讀）。ff-daily 開 `api_1792573589_0c14ed12`（config 係 `20261013_180130_88f994`，唔係 explicit，唔寫返檔）。mt-orch 開 explicit `20261015_011713_2242f9`，旗保留。mt-coder 開 `api_1792573589_f1c99a3b`。mt-tester 開 `api_1792573589_257658b2`。mt-reviewer 開 `api_1792573589_b1b8ccc5`。單元測試覆蓋：過時 archived config id、非 explicit 而且唔等於 Bot Chat 嘅 config id、explicit 贏、壓縮譜系、空 Bot Chat。gateway 返嚟之後 config 位元組同重連之前一樣。輸入同傳送停用見 R-SS-08。
 - 狀態：❓ / ❌(Win，11a150e：0 次建立，但開錯 session 同改寫 config）。單元測試已鎖呢條 Desktop 規則；手提未再驗。
 
 **R-SS-02** 自動路徑**唔改** config.json：啟動、打開或關閉面板、cron 更新 `last_active`、有新 session、gateway 重連，位元組都保持不變，包括 session id、explicit 旗、anchor。畫面喺記憶跟 R-SS-01 解析，所以一條非 explicit 嘅舊 id 可以顯示 Desktop 嘅 Bot Chat，但唔寫返檔。explicit 唔會被清走。手動 picker（R-SS-04）先可以改 id 同寫上 explicit；anchor 數字唔跟最新訊息時間改寫。「只有 config 未有 id 先寫入一次」**已取代**（v92 打開面板改寫 anchor）。
@@ -287,6 +287,11 @@
 
 **R-SS-07** Bot Chat 以外嘅 session，每條用一粒 sub-orb 代表（將來做，見 R-SO）；主光球唔會用嚟顯示呢啲 session。
 - 來源：Devon（2026-10-21）。狀態：— / —（PR #3 唔包）。
+
+**R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），畫面顯示同一句，唔顯示原始錯誤，唔重試，亦唔建立 session。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。新 session 按鈕仍然留喺 sub-orb（R-SS-07／R-SO），呢條唔加。
+- 來源：Devon 手提真用（Hermes gateway 0.22.5，CLI oneshot `source=oneshot`）。
+- 驗收（盒）：`oneshot`／`desktop`／`tui`／`cli`／空 source 係只讀而且 id 不變；`api_server`／`bot_room` 可寫；explicit desktop `20261015_011713_2242f9` 仍然開嗰條而且只讀；`failure_detail`／`explain` 見到 `RuntimeStoreError('permission_denied')` 只剩嗰句；`send_chat` 喺 `status: 404` 之前唔呼叫 `ensure_bot_chat`、`create_session`、`persist_pin`。呢條唔寫 config.json。
+- 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
 ---
 

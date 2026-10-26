@@ -16,12 +16,34 @@ export function isOverlayBotChat(session) {
   return isBotChat(session) && isOverlayChatSource(session?.source);
 }
 
-/** POST /api/sessions/{id}/chat refuses a tui row with permission_denied. */
+/** Narrow `tui` check. Sending uses `sessionAcceptsSend`. */
 export function isTuiSource(source) {
   return String(source || "").trim().toLowerCase() === "tui";
 }
 
-export const TUI_READ_ONLY_REASON = "呢個 Bot Chat 來源係 tui。API 唔接受寫入 tui session（permission_denied），只可以睇。";
+/** Gateway 0.22.5 accepts a send only from these session sources. */
+export function sessionAcceptsSend(source) {
+  const value = String(source || "").trim().toLowerCase();
+  return value === "api_server" || value === "bot_room";
+}
+
+export function sessionReadOnly(source) {
+  return !sessionAcceptsSend(source);
+}
+
+export const SESSION_READ_ONLY_REASON = "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢";
+
+export const TUI_READ_ONLY_REASON = SESSION_READ_ONLY_REASON;
+
+export function isPermissionDeniedText(text) {
+  const value = String(text || "");
+  return value === SESSION_READ_ONLY_REASON || /permission[_\s-]*denied/i.test(value);
+}
+
+export function permissionDeniedMessage(text) {
+  const value = String(text ?? "");
+  return isPermissionDeniedText(value) ? SESSION_READ_ONLY_REASON : value;
+}
 
 function retiredBotChat(session) {
   const title = String(session?.title || "").trim();
@@ -113,7 +135,7 @@ export function resolveSession(sessions, pin = {}) {
       explicit: true,
       anchor,
       source: saved.source || "",
-      readOnly: isTuiSource(saved.source),
+      readOnly: sessionReadOnly(saved.source),
     };
   }
   const preferred = canonicalBotChat(sessions);
@@ -123,7 +145,7 @@ export function resolveSession(sessions, pin = {}) {
       explicit: false,
       anchor: preferred.id === remembered ? anchor : (Number(preferred.last_active) || 0),
       source: preferred.source || "",
-      readOnly: isTuiSource(preferred.source),
+      readOnly: sessionReadOnly(preferred.source),
     };
   }
   if (saved && !retiredBotChat(saved)) {
@@ -132,7 +154,7 @@ export function resolveSession(sessions, pin = {}) {
       explicit: false,
       anchor,
       source: saved.source || "",
-      readOnly: isTuiSource(saved.source),
+      readOnly: sessionReadOnly(saved.source),
     };
   }
   return null;
