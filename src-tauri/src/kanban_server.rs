@@ -154,6 +154,11 @@ fn rejected_passwords() -> &'static Mutex<HashSet<String>> {
     CELL.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+fn rejected_refreshes() -> &'static Mutex<HashSet<String>> {
+    static CELL: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 fn credential_fingerprint(username: &str, password: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(username.trim().as_bytes());
@@ -194,6 +199,37 @@ pub fn clear_rejected_password() {
         .clear();
 }
 
+fn refresh_is_rejected(refresh_token: &str) -> bool {
+    let fp = credential_fingerprint("kanban-refresh", refresh_token);
+    rejected_refreshes()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .contains(&fp)
+}
+
+fn note_rejected_refresh(refresh_token: &str) {
+    let fp = credential_fingerprint("kanban-refresh", refresh_token);
+    rejected_refreshes()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .insert(fp);
+}
+
+fn forget_rejected_refresh(refresh_token: &str) {
+    let fp = credential_fingerprint("kanban-refresh", refresh_token);
+    rejected_refreshes()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .remove(&fp);
+}
+
+pub fn clear_rejected_refresh() {
+    rejected_refreshes()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clear();
+}
+
 /// Kanban-port failures stay on the kanban surface. The words must not match `gatewayDown`.
 pub fn explain_kanban(err: &HermesError) -> String {
     match err {
@@ -217,15 +253,11 @@ fn map_reqwest(err: reqwest::Error) -> HermesError {
     }
 }
 
-fn session_expired(status: u16, body: &str) -> bool {
-    if status != 401 {
-        return false;
-    }
-    let lower = body.to_ascii_lowercase();
-    lower.contains("invalid_or_expired_session")
-        || lower.contains("login_url")
-        || lower.contains("unauthorized")
-        || body.trim().is_empty()
+fn session_expired(status: u16, _body: &str) -> bool {
+    // Any board GET 401 is an expired or missing bearer. The body shape
+    // differs (`invalid_or_expired_session`, `session_expired`, empty).
+    // The refresh call is the only recovery; the body is not logged.
+    status == 401
 }
 
 pub fn cookie_from_headers(headers: &HeaderMap) -> String {
@@ -443,12 +475,22 @@ async fn renew(
     secrets: &mut KanbanSecrets,
 ) -> Result<bool, HermesError> {
     if !secrets.refresh_token.trim().is_empty() {
-        if let Ok(tokens) = refresh_tokens(http, origin, secrets.refresh_token.trim()).await {
-            secrets.access_token = tokens.access_token;
-            if !tokens.refresh_token.is_empty() {
-                secrets.refresh_token = tokens.refresh_token;
+        let token = secrets.refresh_token.trim().to_string();
+        if !refresh_is_rejected(&token) {
+            match refresh_tokens(http, origin, &token).await {
+                Ok(tokens) => {
+                    forget_rejected_refresh(&token);
+                    secrets.access_token = tokens.access_token;
+                    if !tokens.refresh_token.is_empty() {
+                        secrets.refresh_token = tokens.refresh_token;
+                    }
+                    return Ok(true);
+                }
+                Err(HermesError::Http { status: 401 | 403, .. }) => {
+                    note_rejected_refresh(&token);
+                }
+                Err(err) => return Err(err),
             }
-            return Ok(true);
         }
     }
     if !secrets.username.trim().is_empty() && !secrets.password.is_empty() {
@@ -952,6 +994,124 @@ mod tests {
         let (third, _, _) = read_board(&http, &base, "default", changed_pw).await.unwrap();
         assert!(third.needs_login);
         assert_eq!(*posts.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_expired_access_token_refreshes_once_and_retries_the_get() {
+        clear_rejected_refresh();
+        let counts = Arc::new(Mutex::new((0u32, 0u32, 0u32)));
+        let seen = counts.clone();
+        let base = serve(move |head| {
+            let line = head.lines().next().unwrap_or("").to_string();
+            let mut slot = seen.lock().unwrap();
+            if line.contains("/api/plugins/kanban") && line.starts_with("POST") {
+                slot.2 += 1;
+            }
+            if line.starts_with("POST") && line.contains("/auth/native/refresh") {
+                slot.1 += 1;
+                assert!(head.contains("refresh-laptop"));
+                assert!(!head.contains("access-expired"));
+                return (
+                    200,
+                    "",
+                    r#"{"access_token":"access-rotated","refresh_token":"refresh-rotated","expires_at":99}"#
+                        .into(),
+                );
+            }
+            if line.starts_with("GET") && line.contains("/api/plugins/kanban/board") {
+                slot.0 += 1;
+                if head.contains("Bearer access-rotated") {
+                    return (200, "", board_json());
+                }
+                assert!(head.contains("Bearer access-expired"));
+                return (401, "", r#"{"error":"session_expired"}"#.into());
+            }
+            (404, "", r#"{"error":"nope"}"#.into())
+        });
+        let http = Client::new();
+        let secrets = KanbanSecrets {
+            access_token: "access-expired".into(),
+            refresh_token: "refresh-laptop".into(),
+            ..KanbanSecrets::default()
+        };
+        let (board, next, changed) = read_board(&http, &base, "default", secrets).await.unwrap();
+        assert!(changed);
+        assert!(!board.needs_login);
+        assert!(!board.unavailable);
+        assert_eq!(next.access_token, "access-rotated");
+        assert_eq!(next.refresh_token, "refresh-rotated");
+        assert!(!board.message.contains("refresh-laptop"));
+        assert!(!board.message.contains("access-expired"));
+        assert!(!board.message.contains("access-rotated"));
+        let (gets, refreshes, kanban_posts) = *counts.lock().unwrap();
+        assert_eq!(gets, 2, "the board GET is retried once");
+        assert_eq!(refreshes, 1);
+        assert_eq!(kanban_posts, 0);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_refresh_token_needs_login_and_is_not_posted_again() {
+        clear_rejected_refresh();
+        let posts = Arc::new(Mutex::new(0u32));
+        let posts2 = posts.clone();
+        let base = serve(move |head| {
+            let line = head.lines().next().unwrap_or("");
+            if line.starts_with("POST") && line.contains("/auth/native/refresh") {
+                *posts2.lock().unwrap() += 1;
+                assert!(head.contains("refresh-dead-box"));
+                return (
+                    401,
+                    "",
+                    r#"{"error":"session_expired","detail":"Refresh token expired or invalid"}"#
+                        .into(),
+                );
+            }
+            if line.contains("/api/plugins/kanban") && line.starts_with("POST") {
+                return (500, "", r#"{"error":"kanban post"}"#.into());
+            }
+            if line.starts_with("GET") && line.contains("/api/plugins/kanban/board") {
+                assert!(head.contains("Bearer access-stale"));
+                return (401, "", r#"{"error":"session_expired"}"#.into());
+            }
+            (404, "", "{}".into())
+        });
+        let http = Client::new();
+        let secrets = KanbanSecrets {
+            access_token: "access-stale".into(),
+            refresh_token: "refresh-dead-box".into(),
+            ..KanbanSecrets::default()
+        };
+        let (board, next, changed) = read_board(&http, &base, "default", secrets.clone())
+            .await
+            .unwrap();
+        assert!(!changed);
+        assert!(board.needs_login);
+        assert!(!board.unavailable);
+        assert_eq!(board.message, LOGIN_MESSAGE);
+        assert!(!board.message.contains("refresh-dead-box"));
+        assert!(!board.message.contains("access-stale"));
+        assert_eq!(next.refresh_token, "refresh-dead-box");
+        assert_eq!(*posts.lock().unwrap(), 1);
+        let (again, _, again_changed) = read_board(&http, &base, "default", secrets)
+            .await
+            .unwrap();
+        assert!(again.needs_login);
+        assert!(!again_changed);
+        assert_eq!(again.message, LOGIN_MESSAGE);
+        assert_eq!(*posts.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn kanban_auth_source_does_not_log_tokens() {
+        let src = include_str!("kanban_server.rs");
+        let end = src.find("#[cfg(test)]").expect("tests");
+        let production = &src[..end];
+        assert!(!production.contains("println!"));
+        assert!(!production.contains("eprintln!"));
+        assert!(!production.contains("debug!"));
+        assert!(!production.contains("tracing::"));
+        assert!(production.contains("/auth/native/refresh"));
+        assert!(production.contains("\"refresh_token\": refresh_token"));
     }
 
     #[test]

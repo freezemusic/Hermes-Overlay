@@ -230,12 +230,12 @@
 
 **R-KB-05** 看板讀 Devon 部機嘅 `hermes serve`（埠 9119，`/api/plugins/kanban`），唔係 gateway 8642。8642 嘅 `/api/jobs` 係排程；看板路徑 404 係預期。讀只用 GET：`/api/plugins/kanban/board` 同 `/api/plugins/kanban/tasks/{id}`。欄序 triage、todo、scheduled、ready、running、blocked、review、done。撳卡片開詳情（標題、內文、負責人、狀態、優先、latest_summary、留言）。拖卡仍然走原來嘅 overlay PATCH（R-KB-01），唔好對 9119 嘅看板路徑發 POST。
 
-設定有 Kanban server 位址。留空就用 gateway 嘅 host 加埠 9119。登入由 Devon 自己填：優先系統瀏覽器 PKCE（`GET /auth/native/authorize`、`POST /auth/native/token`、`POST /auth/native/refresh`）；帳號密碼一齊填就用 `POST /auth/password-login`（`provider: basic`）攞 session cookie。401 `invalid_or_expired_session` 先靜靜刷新或再登入一次。帳號、密碼、cookie、access、refresh 只放呢個程式自己嘅鑰匙圈（`com.freezemusic.hermes-overlay` 嘅 kanban 帳戶），唔寫 log、唔寫 config.json、唔讀寫 `dashboard-session-token`、`profile:*`，亦唔用其他程式嘅鑰匙圈。
+設定有 Kanban server 位址。留空就用 gateway 嘅 host 加埠 9119。登入由 Devon 自己填：優先系統瀏覽器 PKCE（`GET /auth/native/authorize`、`POST /auth/native/token`、`POST /auth/native/refresh`）；帳號密碼一齊填就用 `POST /auth/password-login`（`provider: basic`）攞 session cookie。鑰匙圈已經有 `kanban-access-token` 同 `kanban-refresh-token`（Windows 目標名係 `kanban-access-token.com.freezemusic.hermes-overlay` 同 `kanban-refresh-token.com.freezemusic.hermes-overlay`）時，access 過期或者看板 GET 回任何 401，都用該 refresh token POST `/auth/native/refresh`（JSON 只得 `refresh_token`）。成功就把新 access 同新 refresh 寫返同一對鑰匙圈帳戶，然後同一個 GET 再試一次。Refresh 回 401 或 403 先顯示「要登入 Kanban」；同一條已拒嘅 refresh token 唔好每個輪詢再 POST。Refresh 連唔到或者逾時保持「連唔到 Kanban。」，token 留喺鑰匙圈。帳號、密碼、cookie、access、refresh 只放呢個程式自己嘅鑰匙圈（`com.freezemusic.hermes-overlay` 嘅 kanban 帳戶），唔寫 log、唔寫 config.json、唔讀寫 `dashboard-session-token`、`profile:*`，亦唔用其他程式嘅鑰匙圈。
 
 401 顯示平靜「要登入 Kanban」加登入掣，唔當錯誤、唔當未有看板、唔進入 R-SY-08。錯咗嘅已存密碼同樣係呢句，唔好顯示 API_SERVER_KEY 嘅 401 字，而且要清走看板上面嘅舊卡。錯密碼唔好每 5 秒再 POST `/auth/password-login`；記住呢組帳號密碼已經被拒，直至 Devon 改咗鑰匙圈入面嘅帳號或密碼先再試一次。真正 404 先用 R-KB-04。9119 連唔到、逾時、或者條閒置連線被 `hermes serve` 關掉（大約 5 秒），都只顯示喺看板，唔好觸發 R-SY-08，亦唔好出 gateway 嗰粒「連唔到 Hermes」膠囊。HTTP pool 嘅 idle timeout 係 2 秒，短過 5 秒，避免重用已經被伺服器關掉嘅 socket。
 
 - 來源：Devon（2026-10-22，Hermes 0.22.2，`http://10.10.24.33:9119`）。8cf5af4 盒：錯密碼出 API_SERVER_KEY 401 而且每 5 秒再登入；needsLogin 留低舊卡；閒置 socket 閃「連唔到 Hermes」並觸發重連。
-- 驗收（單元，假 9119）：401 之後刷新再 GET 到欄同卡片；密碼登入儲 cookie；錯密碼係登入狀態而且第二次讀唔再 POST 密碼；404 仍然係 R-KB-04；閂咗嘅埠係連線錯誤，看板文案唔含 Hermes gateway；登入狀態唔當 404。金鑰唔入 config.json。
+- 驗收（單元，假 9119）：過期 access 加 refresh token，board GET 401 之後只 POST 一次 `/auth/native/refresh`，寫低新 access 同新 refresh，再 GET 一次就有欄同卡片；refresh 401 先係「要登入 Kanban」，第二次讀唔再 POST 該 refresh token，回應亦唔包含 token 字；密碼登入儲 cookie；錯密碼係登入狀態而且第二次讀唔再 POST 密碼；404 仍然係 R-KB-04；閂咗嘅埠係連線錯誤，看板文案唔含 Hermes gateway；登入狀態唔當 404。金鑰唔入 config.json。`get_kanban_board` 同 `get_kanban_task` 喺 secrets 有變時寫返鑰匙圈，而且唔 log token。
 - 狀態：❓ / ❓。
 
 ---

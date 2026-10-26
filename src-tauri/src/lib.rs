@@ -1925,6 +1925,7 @@ async fn sign_in_kanban(
         secrets.access_token.clear();
         store_kanban_secrets(&secrets)?;
         kanban_server::clear_rejected_password();
+        kanban_server::clear_rejected_refresh();
         return Ok("已登入 Kanban".into());
     }
     let tokens = kanban_server::native_pkce_login(
@@ -1940,6 +1941,7 @@ async fn sign_in_kanban(
     secrets.refresh_token = tokens.refresh_token;
     store_kanban_secrets(&secrets)?;
     kanban_server::clear_rejected_password();
+    kanban_server::clear_rejected_refresh();
     Ok("已登入 Kanban".into())
 }
 
@@ -2661,6 +2663,15 @@ mod tests {
         let task_body = &src[task..task + after];
         assert!(task_body.contains("explain_kanban"));
         assert!(!task_body.contains("explain("));
+        assert!(board_body.contains("if changed"));
+        assert!(board_body.contains("store_kanban_secrets"));
+        assert!(task_body.contains("store_kanban_secrets"));
+        let store = src.find("fn store_kanban_secrets").expect("store");
+        let store_body = &src[store..store + 700];
+        assert!(store_body.contains("KANBAN_ACCESS_ACCOUNT"));
+        assert!(store_body.contains("KANBAN_REFRESH_ACCOUNT"));
+        assert!(!store_body.contains("println!"));
+        assert!(!store_body.contains("eprintln!"));
     }
 
     fn invoke_commands() -> Vec<String> {
