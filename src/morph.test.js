@@ -64,6 +64,7 @@ import {
   cronShellHeight,
   chatTailAction,
   hostOpenPlan,
+  releasePlanDock,
   planControlUnder,
   panelDragHost,
   closeYieldsToOpen,
@@ -1017,6 +1018,7 @@ test("open plan controls are the hit target outside the shell clip", () => {
   anim.playState = "running";
   anim.currentTime = 12;
   assert.equal(hostOpenPlan(shell), true);
+  assert.equal(plan.style.left, "0px");
   assert.equal(plan.parentElement.className, "plan-hit-host");
   assert.equal(plan.style.clipPath, "none");
   assert.equal(plan.style.height, "560px");
@@ -1045,6 +1047,8 @@ test("open plan controls are the hit target outside the shell clip", () => {
   assert.equal(document.elementFromPoint(center(close).x, center(close).y), close);
   assert.equal(restoreHostedPlan(shell), true);
   assert.equal(plan.parentElement, shell);
+  assert.equal(plan.style.left, "");
+  assert.equal(plan.style.right, "");
   shell.dataset.intent = "close";
   shell.dataset.planOpen = "1";
   plan.hidden = false;
@@ -1067,6 +1071,7 @@ test("open plan controls are the hit target outside the shell clip", () => {
   plan._seamPhase = "grown";
   const leftBefore = boxOf(plan).x;
   assert.equal(hostOpenPlan(shell), true);
+  assert.equal(plan.style.left, `${PLAN_EDGE_OUT}px`);
   assert.equal(boxOf(plan).x, leftBefore - PLAN_EDGE_OUT);
   assert.equal(boxOf(plan).w, 420 + PLAN_EDGE_OUT);
   assert.equal(shell.style.left, "500px");
@@ -1077,6 +1082,19 @@ test("open plan controls are the hit target outside the shell clip", () => {
   assert.equal(shell.style.left, "500px");
   assert.equal(shell.style.width, "420px");
   assert.equal(plan.parentElement, shell);
+  assert.equal(plan.style.left, "");
+  assert.equal(plan.style.right, "");
+  plan.style.left = "0px";
+  releasePlanDock(plan);
+  assert.equal(plan.style.left, "");
+  const host = document.createElement("div");
+  host.className = "plan-hit-host";
+  shell.parentElement.append(host);
+  host.append(plan);
+  plan.style.left = "0px";
+  releasePlanDock(plan);
+  assert.equal(plan.style.left, "0px");
+  shell.append(plan);
 });
 
 test("the settled plan host includes the outward edge in the same frame", () => {
@@ -1117,4 +1135,10 @@ test("the settled plan host includes the outward edge in the same frame", () => 
   const morph = readFileSync(new URL("./morph.js", import.meta.url), "utf8");
   assert.match(morph, /PLAN_GROW_MS = 280/);
   assert.match(morph, /cubic-bezier\(\.3,\.6,\.2,1\)/);
+  const parked = main.slice(main.indexOf("function applyParkedPlan"), main.indexOf("function lockPlanBox"));
+  assert.match(parked, /releasePlanDock\(plan\)/);
+  const grow = main.slice(main.indexOf("function growPlan"), main.indexOf("function visualQuiet"));
+  assert.match(grow, /releasePlanDock\(plan\)/);
+  assert.ok(grow.indexOf("releasePlanDock(plan)") < grow.indexOf('plan.style.transform = "none"'));
+  assert.doesNotMatch(present, /translate3d/);
 });

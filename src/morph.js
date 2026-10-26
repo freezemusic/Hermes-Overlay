@@ -1247,6 +1247,16 @@ export function hostOpenPlan(shell) {
   return placePlanHost(shell);
 }
 
+/** Inline left/right belong to the hit host. Inside the shell the plan docks
+ *  with CSS (`left: 100%` / `right: 100%`). A hosted `left: 0` left in place
+ *  parks the reopen 420px under the panel for the whole clip. */
+export function releasePlanDock(plan) {
+  if (!plan?.style) return;
+  if (plan.parentElement?.classList?.contains("plan-hit-host")) return;
+  plan.style.removeProperty("left");
+  plan.style.removeProperty("right");
+}
+
 /** Put the plan back inside the shell before a collapse clip reads it. */
 export function restoreHostedPlan(shell) {
   if (!shell || shell.dataset.planHost !== "1") return false;
@@ -1254,6 +1264,7 @@ export function restoreHostedPlan(shell) {
   const plan = host?.querySelector?.(".plan-window") || null;
   if (plan) {
     shell.append(plan);
+    releasePlanDock(plan);
     delete plan._planShell;
   }
   host?.remove();

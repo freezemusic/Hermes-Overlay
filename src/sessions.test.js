@@ -24,6 +24,12 @@ import {
   storedPinAfterResolve,
   catchUpMessages,
   writableContinuation,
+  refusedSessionIds,
+  UNSENT_MARK,
+  markUnsentDraft,
+  mergeUnsentDraft,
+  rememberUnsent,
+  unsentDraft,
   clearRunSession,
   continueLiveTurn,
   noteRunSession,
@@ -446,6 +452,8 @@ test("foreign session sources stay readable and permission_denied stays plain", 
   assert.doesNotMatch(denied, /setBanner|appendMessage/);
   const cont = main.slice(main.indexOf("async function continueApiSession"), main.indexOf("function botsFromSettings"));
   assert.match(cont, /writableContinuation/);
+  assert.match(cont, /refusedSessionIds/);
+  assert.match(cont, /refused,/);
   assert.match(cont, /command: "continue"/);
   assert.doesNotMatch(cont, /create_session|create_bot_chat/);
   const open = main.slice(main.indexOf("async function loadBotHistory"), main.indexOf("function paintSessionSelect"));
@@ -472,6 +480,10 @@ test("a read-only chat continues in another api session of the same bot", () => 
   );
   assert.equal(CONTINUE_API_LABEL, "喺 API 對話繼續");
   assert.match(CONTINUE_API_HINT, /API 對話繼續/);
+  const refusedApi = { id: "api_denied", title: "Bot Chat", source: "api_server", last_active: 20 };
+  assert.equal(writableContinuation([refusedApi, notes], "local-mt5", ["api_denied"]).id, notes.id);
+  assert.equal(writableContinuation([refusedApi, notes, chat], cli.id, ["api_denied", notes.id, chat.id]), null);
+  assert.equal(writableContinuation([cli, desktop, notes, chat], desktop.id).id, chat.id);
 });
 
 test("catch-up keeps an unseen reply and does not copy the live bubble", () => {
@@ -586,6 +598,13 @@ test("permission_denied stays read-only after history says the source is writabl
   assert.doesNotMatch(opened, /sessionReadOnly = !!opened\.read_only/);
   const note = main.slice(main.indexOf("function noteReadOnly"), main.indexOf("function lockIfPermissionDenied"));
   assert.match(note, /rememberDenied/);
+  assert.match(note, /markUnsentDraft/);
+  assert.match(note, /rememberUnsent/);
+  const bubble = main.slice(main.indexOf("function paintUserBubble"), main.indexOf("function paintBotBubble"));
+  assert.match(bubble, /UNSENT_MARK/);
+  assert.match(bubble, /unsent-mark/);
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.unsent-mark[^}]*font-size:\s*11px/s);
   assert.equal(readOnlyNote(SESSION_READ_ONLY_REASON), `${SESSION_READ_ONLY_REASON}。${CONTINUE_API_HINT}`);
   assert.equal(readOnlyNote().includes("傳嘢。撳下面"), true);
   assert.equal(readOnlyNote().includes("傳嘢 撳"), false);
@@ -604,4 +623,48 @@ test("the session menu separates desktop, archived, and api Bot Chats", () => {
   assert.equal(sessionLabel({ id: "room", title: "Bot Chat", source: "bot_room" }), "Bot Chat");
   assert.notEqual(sessionLabel(desktop), sessionLabel(archived));
   assert.notEqual(sessionLabel(archived), sessionLabel(api));
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const choice = lib.slice(lib.indexOf("struct SessionChoice"), lib.indexOf("struct DiscoveredBot"));
+  assert.match(choice, /source:\s*String/);
+  assert.match(choice, /archived:\s*bool/);
+  const menu = lib.slice(lib.indexOf("fn session_choices"), lib.indexOf("fn begin_stream"));
+  assert.match(menu, /source:\s*session\.source\.clone\(\)/);
+  assert.match(menu, /archived:\s*session\.archived/);
+});
+
+test("a refused typed line stays visible and marked unsent after history reloads", () => {
+  const messages = [
+    { role: "user", text: "舊句" },
+    { role: "bot", text: "舊回覆" },
+    { role: "user", text: "幫我睇下個倉" },
+  ];
+  assert.equal(markUnsentDraft(messages), "幫我睇下個倉");
+  assert.equal(messages[2].unsent, true);
+  assert.equal(messages[0].unsent, undefined);
+  assert.equal(UNSENT_MARK, "未送出");
+  const history = [
+    { role: "user", text: "舊句" },
+    { role: "bot", text: "舊回覆" },
+  ];
+  const merged = mergeUnsentDraft(history, "幫我睇下個倉");
+  assert.equal(merged.at(-1).text, "幫我睇下個倉");
+  assert.equal(merged.at(-1).unsent, true);
+  assert.equal(mergeUnsentDraft(merged, "幫我睇下個倉").length, merged.length);
+  assert.equal(mergeUnsentDraft(history, "").length, history.length);
+  const store = new Map();
+  const denied = new Set();
+  rememberDenied(denied, "mt-orch", "api_refused");
+  rememberUnsent(store, "mt-orch", "api_refused", "幫我睇下個倉");
+  assert.deepEqual(refusedSessionIds(denied, "mt-orch"), ["api_refused"]);
+  assert.equal(unsentDraft(store, "mt-orch", "api_refused"), "幫我睇下個倉");
+  assert.equal(unsentDraft(store, "ff-daily", "api_refused"), "");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
+  assert.match(opened, /mergeUnsentDraft/);
+  const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
+  const busy = main.slice(main.indexOf("async function sendWhileBusy"), main.indexOf("async function stopActive"));
+  assert.match(send, /lockIfPermissionDenied/);
+  assert.match(busy, /lockIfPermissionDenied/);
+  const stream = main.slice(main.indexOf('if (payload.outcome === "failed" && isPermissionDeniedText(detail))'), main.indexOf('if (payload.type === "error")'));
+  assert.match(stream, /lockIfPermissionDenied/);
 });

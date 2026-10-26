@@ -220,11 +220,16 @@ pub const OVERLAY_CONTINUE_TITLE: &str = "Overlay";
 pub fn writable_continuation<'a>(
     sessions: &'a [SessionSummary],
     avoid_id: &str,
+    refused: &[&str],
 ) -> Option<&'a SessionSummary> {
     let avoid = avoid_id.trim();
     let writable: Vec<&SessionSummary> = sessions
         .iter()
-        .filter(|session| session.id != avoid && session_accepts_send(&session.source))
+        .filter(|session| {
+            session.id != avoid
+                && !refused.iter().any(|id| session.id == id.trim())
+                && session_accepts_send(&session.source)
+        })
         .collect();
     let live: Vec<&SessionSummary> = writable
         .iter()
@@ -4407,28 +4412,43 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
         let notes = summary_source("api_notes", "notes", 7.0, "api_server");
         let chat = summary_source("api_1792573589_0c14ed12", "Bot Chat", 3.0, "api_server");
         let sessions = [cli.clone(), desktop.clone(), notes.clone(), chat.clone()];
-        let picked = writable_continuation(&sessions, "20261015_011713_2242f9").unwrap();
+        let picked = writable_continuation(&sessions, "20261015_011713_2242f9", &[]).unwrap();
         assert_eq!(picked.id, "api_1792573589_0c14ed12");
         let foreign = [cli.clone(), desktop.clone()];
-        assert!(writable_continuation(&foreign, "local-mt5").is_none());
+        assert!(writable_continuation(&foreign, "local-mt5", &[]).is_none());
         let refused = summary_source("api_refused", "Bot Chat", 12.0, "api_server");
         let after_deny = [refused, notes.clone()];
-        let next = writable_continuation(&after_deny, "api_refused").unwrap();
+        let next = writable_continuation(&after_deny, "api_refused", &[]).unwrap();
         assert_eq!(next.id, "api_notes");
         let room = summary_source("room", "stand", 1.0, "bot_room");
         let room_only = [desktop.clone(), room];
         assert_eq!(
-            writable_continuation(&room_only, "20261015_011713_2242f9")
+            writable_continuation(&room_only, "20261015_011713_2242f9", &[])
                 .unwrap()
                 .id,
             "room"
         );
+        let denied = summary_source("api_denied", "Bot Chat", 20.0, "api_server");
+        let denied_pool = [denied.clone(), notes.clone(), chat.clone()];
+        assert_eq!(
+            writable_continuation(&denied_pool, "local-mt5", &["api_denied"])
+                .unwrap()
+                .id,
+            "api_1792573589_0c14ed12"
+        );
+        assert!(writable_continuation(
+            &denied_pool,
+            "local-mt5",
+            &["api_denied", "api_notes", "api_1792573589_0c14ed12"]
+        )
+        .is_none());
 
         let lib = include_str!("lib.rs");
         let arm = lib.find("\"continue\" =>").expect("continue");
-        let body = &lib[arm..arm + 900];
+        let body = &lib[arm..arm + 1400];
         let pick_at = body.find("writable_continuation").expect("pick");
         let create_at = body.find("create_session").expect("create");
+        assert!(body.contains("refused"));
         assert!(pick_at < create_at);
         assert!(body.contains("OVERLAY_CONTINUE_TITLE"));
         let open_at = lib.find("async fn open_bot").expect("open");

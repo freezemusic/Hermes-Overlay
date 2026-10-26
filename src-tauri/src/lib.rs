@@ -295,6 +295,8 @@ struct SessionChoice {
     last_active: f64,
     hidden: bool,
     preview: String,
+    source: String,
+    archived: bool,
 }
 
 #[derive(Serialize)]
@@ -613,6 +615,8 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
             last_active: session.last_active,
             hidden: session.hidden.unwrap_or(false),
             preview: session.preview.clone(),
+            source: session.source.clone(),
+            archived: session.archived,
         })
         .collect();
     if !active.is_empty() && !rows.iter().any(|row| row.id == active) {
@@ -624,6 +628,8 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
                 last_active: 0.0,
                 hidden: false,
                 preview: String::new(),
+                source: String::new(),
+                archived: false,
             },
         );
     }
@@ -2400,6 +2406,8 @@ struct ClientCommandIn {
     model: String,
     #[serde(default)]
     provider: String,
+    #[serde(default)]
+    refused: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -2442,7 +2450,8 @@ async fn client_command(
             let sessions = hermes::list_sessions_for_bot_chat(&state.http, &root, &key)
                 .await
                 .map_err(|err| hermes::explain(&err))?;
-            if let Some(found) = hermes::writable_continuation(&sessions, &args) {
+            let refused_ids: Vec<&str> = input.refused.iter().map(String::as_str).collect();
+            if let Some(found) = hermes::writable_continuation(&sessions, &args, &refused_ids) {
                 pin_explicit(&app, &state, &input.profile, &root, &key, &found.id).await;
                 return Ok(ClientCommandOut {
                     command,
@@ -3245,5 +3254,51 @@ mod tests {
         assert!(csp.contains("font-src 'self'"));
         assert!(!csp.contains("fonts.googleapis.com"));
         assert!(!csp.contains("fonts.gstatic.com"));
+    }
+
+    #[test]
+    fn session_choice_sends_source_and_archived() {
+        let desktop = crate::hermes::SessionSummary {
+            id: "desk".into(),
+            title: "Bot Chat".into(),
+            hidden: Some(false),
+            last_active: 8.0,
+            preview: String::new(),
+            source: "desktop".into(),
+            started_at: 0.0,
+            message_count: None,
+            delivery: false,
+            parent_session_id: String::new(),
+            archived: false,
+        };
+        let archived = crate::hermes::SessionSummary {
+            id: "old".into(),
+            title: "Bot Chat".into(),
+            hidden: None,
+            last_active: 1.0,
+            preview: String::new(),
+            source: "api_server".into(),
+            started_at: 0.0,
+            message_count: None,
+            delivery: false,
+            parent_session_id: String::new(),
+            archived: true,
+        };
+        let rows = super::session_choices(&[desktop, archived], "missing");
+        assert_eq!(rows[0].id, "missing");
+        assert!(rows[0].source.is_empty());
+        assert!(!rows[0].archived);
+        let desk = rows.iter().find(|row| row.id == "desk").expect("desktop");
+        assert_eq!(desk.source, "desktop");
+        assert!(!desk.archived);
+        let old = rows.iter().find(|row| row.id == "old").expect("archived");
+        assert_eq!(old.source, "api_server");
+        assert!(old.archived);
+        let json = serde_json::to_value(desk).expect("json");
+        assert_eq!(json["source"], "desktop");
+        assert_eq!(json["archived"], false);
+        let old_json = serde_json::to_value(old).expect("old json");
+        assert_eq!(old_json["source"], "api_server");
+        assert_eq!(old_json["archived"], true);
     }
 }

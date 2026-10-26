@@ -39,12 +39,17 @@ export const CONTINUE_API_HINT = "撳下面就可以喺呢個 Bot 嘅 API 對話
 
 /**
  * Another session of this bot that the gateway will accept a chat into.
- * A live Bot Chat wins. `avoidId` is the row that is read-only or was just refused.
+ * A live Bot Chat wins. `avoidId` is the row on screen. `refused` is every
+ * session id that already returned permission_denied this app run.
  */
-export function writableContinuation(sessions, avoidId = "") {
-  const avoid = String(avoidId || "");
+export function writableContinuation(sessions, avoidId = "", refused = []) {
+  const skip = new Set(
+    [String(avoidId || ""), ...(Array.isArray(refused) ? refused : [])]
+      .map((id) => String(id || ""))
+      .filter(Boolean),
+  );
   const writable = (sessions || []).filter(
-    (session) => session && session.id && session.id !== avoid && sessionAcceptsSend(session.source),
+    (session) => session && session.id && !skip.has(session.id) && sessionAcceptsSend(session.source),
   );
   const live = writable.filter((session) => session.archived !== true);
   const pool = live.length ? live : writable;
@@ -215,6 +220,54 @@ export function rememberDenied(set, profile, sessionId) {
   const key = deniedKey(profile, sessionId);
   if (key && set) set.add(key);
   return set;
+}
+
+export function refusedSessionIds(set, profile) {
+  const prefix = `${profile}:`;
+  const ids = [];
+  if (!set || !profile) return ids;
+  for (const key of set) {
+    const value = String(key || "");
+    if (value.startsWith(prefix)) ids.push(value.slice(prefix.length));
+  }
+  return ids;
+}
+
+export const UNSENT_MARK = "未送出";
+
+/** The latest typed line was refused. Keep that text, marked unsent. */
+export function markUnsentDraft(messages) {
+  const list = messages || [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const message = list[index];
+    if (message?.role !== "user" || !String(message.text || "").trim()) continue;
+    message.unsent = true;
+    return String(message.text);
+  }
+  return "";
+}
+
+/** History from the gateway does not contain a refused send. Put the line back. */
+export function mergeUnsentDraft(messages, text) {
+  const line = String(text || "");
+  const list = messages || [];
+  if (!line) return list;
+  if (list.some((message) => message?.role === "user" && message.text === line)) return list;
+  return list.concat([{ role: "user", text: line, unsent: true }]);
+}
+
+export function rememberUnsent(store, profile, sessionId, text) {
+  const key = deniedKey(profile, sessionId);
+  const line = String(text || "");
+  if (!key || !line || !store) return store;
+  store.set(key, line);
+  return store;
+}
+
+export function unsentDraft(store, profile, sessionId) {
+  const key = deniedKey(profile, sessionId);
+  if (!key || !store) return "";
+  return String(store.get(key) || "");
 }
 
 export function readOnlyLocked(set, profile, sessionId, sourceReadOnly) {

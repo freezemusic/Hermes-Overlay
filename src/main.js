@@ -47,6 +47,7 @@ import {
   includePlan,
   hostOpenPlan,
   placePlanHost,
+  releasePlanDock,
   planControlUnder,
   restoreHostedPlan,
   sameChatSnapshot,
@@ -79,7 +80,7 @@ import {
   APPROVAL_WAIT_LABEL,
   EXECUTE_CODE_BLOCKED_LINE,
 } from "./approval.js";
-import { SESSION_READ_ONLY_REASON, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, noteRunSession, noteRunStarted, orderSessions, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, rememberDenied, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, viewingRun, writableContinuation } from "./sessions.js";
+import { SESSION_READ_ONLY_REASON, UNSENT_MARK, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, markUnsentDraft, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberUnsent, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -1708,6 +1709,7 @@ function watchSeamFrames() {
  *  WebKitGTK does not rasterise opacity:0, so the real markdown paint has to
  *  happen here, during the panel clip, not on the first seam frame. */
 function applyParkedPlan(shell, plan) {
+  releasePlanDock(plan);
   const fit = ensurePlanFit(plan);
   const origin = seamOrigin(shell);
   const shift = shell.dataset.planSide === "left" ? "100%" : "-100%";
@@ -2774,6 +2776,7 @@ function growPlan(shell, token) {
     const parked = planRasterHost(plan);
     if (parked) parked.style.visibility = "hidden";
     fit.style.visibility = "visible";
+    releasePlanDock(plan);
     plan.style.transform = "none";
     plan.style.visibility = "visible";
     plan.classList.remove("is-plan-parked");
@@ -2804,6 +2807,7 @@ function growPlan(shell, token) {
   fit.style.visibility = "visible";
   fit.style.willChange = "transform";
   plan.style.transformOrigin = origin;
+  releasePlanDock(plan);
   plan.getAnimations?.().forEach((anim) => {
     if (anim.id !== "plan-warm") return;
     debugLog("plan-warm-cancel", `current=${Number(anim.currentTime || 0).toFixed(1)} presented=${plan.dataset.warmPresented || 0}`);
@@ -3019,8 +3023,13 @@ function restorePlanGeometry(plan, snap) {
   plan.style.width = snap.width;
   plan.style.height = snap.height;
   plan.style.top = snap.top;
-  plan.style.left = snap.left;
-  plan.style.right = snap.right;
+  if (plan.parentElement?.classList?.contains("plan-hit-host")) {
+    plan.style.left = snap.left;
+    plan.style.right = snap.right;
+  } else {
+    plan.style.removeProperty("left");
+    plan.style.removeProperty("right");
+  }
   plan.style.minWidth = snap.minWidth;
   plan.style.maxWidth = snap.maxWidth;
   const close = plan.querySelector("[data-role='plan-close']");
@@ -3812,6 +3821,7 @@ const state = {
   cronPrimed: false,
   toastSeq: 0,
   deniedSessions: new Set(),
+  unsentDrafts: new Map(),
 };
 
 const probeGate = createProbeGate();
@@ -4938,6 +4948,12 @@ function paintUserBubble(bubble, message) {
     chip.textContent = message.command;
     bubble.appendChild(chip);
   }
+  if (message.unsent) {
+    const mark = document.createElement("span");
+    mark.className = "unsent-mark";
+    mark.textContent = UNSENT_MARK;
+    bubble.appendChild(mark);
+  }
   if (!message.full) return;
   const full = document.createElement("div");
   full.className = "full-prompt";
@@ -5185,12 +5201,13 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   const messages = (opened.messages || []).map(presentMessage);
   const sessions = opened.sessions || [];
   const nextId = opened.session_id || "";
+  const shown = mergeUnsentDraft(messages, unsentDraft(state.unsentDrafts, id, nextId || thread.sessionId));
   const running = state.busy.has(id);
   const switching = running && thread.sessionId && nextId && thread.sessionId !== nextId;
   if (switching) {
     if (!thread.liveSessionId) noteRunSession(thread);
     rememberView(thread);
-    showSession(thread, nextId, messages);
+    showSession(thread, nextId, shown);
   }
   const keptApprovals = !switching && thread.sessionId === nextId
     ? thread.messages.filter(approvalPending)
@@ -5206,12 +5223,12 @@ function applyOpened(id, opened, { quiet = false } = {}) {
       sessionId: nextId,
       sessionExplicit: !!opened.session_explicit,
       sessionReadOnly: !!opened.read_only,
-      messages,
+      messages: shown,
       sessions,
     }) && thread.statusState !== "busy") {
       return;
     }
-    thread.messages = messages;
+    thread.messages = shown;
     for (const card of keptApprovals) {
       if (!thread.messages.some((message) => message.role === "approval" && message.requestId === card.requestId)) {
         thread.messages.push(card);
@@ -5220,6 +5237,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   }
   thread.loaded = true;
   thread.sessionId = nextId || thread.sessionId;
+  thread.messages = mergeUnsentDraft(thread.messages, unsentDraft(state.unsentDrafts, id, thread.sessionId));
   thread.sessionExplicit = !!opened.session_explicit;
   thread.sessionAnchor = Number(opened.session_anchor) || 0;
   const locked = readOnlyLocked(state.deniedSessions, id, thread.sessionId, !!opened.read_only);
@@ -6302,6 +6320,7 @@ function deliverCron(id, payload) {
 function noteReadOnly(id) {
   const thread = threadFor(id);
   rememberDenied(state.deniedSessions, id, thread.sessionId);
+  rememberUnsent(state.unsentDrafts, id, thread.sessionId, markUnsentDraft(thread.messages));
   thread.sessionReadOnly = true;
   thread.sessionReadOnlyReason = SESSION_READ_ONLY_REASON;
   thread.queued = false;
@@ -6613,7 +6632,8 @@ async function continueApiSession(id) {
   const button = role(panelFor(id), "continue");
   if (button) button.disabled = true;
   try {
-    const existing = writableContinuation(thread.sessions, thread.sessionId);
+    const refused = refusedSessionIds(state.deniedSessions, id);
+    const existing = writableContinuation(thread.sessions, thread.sessionId, refused);
     if (existing) {
       await pickSession(id, existing.id);
       return;
@@ -6627,6 +6647,7 @@ async function continueApiSession(id) {
         args: thread.sessionId || "",
         model: "",
         provider: "",
+        refused,
       },
     });
     const sessionId = result?.session_id || "";

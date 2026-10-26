@@ -1483,6 +1483,13 @@ html, body {
   vertical-align: 1px;
 }
 
+.unsent-mark {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #3a3a68;
+}
+
 .prompt-toggle {
   display: block;
   margin-top: 6px;
