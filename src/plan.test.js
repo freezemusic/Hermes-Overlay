@@ -88,6 +88,37 @@ test("the last plan is cached per bot and used only before the session loads", (
   assert.equal(planForPanel(thread).markdown, thread.messages[0].text);
 });
 
+test("a long Windows plan path opens without a heading, and a one-line mention does not", () => {
+  const win = "C:\\Users\\freez\\Desktop\\MetaTrader Workbench\\.hermes\\plans\\2026-10-26_210008-mt5-wrapper-next.md";
+  const eaten = "C:\\Users\\freez\\Desktop\\MetaTrader Workbench.hermes\\plans\\2026-10-26_210008-mt5-wrapper-next.md";
+  const prose = [
+    "先在原路徑重建 worktree，分支用現有的 hermes/mt5-ea-wrappers。",
+    "然後才開 coder 卡，只改 SMA_Core.mqh 上述兩處。",
+    "編譯只含這 7 支，以及其他一支的 MT4 檔。118 還在就還原，不提交。",
+    "不要跑 130 支。不要碰 NT_01。不要把 compat 符號寫進 Note。",
+  ].join("\n");
+  const withSlash = `${prose}\n${win}`;
+  const withEaten = `${prose}\n${eaten}`;
+  assert.ok(withSlash.length >= 200);
+  assert.equal(withSlash.includes("#"), false);
+  assert.equal(looksLikePlan(withSlash), true);
+  assert.equal(looksLikePlan(withEaten), true);
+  assert.equal(planTitle(withSlash), "mt5-wrapper-next");
+  assert.equal(planTitle(withEaten), "mt5-wrapper-next");
+  assert.equal(planTitle(`${prose}\n.hermes/plans/2026-10-26_210008-mt5-wrapper-next.md`), "mt5-wrapper-next");
+  const found = plansIn([{ role: "bot", text: withSlash }]);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].title, "mt5-wrapper-next");
+  assert.equal(plansIn([{ role: "bot", text: withEaten }]).length, 1);
+  const mention = `檔案：${win}`;
+  assert.ok(mention.length < 200);
+  assert.equal(mention.includes("\n"), false);
+  assert.equal(looksLikePlan(mention), false);
+  assert.equal(plansIn([{ role: "bot", text: mention }]).length, 0);
+  assert.equal(plansIn([{ role: "bot", text: withSlash, live: true }]).length, 0);
+  assert.equal(planTitle("收到，我再諗。"), "計劃");
+});
+
 test("睇計劃 clears a dismiss so the same plan shows again", () => {
   const markdown = planDemoMarkdown("再開");
   const thread = {

@@ -1,14 +1,23 @@
 /** Detect a Hermes `/plan` reply and pull a title out of its markdown. */
 
-const PLAN_PATH = /\.hermes\/plans\/[^\s)]+\.md/;
+/** Both separators. A missing slash before `.hermes` (`Workbench.hermes\plans\`) still matches. */
+const PLAN_PATH = /\.hermes[\\/]plans[\\/]([^\s)]+?)\.md/;
+const PLAN_MIN_CHARS = 200;
 
 function hasHeading(body) {
   return /^#{1,3}\s+\S/m.test(body);
 }
 
+function planFileTitle(body) {
+  const match = String(body || "").match(PLAN_PATH);
+  if (!match) return "";
+  const file = match[1].split(/[\\/]/).pop() || "";
+  return file.replace(/^\d{4}-\d{2}-\d{2}_\d+-/, "").trim();
+}
+
 function strictPlan(body) {
   if (/implementation plan/i.test(body) && hasHeading(body)) return true;
-  if (PLAN_PATH.test(body) && hasHeading(body)) return true;
+  if (PLAN_PATH.test(body) && (hasHeading(body) || body.length >= PLAN_MIN_CHARS)) return true;
   if (hasHeading(body) && /\*\*Goal:\*\*/i.test(body)) return true;
   return false;
 }
@@ -55,7 +64,7 @@ export function noteNewestPlan(thread, plans) {
 export function planTitle(markdown) {
   const match = String(markdown || "").match(/^#{1,3}\s+(.+)$/m);
   const title = match ? match[1].replace(/[*_`]/g, "").trim() : "";
-  return title || "計劃";
+  return title || planFileTitle(markdown) || "計劃";
 }
 
 /** Header stays 「計劃」. The plan name is the first line of the body. */
