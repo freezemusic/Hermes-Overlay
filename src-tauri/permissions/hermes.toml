@@ -39,6 +39,11 @@ description = "Stream a chat turn."
 commands.allow = ["send_chat"]
 
 [[permission]]
+identifier = "allow-respond-approval"
+description = "Approve or deny one Hermes tool request by hand."
+commands.allow = ["respond_approval"]
+
+[[permission]]
 identifier = "allow-stop-chat"
 description = "Stop the local chat stream."
 commands.allow = ["stop_chat"]

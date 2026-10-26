@@ -101,7 +101,7 @@ pub const PLUGIN_HINT: &str = "未裝 overlay-slash，/ 選單唔會出現。";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnEvent {
-    Started,
+    Started { run_id: String },
     Delta(String),
     Commentary(String),
     Command(String),
@@ -109,6 +109,16 @@ pub enum TurnEvent {
         phase: String,
         name: String,
         preview: String,
+    },
+    ApprovalRequest {
+        run_id: String,
+        request_id: String,
+        description: String,
+        command: String,
+    },
+    ApprovalResponded {
+        request_id: String,
+        choice: String,
     },
     Finished {
         outcome: String,
@@ -200,6 +210,52 @@ pub fn turn_is_permission_denied(result: &Result<(), HermesError>) -> bool {
         Err(HermesError::Protocol(msg)) => text_is_permission_denied(msg),
         _ => false,
     }
+}
+
+pub fn execute_code_blocked_line() -> &'static str {
+    "呢個 bot 想行 Python（execute_code），經 Overlay 唔允許，叫佢改用 terminal 指令"
+}
+
+pub fn text_is_execute_code_blocked(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("execute_code") && lower.contains("blocked")
+}
+
+/// Hand approval only. `session` and `always` are not posted.
+pub fn allowed_approval_choice(choice: &str) -> Option<&'static str> {
+    match choice.trim() {
+        "once" => Some("once"),
+        "deny" => Some("deny"),
+        _ => None,
+    }
+}
+
+pub fn approval_run_id(run_id: &str) -> Option<&str> {
+    let id = run_id.trim();
+    if id.len() < 5 || !id.starts_with("run_") {
+        return None;
+    }
+    if !id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return None;
+    }
+    Some(id)
+}
+
+pub fn approval_request_id(request_id: &str) -> Option<&str> {
+    let id = request_id.trim();
+    if id.is_empty()
+        || id.len() > 200
+        || id.contains('/')
+        || id.contains('\\')
+        || id.contains("..")
+        || id.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return None;
+    }
+    Some(id)
 }
 
 fn finish_resolved(session: &SessionSummary, explicit: bool, anchor: f64) -> ResolvedSession {
@@ -2064,6 +2120,7 @@ where
     let mut saw_terminal = false;
     let mut streamed = false;
     let mut pending_failure: Option<String> = None;
+    let mut run_id = String::new();
     while let Some(chunk) = stream.next().await {
         if stop.load(Ordering::Relaxed) {
             return Err(HermesError::Cancelled);
@@ -2078,6 +2135,7 @@ where
                 &mut streamed,
                 &mut saw_terminal,
                 &mut pending_failure,
+                &mut run_id,
                 &mut on_event,
             ) {
                 saw_terminal = true;
@@ -2090,6 +2148,7 @@ where
             &mut streamed,
             &mut saw_terminal,
             &mut pending_failure,
+            &mut run_id,
             &mut on_event,
         ) {
             saw_terminal = true;
@@ -2111,6 +2170,7 @@ fn apply_sse<F>(
     streamed: &mut bool,
     saw_terminal: &mut bool,
     pending_failure: &mut Option<String>,
+    run_id: &mut String,
     on_event: &mut F,
 ) -> bool
 where
@@ -2119,7 +2179,13 @@ where
     let payload: Value = serde_json::from_str(&event.data).unwrap_or(Value::Null);
     match event.event.as_str() {
         "run.started" => {
-            on_event(TurnEvent::Started);
+            let incoming = json_text(payload.get("run_id"));
+            if !incoming.is_empty() {
+                *run_id = incoming;
+            }
+            on_event(TurnEvent::Started {
+                run_id: run_id.clone(),
+            });
             false
         }
         "assistant.delta" => {
@@ -2131,7 +2197,7 @@ where
             if !text.is_empty() {
                 *streamed = true;
                 *pending_failure = None;
-                on_event(TurnEvent::Delta(text.to_string()));
+                on_event(TurnEvent::Delta(plain_permission_detail(text.to_string())));
             }
             false
         }
@@ -2147,7 +2213,7 @@ where
             if !*streamed && !text.is_empty() {
                 *streamed = true;
                 *pending_failure = None;
-                on_event(TurnEvent::Delta(text));
+                on_event(TurnEvent::Delta(plain_permission_detail(text)));
             }
             false
         }
@@ -2158,7 +2224,7 @@ where
                 .and_then(Value::as_str)
                 .unwrap_or("");
             if !text.is_empty() {
-                on_event(TurnEvent::Commentary(text.to_string()));
+                on_event(TurnEvent::Commentary(plain_permission_detail(text.to_string())));
             }
             false
         }
@@ -2168,10 +2234,39 @@ where
                 .strip_prefix("tool.")
                 .unwrap_or("started")
                 .to_string();
+            let name = tool_name(&payload);
+            let preview = preview_text(&payload);
+            let preview = if text_is_execute_code_blocked(&preview)
+                || text_is_execute_code_blocked(&format!("{name} {preview}"))
+            {
+                execute_code_blocked_line().to_string()
+            } else {
+                preview
+            };
             on_event(TurnEvent::Tool {
                 phase,
-                name: tool_name(&payload),
-                preview: preview_text(&payload),
+                name,
+                preview,
+            });
+            false
+        }
+        "approval.request" => {
+            let incoming = json_text(payload.get("run_id"));
+            if !incoming.is_empty() {
+                *run_id = incoming;
+            }
+            on_event(TurnEvent::ApprovalRequest {
+                run_id: run_id.clone(),
+                request_id: json_text(payload.get("request_id")),
+                description: clip(&json_text(payload.get("description")), 500),
+                command: clip(&json_text(payload.get("command")), 2000),
+            });
+            false
+        }
+        "approval.responded" => {
+            on_event(TurnEvent::ApprovalResponded {
+                request_id: json_text(payload.get("request_id")),
+                choice: json_text(payload.get("choice")),
             });
             false
         }
@@ -2276,9 +2371,43 @@ fn failure_detail(payload: &Value, prior: Option<&str>) -> String {
 fn plain_permission_detail(text: String) -> String {
     if text_is_permission_denied(&text) {
         session_read_only_reason().to_string()
+    } else if text_is_execute_code_blocked(&text) {
+        execute_code_blocked_line().to_string()
     } else {
         text
     }
+}
+
+pub async fn submit_approval(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+    request_id: &str,
+    choice: &str,
+) -> Result<(), HermesError> {
+    let url = format!("{root}/v1/runs/{run_id}/approval");
+    let resp = authed(
+        http.post(&url).json(&serde_json::json!({
+            "choice": choice,
+            "request_id": request_id,
+        })),
+        key,
+    )
+    .send()
+    .await
+    .map_err(map_reqwest)?;
+    let status = resp.status();
+    if status.is_success() {
+        let _ = resp.bytes().await;
+        return Ok(());
+    }
+    let code = status.as_u16();
+    let _ = resp.bytes().await;
+    Err(HermesError::Http {
+        status: code,
+        body: String::new(),
+    })
 }
 
 fn json_error_reason(body: &str) -> String {
@@ -3870,6 +3999,166 @@ data: {\"error\":\"RuntimeStoreError('permission_denied')\"}\n\
         assert!(matches!(err, Err(HermesError::Http { status: 500, .. })));
     }
 
+    #[tokio::test]
+    async fn approval_request_keeps_run_id_and_blocked_execute_code_is_plain() {
+        let body = "\
+event: run.started\n\
+data: {\"run_id\":\"run_abc\"}\n\
+\n\
+event: approval.request\n\
+data: {\"event\":\"approval.request\",\"run_id\":\"run_abc\",\"request_id\":\"req_1\",\"description\":\"list files\",\"command\":\"ls <redacted>\",\"choices\":[\"once\",\"session\",\"always\",\"deny\"],\"allow_permanent\":true}\n\
+\n\
+event: approval.responded\n\
+data: {\"request_id\":\"req_1\",\"choice\":\"once\"}\n\
+\n\
+event: tool.completed\n\
+data: {\"tool_name\":\"execute_code\",\"preview\":\"BLOCKED execute_code\"}\n\
+\n\
+event: run.completed\n\
+data: {}\n\
+\n";
+        let base = oneshot("200 OK", "text/event-stream", body);
+        let http = Client::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let stop = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, |ev| {
+            seen2.lock().unwrap().push(ev);
+        })
+        .await
+        .unwrap();
+        let seen = seen.lock().unwrap();
+        assert!(matches!(&seen[0], TurnEvent::Started { run_id } if run_id == "run_abc"));
+        match &seen[1] {
+            TurnEvent::ApprovalRequest {
+                run_id,
+                request_id,
+                description,
+                command,
+            } => {
+                assert_eq!(run_id, "run_abc");
+                assert_eq!(request_id, "req_1");
+                assert_eq!(description, "list files");
+                assert_eq!(command, "ls <redacted>");
+            }
+            other => panic!("expected approval request, got {other:?}"),
+        }
+        assert!(matches!(
+            &seen[2],
+            TurnEvent::ApprovalResponded { request_id, choice }
+                if request_id == "req_1" && choice == "once"
+        ));
+        assert!(matches!(
+            &seen[3],
+            TurnEvent::Tool { name, preview, .. }
+                if name == "execute_code" && preview == execute_code_blocked_line()
+        ));
+        assert_eq!(allowed_approval_choice("once"), Some("once"));
+        assert_eq!(allowed_approval_choice("deny"), Some("deny"));
+        assert_eq!(allowed_approval_choice("always"), None);
+        assert_eq!(allowed_approval_choice("session"), None);
+        assert_eq!(approval_run_id("run_abc"), Some("run_abc"));
+        assert_eq!(approval_run_id("../run_abc"), None);
+        assert_eq!(
+            failure_detail(
+                &json!({"error": "BLOCKED execute_code by policy"}),
+                None
+            ),
+            execute_code_blocked_line()
+        );
+        let src = include_str!("hermes.rs");
+        let start = src.find("pub async fn submit_approval").expect("submit");
+        let end = src[start..].find("\nfn ").expect("next fn");
+        let body = &src[start..start + end];
+        assert!(body.contains("/v1/runs/{run_id}/approval"));
+        assert!(body.contains("\"request_id\""));
+        assert!(body.contains("\"choice\""));
+        assert!(!body.contains("resolve_all"));
+        assert!(!body.contains("println"));
+        assert!(!body.contains("eprintln"));
+        assert!(!body.contains("config::save"));
+        let lib = include_str!("lib.rs");
+        let cmd = lib.find("async fn respond_approval").expect("command");
+        let cmd_end = lib[cmd..].find("\nfn dispatch_turn").expect("dispatch");
+        let cmd_body = &lib[cmd..cmd + cmd_end];
+        assert!(cmd_body.contains("allowed_approval_choice"));
+        assert!(cmd_body.contains("status: 409"));
+        assert!(!cmd_body.contains("println"));
+        assert!(!cmd_body.contains("eprintln"));
+        assert!(!cmd_body.contains("config::save"));
+        assert!(!cmd_body.contains("resolve_all"));
+    }
+
+    #[tokio::test]
+    async fn approval_post_uses_the_profile_prefix_once_and_409_does_not_retry() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let seen2 = seen.clone();
+        let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let posts2 = posts.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 8192];
+            let n = sock.read(&mut buf).unwrap_or(0);
+            posts2.fetch_add(1, Ordering::SeqCst);
+            *seen2.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let body = r#"{"object":"hermes.run.approval_response","run_id":"run_abc","choice":"once","request_id":"req_1","resolved":true}"#;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(body.as_bytes());
+        });
+        let root = format!("http://{addr}/p/mt-coder");
+        let http = Client::new();
+        submit_approval(&http, &root, "test-key", "run_abc", "req_1", "once")
+            .await
+            .unwrap();
+        let req = seen.lock().unwrap();
+        assert!(req.starts_with("POST /p/mt-coder/v1/runs/run_abc/approval "));
+        let json_body = req.split("\r\n\r\n").nth(1).unwrap_or("");
+        let value: Value = serde_json::from_str(json_body.trim()).unwrap();
+        assert_eq!(value["choice"], "once");
+        assert_eq!(value["request_id"], "req_1");
+        assert_eq!(value.as_object().unwrap().len(), 2);
+        assert!(req.to_ascii_lowercase().contains("authorization: bearer "));
+        assert!(!req.contains("resolve_all"));
+        drop(req);
+        assert_eq!(posts.load(Ordering::SeqCst), 1);
+
+        let stale = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stale_addr = stale.local_addr().unwrap();
+        let stale_posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stale_posts2 = stale_posts.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = stale.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf);
+            stale_posts2.fetch_add(1, Ordering::SeqCst);
+            let body = r#"{"error":"approval_not_pending"}"#;
+            let header = format!(
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(body.as_bytes());
+        });
+        let err = submit_approval(
+            &http,
+            &format!("http://{stale_addr}/p/mt-coder"),
+            "test-key",
+            "run_abc",
+            "req_1",
+            "deny",
+        )
+        .await
+        .expect_err("409");
+        assert!(matches!(err, HermesError::Http { status: 409, ref body } if body.is_empty()));
+        assert_eq!(stale_posts.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn command_catalog_keeps_client_maps_and_falls_back_when_missing() {
         let value = json!({
@@ -4098,7 +4387,7 @@ data: {\"completed\":true}\n\
         .await
         .unwrap();
         let seen = seen.lock().unwrap();
-        assert!(matches!(seen[0], TurnEvent::Started));
+        assert!(matches!(seen[0], TurnEvent::Started { .. }));
         assert!(
             matches!(seen[1], TurnEvent::Tool { ref phase, ref preview, .. } if phase == "progress" && preview == "讀緊")
         );

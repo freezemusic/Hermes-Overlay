@@ -21,6 +21,7 @@
     "allow-open-bot",
     "allow-select-session",
     "allow-send-chat",
+    "allow-respond-approval",
     "allow-stop-chat",
     "allow-list-commands",
     "allow-client-command",

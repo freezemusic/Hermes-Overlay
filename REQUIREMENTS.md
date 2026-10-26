@@ -20,6 +20,32 @@
 
 ---
 
+## 工具批准（R-AP）
+
+Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattended_mode: approve`，畫面、設定、註解都唔好建議開啟。
+
+**R-AP-01** `POST /p/{profile}/api/sessions/{id}/chat/stream` 嘅 SSE 如果出 `approval.request`，面板入面即刻出一張卡。卡顯示 `description` 同 gateway 已經遮罩嘅 `command`。只有兩個掣：「批准（一次）」（body `choice` = `once`）同「拒絕」（`deny`）。撳一次之後兩個掣停用。`approval.responded` 或者 POST 成功之後顯示「已批准」或「已拒絕」。HTTP 409 顯示「呢個批准已經過時」。唔自動重試，唔自動批准，唔送 `session`、`always`、`all` 或 `resolve_all`。
+- 來源：Devon（2026-10-26，Hermes gateway 0.22.5）。`approval.request` 喺 `gateway/platforms/api_server.py`；回覆係 `POST /p/{profile}/v1/runs/{run_id}/approval`，body `{"choice","request_id"}`，用同一個 profile prefix 同 api_server Bearer。`run_id` 亦出現喺同一條串流嘅 `run.started`。
+- 驗收（盒）：模擬 `approval.request` 出卡；POST 路徑包含 profile prefix、`run_id`，body 有對應 `request_id` 同 `once` 或 `deny`。409 只顯示「呢個批准已經過時」，而且只 POST 一次。
+- 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
+
+**R-AP-02** 面板規則不變：預設實色、可以撳（R-CT-04）；Ctrl 揸住就穿透（R-CT-05）。面板收埋時如果有批准等緊，嗰粒 bot 光球出一個小標記。標記喺 44px 光球裡面，`pointer-events: none`，唔擴大命中區，光球預設仍然穿透（R-CT-02）。
+- 來源：Devon（2026-10-26）。
+- 驗收（盒）：面板未開時 `has-approval` 先出現；打開面板之後標記收起；命中區仍然係光球本身。
+- 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
+
+**R-AP-03** `execute_code` 喺 api_server session 唔會出 `approval.request`（gateway 早已拒絕）。串流或工具結果如果係 BLOCKED `execute_code`，顯示「呢個 bot 想行 Python（execute_code），經 Overlay 唔允許，叫佢改用 terminal 指令」，唔顯示原始錯誤。
+- 來源：Devon（2026-10-26，gateway 0.22.5）。
+- 驗收（盒）：含 `execute_code` 同 `BLOCKED` 嘅工具結果只剩嗰句。
+- 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
+
+**R-AP-04** 非 debug log 唔記錄 Bearer，亦唔記錄 command 原文。debug log 維持 opt-in（要 `HERMES_OVERLAY_DEBUG_LOG`）。批准路徑唔寫 config.json。
+- 來源：Devon（2026-10-26）；R-SS-02。
+- 驗收（盒）：`submit_approval`／`respond_approval` 冇 `println`、`eprintln`、`config::save`，錯誤 body 唔留低。
+- 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
+
+---
+
 ## 1. 穿透同 Ctrl 規則（R-CT）
 
 **R-CT-01** overlay 除咗按 Ctrl 規則可以互動嘅光球／面板之外，**絕對唔可以擋住後面程式嘅點擊、hover 同滾動**。光球同面板嘅命中區可以伸出矩形外最多 12px（`HIT_MARGIN_PX`，`interaction.rs`）。再外嘅點一定要穿透。頁腳量度跌出殼外時，命中區只包住殼，唔好拉成成版高。

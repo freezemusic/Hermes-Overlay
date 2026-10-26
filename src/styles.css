@@ -310,6 +310,21 @@ html, body {
 
 .unread-dot { display: none; }
 
+.approval-badge {
+  display: none;
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 3;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #0000f2;
+  pointer-events: none;
+}
+
+.bot-btn.has-approval .approval-badge { display: block; }
+
 .bot-btn.has-unread .unread-dot {
   display: block;
   position: absolute;
@@ -1496,6 +1511,54 @@ html, body {
   align-self: flex-start;
   background: rgb(242 0 0 / .08);
   border: 1px solid rgb(242 0 0 / .45);
+  color: #14142b;
+}
+
+.bubble.approval {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 92%;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #616191;
+  color: #14142b;
+}
+
+.approval-description,
+.approval-result {
+  margin: 0;
+  color: #14142b;
+  font: 400 var(--fs-body) var(--font-body);
+}
+
+.approval-command {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #14142b;
+  font: 400 12px/1.4 var(--font-mono);
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.approval-actions button {
+  height: 32px;
+  padding: 0 12px;
+  background: #fff;
+  border: 1px solid #616191;
+  border-radius: var(--r-sm);
+  color: #14142b;
+  font: 400 var(--fs-body) var(--font-body);
+}
+
+.approval-actions button:disabled {
+  background: #eee;
   color: #14142b;
 }
 

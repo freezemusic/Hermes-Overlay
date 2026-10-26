@@ -65,6 +65,17 @@ import {
   chatTailAction,
 } from "./morph.js";
 import { isProfileEnabled, keyBannerSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
+import {
+  approvalFailure,
+  approvalPending,
+  approvalPost,
+  plainToolText,
+  renderApprovalCard,
+  showApprovalBadge,
+  statusAfterResponded,
+  textIsExecuteCodeBlocked,
+  EXECUTE_CODE_BLOCKED_LINE,
+} from "./approval.js";
 import { SESSION_READ_ONLY_REASON, isPermissionDeniedText, orderSessions, permissionDeniedMessage, previewLine, resolveSession, sessionLabel, sessionReadOnly, unseenMessages } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
@@ -4140,6 +4151,7 @@ function botPaintSig() {
       thread.activity || "",
       thread.statusState || "",
       thread.unread ? 1 : 0,
+      thread.messages.some(approvalPending) && !open ? 1 : 0,
     ].join(":");
   }).join("|") + `|${state.activeId || ""}|${state.showBotNames ? 1 : 0}`;
 }
@@ -4200,14 +4212,17 @@ function renderBots(tag = "renderBots") {
     if (motion === "spin") classes.push("is-thinking");
     if (motion === "wait") classes.push("is-waiting");
     if (thread.unread) classes.push("has-unread");
+    const panelOpen = state.openIds.includes(bot.id) || shell.dataset.state === "panel";
+    if (showApprovalBadge(panelOpen, thread.messages.some(approvalPending))) classes.push("has-approval");
     if (thread.statusState === "error") classes.push("error");
     if (bot.id === pulseId || keepEnter) classes.push("orb-enter");
     const nextClass = classes.join(" ");
     if (btn.className !== nextClass) btn.className = nextClass;
     applyBotColor(shell, bot.color);
     applyBotColor(btn, bot.color);
-    if (btn.getAttribute("aria-label") !== bot.name) btn.setAttribute("aria-label", bot.name);
-    if (btn.title !== bot.name) btn.title = bot.name;
+    const orbLabel = classes.includes("has-approval") ? `${bot.name}，有工具等緊批准` : bot.name;
+    if (btn.getAttribute("aria-label") !== orbLabel) btn.setAttribute("aria-label", orbLabel);
+    if (btn.title !== orbLabel) btn.title = orbLabel;
     const glyph = btn.querySelector(".orb-glyph");
     const nameLabel = btn.querySelector(".bot-label");
     const shortText = bot.short || "";
@@ -4277,7 +4292,10 @@ function fillOrb(btn) {
   spinner.setAttribute("aria-hidden", "true");
   const unread = document.createElement("span");
   unread.className = "unread-dot";
-  btn.append(hit, core, glyph, spinner, unread);
+  const badge = document.createElement("span");
+  badge.className = "approval-badge";
+  badge.setAttribute("aria-hidden", "true");
+  btn.append(hit, core, glyph, spinner, unread, badge);
 }
 
 function renderKanbanOrb() {
@@ -4482,7 +4500,11 @@ function renderCronOrb(options = {}) {
 
 function chatStamp(thread) {
   const last = thread.messages[thread.messages.length - 1];
-  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}`;
+  const approvals = thread.messages
+    .filter((message) => message.role === "approval")
+    .map((message) => `${message.requestId || ""}:${message.status || ""}`)
+    .join(",");
+  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}|${approvals}`;
 }
 
 function threadHasCache(thread) {
@@ -4548,6 +4570,8 @@ function syncChatInPlace(chat, thread, id, resting = false) {
         node.replaceChildren();
         paintUserBubble(node, message);
       }
+    } else if (message.role === "approval") {
+      paintApprovalBubble(node, message, id);
     } else if (node.textContent !== (message.text || "")) {
       node.textContent = message.text || "";
     }
@@ -4654,6 +4678,7 @@ function renderChat(id = state.activeId, options = {}) {
   if (send) send.disabled = locked || (state.mode === "hermes" && state.busy.has(bot.id));
   if (!quietChrome) syncActivityChrome(id);
   if (!shell || !visualQuiet(shell)) scheduleHitSync();
+  paintApprovalBadge(id);
   requestAnimationFrame(() => logPlanChip(id));
 }
 
@@ -4864,9 +4889,20 @@ function setStatusText(id, text) {
   if (node) node.textContent = text;
 }
 
+function paintApprovalBubble(bubble, message, id) {
+  bubble.className = "bubble approval";
+  bubble.replaceChildren(renderApprovalCard(document, message, (choice) => {
+    void answerApproval(id, message, choice);
+  }));
+}
+
 function bubbleEl(m, id) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${m.role === "user" ? "user" : m.role === "bot" ? "bot" : m.role}`;
+  if (m.role === "approval") {
+    paintApprovalBubble(bubble, m, id);
+    return bubble;
+  }
   if (m.role === "bot") paintBotBubble(bubble, m.text);
   else if (m.role === "user") paintUserBubble(bubble, m);
   else bubble.textContent = m.text;
@@ -5103,6 +5139,9 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   const thread = threadFor(id);
   const messages = (opened.messages || []).map(presentMessage);
   const sessions = opened.sessions || [];
+  const keptApprovals = thread.sessionId === (opened.session_id || "")
+    ? thread.messages.filter(approvalPending)
+    : [];
   if (quiet && sameChatSnapshot({
     sessionId: thread.sessionId,
     sessionExplicit: thread.sessionExplicit,
@@ -5119,6 +5158,11 @@ function applyOpened(id, opened, { quiet = false } = {}) {
     return;
   }
   thread.messages = messages;
+  for (const card of keptApprovals) {
+    if (!thread.messages.some((message) => message.role === "approval" && message.requestId === card.requestId)) {
+      thread.messages.push(card);
+    }
+  }
   thread.loaded = true;
   thread.sessionId = opened.session_id || "";
   thread.sessionExplicit = !!opened.session_explicit;
@@ -6132,6 +6176,53 @@ function lockIfPermissionDenied(id, raw) {
   return SESSION_READ_ONLY_REASON;
 }
 
+function panelIsOpen(id) {
+  const shell = shellFor(id);
+  if (shell?.classList.contains("is-collapsing")) return false;
+  if (state.openIds.includes(id)) return true;
+  return shell?.dataset.state === "panel";
+}
+
+function paintApprovalBadge(id) {
+  const thread = threadFor(id);
+  const show = showApprovalBadge(panelIsOpen(id), thread.messages.some(approvalPending));
+  const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
+  btn?.classList.toggle("has-approval", show);
+}
+
+async function answerApproval(id, message, choice) {
+  if (!message || message.status !== "pending") return;
+  const posted = approvalPost(id, message.runId, message.requestId, choice);
+  if (!posted) return;
+  message.status = "sending";
+  if (panelFor(id)) renderChat(id);
+  paintApprovalBadge(id);
+  if (state.mode !== "hermes" || !inTauri()) {
+    message.status = choice === "deny" ? "denied" : "approved";
+    if (panelFor(id)) renderChat(id);
+    paintApprovalBadge(id);
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("respond_approval", {
+      profile: posted.profile,
+      runId: posted.runId,
+      requestId: posted.requestId,
+      choice: posted.choice,
+    });
+    if (message.status === "sending") message.status = choice === "deny" ? "denied" : "approved";
+  } catch (err) {
+    if (message.status !== "approved" && message.status !== "denied") {
+      const failed = approvalFailure(String(err));
+      message.status = failed.status;
+      message.notice = failed.notice;
+    }
+  }
+  if (panelFor(id)) renderChat(id);
+  paintApprovalBadge(id);
+}
+
 function handleHermes(payload) {
   if (!payload || !payload.profile) return;
   const id = payload.profile;
@@ -6140,13 +6231,41 @@ function handleHermes(payload) {
     return;
   }
   if (payload.type === "run.started") {
+    if (payload.run_id) threadFor(id).runId = payload.run_id;
     noteActivity(id, { type: "run.started" });
+    return;
+  }
+  if (payload.type === "approval.request") {
+    const thread = threadFor(id);
+    const requestId = String(payload.request_id || "");
+    const existing = thread.messages.find((message) => message.role === "approval" && message.requestId === requestId);
+    if (!existing) {
+      appendMessage(id, {
+        role: "approval",
+        runId: payload.run_id || thread.runId || "",
+        requestId,
+        description: payload.description || "",
+        command: payload.command || "",
+        status: "pending",
+      });
+    }
+    if (panelFor(id)) renderChat(id);
+    paintApprovalBadge(id);
+    return;
+  }
+  if (payload.type === "approval.responded") {
+    const card = threadFor(id).messages.find((message) => message.role === "approval" && message.requestId === payload.request_id);
+    const next = statusAfterResponded(payload.choice);
+    if (card && next && card.status !== "stale") card.status = next;
+    if (panelFor(id)) renderChat(id);
+    paintApprovalBadge(id);
     return;
   }
   if (payload.type === "delta") {
     noteActivity(id, { type: "delta" });
     const live = ensureLiveBubble(id);
-    live.text += payload.text || "";
+    live.text += plainToolText(payload.text || "");
+    if (textIsExecuteCodeBlocked(live.text)) live.text = EXECUTE_CODE_BLOCKED_LINE;
     patchLive(id);
     return;
   }
@@ -6159,20 +6278,23 @@ function handleHermes(payload) {
     return;
   }
   if (payload.type === "commentary") {
-    appendMessage(id, { role: "commentary", text: `過程：${payload.text || ""}` });
+    const text = plainToolText(payload.text || "");
+    appendMessage(id, { role: "commentary", text: text === EXECUTE_CODE_BLOCKED_LINE ? text : `過程：${text}` });
     if (panelFor(id)) renderChat(id);
     return;
   }
   if (payload.type === "tool") {
-    const preview = payload.preview ? ` — ${payload.preview}` : "";
-    const text = `${payload.name || "tool"}${preview}`;
+    const raw = `${payload.name || ""} ${payload.preview || ""}`;
+    const blocked = textIsExecuteCodeBlocked(raw) || payload.preview === EXECUTE_CODE_BLOCKED_LINE;
+    const preview = payload.preview ? ` — ${plainToolText(payload.preview)}` : "";
+    const text = blocked ? EXECUTE_CODE_BLOCKED_LINE : `${payload.name || "tool"}${preview}`;
     if (payload.phase === "progress") {
       noteActivity(id, { type: "tool.progress", name: payload.name || "", text });
       return;
     }
     noteActivity(id, { type: "tool" });
     const phase = payload.phase === "completed" ? "完成" : payload.phase === "failed" ? "失敗" : "開始";
-    appendMessage(id, { role: "tool", text: `${phase} ${text}` });
+    appendMessage(id, { role: "tool", text: blocked ? EXECUTE_CODE_BLOCKED_LINE : `${phase} ${text}` });
     if (panelFor(id)) renderChat(id);
     return;
   }
@@ -6185,19 +6307,26 @@ function handleHermes(payload) {
     const thread = threadFor(id);
     const live = [...thread.messages].reverse().find((m) => m.live);
     painterFor(id).flush();
-    if (live) live.live = false;
+    if (live) {
+      live.live = false;
+      if (textIsExecuteCodeBlocked(live.text)) live.text = EXECUTE_CODE_BLOCKED_LINE;
+    }
     if (panelFor(id)) renderChat(id);
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
-    noteActivity(id, { type: outcome, text: outcome === "completed" ? live?.text || "" : payload.detail || "" });
+    const detail = payload.detail || "";
+    const blocked = textIsExecuteCodeBlocked(detail) || detail === EXECUTE_CODE_BLOCKED_LINE;
+    noteActivity(id, { type: outcome, text: outcome === "completed" ? live?.text || "" : plainToolText(detail) });
     if (payload.outcome === "completed") clearConnectionBanner();
-    const failedText = payload.outcome === "failed" ? lockIfPermissionDenied(id, payload.detail || "") : "";
+    const failedText = payload.outcome === "failed"
+      ? (isPermissionDeniedText(detail) ? lockIfPermissionDenied(id, detail) : plainToolText(detail))
+      : "";
     if (payload.outcome === "failed" && failedText) {
       appendMessage(id, { role: "failure", text: failedText });
     }
     setBotStatus(
       id,
       payload.outcome === "failed"
-        ? (isPermissionDeniedText(failedText) ? SESSION_READ_ONLY_REASON : "回覆失敗")
+        ? (isPermissionDeniedText(failedText) ? SESSION_READ_ONLY_REASON : blocked || failedText === EXECUTE_CODE_BLOCKED_LINE ? EXECUTE_CODE_BLOCKED_LINE : "回覆失敗")
         : payload.outcome === "cancelled" ? "已停止" : "閒置",
       payload.outcome === "failed" ? "error" : "idle",
     );

@@ -1457,11 +1457,68 @@ async fn send_chat(
     Ok(())
 }
 
+#[tauri::command]
+async fn respond_approval(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    run_id: String,
+    request_id: String,
+    choice: String,
+) -> Result<(), String> {
+    let Some(choice) = hermes::allowed_approval_choice(&choice) else {
+        return Err("只可以批准一次或者拒絕".into());
+    };
+    let Some(run_id) = hermes::approval_run_id(&run_id) else {
+        return Err("缺少批准編號".into());
+    };
+    let Some(request_id) = hermes::approval_request_id(&request_id) else {
+        return Err("缺少批准編號".into());
+    };
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?;
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    hermes::submit_approval(&state.http, &root, &key, run_id, request_id, choice)
+        .await
+        .map_err(|err| match err {
+            HermesError::Http { status: 409, .. } => "呢個批准已經過時".into(),
+            HermesError::Http { status, .. } => format!("批准未送出（{status}）。"),
+            other => explain(&other),
+        })
+}
+
 fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
     match event {
-        TurnEvent::Started => emit(
+        TurnEvent::Started { run_id } => emit(
             app,
-            serde_json::json!({"type": "run.started", "profile": profile}),
+            serde_json::json!({"type": "run.started", "profile": profile, "run_id": run_id}),
+        ),
+        TurnEvent::ApprovalRequest {
+            run_id,
+            request_id,
+            description,
+            command,
+        } => emit(
+            app,
+            serde_json::json!({
+                "type": "approval.request",
+                "profile": profile,
+                "run_id": run_id,
+                "request_id": request_id,
+                "description": description,
+                "command": command,
+            }),
+        ),
+        TurnEvent::ApprovalResponded { request_id, choice } => emit(
+            app,
+            serde_json::json!({
+                "type": "approval.responded",
+                "profile": profile,
+                "request_id": request_id,
+                "choice": choice,
+            }),
         ),
         TurnEvent::Delta(text) => emit(
             app,
@@ -1492,13 +1549,17 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
         TurnEvent::Finished { outcome, detail } => {
             let denied = hermes::text_is_permission_denied(&detail)
                 || detail == hermes::session_read_only_reason();
+            let blocked = hermes::text_is_execute_code_blocked(&detail)
+                || detail == hermes::execute_code_blocked_line();
             let detail = if denied {
                 hermes::session_read_only_reason().to_string()
+            } else if blocked {
+                hermes::execute_code_blocked_line().to_string()
             } else {
                 detail
             };
             let state_name = if outcome == "failed" { "error" } else { "idle" };
-            let label = if denied {
+            let label = if denied || blocked {
                 detail.clone()
             } else {
                 match outcome.as_str() {
@@ -2649,6 +2710,7 @@ pub fn run() {
             open_bot,
             select_session,
             send_chat,
+            respond_approval,
             stop_chat,
             list_commands,
             client_command,
