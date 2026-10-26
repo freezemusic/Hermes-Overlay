@@ -1081,6 +1081,7 @@ mod tests {
         assert!(log.iter().all(|line| !line.starts_with("POST") || line.contains("/auth/native/refresh")));
         assert_eq!(log.iter().filter(|line| line.starts_with("GET") && line.contains("/api/profiles")).count(), 2);
 
+        forget_rejected_refresh("refresh-roster-dead");
         let refreshes = Arc::new(Mutex::new(0u32));
         let counted = refreshes.clone();
         let again = serve(move |head| {
@@ -1241,7 +1242,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_expired_access_token_refreshes_once_and_retries_the_get() {
-        clear_rejected_refresh();
+        forget_rejected_refresh("refresh-laptop");
         let counts = Arc::new(Mutex::new((0u32, 0u32, 0u32)));
         let seen = counts.clone();
         let base = serve(move |head| {
@@ -1294,7 +1295,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rejected_refresh_token_needs_login_and_is_not_posted_again() {
-        clear_rejected_refresh();
+        forget_rejected_refresh("refresh-dead-box");
         let posts = Arc::new(Mutex::new(0u32));
         let posts2 = posts.clone();
         let base = serve(move |head| {
