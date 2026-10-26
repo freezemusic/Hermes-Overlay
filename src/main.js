@@ -68,18 +68,20 @@ import { isProfileEnabled, keyBannerSlot, profilesNeedingKeys, rosterSyncDelayMs
 import { TUI_READ_ONLY_REASON, isTuiSource, orderSessions, previewLine, resolveSession, sessionLabel, unseenMessages } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
-  KANBAN_BOARD,
   KANBAN_EMPTY,
   KANBAN_LOGIN,
   KANBAN_POLL_MS,
   KANBAN_UNAVAILABLE,
   boardFingerprint,
+  columnCollapsed,
   kanbanChangeLine,
   kanbanErrorText,
+  kanbanRequestSlug,
   kanbanUnavailable,
   moveTask,
   normalizeBoard,
   ownerColor,
+  pickerSelection,
 } from "./kanban.js";
 import {
   CRON_EMPTY,
@@ -3777,7 +3779,18 @@ const state = {
   dragHitId: "",
   souls: new Map(),
   kanbanOpen: false,
-  kanban: { board: null, fingerprint: "", unread: false, saving: false, dragging: false, detailOpen: false },
+  kanban: {
+    board: null,
+    fingerprint: "",
+    unread: false,
+    saving: false,
+    dragging: false,
+    detailOpen: false,
+    explicit: "",
+    boards: [],
+    current: "",
+    doneOpen: false,
+  },
   rosterTimer: 0,
   keyPromptBots: [],
   prefetchDeferred: false,
@@ -5367,7 +5380,7 @@ function paintGatewayWait() {
     root.hidden = true;
     if (!state.kanban.board?.retry) {
       state.kanban.board = {
-        board: KANBAN_BOARD,
+        board: state.kanban.board?.board || kanbanRequestSlug(state.kanban.explicit),
         columns: [],
         unavailable: true,
         retry: true,
@@ -5550,7 +5563,7 @@ async function recoverGateway() {
   if (!probeGate.tryBegin("kanban")) return "busy";
   let board;
   try {
-    board = await invoke("get_kanban_board", { board: KANBAN_BOARD });
+    board = await readKanbanPayload(invoke);
   } catch (err) {
     const message = String(err);
     board = message.includes(KANBAN_LOGIN)
@@ -6343,6 +6356,7 @@ function useHermes(settings) {
   state.catalogProfile = "";
   state.mode = "hermes";
   state.settings = settings;
+  adoptKanbanPick(settings);
   state.showBotNames = !!settings?.show_bot_names;
   state.bots = botsFromSettings(settings);
   state.threads = new Map();
@@ -9260,6 +9274,55 @@ function stopKanbanPoll() {
   state.kanbanTimer = 0;
 }
 
+function adoptKanbanPick(settings) {
+  const saved = kanbanRequestSlug(settings?.kanban_board);
+  if (saved) state.kanban.explicit = saved;
+}
+
+function kanbanBoardArgs() {
+  const board = kanbanRequestSlug(state.kanban.explicit);
+  return board ? { board } : {};
+}
+
+async function readKanbanPayload(invoke) {
+  const payload = await invoke("get_kanban_board", kanbanBoardArgs());
+  try {
+    const list = await invoke("get_kanban_boards");
+    const boards = Array.isArray(list?.boards)
+      ? list.boards.map((slug) => kanbanRequestSlug(slug)).filter(Boolean)
+      : [];
+    state.kanban.boards = boards;
+    state.kanban.current = kanbanRequestSlug(list?.current);
+  } catch {
+    // The board GET already follows the current board. A boards-list miss leaves the picker.
+  }
+  return payload;
+}
+
+async function pickKanbanBoard(slug) {
+  const next = kanbanRequestSlug(slug);
+  if (!next || next === kanbanRequestSlug(state.kanban.explicit)) return;
+  const shown = pickerSelection("", state.kanban.current, state.kanban.board?.board);
+  if (!state.kanban.explicit && next === shown) return;
+  state.kanban.explicit = next;
+  if (state.settings) state.settings.kanban_board = next;
+  state.kanban.board = null;
+  state.kanban.fingerprint = "";
+  if (state.mode === "hermes" && inTauri()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const settings = await invoke("set_kanban_board", { board: next });
+      if (settings) {
+        state.settings = settings;
+        state.kanban.explicit = kanbanRequestSlug(settings.kanban_board) || next;
+      }
+    } catch (err) {
+      setKanbanError(String(err));
+    }
+  }
+  refreshKanban();
+}
+
 async function refreshKanban() {
   if (backgroundBlocked()) {
     state.kanbanDeferred = true;
@@ -9275,7 +9338,7 @@ async function refreshKanban() {
   } else {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      payload = await invoke("get_kanban_board", { board: KANBAN_BOARD });
+      payload = await readKanbanPayload(invoke);
     } catch (err) {
       const message = String(err);
       if (message.includes(KANBAN_LOGIN)) {
@@ -9317,7 +9380,7 @@ function commitKanban(board) {
 
 function mockKanban() {
   return {
-    board: KANBAN_BOARD,
+    board: "",
     columns: [
       { name: "triage", tasks: [{ id: "demo-1", title: "整理今日待辦", assignee: "計劃助手", status: "triage", priority: "high", updated_at: "" }] },
       { name: "ready", tasks: [{ id: "demo-2", title: "對一下看板欄位", assignee: "程式夥伴", status: "ready", priority: "normal", updated_at: "" }] },
@@ -9363,9 +9426,7 @@ function paintKanban(board) {
   state.kanbanPaintDue = null;
   const empty = $("#kanban-empty");
   const root = $("#kanban-board");
-  const title = $("#kanban-title");
-  const crumb = document.getElementById("kanban-crumb-profile");
-  if (crumb) crumb.textContent = board.board || "default";
+  paintKanbanPicker(board);
   if (!root || !empty) return;
   if (board.needsLogin && !board.retry) {
     showKanbanLogin();
@@ -9410,6 +9471,9 @@ function paintKanban(board) {
     const col = document.createElement("section");
     col.className = "kanban-col";
     col.dataset.status = column.name;
+    const collapsed = columnCollapsed(column.name, state.kanban.doneOpen);
+    if (collapsed) col.classList.add("is-collapsed");
+    if (column.name === "done") col.setAttribute("aria-expanded", collapsed ? "false" : "true");
     const head = document.createElement("header");
     head.className = "kanban-col-head";
     head.lang = "en";
@@ -9419,12 +9483,60 @@ function paintKanban(board) {
     const count = document.createElement("small");
     count.textContent = String(column.tasks.length);
     head.append(name, count);
-    const list = document.createElement("div");
-    column.tasks.forEach((task) => list.appendChild(kanbanCard(task)));
-    col.append(head, list);
+    if (column.name === "done") {
+      head.addEventListener("click", () => {
+        state.kanban.doneOpen = !state.kanban.doneOpen;
+        if (state.kanban.board) paintKanban(state.kanban.board);
+      });
+    }
+    col.append(head);
+    if (!collapsed) {
+      const list = document.createElement("div");
+      column.tasks.forEach((task) => list.appendChild(kanbanCard(task)));
+      col.append(list);
+    }
     root.appendChild(col);
   });
   scheduleHitSync();
+}
+
+function paintKanbanPicker(board) {
+  const crumb = document.getElementById("kanban-crumb-board");
+  const pick = document.getElementById("kanban-board-pick");
+  const selected = pickerSelection(state.kanban.explicit, state.kanban.current, board?.board);
+  const slugs = [];
+  for (const slug of state.kanban.boards || []) {
+    const name = kanbanRequestSlug(slug);
+    if (name && !slugs.includes(name)) slugs.push(name);
+  }
+  if (selected && !slugs.includes(selected)) slugs.unshift(selected);
+  state.kanban.paintingPick = true;
+  try {
+    if (pick && slugs.length) {
+      const same = pick.options.length === slugs.length
+        && slugs.every((slug, index) => pick.options[index]?.value === slug);
+      if (!same) {
+        pick.replaceChildren();
+        for (const slug of slugs) {
+          const option = document.createElement("option");
+          option.value = slug;
+          option.textContent = slug;
+          pick.append(option);
+        }
+      }
+      if (pick.value !== selected) pick.value = selected;
+      pick.hidden = false;
+      if (crumb) crumb.hidden = true;
+    } else {
+      if (pick) pick.hidden = true;
+      if (crumb) {
+        crumb.hidden = false;
+        crumb.textContent = selected;
+      }
+    }
+  } finally {
+    state.kanban.paintingPick = false;
+  }
 }
 
 function kanbanCard(task) {
@@ -9584,7 +9696,7 @@ async function openKanbanDetail(taskId) {
     const message = String(err);
     if (message.includes(KANBAN_LOGIN)) {
       state.kanban.board = {
-        board: state.kanban.board?.board || KANBAN_BOARD,
+        board: state.kanban.board?.board || kanbanRequestSlug(state.kanban.explicit),
         columns: [],
         unavailable: false,
         needsLogin: true,
@@ -10470,6 +10582,13 @@ async function boot() {
   scheduleOverlayReveal();
   setupWindowChrome();
   setupProximity();
+  const kanbanPick = $("#kanban-board-pick");
+  if (kanbanPick) {
+    kanbanPick.addEventListener("change", (event) => {
+      if (!event.isTrusted || state.kanban.paintingPick) return;
+      void pickKanbanBoard(kanbanPick.value);
+    });
+  }
   const kanbanClose = $("#btn-kanban-close");
   if (kanbanClose) {
     kanbanClose.dataset.hitId = "close:kanban";
@@ -10534,6 +10653,7 @@ async function boot() {
     });
     const settings = await invoke("get_settings");
     state.settings = settings;
+    adoptKanbanPick(settings);
     state.showBotNames = !!settings?.show_bot_names;
     applyInteraction(settings.interaction);
     if (settings.needs_setup) {

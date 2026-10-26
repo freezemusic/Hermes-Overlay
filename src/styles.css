@@ -1803,6 +1803,10 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   color: var(--text-muted);
 }
 
+.kanban-col[data-status="done"] > .kanban-col-head {
+  cursor: pointer;
+}
+
 .kanban-card {
   margin: var(--sp-2);
   padding: var(--sp-3);
@@ -1885,6 +1889,21 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 .kanban-crumb-profile::before {
   content: "/ ";
 }
+
+.kanban-board-pick {
+  font: 400 11px/1 "JetBrains Mono", var(--font-mono);
+  color: #616191;
+  letter-spacing: 0;
+  text-transform: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  max-width: 8rem;
+  cursor: pointer;
+}
+
+.kanban-board-pick[hidden] { display: none; }
 
 .kanban-login {
   flex: 1;

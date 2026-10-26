@@ -25,6 +25,8 @@
     "allow-list-commands",
     "allow-client-command",
     "allow-get-kanban-board",
+    "allow-get-kanban-boards",
+    "allow-set-kanban-board",
     "allow-get-kanban-task",
     "allow-sign-in-kanban",
     "allow-patch-kanban-task",

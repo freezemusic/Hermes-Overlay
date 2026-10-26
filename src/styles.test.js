@@ -505,6 +505,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.morph\[data-orb-covered="1"\] \.morph-orb \{[^}]*pointer-events:\s*none !important/s);
   assert.match(css, /\.kanban-panel:has\(> \.kanban-empty:not\(\[hidden\]\)\) > \.kanban \{[^}]*display:\s*none/s);
   assert.match(css, /\.kanban-crumb-profile \{[^}]*JetBrains Mono/s);
+  assert.match(css, /\.kanban-board-pick \{[^}]*JetBrains Mono/s);
+  assert.match(css, /\.kanban-board-pick \{[^}]*#616191/s);
+  assert.match(css, /\.kanban-col\[data-status="done"\] > \.kanban-col-head \{[^}]*cursor:\s*pointer/s);
   assert.match(css, /\.settings-panel \.bot-row input\[type="checkbox"\] \{[^}]*width:\s*14px/s);
   assert.doesNotMatch(css, /\.bot-row input\[type="checkbox"\] \{[^}]*width:\s*16px/s);
   assert.match(css, /\.alt-warning::before \{[^}]*background:\s*var\(--nous-orange\)/s);

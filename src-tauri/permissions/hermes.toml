@@ -59,6 +59,16 @@ description = "Read the kanban board from hermes serve on port 9119."
 commands.allow = ["get_kanban_board"]
 
 [[permission]]
+identifier = "allow-get-kanban-boards"
+description = "List kanban boards and the server's current board."
+commands.allow = ["get_kanban_boards"]
+
+[[permission]]
+identifier = "allow-set-kanban-board"
+description = "Remember an explicit kanban board pick in config.json."
+commands.allow = ["set_kanban_board"]
+
+[[permission]]
 identifier = "allow-get-kanban-task"
 description = "Read one kanban card from hermes serve."
 commands.allow = ["get_kanban_task"]

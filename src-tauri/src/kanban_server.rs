@@ -32,6 +32,12 @@ pub struct KanbanComment {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+pub struct KanbanBoardList {
+    pub boards: Vec<String>,
+    pub current: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct KanbanTaskDetail {
     pub task: KanbanTask,
@@ -62,6 +68,7 @@ pub fn origin(gateway: &str, configured: &str) -> String {
     format!("{}://{host}:9119", url.scheme())
 }
 
+/// An empty slug omits `?board=` so hermes serve returns its current board.
 pub fn board_url(origin: &str, board: &str) -> String {
     let mut url = format!(
         "{}/api/plugins/kanban/board",
@@ -72,6 +79,13 @@ pub fn board_url(origin: &str, board: &str) -> String {
         url.push_str(&query_escape(board.trim()));
     }
     url
+}
+
+pub fn boards_url(origin: &str) -> String {
+    format!(
+        "{}/api/plugins/kanban/boards",
+        origin.trim_end_matches('/')
+    )
 }
 
 pub fn task_url(origin: &str, id: &str) -> String {
@@ -537,6 +551,76 @@ pub async fn read_board(
         ReadBody::Json(value) => Ok((parse_kanban_board(&value, board), secrets, changed)),
         ReadBody::Missing => Ok((missing_board(board), secrets, changed)),
         ReadBody::Expired => Ok((login_board(board), secrets, changed)),
+    }
+}
+
+fn json_field(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// `current` wins. `is_current` fills it when the response omits that field.
+pub fn parse_kanban_boards(value: &Value) -> KanbanBoardList {
+    let source = value.get("data").unwrap_or(value);
+    let mut current = json_field(source, "current");
+    let mut boards = Vec::new();
+    if let Some(rows) = source.get("boards").and_then(Value::as_array) {
+        for row in rows {
+            let (slug, marked) = match row {
+                Value::String(text) => (text.trim().to_string(), false),
+                Value::Object(_) => {
+                    let from_slug = json_field(row, "slug");
+                    let slug = if from_slug.is_empty() {
+                        json_field(row, "name")
+                    } else {
+                        from_slug
+                    };
+                    let marked = row.get("is_current").and_then(Value::as_bool) == Some(true);
+                    (slug, marked)
+                }
+                _ => continue,
+            };
+            if slug.is_empty() {
+                continue;
+            }
+            if marked && current.is_empty() {
+                current = slug.clone();
+            }
+            if !boards.iter().any(|item: &String| item == &slug) {
+                boards.push(slug);
+            }
+        }
+    }
+    if !current.is_empty() && !boards.iter().any(|item| item == &current) {
+        boards.insert(0, current.clone());
+    }
+    KanbanBoardList { boards, current }
+}
+
+/// GET `/api/plugins/kanban/boards`. A missing route leaves the picker empty.
+/// The board GET still follows the server's current board.
+pub async fn read_boards(
+    http: &Client,
+    origin: &str,
+    mut secrets: KanbanSecrets,
+) -> Result<(KanbanBoardList, KanbanSecrets, bool), HermesError> {
+    let url = boards_url(origin);
+    let mut changed = false;
+    let mut body = get_json(http, &url, &secrets).await?;
+    if matches!(body, ReadBody::Expired) {
+        let renewed = renew(http, origin, &mut secrets).await?;
+        if renewed {
+            changed = true;
+            body = get_json(http, &url, &secrets).await?;
+        }
+    }
+    match body {
+        ReadBody::Json(value) => Ok((parse_kanban_boards(&value), secrets, changed)),
+        ReadBody::Missing | ReadBody::Expired => Ok((KanbanBoardList::default(), secrets, changed)),
     }
 }
 
@@ -1099,6 +1183,181 @@ mod tests {
         assert!(!again_changed);
         assert_eq!(again.message, LOGIN_MESSAGE);
         assert_eq!(*posts.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn an_empty_board_slug_omits_the_query() {
+        assert_eq!(
+            board_url("http://10.10.24.33:9119", ""),
+            "http://10.10.24.33:9119/api/plugins/kanban/board"
+        );
+        assert_eq!(
+            board_url("http://10.10.24.33:9119/", "   "),
+            "http://10.10.24.33:9119/api/plugins/kanban/board"
+        );
+        assert!(
+            !board_url("http://10.10.24.33:9119", "").contains("default"),
+            "an omitted slug must not become board=default"
+        );
+        assert_eq!(
+            board_url("http://10.10.24.33:9119", "mt4"),
+            "http://10.10.24.33:9119/api/plugins/kanban/board?board=mt4"
+        );
+        assert_eq!(
+            boards_url("http://10.10.24.33:9119/"),
+            "http://10.10.24.33:9119/api/plugins/kanban/boards"
+        );
+        let listed = parse_kanban_boards(&json!({
+            "boards": [
+                {"slug": "default"},
+                {"slug": "deskrpg"},
+                {"slug": "mt4", "is_current": true}
+            ],
+            "current": "mt4"
+        }));
+        assert_eq!(listed.current, "mt4");
+        assert_eq!(
+            listed.boards,
+            vec!["default".to_string(), "deskrpg".to_string(), "mt4".to_string()]
+        );
+        let marked = parse_kanban_boards(&json!({
+            "boards": [
+                {"slug": "default", "is_current": false},
+                {"slug": "mt4", "is_current": true}
+            ]
+        }));
+        assert_eq!(marked.current, "mt4");
+        assert_eq!(marked.boards, vec!["default".to_string(), "mt4".to_string()]);
+    }
+
+    fn mt4_board_json() -> String {
+        json!({
+            "board": "mt4",
+            "columns": [
+                {"name": "triage", "tasks": [
+                    {"id": "tr-1", "title": "一分", "status": "triage"},
+                    {"id": "tr-2", "title": "二分", "status": "triage"},
+                    {"id": "tr-3", "title": "三分", "status": "triage"}
+                ]},
+                {"name": "todo", "tasks": [
+                    {"id": "td-1", "title": "一做", "status": "todo"},
+                    {"id": "td-2", "title": "二做", "status": "todo"},
+                    {"id": "td-3", "title": "三做", "status": "todo"},
+                    {"id": "td-4", "title": "四做", "status": "todo"}
+                ]},
+                {"name": "done", "tasks": [
+                    {"id": "dn-1", "title": "完成", "status": "done"},
+                    {"id": "ar-1", "title": "封存", "status": "archived"}
+                ]},
+                {"name": "archived", "tasks": [
+                    {"id": "ar-2", "title": "舊", "status": "archived"}
+                ]}
+            ]
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn the_current_board_is_read_when_the_query_is_omitted() {
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let posts = Arc::new(Mutex::new(0u32));
+        let hits2 = hits.clone();
+        let posts2 = posts.clone();
+        let base = serve(move |head| {
+            let line = head.lines().next().unwrap_or("").to_string();
+            if line.starts_with("POST") {
+                *posts2.lock().unwrap() += 1;
+                return (500, "", r#"{"error":"no writes"}"#.into());
+            }
+            if line.starts_with("GET") && line.contains("/api/plugins/kanban/boards") {
+                hits2.lock().unwrap().push(line);
+                return (
+                    200,
+                    "",
+                    r#"{"boards":[{"slug":"default"},{"slug":"deskrpg"},{"slug":"mt4","is_current":true}],"current":"mt4"}"#
+                        .into(),
+                );
+            }
+            if line.starts_with("GET") && line.contains("/api/plugins/kanban/board") {
+                hits2.lock().unwrap().push(line.clone());
+                if line.contains("board=") {
+                    let name = if line.contains("board=deskrpg") {
+                        "deskrpg"
+                    } else {
+                        "default"
+                    };
+                    return (200, "", format!(r#"{{"board":"{name}","columns":[]}}"#));
+                }
+                return (200, "", mt4_board_json());
+            }
+            (404, "", r#"{"error":"nope"}"#.into())
+        });
+        let http = Client::new();
+        let (board, _, changed) = read_board(&http, &base, "", KanbanSecrets::default())
+            .await
+            .unwrap();
+        assert!(!changed);
+        assert_eq!(board.board, "mt4");
+        assert!(!board.unavailable);
+        assert!(!board.needs_login);
+        let ids: Vec<_> = board
+            .columns
+            .iter()
+            .flat_map(|column| column.tasks.iter().map(|task| task.id.as_str()))
+            .collect();
+        assert!(ids.contains(&"tr-1") && ids.contains(&"td-4") && ids.contains(&"dn-1"), "{ids:?}");
+        assert!(!ids.contains(&"ar-1") && !ids.contains(&"ar-2"), "{ids:?}");
+        assert_eq!(
+            board
+                .columns
+                .iter()
+                .find(|column| column.name == "done")
+                .unwrap()
+                .tasks
+                .len(),
+            1
+        );
+        assert!(board.columns.iter().all(|column| column.name != "archived"));
+        let (empty, _, _) = read_board(&http, &base, "default", KanbanSecrets::default())
+            .await
+            .unwrap();
+        assert_eq!(empty.board, "default");
+        assert_eq!(empty.columns.iter().flat_map(|column| &column.tasks).count(), 0);
+        let (desk, _, _) = read_board(&http, &base, "deskrpg", KanbanSecrets::default())
+            .await
+            .unwrap();
+        assert_eq!(desk.board, "deskrpg");
+        assert_eq!(desk.columns.iter().flat_map(|column| &column.tasks).count(), 0);
+        let (list, _, list_changed) = read_boards(&http, &base, KanbanSecrets::default())
+            .await
+            .unwrap();
+        assert!(!list_changed);
+        assert_eq!(list.current, "mt4");
+        assert_eq!(
+            list.boards,
+            vec!["default".to_string(), "deskrpg".to_string(), "mt4".to_string()]
+        );
+        let lines = hits.lock().unwrap().clone();
+        assert!(
+            lines.iter().any(|line| {
+                line.contains("/api/plugins/kanban/board")
+                    && !line.contains("/boards")
+                    && !line.contains("board=")
+            }),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|line| line.contains("board=default")), "{lines:?}");
+        assert!(
+            lines.iter().any(|line| line.contains("/api/plugins/kanban/boards")),
+            "{lines:?}"
+        );
+        assert_eq!(*posts.lock().unwrap(), 0);
+        let src = include_str!("kanban_server.rs");
+        let end = src.find("#[cfg(test)]").expect("tests");
+        let production = &src[..end];
+        assert!(production.contains("/api/plugins/kanban/boards"));
+        assert!(!production.contains("include_archived"));
+        assert!(!production.contains("println!"));
     }
 
     #[test]

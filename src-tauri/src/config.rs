@@ -74,6 +74,11 @@ pub struct AppConfig {
     /// Empty means the gateway host on port 9119. Not a secret.
     #[serde(default)]
     pub kanban_base_url: String,
+    /// Empty follows the server's current kanban board.
+    /// Written only after an explicit pick. Omitted while empty so an
+    /// untouched config.json stays byte-identical.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kanban_board: String,
     #[serde(default)]
     pub bots: Vec<BotConfig>,
     #[serde(default)]
@@ -140,6 +145,7 @@ impl Default for AppConfig {
             gateway_base_url: String::new(),
             dashboard_base_url: default_dashboard(),
             kanban_base_url: String::new(),
+            kanban_board: String::new(),
             bots: Vec::new(),
             interaction: InteractionConfig::default(),
             show_bot_names: false,
@@ -530,6 +536,36 @@ fn top_level_field(text: &str, name: &str) -> Option<JsonField> {
     }
 }
 
+fn valid_board_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug.len() <= 64
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn insert_kanban_board(text: &str, slug: &str) -> Result<String, String> {
+    let bytes = text.as_bytes();
+    let close = root_object_close(bytes).ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    let mut j = close;
+    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    let field = format!("\n  \"kanban_board\": \"{slug}\"\n");
+    let mut out = String::with_capacity(text.len() + field.len() + 1);
+    if j > 0 && bytes[j - 1] == b'{' {
+        out.push_str(&text[..j]);
+        out.push_str(&field);
+        out.push_str(&text[close..]);
+        return Ok(out);
+    }
+    out.push_str(&text[..j]);
+    out.push(',');
+    out.push_str(&field);
+    out.push_str(&text[close..]);
+    Ok(out)
+}
+
 fn insert_show_bot_names(text: &str) -> Result<String, String> {
     let bytes = text.as_bytes();
     let close = root_object_close(bytes).ok_or_else(|| "設定檔格式唔啱".to_string())?;
@@ -604,6 +640,56 @@ fn write_config_text(path: &Path, text: &str) -> Result<(), String> {
     fs::write(&tmp, text).map_err(|e| format!("寫唔到設定：{e}"))?;
     fs::rename(&tmp, path).map_err(|e| format!("寫唔到設定：{e}"))?;
     Ok(())
+}
+
+/// Writes `kanban_board` only when the user picked a slug.
+/// An empty slug removes the key. A missing key and an empty slug leave
+/// the file byte-identical. Other keys keep their order.
+pub fn store_kanban_board(path: &Path, slug: &str) -> Result<bool, String> {
+    let slug = slug.trim();
+    if !slug.is_empty() && !valid_board_slug(slug) {
+        return Err("看板名稱唔合法".into());
+    }
+    if !path.exists() {
+        if slug.is_empty() {
+            return Ok(false);
+        }
+        let mut cfg = AppConfig::default();
+        cfg.kanban_board = slug.to_string();
+        save(path, &cfg)?;
+        return Ok(true);
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    if !value.is_object() {
+        return Err("設定檔格式唔啱".to_string());
+    }
+    let current = value
+        .get("kanban_board")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if current == slug {
+        return Ok(false);
+    }
+    let patched = if slug.is_empty() {
+        let span = top_level_field(&text, "kanban_board")
+            .ok_or_else(|| "設定檔格式唔啱".to_string())?;
+        remove_top_level_field(&text, &span)
+    } else if let Some(span) = top_level_field(&text, "kanban_board") {
+        let mut out = String::with_capacity(text.len() + slug.len());
+        out.push_str(&text[..span.value_start]);
+        out.push('"');
+        out.push_str(slug);
+        out.push('"');
+        out.push_str(&text[span.value_end..]);
+        out
+    } else {
+        insert_kanban_board(&text, slug)?
+    };
+    write_config_text(path, &patched)?;
+    Ok(true)
 }
 
 /// Writes `show_bot_names` only when the stored value changes.
@@ -1247,6 +1333,7 @@ other:
         let before = fs::read(&path).unwrap();
         let text = String::from_utf8(before.clone()).unwrap();
         assert!(!text.contains("show_bot_names"));
+        assert!(!text.contains("kanban_board"));
         assert!(!load(&path).unwrap().show_bot_names);
         assert_eq!(store_show_bot_names(&path, false).unwrap(), false);
         assert_eq!(fs::read(&path).unwrap(), before);
@@ -1323,6 +1410,70 @@ other:
                 < turned_off.find("\"gateway_base_url\"").unwrap()
         );
         assert!(load(&ordered).unwrap().gateway_base_url.contains("8642"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn kanban_board_is_written_only_after_an_explicit_pick() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-kanban-board-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let cfg = AppConfig {
+            bots: vec![BotConfig {
+                profile: "mt-coder".into(),
+                display_name: "Coder".into(),
+                color: "#112233".into(),
+                base_url: String::new(),
+                detail: String::new(),
+                session_id: "api_1792573589_f1c99a3b".into(),
+                session_explicit: false,
+                session_anchor: 4.0,
+                enabled: true,
+            }],
+            gateway_base_url: "http://10.10.24.33:8642".into(),
+            ..AppConfig::default()
+        };
+        save(&path, &cfg).unwrap();
+        let before = fs::read(&path).unwrap();
+        let text = String::from_utf8(before.clone()).unwrap();
+        assert!(!text.contains("kanban_board"), "{text}");
+        assert!(load(&path).unwrap().kanban_board.is_empty());
+        assert_eq!(store_kanban_board(&path, "").unwrap(), false);
+        assert_eq!(store_kanban_board(&path, "   ").unwrap(), false);
+        assert!(store_kanban_board(&path, "../mt4").is_err());
+        assert!(store_kanban_board(&path, "board=default").is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(store_kanban_board(&path, "mt4").unwrap(), true);
+        let picked = fs::read(&path).unwrap();
+        assert_ne!(picked, before);
+        let picked_text = String::from_utf8(picked.clone()).unwrap();
+        assert!(picked_text.contains("\"kanban_board\": \"mt4\""));
+        assert_eq!(picked_text.matches("kanban_board").count(), 1);
+        assert!(picked_text.contains("api_1792573589_f1c99a3b"));
+        assert!(picked_text.contains("http://10.10.24.33:8642"));
+        assert!(!picked_text.contains("kanban_base_url"));
+        assert_eq!(load(&path).unwrap().kanban_board, "mt4");
+        assert_eq!(store_kanban_board(&path, "mt4").unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), picked);
+        assert_eq!(store_kanban_board(&path, "deskrpg").unwrap(), true);
+        let switched = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+        assert_eq!(switched.matches("kanban_board").count(), 1);
+        assert!(switched.contains("\"kanban_board\": \"deskrpg\""));
+        assert!(!switched.contains("mt4"));
+        assert!(switched.contains("api_1792573589_f1c99a3b"));
+        assert_eq!(store_kanban_board(&path, "").unwrap(), true);
+        let cleared = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+        assert!(!cleared.contains("kanban_board"), "{cleared}");
+        assert!(cleared.contains("api_1792573589_f1c99a3b"));
+        assert!(load(&path).unwrap().kanban_board.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

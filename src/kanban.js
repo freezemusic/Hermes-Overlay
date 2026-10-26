@@ -5,7 +5,25 @@ export const KANBAN_POLL_MS = 5_000;
 export const KANBAN_EMPTY = "未裝 overlay-slash kanban，看板唔會出現。";
 export const KANBAN_UNAVAILABLE = "呢部 Hermes 未有看板。伺服器冇提供看板功能。";
 export const KANBAN_LOGIN = "要登入 Kanban";
-export const KANBAN_BOARD = "default";
+
+/** Empty follows the server's current board. A slug is only an explicit pick. */
+export function kanbanRequestSlug(explicit) {
+  return String(explicit || "").trim();
+}
+
+/** Done starts collapsed so a long done column stays a count. */
+export function columnCollapsed(name, doneOpen) {
+  return String(name || "") === "done" && !doneOpen;
+}
+
+/** An explicit pick wins. Otherwise show the server current board. */
+export function pickerSelection(explicit, current, shown) {
+  const pick = kanbanRequestSlug(explicit);
+  if (pick) return pick;
+  const live = kanbanRequestSlug(current);
+  if (live) return live;
+  return kanbanRequestSlug(shown);
+}
 
 /** 404 or a missing kanban route. A sign-in prompt is not a 404. */
 export function kanbanUnavailable(message) {
@@ -96,7 +114,7 @@ export function columnsFromTasks(tasks) {
 export function normalizeBoard(payload) {
   if (payload?.needs_login || payload?.needsLogin) {
     return {
-      board: payload.board || KANBAN_BOARD,
+      board: kanbanRequestSlug(payload.board),
       columns: [],
       unavailable: false,
       needsLogin: true,
@@ -105,7 +123,7 @@ export function normalizeBoard(payload) {
   }
   if (!payload || payload.unavailable) {
     return {
-      board: payload?.board || KANBAN_BOARD,
+      board: kanbanRequestSlug(payload?.board),
       columns: [],
       unavailable: true,
       needsLogin: false,
@@ -114,7 +132,7 @@ export function normalizeBoard(payload) {
   }
   const tasks = tasksOf(payload);
   return {
-    board: payload.board || KANBAN_BOARD,
+    board: kanbanRequestSlug(payload.board),
     columns: columnsFromTasks(tasks),
     unavailable: false,
     needsLogin: false,

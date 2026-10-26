@@ -177,6 +177,7 @@ struct PublicSettings {
     gateway_base_url: String,
     dashboard_base_url: String,
     kanban_base_url: String,
+    kanban_board: String,
     kanban_server_url: String,
     has_kanban_login: bool,
     has_dashboard_token: bool,
@@ -776,6 +777,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         mode: cfg.mode().into(),
         kanban_server_url: kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url),
         kanban_base_url: cfg.kanban_base_url,
+        kanban_board: cfg.kanban_board,
         gateway_base_url: cfg.gateway_base_url,
         dashboard_base_url: cfg.dashboard_base_url,
         has_kanban_login,
@@ -933,6 +935,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         gateway_base_url,
         dashboard_base_url,
         kanban_base_url,
+        kanban_board: previous.kanban_board,
         bots,
         interaction,
         show_bot_names: input.show_bot_names,
@@ -1809,6 +1812,11 @@ fn kanban_auth(cfg: &AppConfig) -> Result<(String, String), String> {
     Err("未有 API 金鑰，看板開唔到。".into())
 }
 
+/// Empty follows the server current board. A slug is sent only after a pick.
+fn kanban_slug(board: Option<String>) -> String {
+    board.unwrap_or_default().trim().to_string()
+}
+
 #[tauri::command]
 async fn get_kanban_board(
     app: AppHandle,
@@ -1816,12 +1824,7 @@ async fn get_kanban_board(
     board: Option<String>,
 ) -> Result<hermes::KanbanBoard, String> {
     let cfg = load_config(&app)?;
-    let slug = board.unwrap_or_else(|| "default".into());
-    let slug = if slug.trim().is_empty() {
-        "default".to_string()
-    } else {
-        slug
-    };
+    let slug = kanban_slug(board);
     if cfg.mode() == "mock" {
         return Ok(hermes::KanbanBoard {
             board: slug,
@@ -1998,6 +2001,48 @@ async fn get_kanban_task(
         let _ = store_kanban_secrets(&next);
     }
     Ok(detail)
+}
+
+#[tauri::command]
+async fn get_kanban_boards(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<kanban_server::KanbanBoardList, String> {
+    let cfg = load_config(&app)?;
+    if cfg.mode() == "mock" {
+        return Ok(kanban_server::KanbanBoardList::default());
+    }
+    let origin = kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url);
+    let secrets = load_kanban_secrets();
+    let (list, next, changed) = kanban_server::read_boards(&state.http, &origin, secrets)
+        .await
+        .map_err(|err| kanban_server::explain_kanban(&err))?;
+    if changed {
+        let _ = store_kanban_secrets(&next);
+    }
+    Ok(list)
+}
+
+#[tauri::command]
+async fn set_kanban_board(app: AppHandle, board: String) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || set_kanban_board_sync(app, board))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn set_kanban_board_sync(app: AppHandle, board: String) -> Result<PublicSettings, String> {
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    config::store_kanban_board(&path, &board)?;
+    drop(_guard);
+    drop(state);
+    load_public_settings(app)
 }
 
 #[derive(Deserialize)]
@@ -2591,7 +2636,9 @@ pub fn run() {
             list_commands,
             client_command,
             get_kanban_board,
+            get_kanban_boards,
             get_kanban_task,
+            set_kanban_board,
             sign_in_kanban,
             patch_kanban_task,
             list_cron_jobs,
@@ -2665,6 +2712,12 @@ mod tests {
         assert!(!task_body.contains("explain("));
         assert!(board_body.contains("if changed"));
         assert!(board_body.contains("store_kanban_secrets"));
+        let slug_end = src[board..].find("fn load_kanban_secrets").expect("secrets");
+        let slug_body = &src[board..board + slug_end];
+        assert!(slug_body.contains("kanban_slug"));
+        assert!(!slug_body.contains("\"default\""));
+        assert!(!slug_body.contains("store_kanban_board"));
+        assert!(!slug_body.contains("config::save"));
         assert!(task_body.contains("store_kanban_secrets"));
         let store = src.find("fn store_kanban_secrets").expect("store");
         let store_body = &src[store..store + 700];
@@ -2672,6 +2725,29 @@ mod tests {
         assert!(store_body.contains("KANBAN_REFRESH_ACCOUNT"));
         assert!(!store_body.contains("println!"));
         assert!(!store_body.contains("eprintln!"));
+    }
+
+    #[test]
+    fn kanban_slug_follows_the_server_current_board() {
+        assert_eq!(super::kanban_slug(None), "");
+        assert_eq!(super::kanban_slug(Some("  ".into())), "");
+        assert_eq!(super::kanban_slug(Some("mt4".into())), "mt4");
+        assert_eq!(super::kanban_slug(Some("default".into())), "default");
+        let src = include_str!("lib.rs");
+        let save = src.find("fn save_settings_sync").expect("save");
+        let save_end = src[save..].find("async fn probe_gateway").expect("probe");
+        let save_body = &src[save..save + save_end];
+        assert!(save_body.contains("kanban_board: previous.kanban_board"));
+        let boards = src.find("async fn get_kanban_boards").expect("boards");
+        let set = src.find("async fn set_kanban_board").expect("set");
+        let boards_body = &src[boards..set];
+        assert!(boards_body.contains("read_boards"));
+        assert!(!boards_body.contains("store_kanban_board"));
+        assert!(!boards_body.contains("config::save"));
+        let set_end = src[set..].find("struct KanbanPatch").expect("patch");
+        let set_body = &src[set..set + set_end];
+        assert!(set_body.contains("store_kanban_board"));
+        assert!(!set_body.contains("read_board"));
     }
 
     fn invoke_commands() -> Vec<String> {

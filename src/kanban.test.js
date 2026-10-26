@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
 import {
   KANBAN_EMPTY,
   KANBAN_LOGIN,
@@ -8,6 +9,9 @@ import {
   KANBAN_STATUSES,
   boardFingerprint,
   kanbanChangeLine,
+  kanbanRequestSlug,
+  columnCollapsed,
+  pickerSelection,
   columnsFromTasks,
   moveTask,
   normalizeBoard,
@@ -133,4 +137,60 @@ test("404 is an empty state and owner colour follows the bot", () => {
     boardFingerprint({ unavailable: true, message: KANBAN_UNAVAILABLE, columns: [] }),
     boardFingerprint(login),
   );
+});
+
+test("an omitted slug follows the current board and done starts collapsed", () => {
+  assert.equal(kanbanRequestSlug(""), "");
+  assert.equal(kanbanRequestSlug(undefined), "");
+  assert.equal(kanbanRequestSlug("  "), "");
+  assert.equal(kanbanRequestSlug("mt4"), "mt4");
+  assert.equal(kanbanRequestSlug(" default "), "default");
+  const board = normalizeBoard({
+    board: "mt4",
+    columns: [
+      {
+        name: "done",
+        tasks: [
+          { id: "d", title: "完成", status: "done" },
+          { id: "a", title: "封存", status: "archived" },
+        ],
+      },
+      { name: "todo", tasks: [{ id: "t", title: "未做", status: "todo" }] },
+      { name: "triage", tasks: [{ id: "g", title: "分", status: "triage" }] },
+    ],
+  });
+  assert.equal(board.board, "mt4");
+  assert.equal(board.columns.find((column) => column.name === "done").tasks.length, 1);
+  assert.equal(board.columns.find((column) => column.name === "archived"), undefined);
+  assert.equal(columnCollapsed("done", false), true);
+  assert.equal(columnCollapsed("done", true), false);
+  assert.equal(columnCollapsed("todo", false), false);
+  assert.equal(columnCollapsed("triage", false), false);
+  assert.equal(pickerSelection("", "mt4", ""), "mt4");
+  assert.equal(pickerSelection("", "", "mt4"), "mt4");
+  assert.equal(pickerSelection("deskrpg", "mt4", "mt4"), "deskrpg");
+  assert.equal(normalizeBoard({ columns: [{ name: "todo", tasks: [] }] }).board, "");
+  assert.equal(normalizeBoard({ unavailable: true }).board, "");
+  const main = fs.readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(html, /id="kanban-board-pick"/);
+  assert.doesNotMatch(html, /id="kanban-crumb-profile">default</);
+  assert.doesNotMatch(main, /KANBAN_BOARD/);
+  const reader = main.slice(main.indexOf("async function readKanbanPayload"), main.indexOf("async function pickKanbanBoard"));
+  assert.match(reader, /get_kanban_board/);
+  assert.match(reader, /get_kanban_boards/);
+  assert.match(reader, /kanbanBoardArgs\(\)/);
+  assert.doesNotMatch(reader, /set_kanban_board/);
+  assert.doesNotMatch(reader, /"default"/);
+  const pick = main.slice(main.indexOf("async function pickKanbanBoard"), main.indexOf("async function refreshKanban"));
+  assert.match(pick, /set_kanban_board/);
+  const refresh = main.slice(main.indexOf("async function refreshKanban"), main.indexOf("function commitKanban"));
+  assert.match(refresh, /readKanbanPayload/);
+  assert.doesNotMatch(refresh, /set_kanban_board/);
+  assert.doesNotMatch(refresh, /"default"/);
+  const paint = main.slice(main.indexOf("function paintKanban"), main.indexOf("function kanbanCard"));
+  assert.match(paint, /columnCollapsed/);
+  assert.match(paint, /is-collapsed/);
+  assert.doesNotMatch(paint, /set_kanban_board/);
+  assert.doesNotMatch(main, /include_archived/);
 });

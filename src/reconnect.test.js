@@ -194,7 +194,11 @@ test("opening the panel or the network returning retries immediately", async () 
 test("the recover path only reads kanban, cron, profiles, and bot chat", () => {
   const main = fs.readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const body = main.slice(main.indexOf("async function recoverGateway"), main.indexOf("function applyRoster"));
-  assert.match(body, /get_kanban_board/);
+  assert.match(body, /readKanbanPayload/);
+  const reader = main.slice(main.indexOf("async function readKanbanPayload"), main.indexOf("async function pickKanbanBoard"));
+  assert.match(reader, /get_kanban_board/);
+  assert.match(reader, /get_kanban_boards/);
+  assert.doesNotMatch(reader, /set_kanban_board/);
   assert.match(body, /sync_profiles/);
   assert.match(body, /list_cron_jobs/);
   assert.match(body, /refreshBotQuiet/);
