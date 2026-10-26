@@ -49,7 +49,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：收埋時有 pending approval，再開之後張卡喺對話底、輸入框上面。之後用戶自己捲上唔好被拉返底。
 - 狀態：❓ / ❓。
 
-**R-AP-06** Hermes `clarify`（問用戶）出一張卡，同批准卡一齊。小標題「要你答」。同一時間只得一張。有選擇時第一個標「推薦」，送出嘅係選項原文，唔係「推薦」兩個字。冇選擇就係自由文字，空嘅「送出」停用。「跳過」送 `answer: ""`。多選送 JSON array 字串。`stale_generation`（HTTP 409）顯示「呢條問題已經過時」並收起。`clarify.settled` 或 `already_resolved` 收卡。冇 `timeout_s` 就倒數 600 秒；到時顯示「時間到，個 bot 會自己繼續」，唔自動代答。等緊答時狀態係「等你答」；批卡優先於澄清卡。SSE 斷咗或者再開面板，用 `GET /v1/runs/{id}` 嘅 `pending_controls` 補卡，並且同批准卡一樣貼底。面板收埋時澄清卡共用光球 `has-approval` 標記。
+**R-AP-06** Hermes `clarify`（問用戶）出一張卡，同批准卡一齊。小標題「要你答」。同一時間只得一張。有選擇時第一個標「推薦」，送出嘅係選項原文，唔係「推薦」兩個字。冇選擇就係自由文字，空嘅「送出」停用。「跳過」送 `answer: ""`。多選送 JSON array 字串。`stale_generation`（HTTP 409）顯示「呢條問題已經過時」並收起。`clarify.settled` 或 `already_resolved` 收卡。冇 `timeout_s` 就倒數 600 秒；到時顯示「時間到，個 bot 會自己繼續」，唔自動代答。等緊答時狀態係「等你答」；批卡優先於澄清卡。SSE 斷咗或者再開面板，用 `GET /v1/runs/{id}` 嘅 `pending_controls` 補卡，並且同批准卡一樣貼底。面板收埋時澄清卡共用光球 `has-approval` 標記。多選撳「送出」先讀當下勾選。批卡同澄清卡一齊等，狀態係「等緊批准」。補卡之後澄清係「等你答」，有批卡就仍然係「等緊批准」。過時卡收起之後留喺收起，唔再貼返對話底。events 斷線用退避重連，預算大約 60 秒，並且先 GET run 先至顯示連線錯誤；run 仲在或者有未答嘅卡就繼續跟到完結。
 - 來源：Devon（2026-10-26，對過 NousResearch hermes-agent v0.22.5 `56b6a31`）。`session_api_turn.py` 嘅 chat sink 只轉發 `approval.request`，`clarify.request` 會掉。澄清只出現喺 `POST /v1/runs` 然後 `GET /v1/runs/{id}/events`（`id:` 係 seq，事件名喺 JSON `event`，唔係 SSE `event:`）。回覆係 `POST /v1/runs/{id}/clarify`，body 剛好 `{request_id, execution_generation, answer}`。`stale_generation` 係 409，唔係 200 嘅 status。`clarify.settled` 只有 `prompt_id` 同 `execution_generation`。`pending_controls` 只喺 admission `started` 先出現。events 斷線唔會停 run；新一次傳送頂走舊 reader 先會對嗰個 run `POST /stop`。用戶自己撳停止仍然只停一次。寫入門檻仍然係 `api_server`／`bot_room`，`permission_denied` 照舊只可以睇。
 - 驗收（盒）：mock gateway 覆蓋單選、多選、自由文字、跳過、過時、settled、逾時、SSE 重連同 `pending_controls` 恢復。唔自動批准、唔自動代答。
 - 狀態：❓ / ✅(單元測試)；Win 未再驗。
@@ -58,12 +58,12 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 ## 停止同忙碌發送（R-ST）
 
-**R-ST-01** 「停止」打 `POST /p/{profile}/v1/runs/{run_id}/stop`，冇 body（Hermes 0.22.5 `api_server.py:89`，handler `api_server_runs.py:1453`）。`run_id` 係最新一條 `run.started` 嘅 admission request id。排隊輪完結之後再開嘅慢回覆，停止打去嗰條仲活躍嘅 id，唔好打去已經完結嘅排隊 id。呢下唔切斷 SSE：繼續聽直到串流 `run.cancelled` 或者結束。串流確認取消，先顯示「已停止」。HTTP 409 `run_not_active` 唔當停止成功：改打而家嘅活躍 id，或者再對一次；忙碌狀態保持真實，畫面唔好變「閒置」或者「已停止」而伺服器嗰輪仲行。舊 run 嘅 `done`／`status` 唔可以清走新 run 嘅忙碌。其他失敗只顯示「停止未送到。」，唔顯示原始錯誤，唔記錄金鑰或者 body。
+**R-ST-01** 「停止」打 `POST /p/{profile}/v1/runs/{run_id}/stop`，冇 body（Hermes 0.22.5 `api_server.py:89`，handler `api_server_runs.py:1453`）。`run_id` 係最新一條 `run.started` 嘅 admission request id。排隊輪完結之後再開嘅慢回覆，停止打去嗰條仲活躍嘅 id，唔好打去已經完結嘅排隊 id。呢下唔切斷 SSE：繼續聽直到串流 `run.cancelled` 或者結束。串流確認取消，先顯示「已停止」。HTTP 409 `run_not_active` 唔當停止成功：改打而家嘅活躍 id，或者再對一次；忙碌狀態保持真實，畫面唔好變「閒置」或者「已停止」而伺服器嗰輪仲行。舊 run 嘅 `done`／`status` 唔可以清走新 run 嘅忙碌。其他失敗只顯示「停止未送到。」，唔顯示原始錯誤，唔記錄金鑰或者 body。409 之後再 GET 嗰條 run；全部目標都已經完結先清忙碌（失敗顯示「回覆失敗」，否則「閒置」），唔顯示「已停止」。仲有一條未完結就保持忙碌。
 - 來源：Devon（2026-10-26，Hermes gateway 0.22.5）。真用：mt-orch 撳停止之後本地只係唔再聽，gateway 嗰輪仲行。盒測 v114：慢回覆 → 排隊 → 新慢回覆 → 停止，409 打去已完結嘅排隊 `run_id`，畫面變閒置。
 - 驗收（盒）：mock gateway 見到 `POST /p/mt-coder/v1/runs/{活躍 run_id}/stop`、冇 body；已完結 id 嘅 409 之後會打去活躍 id；409 本身唔顯示「已停止」；使用者停止唔會設 reader abort。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
-**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常嗰條傳送（`POST /v1/runs`，舊 gateway 冇呢條先至 `POST /api/sessions/{id}/chat/stream`）。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 顯示「個 bot 仲忙，呢句未送出。」。
+**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常嗰條傳送（`POST /v1/runs`，舊 gateway 冇呢條先至 `POST /api/sessions/{id}/chat/stream`）。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。有句排住喺度，狀態行顯示「排隊中」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 顯示「個 bot 仲忙，呢句未送出。」。
 - 來源：Devon（2026-10-26）。真用：訊息排咗 admission seq 8，約一分鐘後先答，畫面冇排隊狀態。
 - 驗收（盒）：steer 路徑同 body 只有 `input`；409 變排隊句；忙碌發送唔再係直接 `return`。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
@@ -173,7 +173,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 ## 3. 計劃視窗（R-PL）
 
-**R-PL-01** 只有 bot 真係出咗計劃，先喺該 bot 面板**右邊**貼一個計劃視窗（右邊放唔落就貼左；兩邊都放唔落就鉗入畫面，成個計劃要留喺螢幕入面）；串流緊嘅氣泡唔算計劃；新計劃到就換成最新嗰份。`.hermes/plans/*.md` 同 `.hermes\plans\*.md` 都算路徑；`.hermes` 前面嘅反斜線被吃掉（`Workbench.hermes\plans\`）仍然算。冇 `#` 標題、但成篇至少 200 字而且有呢條路徑，都當計劃。標題跟 `#` 標題；冇標題就用檔名，去掉日期前綴同 `.md`（`2026-10-26_210008-mt5-wrapper-next.md` → `mt5-wrapper-next`），再冇就「計劃」。一行短句只提到路徑唔算。對話氣泡同計劃預覽要原樣顯示 Windows 路徑嘅反斜線。落定嗰一幀就要畫到計劃外緣（邊線、1px 環、角），唔好等下一幀先補一條 1–3px 線。落定嗰幀同時把計劃放上 hit host；之後唔好再清 `translateZ(0)`，亦唔好再寫一次已經空咗嘅 `left`／`right`。重開都要沿住同一條揭示揭開：計劃返入 shell 之後清走 hosted 嘅 `left`／`right`，唔好停喺面板下面大約十格先一次過彈出。R-PL-04 曲線唔改。
+**R-PL-01** 只有 bot 真係出咗計劃，先喺該 bot 面板**右邊**貼一個計劃視窗（右邊放唔落就貼左；兩邊都放唔落就鉗入畫面，成個計劃要留喺螢幕入面）；串流緊嘅氣泡唔算計劃；新計劃到就換成最新嗰份。`.hermes/plans/*.md` 同 `.hermes\plans\*.md` 都算路徑；`.hermes` 前面嘅反斜線被吃掉（`Workbench.hermes\plans\`）仍然算。冇 `#` 標題、但成篇至少 200 字而且有呢條路徑，都當計劃。標題跟 `#` 標題；冇標題就用檔名，去掉日期前綴同 `.md`（`2026-10-26_210008-mt5-wrapper-next.md` → `mt5-wrapper-next`），再冇就「計劃」。一行短句只提到路徑唔算。對話氣泡同計劃預覽要原樣顯示 Windows 路徑嘅反斜線。落定嗰一幀就要畫到計劃外緣（邊線、1px 環、角），唔好等下一幀先補一條 1–3px 線。落定嗰幀同時把計劃放上 hit host；之後唔好再清 `translateZ(0)`，亦唔好再寫一次已經空咗嘅 `left`／`right`。重開都要沿住同一條揭示揭開：計劃返入 shell 之後清走 hosted 嘅 `left`／`right`，唔好停喺面板下面大約十格先一次過彈出。落定嗰幀把計劃 opacity 定做 1，之後唔好用揭示 clip 蓋過已經落定嘅外緣。R-PL-04 曲線唔改。
 - 來源：Devon；SPEC §6.6–6.7。2026-10-26 手提：mt-orch 把整份計劃貼成普通回覆，路徑係 `C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-10-26_210008-mt5-wrapper-next.md`，畫面未開計劃窗。驗收（盒＋Windows）：冇計劃嘅 session 唔出；送 `/plan` → 出；第二份取代第一份。上面嗰條 Windows 路徑（連吃掉 `\.` 嗰種）喺長文入面會開計劃窗，短句提到路徑唔會。狀態：❓ / ❓。
 
 **R-PL-02** 有「關閉計劃視窗」掣（✕，無障礙名稱「關閉計劃視窗」）；關咗之後對話入面「睇計劃」可以再開。撳 ✕ 同一回合就要喺命中區抽走計劃矩形，唔使收埋面板再打開。睇計劃清走 dismiss 並重新畫出計劃，唔使重開 app。

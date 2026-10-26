@@ -2386,6 +2386,7 @@ function presentSeamFinal(shell, anim) {
   shell.style.clipPath = value;
   const plan = planNode(shell);
   if (plan && seamPhase(plan) !== "grown") setSeamPhase(plan, "grown", { dom: false });
+  if (plan && plan.style.opacity !== "1") plan.style.opacity = "1";
   hostOpenPlan(shell);
   if (!debugFile.enabled) return;
   let used = "";
@@ -2872,7 +2873,7 @@ function growPlan(shell, token) {
       holdMotion(shell);
       shell.style.clipPath = openClip;
     }
-    if (shell.style.clipPath !== openClip) shell.style.clipPath = openClip;
+    if (!shell._seamFinal && shell.style.clipPath !== openClip) shell.style.clipPath = openClip;
     if (!plan.parentElement?.classList?.contains("plan-hit-host")) plan.style.pointerEvents = "";
     if (fit.style.visibility !== "visible") fit.style.visibility = "visible";
     paintOpenedHeldLook();
@@ -5228,8 +5229,15 @@ function setBotStatus(id, text, statusState) {
   const thread = threadFor(id);
   const waitingApproval = thread.messages.some(approvalPending) || parkedApproval(thread);
   const waitingClarify = thread.messages.some(clarifyPending) || parkedClarify(thread);
-  if (String(text).includes("思考中") && waitingApproval) text = APPROVAL_WAIT_LABEL;
-  else if (String(text).includes("思考中") && waitingClarify) text = CLARIFY_WAIT_LABEL;
+  const raw = String(text);
+  if (waitingApproval && (raw.includes("思考中") || raw === CLARIFY_WAIT_LABEL)) text = APPROVAL_WAIT_LABEL;
+  else if (waitingClarify && raw.includes("思考中")) text = CLARIFY_WAIT_LABEL;
+  else if (
+    thread.queued
+    && !waitingApproval
+    && !waitingClarify
+    && (raw.includes("思考中") || raw === "排隊中，等佢講完就會行")
+  ) text = "排隊中";
   thread.status = text;
   thread.statusState = statusState;
   if (statusState === "busy") state.busy.add(id);
@@ -6577,6 +6585,11 @@ async function recoverRunControls(id) {
       thread.bySession.set(thread.liveSessionId, merged);
     }
     if (merged.some(clarifyPending)) armClarifyClock();
+    if (merged.some(approvalPending) || parkedApproval(thread)) {
+      setBotStatus(id, APPROVAL_WAIT_LABEL, "busy");
+    } else if (merged.some(clarifyPending) || parkedClarify(thread)) {
+      setBotStatus(id, CLARIFY_WAIT_LABEL, "busy");
+    }
     if (panelFor(id)) renderChat(id);
     if (merged.some(approvalPending) || merged.some(clarifyPending)) pinChat(id);
     paintApprovalBadge(id);
@@ -6659,7 +6672,8 @@ function handleHermes(payload) {
       if (runIsOnScreen(id)) appendMessage(id, card);
       else messages.push(card);
     }
-    setBotStatus(id, CLARIFY_WAIT_LABEL, "busy");
+    const waitingApproval = thread.messages.some(approvalPending) || parkedApproval(thread);
+    setBotStatus(id, waitingApproval ? APPROVAL_WAIT_LABEL : CLARIFY_WAIT_LABEL, "busy");
     armClarifyClock();
     if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
     paintApprovalBadge(id);
@@ -7661,6 +7675,16 @@ async function stopActive(id) {
     const again = stopAfterMiss(thread, posted);
     if (result === "not_active" && again.retry) {
       result = await invoke("stop_chat", { profile, runId: again.retry });
+    }
+    if (typeof result === "string" && result.startsWith("terminal:")) {
+      const ended = result.slice("terminal:".length);
+      thread.queued = false;
+      thread.watchReply = false;
+      thread.runId = "";
+      clearRunSession(thread);
+      setBotStatus(profile, ended === "failed" ? "回覆失敗" : "閒置", ended === "failed" ? "error" : "idle");
+      void catchUpSession(profile);
+      return;
     }
     if (result === "not_active") {
       void catchUpSession(profile);

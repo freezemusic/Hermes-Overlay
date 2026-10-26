@@ -2982,14 +2982,36 @@ async fn request_stop(
     let bot = bot_or_err(&cfg, profile)?;
     let key = profile_key(profile)?;
     let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let mut ended = String::new();
+    let mut still_open = false;
     for run_id in targets {
         match hermes::stop_run(&state.http, &root, &key, &run_id)
             .await
             .map_err(|_| "停止未送到。".to_string())?
         {
             hermes::StopOutcome::Stopping => return Ok("stopping".into()),
-            hermes::StopOutcome::NotActive => {}
+            hermes::StopOutcome::NotActive => match hermes::fetch_run(&state.http, &root, &key, &run_id).await {
+                Ok(value) => {
+                    let status = value.get("status").and_then(|item| item.as_str()).unwrap_or("");
+                    let pending = value
+                        .get("pending_controls")
+                        .and_then(|item| item.as_array())
+                        .map(|items| !items.is_empty())
+                        .unwrap_or(false);
+                    if hermes::terminal_run_status(status) && !pending {
+                        if ended.is_empty() {
+                            ended = status.to_string();
+                        }
+                    } else if pending || !status.is_empty() {
+                        still_open = true;
+                    }
+                }
+                Err(_) => still_open = true,
+            },
         }
+    }
+    if !still_open && !ended.is_empty() {
+        return Ok(format!("terminal:{ended}"));
     }
     Ok("not_active".into())
 }

@@ -16,8 +16,9 @@ export function clarifyPending(message) {
   return message?.role === "clarify" && (message.status === "pending" || message.status === "sending");
 }
 
+/** Pending work stays across a history reload. A stale card is closed and stays closed. */
 export function clarifyKept(message) {
-  return message?.role === "clarify" && ["pending", "sending", "timeout", "stale"].includes(message.status);
+  return message?.role === "clarify" && ["pending", "sending", "timeout"].includes(message.status);
 }
 
 /** Omitted timeout uses the gateway default. Zero or negative means no countdown. */
@@ -146,7 +147,11 @@ export function renderClarifyCard(doc, message, handlers) {
       box.dataset.choice = choice;
       box.checked = selected.includes(choice);
       box.disabled = message.status !== "pending";
-      box.addEventListener("change", () => onToggle(choice, box.checked));
+      box.addEventListener("change", () => {
+        onToggle(choice, box.checked);
+        const live = Array.isArray(message.selected) ? message.selected : [];
+        send.disabled = message.status !== "pending" || live.length === 0;
+      });
       label.appendChild(box);
       label.append(choiceLabel(choice, index));
       actions.appendChild(label);
@@ -160,7 +165,8 @@ export function renderClarifyCard(doc, message, handlers) {
       event.preventDefault();
       event.stopPropagation();
       if (send.disabled) return;
-      onAnswer(clarifyAnswerValue({ choices, multi: true, selected }));
+      const live = Array.isArray(message.selected) ? message.selected : [];
+      onAnswer(clarifyAnswerValue({ choices, multi: true, selected: live }));
     });
     actions.appendChild(send);
   } else if (open) {

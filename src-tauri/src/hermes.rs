@@ -11,8 +11,9 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum HermesError {
@@ -2442,30 +2443,67 @@ fn snapshot_outcome(status: &str) -> &'static str {
     }
 }
 
+enum RunFollow {
+    Done,
+    Live,
+    Dark,
+}
+
+fn remember_control(seen: &mut HashSet<String>, event: &TurnEvent) {
+    let id = match event {
+        TurnEvent::ClarifyRequest { prompt_id, .. } => prompt_id.as_str(),
+        TurnEvent::ApprovalRequest { request_id, .. } => request_id.as_str(),
+        _ => "",
+    };
+    if !id.is_empty() {
+        seen.insert(id.to_string());
+    }
+}
+
+fn control_ids(item: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    for key in ["prompt_id", "request_id"] {
+        let id = json_text(item.get(key));
+        if !id.is_empty() && !ids.iter().any(|have| have == &id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+fn run_still_open(status: &str, pending: bool) -> bool {
+    pending
+        || matches!(
+            status,
+            "started" | "running" | "queued" | "waiting_for_approval" | "stopping" | "accepted"
+        )
+}
+
 async fn finish_open_run<F>(
     http: &Client,
     root: &str,
     key: &str,
     run_id: &str,
     streamed: bool,
+    seen: &mut HashSet<String>,
     mut on_event: F,
-) -> Result<(), HermesError>
+) -> Result<RunFollow, HermesError>
 where
     F: FnMut(TurnEvent),
 {
-    let value = match fetch_run(http, root, key, run_id).await {
-        Ok(value) => value,
-        Err(_) => {
-            return Err(HermesError::Protocol(
-                "串流未有 run.completed / run.failed / run.cancelled 就結束".into(),
-            ));
-        }
-    };
+    let value = fetch_run(http, root, key, run_id).await?;
     let mut streamed = streamed;
     let mut current = run_id.to_string();
     if let Some(controls) = value.get("pending_controls").and_then(Value::as_array) {
         for item in controls {
+            let ids = control_ids(item);
+            if ids.iter().any(|id| seen.contains(id)) {
+                continue;
+            }
             emit_one_control(item, &mut current, &mut streamed, &mut on_event);
+            for id in ids {
+                seen.insert(id);
+            }
         }
     }
     let status = json_text(value.get("status"));
@@ -2489,19 +2527,17 @@ where
             detail,
             run_id: current,
         });
-        return Ok(());
+        return Ok(RunFollow::Done);
     }
-    if pending || matches!(status.as_str(), "queued" | "waiting_for_approval" | "stopping") {
-        // Queued admission, or a card is still waiting. The panel stays busy.
-        return Ok(());
+    if run_still_open(&status, pending) {
+        return Ok(RunFollow::Live);
     }
-    Err(HermesError::Protocol(
-        "串流未有 run.completed / run.failed / run.cancelled 就結束".into(),
-    ))
+    Ok(RunFollow::Dark)
 }
 
-/// Events-SSE disconnect does not stop the run. A newer send aborts this reader
-/// and must POST `/stop`, or the previous turn keeps going beside the new one.
+/// Events-SSE disconnect does not stop the run. Reconnect with backoff for
+/// about a minute, and keep following a live run until it is terminal.
+/// A newer send aborts this reader and must POST `/stop`.
 async fn follow_run_events<F>(
     http: &Client,
     root: &str,
@@ -2517,67 +2553,80 @@ where
     let mut last_id = String::new();
     let mut streamed = false;
     let mut current = run_id.to_string();
-    for attempt in 0..=4u32 {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_millis(40)).await;
+    let mut seen = HashSet::new();
+    let mut outage: Option<Instant> = None;
+    let mut pause = Duration::from_millis(40);
+    loop {
+        if stop.load(Ordering::Relaxed) && !stop_requested.load(Ordering::Relaxed) {
+            let _ = stop_run(http, root, key, &current).await;
+            return Err(HermesError::Cancelled);
+        }
+        if stop_requested.load(Ordering::Relaxed) {
+            return Err(HermesError::Cancelled);
+        }
+        match open_run_events(http, root, key, &current, &last_id).await {
+            Ok(resp) => {
+                match read_sse_body(resp, stop, &mut current, &mut streamed, &mut last_id, |event| {
+                    remember_control(&mut seen, &event);
+                    on_event(event);
+                })
+                .await
+                {
+                    Err(HermesError::Cancelled) => {
+                        if !stop_requested.load(Ordering::Relaxed) {
+                            let _ = stop_run(http, root, key, &current).await;
+                        }
+                        return Err(HermesError::Cancelled);
+                    }
+                    Ok(read) if read.terminal => return Ok(()),
+                    Ok(_)
+                        if stop.load(Ordering::Relaxed)
+                            && !stop_requested.load(Ordering::Relaxed) =>
+                    {
+                        let _ = stop_run(http, root, key, &current).await;
+                        return Err(HermesError::Cancelled);
+                    }
+                    Ok(_)
+                        if stop.load(Ordering::Relaxed)
+                            || stop_requested.load(Ordering::Relaxed) =>
+                    {
+                        return Err(HermesError::Cancelled);
+                    }
+                    Ok(_) | Err(_) => {}
+                }
+            }
+            Err(_) => {}
         }
         if stop.load(Ordering::Relaxed) && !stop_requested.load(Ordering::Relaxed) {
             let _ = stop_run(http, root, key, &current).await;
             return Err(HermesError::Cancelled);
         }
-        let resp = match open_run_events(http, root, key, &current, &last_id).await {
-            Ok(resp) => resp,
-            Err(HermesError::Connect(_))
-            | Err(HermesError::Timeout(_))
-            | Err(HermesError::Transport(_))
-            | Err(HermesError::Http { .. })
-                if attempt < 4 =>
-            {
-                continue;
-            }
-            Err(_) => break,
-        };
-        match read_sse_body(
-            resp,
-            stop,
-            &mut current,
-            &mut streamed,
-            &mut last_id,
-            &mut on_event,
-        )
-        .await
-        {
-            Err(HermesError::Cancelled) => {
-                if !stop_requested.load(Ordering::Relaxed) {
-                    let _ = stop_run(http, root, key, &current).await;
-                }
-                return Err(HermesError::Cancelled);
-            }
-            Err(HermesError::Connect(_))
-            | Err(HermesError::Timeout(_))
-            | Err(HermesError::Transport(_))
-                if attempt < 4 =>
-            {
-                continue;
-            }
-            Err(_) if attempt < 4 => continue,
-            Err(_) => break,
-            Ok(read) if read.terminal => return Ok(()),
-            Ok(_) if stop.load(Ordering::Relaxed) && !stop_requested.load(Ordering::Relaxed) => {
-                let _ = stop_run(http, root, key, &current).await;
-                return Err(HermesError::Cancelled);
-            }
-            Ok(_) if stop.load(Ordering::Relaxed) || stop_requested.load(Ordering::Relaxed) => {
-                return Err(HermesError::Cancelled);
-            }
-            Ok(read) if read.queued => {
-                return finish_open_run(http, root, key, &current, streamed, on_event).await;
-            }
-            Ok(_) if attempt < 4 => continue,
-            Ok(_) => break,
+        if stop_requested.load(Ordering::Relaxed) {
+            return Err(HermesError::Cancelled);
         }
+        let elapsed = match outage {
+            Some(start) => start.elapsed(),
+            None => {
+                outage = Some(Instant::now());
+                Duration::ZERO
+            }
+        };
+        match finish_open_run(http, root, key, &current, streamed, &mut seen, &mut on_event).await {
+            Ok(RunFollow::Done) => return Ok(()),
+            Ok(RunFollow::Live) => {
+                outage = None;
+            }
+            Ok(RunFollow::Dark) | Err(_) => {
+                if elapsed >= Duration::from_secs(60) {
+                    return Err(HermesError::Protocol(
+                        "串流未有 run.completed / run.failed / run.cancelled 就結束".into(),
+                    ));
+                }
+            }
+        }
+        tokio::time::sleep(pause).await;
+        pause = (pause * 2).min(Duration::from_secs(5));
     }
-    finish_open_run(http, root, key, &current, streamed, on_event).await
 }
 
 pub async fn stream_turn<F>(
@@ -3091,7 +3140,7 @@ pub enum SteerOutcome {
     Rejected,
 }
 
-fn terminal_run_status(status: &str) -> bool {
+pub fn terminal_run_status(status: &str) -> bool {
     matches!(
         status,
         "completed" | "failed" | "cancelled" | "canceled" | "interrupted" | "expired"
@@ -5258,27 +5307,28 @@ data: {}\n\
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen2 = seen.clone();
         thread::spawn(move || {
-            let (mut sock, _) = listener.accept().unwrap();
-            let head = read_http(&mut sock);
-            seen2.lock().unwrap().push(head);
-            write_http(
-                &mut sock,
-                "202 Accepted",
-                "application/json",
-                r#"{"run_id":"run_abc","status":"started","replayed":false}"#,
-            );
-            let (mut sock, _) = listener.accept().unwrap();
-            let head = read_http(&mut sock);
-            seen2.lock().unwrap().push(head);
-            let partial = "\
+            let mut sent_partial = false;
+            for _ in 0..4 {
+                let (mut sock, _) = listener.accept().unwrap();
+                let head = read_http(&mut sock);
+                let line = head.lines().next().unwrap_or("").to_string();
+                seen2.lock().unwrap().push(head);
+                if line.contains("POST ") {
+                    write_http(
+                        &mut sock,
+                        "202 Accepted",
+                        "application/json",
+                        r#"{"run_id":"run_abc","status":"started","replayed":false}"#,
+                    );
+                } else if line.contains("/events") && !sent_partial {
+                    sent_partial = true;
+                    let partial = "\
 id: 1\n\
 data: {\"event\":\"clarify.request\",\"run_id\":\"run_abc\",\"prompt_id\":\"p1\",\"execution_generation\":4,\"question\":\"邊個？\",\"choices\":[\"甲\",\"乙\"],\"multi_select\":false,\"timeout_s\":2}\n\
 \n";
-            write_http(&mut sock, "200 OK", "text/event-stream", partial);
-            let (mut sock, _) = listener.accept().unwrap();
-            let head = read_http(&mut sock);
-            seen2.lock().unwrap().push(head);
-            let rest = "\
+                    write_http(&mut sock, "200 OK", "text/event-stream", partial);
+                } else if line.contains("/events") {
+                    let rest = "\
 id: 2\n\
 data: {\"event\":\"approval.request\",\"run_id\":\"run_abc\",\"prompt_id\":\"req_9\",\"execution_generation\":4,\"description\":\"list\",\"command\":\"ls\",\"choices\":[\"once\",\"deny\"]}\n\
 \n\
@@ -5288,7 +5338,16 @@ data: {\"event\":\"clarify.settled\",\"run_id\":\"run_abc\",\"prompt_id\":\"p1\"
 id: 4\n\
 data: {\"event\":\"run.completed\",\"run_id\":\"run_abc\",\"output\":\"\"}\n\
 \n";
-            write_http(&mut sock, "200 OK", "text/event-stream", rest);
+                    write_http(&mut sock, "200 OK", "text/event-stream", rest);
+                } else {
+                    write_http(
+                        &mut sock,
+                        "200 OK",
+                        "application/json",
+                        r#"{"run_id":"run_abc","status":"started","pending_controls":[]}"#,
+                    );
+                }
+            }
         });
         let http = Client::new();
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -5318,8 +5377,13 @@ data: {\"event\":\"run.completed\",\"run_id\":\"run_abc\",\"output\":\"\"}\n\
         assert_eq!(body.as_object().unwrap().len(), 2);
         assert!(reqs[1].contains("GET /p/mt-coder/v1/runs/run_abc/events "));
         assert!(!reqs[1].to_ascii_lowercase().contains("last-event-id"));
-        assert!(reqs[2].contains("last_seq=1"));
-        assert!(reqs[2].to_ascii_lowercase().contains("last-event-id: 1"));
+        let snap_at = reqs
+            .iter()
+            .position(|req| req.contains("GET /p/mt-coder/v1/runs/run_abc ") && !req.contains("/events"))
+            .expect("snapshot");
+        let reconnect_at = reqs.iter().position(|req| req.contains("last_seq=1")).expect("reconnect");
+        assert!(snap_at < reconnect_at);
+        assert!(reqs[reconnect_at].to_ascii_lowercase().contains("last-event-id: 1"));
         drop(reqs);
         let events = events.lock().unwrap();
         assert!(matches!(&events[0], TurnEvent::Started { run_id } if run_id == "run_abc"));
@@ -5365,6 +5429,129 @@ data: {\"event\":\"run.completed\",\"run_id\":\"run_abc\",\"output\":\"\"}\n\
         assert!(turned.contains("session_id"));
         assert!(turned.contains("stream_chat_turn"));
         assert!(!turned.contains("conversation_history"));
+        let follow = src.find("async fn follow_run_events").expect("follow");
+        let follow_end = src[follow..].find("pub async fn stream_turn").expect("stream");
+        let followed = &src[follow..follow + follow_end];
+        assert!(followed.contains("60"));
+        assert!(!followed.contains("0..=4"));
+    }
+
+    #[tokio::test]
+    async fn pending_snapshot_keeps_following_until_the_run_ends() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let mut events = 0usize;
+            let mut snaps = 0usize;
+            for _ in 0..5 {
+                let (mut sock, _) = listener.accept().unwrap();
+                let head = read_http(&mut sock);
+                let line = head.lines().next().unwrap_or("");
+                if line.contains("POST ") {
+                    write_http(
+                        &mut sock,
+                        "202 Accepted",
+                        "application/json",
+                        r#"{"run_id":"run_abc","status":"started"}"#,
+                    );
+                } else if line.contains("/events") {
+                    events += 1;
+                    if events == 1 {
+                        let body = "id: 1\ndata: {\"event\":\"clarify.request\",\"run_id\":\"run_abc\",\"prompt_id\":\"p1\",\"execution_generation\":1,\"question\":\"Q\",\"choices\":[\"甲\"]}\n\n";
+                        write_http(&mut sock, "200 OK", "text/event-stream", body);
+                    } else {
+                        write_http(&mut sock, "200 OK", "text/event-stream", "");
+                    }
+                } else {
+                    snaps += 1;
+                    let body = if snaps == 1 {
+                        r#"{"run_id":"run_abc","status":"started","pending_controls":[{"kind":"clarify","prompt_id":"p1","execution_generation":1,"question":"Q","choices":["甲"]}]}"#
+                    } else {
+                        r#"{"run_id":"run_abc","status":"completed","output":"","pending_controls":[]}"#
+                    };
+                    write_http(&mut sock, "200 OK", "application/json", body);
+                }
+            }
+        });
+        let http = Client::new();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events2 = events.clone();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(
+            &http,
+            &format!("http://{addr}"),
+            "k",
+            "sid",
+            "hello",
+            &stop,
+            &stop_requested,
+            |ev| events2.lock().unwrap().push(ev),
+        )
+        .await
+        .unwrap();
+        let events = events.lock().unwrap();
+        let clarifies = events
+            .iter()
+            .filter(|ev| matches!(ev, TurnEvent::ClarifyRequest { .. }))
+            .count();
+        assert_eq!(clarifies, 1);
+        assert!(matches!(events.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
+    }
+
+    #[tokio::test]
+    async fn events_reconnect_survives_five_drops_while_the_run_stays_live() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let mut drops = 0usize;
+            for _ in 0..12 {
+                let (mut sock, _) = listener.accept().unwrap();
+                let head = read_http(&mut sock);
+                let line = head.lines().next().unwrap_or("");
+                if line.contains("POST ") {
+                    write_http(
+                        &mut sock,
+                        "202 Accepted",
+                        "application/json",
+                        r#"{"run_id":"run_abc","status":"started"}"#,
+                    );
+                } else if line.contains("/events") {
+                    if drops < 5 {
+                        drops += 1;
+                        continue;
+                    }
+                    let body = "id: 1\ndata: {\"event\":\"run.completed\",\"run_id\":\"run_abc\",\"output\":\"\"}\n\n";
+                    write_http(&mut sock, "200 OK", "text/event-stream", body);
+                } else {
+                    write_http(
+                        &mut sock,
+                        "200 OK",
+                        "application/json",
+                        r#"{"run_id":"run_abc","status":"running","pending_controls":[]}"#,
+                    );
+                }
+            }
+        });
+        let http = Client::new();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events2 = events.clone();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(
+            &http,
+            &format!("http://{addr}"),
+            "k",
+            "sid",
+            "hello",
+            &stop,
+            &stop_requested,
+            |ev| events2.lock().unwrap().push(ev),
+        )
+        .await
+        .unwrap();
+        let events = events.lock().unwrap();
+        assert!(matches!(events.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
     }
 
     #[tokio::test]

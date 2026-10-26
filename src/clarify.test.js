@@ -13,6 +13,7 @@ import {
   clarifyBudget,
   clarifyCardFromControl,
   clarifyFailure,
+  clarifyKept,
   clarifyPost,
   clarifyTick,
   mergePendingControls,
@@ -81,8 +82,7 @@ test("multi select posts a JSON array and free text or skip posts a string", () 
   boxes[2].checked = true;
   boxes[2].dispatchEvent(new document.defaultView.Event("change"));
   assert.equal(clarifyAnswerValue({ choices: message.choices, multi: true, selected: ["丙", "甲"] }), "[\"甲\",\"丙\"]");
-  const again = renderClarifyCard(document, message, handlers);
-  const send = [...again.querySelectorAll("button")].find((button) => button.textContent === "送出");
+  const send = [...first.querySelectorAll("button")].find((button) => button.textContent === "送出");
   assert.equal(send.disabled, false);
   send.click();
   assert.equal(posted, "[\"甲\",\"丙\"]");
@@ -180,6 +180,18 @@ test("settled and recovery keep one card and the same pin as approvals", () => {
   assert.match(openBot, /clarifyPending/);
   assert.match(openBot, /pinChat\(id\)/);
   assert.match(css, /\.clarify-heading \{[^}]*font:[^}]*11px/s);
+  assert.equal(clarifyKept({ role: "clarify", status: "stale" }), false);
+  assert.equal(clarifyKept({ role: "clarify", status: "pending" }), true);
+  assert.equal(clarifyKept({ role: "clarify", status: "timeout" }), true);
+  const keptFn = readFileSync(new URL("./clarify.js", import.meta.url), "utf8");
+  const keptSrc = keptFn.slice(keptFn.indexOf("export function clarifyKept"), keptFn.indexOf("export function clarifyBudget"));
+  assert.doesNotMatch(keptSrc, /stale/);
+  const recover = main.slice(main.indexOf("async function recoverRunControls"), main.indexOf("function handleHermes"));
+  assert.match(recover, /APPROVAL_WAIT_LABEL/);
+  assert.match(recover, /CLARIFY_WAIT_LABEL/);
+  const asking = main.slice(main.indexOf('payload.type === "clarify.request"'), main.indexOf('payload.type === "clarify.settled"'));
+  assert.match(asking, /APPROVAL_WAIT_LABEL/);
+  assert.match(asking, /CLARIFY_WAIT_LABEL/);
   for (const file of ["./clarify.js", "./main.js", "../src-tauri/src/hermes.rs", "../src-tauri/src/lib.rs"]) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
     assert.doesNotMatch(source, /unattended_mode/);

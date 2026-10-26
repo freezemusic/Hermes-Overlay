@@ -29,7 +29,10 @@ test("stop waits for the gateway and a reopened panel still catches up", () => {
   assert.doesNotMatch(stop, /noteStopped/);
   assert.match(stop, /catchUpSession/);
   assert.match(stop, /停止未送到。/);
+  assert.match(stop, /startsWith\("terminal:"\)/);
   assert.doesNotMatch(stop, /已停止呢次回覆/);
+  const statusFn = main.slice(main.indexOf("function setBotStatus"), main.indexOf("function cancelReconnect"));
+  assert.match(statusFn, /排隊中/);
   const command = main.slice(main.indexOf("async function sendClientCommand"), main.indexOf("function useMock"));
   assert.match(command, /command === "stop"/);
   assert.doesNotMatch(command, /已停止呢次回覆/);
