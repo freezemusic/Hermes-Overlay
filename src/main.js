@@ -80,6 +80,18 @@ import {
   APPROVAL_WAIT_LABEL,
   EXECUTE_CODE_BLOCKED_LINE,
 } from "./approval.js";
+import {
+  CLARIFY_SEND_FAIL,
+  CLARIFY_TIMEOUT_S,
+  CLARIFY_WAIT_LABEL,
+  clarifyFailure,
+  clarifyKept,
+  clarifyPending,
+  clarifyPost,
+  clarifyTick,
+  mergePendingControls,
+  renderClarifyCard,
+} from "./clarify.js";
 import { SESSION_READ_ONLY_REASON, UNSENT_MARK, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, markUnsentDraft, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberUnsent, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
@@ -3822,6 +3834,7 @@ const state = {
   toastSeq: 0,
   deniedSessions: new Set(),
   unsentDrafts: new Map(),
+  clarifyTimer: 0,
 };
 
 const probeGate = createProbeGate();
@@ -4220,14 +4233,18 @@ function renderBots(tag = "renderBots") {
     if (motion === "wait") classes.push("is-waiting");
     if (thread.unread) classes.push("has-unread");
     const panelOpen = state.openIds.includes(bot.id) || shell.dataset.state === "panel";
-    if (showApprovalBadge(panelOpen, thread.messages.some(approvalPending) || parkedApproval(thread))) classes.push("has-approval");
+    const approvalWait = thread.messages.some(approvalPending) || parkedApproval(thread);
+    const clarifyWait = thread.messages.some(clarifyPending) || parkedClarify(thread);
+    if (showApprovalBadge(panelOpen, approvalWait || clarifyWait)) classes.push("has-approval");
     if (thread.statusState === "error") classes.push("error");
     if (bot.id === pulseId || keepEnter) classes.push("orb-enter");
     const nextClass = classes.join(" ");
     if (btn.className !== nextClass) btn.className = nextClass;
     applyBotColor(shell, bot.color);
     applyBotColor(btn, bot.color);
-    const orbLabel = classes.includes("has-approval") ? `${bot.name}，有工具等緊批准` : bot.name;
+    const orbLabel = classes.includes("has-approval")
+      ? (approvalWait ? `${bot.name}，有工具等緊批准` : `${bot.name}，有問題等你答`)
+      : bot.name;
     if (btn.getAttribute("aria-label") !== orbLabel) btn.setAttribute("aria-label", orbLabel);
     if (btn.title !== orbLabel) btn.title = orbLabel;
     const glyph = btn.querySelector(".orb-glyph");
@@ -4511,7 +4528,11 @@ function chatStamp(thread) {
     .filter((message) => message.role === "approval")
     .map((message) => `${message.requestId || ""}:${message.status || ""}`)
     .join(",");
-  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}|${approvals}`;
+  const clarifies = thread.messages
+    .filter((message) => message.role === "clarify")
+    .map((message) => `${message.promptId || ""}:${message.status || ""}`)
+    .join(",");
+  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}|${approvals}|${clarifies}`;
 }
 
 function threadHasCache(thread) {
@@ -4579,6 +4600,8 @@ function syncChatInPlace(chat, thread, id, resting = false) {
       }
     } else if (message.role === "approval") {
       paintApprovalBubble(node, message, id);
+    } else if (message.role === "clarify") {
+      paintClarifyBubble(node, message, id);
     } else if (node.textContent !== (message.text || "")) {
       node.textContent = message.text || "";
     }
@@ -4907,11 +4930,37 @@ function paintApprovalBubble(bubble, message, id) {
   }));
 }
 
+function paintClarifyBubble(bubble, message, id) {
+  bubble.className = "bubble clarify";
+  bubble.replaceChildren(renderClarifyCard(document, message, {
+    onAnswer(answer) {
+      void answerClarify(id, message, answer);
+    },
+    onDraft(value) {
+      message.draft = value;
+      const send = bubble.querySelector(".clarify-primary");
+      if (send && message.status === "pending" && !(message.choices || []).length) {
+        send.disabled = !String(value || "").trim();
+      }
+    },
+    onToggle(choice, checked) {
+      const selected = Array.isArray(message.selected) ? message.selected : [];
+      message.selected = checked ? [...selected, choice] : selected.filter((item) => item !== choice);
+      const send = bubble.querySelector(".clarify-primary");
+      if (send && message.status === "pending") send.disabled = message.selected.length === 0;
+    },
+  }));
+}
+
 function bubbleEl(m, id) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${m.role === "user" ? "user" : m.role === "bot" ? "bot" : m.role}`;
   if (m.role === "approval") {
     paintApprovalBubble(bubble, m, id);
+    return bubble;
+  }
+  if (m.role === "clarify") {
+    paintClarifyBubble(bubble, m, id);
     return bubble;
   }
   if (m.role === "bot") paintBotBubble(bubble, m.text);
@@ -5120,6 +5169,11 @@ function parkedApproval(thread) {
   return !!(parked && parked !== thread.messages && parked.some(approvalPending));
 }
 
+function parkedClarify(thread) {
+  const parked = thread?.liveSessionId && thread.bySession?.get(thread.liveSessionId);
+  return !!(parked && parked !== thread.messages && parked.some(clarifyPending));
+}
+
 function settleBlockedCopies(id) {
   const thread = threadFor(id);
   const messages = runMessages(id);
@@ -5169,7 +5223,10 @@ function appendMessage(id, message) {
 
 function setBotStatus(id, text, statusState) {
   const thread = threadFor(id);
-  if (String(text).includes("思考中") && (thread.messages.some(approvalPending) || parkedApproval(thread))) text = APPROVAL_WAIT_LABEL;
+  const waitingApproval = thread.messages.some(approvalPending) || parkedApproval(thread);
+  const waitingClarify = thread.messages.some(clarifyPending) || parkedClarify(thread);
+  if (String(text).includes("思考中") && waitingApproval) text = APPROVAL_WAIT_LABEL;
+  else if (String(text).includes("思考中") && waitingClarify) text = CLARIFY_WAIT_LABEL;
   thread.status = text;
   thread.statusState = statusState;
   if (statusState === "busy") state.busy.add(id);
@@ -5210,7 +5267,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
     showSession(thread, nextId, shown);
   }
   const keptApprovals = !switching && thread.sessionId === nextId
-    ? thread.messages.filter(approvalPending)
+    ? thread.messages.filter((message) => approvalPending(message) || clarifyKept(message))
     : [];
   if (!switching && !(running && thread.messages.some((message) => message.live))) {
     if (quiet && sameChatSnapshot({
@@ -5230,9 +5287,12 @@ function applyOpened(id, opened, { quiet = false } = {}) {
     }
     thread.messages = shown;
     for (const card of keptApprovals) {
-      if (!thread.messages.some((message) => message.role === "approval" && message.requestId === card.requestId)) {
-        thread.messages.push(card);
-      }
+      const same = thread.messages.some((message) => {
+        if (card.role === "approval") return message.role === "approval" && message.requestId === card.requestId;
+        if (card.role === "clarify") return message.role === "clarify" && message.promptId === card.promptId;
+        return false;
+      });
+      if (!same) thread.messages.push(card);
     }
   }
   thread.loaded = true;
@@ -5964,6 +6024,8 @@ function openBotPanel(id) {
   void runShellMorph(shell, "panel");
   // The card painted while closed is below the restored scroll, under the composer.
   if (thread.messages.some(approvalPending)) pinChat(id);
+  if (thread.messages.some(clarifyPending) || thread.messages.some((message) => message.role === "clarify" && message.status === "timeout")) pinChat(id);
+  void recoverRunControls(id);
   void loadSoul(id);
   scheduleHitSync();
   if (gateway.isDown("gateway")) gateway.kick("gateway");
@@ -6350,16 +6412,72 @@ function releaseApprovalWait(id) {
   setBotStatus(id, "思考中…", "busy");
 }
 
+function armClarifyClock() {
+  if (state.clarifyTimer) return;
+  state.clarifyTimer = window.setInterval(() => {
+    let live = false;
+    for (const bot of state.bots) {
+      const thread = threadFor(bot.id);
+      let changed = false;
+      for (const message of thread.messages) {
+        if (message.role !== "clarify" || message.status !== "pending") continue;
+        live = true;
+        const before = `${message.status}:${message.remain}`;
+        clarifyTick(message, Date.now());
+        if (`${message.status}:${message.remain}` !== before) changed = true;
+      }
+      if (!changed) continue;
+      const chat = chatOf(bot.id);
+      thread.messages.forEach((message, index) => {
+        if (message.role !== "clarify" || !chat?.children[index]) return;
+        if (message.status === "timeout") paintClarifyBubble(chat.children[index], message, bot.id);
+        else {
+          const clock = chat.children[index].querySelector(".clarify-countdown");
+          if (clock && Number.isInteger(message.remain)) clock.textContent = `仲有 ${message.remain} 秒`;
+        }
+      });
+      if (thread.messages.some((message) => message.role === "clarify" && message.status === "timeout")) {
+        releaseClarifyWait(bot.id);
+      }
+    }
+    if (!live) {
+      window.clearInterval(state.clarifyTimer);
+      state.clarifyTimer = 0;
+    }
+  }, 1000);
+}
+
+function releaseClarifyWait(id) {
+  const thread = threadFor(id);
+  if (thread.messages.some(clarifyPending) || parkedClarify(thread)) return;
+  if (thread.messages.some(approvalPending) || parkedApproval(thread)) return;
+  if (!state.busy.has(id) || thread.status !== CLARIFY_WAIT_LABEL) return;
+  setBotStatus(id, "思考中…", "busy");
+}
+
 function paintApprovalBadge(id) {
   const thread = threadFor(id);
-  const show = showApprovalBadge(panelIsOpen(id), thread.messages.some(approvalPending) || parkedApproval(thread));
+  const waiting = thread.messages.some(approvalPending)
+    || parkedApproval(thread)
+    || thread.messages.some(clarifyPending)
+    || parkedClarify(thread);
+  const show = showApprovalBadge(panelIsOpen(id), waiting);
   const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
   btn?.classList.toggle("has-approval", show);
 }
 
+function closeOtherClarifies(messages, promptId) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role === "clarify" && message.promptId !== promptId && (clarifyPending(message) || message.status === "timeout")) {
+      messages.splice(i, 1);
+    }
+  }
+}
+
 async function answerApproval(id, message, choice) {
   if (!message || message.status !== "pending") return;
-  const posted = approvalPost(id, message.runId, message.requestId, choice);
+  const posted = approvalPost(id, message.runId, message.requestId, choice, message.executionGeneration);
   if (!posted) return;
   message.status = "sending";
   if (panelFor(id)) renderChat(id);
@@ -6378,6 +6496,7 @@ async function answerApproval(id, message, choice) {
       runId: posted.runId,
       requestId: posted.requestId,
       choice: posted.choice,
+      ...(Number.isInteger(posted.executionGeneration) ? { executionGeneration: posted.executionGeneration } : {}),
     });
     if (message.status === "sending") message.status = choice === "deny" ? "denied" : "approved";
   } catch (err) {
@@ -6390,6 +6509,77 @@ async function answerApproval(id, message, choice) {
   releaseApprovalWait(id);
   if (panelFor(id)) renderChat(id);
   paintApprovalBadge(id);
+}
+
+async function answerClarify(id, message, answer) {
+  if (!message || message.status !== "pending") return;
+  const posted = clarifyPost(id, message.runId, message.promptId, message.executionGeneration, answer);
+  if (!posted) {
+    message.status = "error";
+    message.notice = CLARIFY_SEND_FAIL;
+    if (panelFor(id)) renderChat(id);
+    return;
+  }
+  message.postedAnswer = posted.body.answer;
+  message.status = "sending";
+  if (panelFor(id)) renderChat(id);
+  paintApprovalBadge(id);
+  if (state.mode !== "hermes" || !inTauri()) {
+    message.status = posted.body.answer === "" ? "skipped" : "answered";
+    releaseClarifyWait(id);
+    if (panelFor(id)) renderChat(id);
+    paintApprovalBadge(id);
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke("respond_clarify", {
+      profile: posted.profile,
+      runId: posted.runId,
+      requestId: posted.promptId,
+      executionGeneration: posted.executionGeneration,
+      answer: posted.body.answer,
+    });
+    if (message.status !== "sending" && message.status !== "pending") return;
+    message.status = result?.status === "stale" ? "stale" : posted.body.answer === "" ? "skipped" : "answered";
+  } catch (err) {
+    if (message.status === "sending") {
+      const failed = clarifyFailure(String(err));
+      message.status = failed.status;
+      message.notice = failed.notice;
+    }
+  }
+  releaseClarifyWait(id);
+  if (panelFor(id)) renderChat(id);
+  paintApprovalBadge(id);
+}
+
+async function recoverRunControls(id) {
+  const thread = threadFor(id);
+  if (state.mode !== "hermes" || !inTauri() || !thread.runId) return;
+  const waiting = state.busy.has(id) || thread.messages.some(approvalPending) || thread.messages.some(clarifyPending);
+  if (!waiting) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const snapshot = await invoke("load_run_controls", { profile: id, runId: thread.runId });
+    const status = String(snapshot?.status || "");
+    const dropMissing = status === "started" || status === "running" || status === "waiting_for_approval";
+    const messages = runMessages(id);
+    const merged = mergePendingControls(messages, snapshot?.pending_controls, thread.runId, {
+      dropMissing,
+      now: Date.now(),
+    });
+    if (messages === thread.messages) thread.messages = merged;
+    else if (thread.liveSessionId && thread.bySession?.get(thread.liveSessionId) === messages) {
+      thread.bySession.set(thread.liveSessionId, merged);
+    }
+    if (merged.some(clarifyPending)) armClarifyClock();
+    if (panelFor(id)) renderChat(id);
+    if (merged.some(approvalPending) || merged.some(clarifyPending)) pinChat(id);
+    paintApprovalBadge(id);
+  } catch {
+    /* the live stream still paints the cards */
+  }
 }
 
 function handleHermes(payload) {
@@ -6419,6 +6609,7 @@ function handleHermes(payload) {
       requestId,
       description: payload.description || "",
       command: payload.command || "",
+      ...(Number.isInteger(payload.execution_generation) ? { executionGeneration: payload.execution_generation } : {}),
       status: "pending",
     };
     if (!existing) {
@@ -6435,6 +6626,57 @@ function handleHermes(payload) {
     const next = statusAfterResponded(payload.choice);
     if (card && next && card.status !== "stale") card.status = next;
     releaseApprovalWait(id);
+    if (panelFor(id)) renderChat(id);
+    paintApprovalBadge(id);
+    return;
+  }
+  if (payload.type === "clarify.request") {
+    const thread = threadFor(id);
+    const promptId = String(payload.prompt_id || "");
+    const messages = runMessages(id);
+    closeOtherClarifies(messages, promptId);
+    const existing = messages.find((message) => message.role === "clarify" && message.promptId === promptId);
+    if (!existing) {
+      const timeoutS = Number.isInteger(payload.timeout_s) ? payload.timeout_s : undefined;
+      const card = {
+        role: "clarify",
+        runId: payload.run_id || thread.runId || "",
+        promptId,
+        question: payload.question || "",
+        choices: Array.isArray(payload.choices) ? payload.choices.map((choice) => String(choice)) : [],
+        multiSelect: !!payload.multi_select,
+        executionGeneration: Number.isInteger(payload.execution_generation) ? payload.execution_generation : undefined,
+        timeoutS,
+        askedAt: Date.now(),
+        remain: timeoutS == null ? CLARIFY_TIMEOUT_S : timeoutS > 0 ? timeoutS : null,
+        status: "pending",
+        draft: "",
+        selected: [],
+      };
+      if (runIsOnScreen(id)) appendMessage(id, card);
+      else messages.push(card);
+    }
+    setBotStatus(id, CLARIFY_WAIT_LABEL, "busy");
+    armClarifyClock();
+    if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
+    paintApprovalBadge(id);
+    return;
+  }
+  if (payload.type === "clarify.settled" || payload.type === "approval.settled") {
+    const promptId = String(payload.prompt_id || "");
+    if (payload.type === "approval.settled") {
+      const card = runMessages(id).find((message) => message.role === "approval" && message.requestId === promptId);
+      if (card && (card.status === "pending" || card.status === "sending")) card.status = "approved";
+      releaseApprovalWait(id);
+    } else {
+      const card = runMessages(id).find((message) => message.role === "clarify" && message.promptId === promptId);
+      if (card && card.status !== "stale" && card.status !== "timeout") {
+        if (card.status === "pending" || card.status === "sending") {
+          card.status = card.postedAnswer === "" ? "skipped" : "answered";
+        }
+      }
+      releaseClarifyWait(id);
+    }
     if (panelFor(id)) renderChat(id);
     paintApprovalBadge(id);
     return;
@@ -6483,12 +6725,16 @@ function handleHermes(payload) {
   if (payload.type === "status") {
     const thread = threadFor(id);
     if (payload.run_id && !finishApplies(thread, payload.run_id) && payload.state !== "busy") return;
-    const pending = thread.messages.some(approvalPending);
+    const pending = thread.messages.some(approvalPending) || parkedApproval(thread);
+    const asking = thread.messages.some(clarifyPending) || parkedClarify(thread);
     const errored = payload.state === "error";
     let label = payload.detail || (payload.state === "busy" ? "思考中…" : "閒置");
     let statusState = payload.state === "busy" ? "busy" : errored ? "error" : "idle";
     if (pending && !errored) {
       label = APPROVAL_WAIT_LABEL;
+      statusState = "busy";
+    } else if (asking && !errored) {
+      label = CLARIFY_WAIT_LABEL;
       statusState = "busy";
     }
     setBotStatus(id, label, statusState);

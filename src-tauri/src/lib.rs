@@ -1629,6 +1629,7 @@ async fn respond_approval(
     run_id: String,
     request_id: String,
     choice: String,
+    execution_generation: Option<i64>,
 ) -> Result<(), String> {
     let Some(choice) = hermes::allowed_approval_choice(&choice) else {
         return Err("只可以批准一次或者拒絕".into());
@@ -1644,7 +1645,15 @@ async fn respond_approval(
     let bot = bot_or_err(&cfg, &profile)?;
     let key = profile_key(&profile)?;
     let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-    hermes::submit_approval(&state.http, &root, &key, run_id, request_id, choice)
+    hermes::submit_approval(
+        &state.http,
+        &root,
+        &key,
+        run_id,
+        request_id,
+        choice,
+        execution_generation,
+    )
         .await
         .map_err(|err| match err {
             HermesError::Http { status: 409, .. } => "呢個批准已經過時".into(),
@@ -1664,6 +1673,7 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
             request_id,
             description,
             command,
+            execution_generation,
         } => emit(
             app,
             serde_json::json!({
@@ -1673,6 +1683,39 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
                 "request_id": request_id,
                 "description": description,
                 "command": command,
+                "execution_generation": execution_generation,
+            }),
+        ),
+        TurnEvent::ClarifyRequest {
+            run_id,
+            prompt_id,
+            question,
+            choices,
+            multi_select,
+            execution_generation,
+            timeout_s,
+        } => {
+            let mut payload = serde_json::json!({
+                "type": "clarify.request",
+                "profile": profile,
+                "run_id": run_id,
+                "prompt_id": prompt_id,
+                "question": question,
+                "choices": choices,
+                "multi_select": multi_select,
+                "execution_generation": execution_generation,
+            });
+            if let Some(timeout) = timeout_s {
+                payload["timeout_s"] = serde_json::json!(timeout);
+            }
+            emit(app, payload);
+        }
+        TurnEvent::ControlSettled { kind, prompt_id } => emit(
+            app,
+            serde_json::json!({
+                "type": format!("{kind}.settled"),
+                "profile": profile,
+                "prompt_id": prompt_id,
             }),
         ),
         TurnEvent::ApprovalResponded { request_id, choice } => emit(
@@ -1758,6 +1801,86 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
             );
         }
     }
+}
+
+#[derive(Serialize)]
+struct ClarifyAnswer {
+    status: String,
+    prompt_id: String,
+}
+
+#[tauri::command]
+async fn respond_clarify(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    run_id: String,
+    request_id: String,
+    execution_generation: i64,
+    answer: String,
+) -> Result<ClarifyAnswer, String> {
+    if answer.chars().count() > 16384 {
+        return Err("答案太長".into());
+    }
+    let Some(run_id) = hermes::approval_run_id(&run_id) else {
+        return Err("缺少問題編號".into());
+    };
+    let Some(request_id) = hermes::approval_request_id(&request_id) else {
+        return Err("缺少問題編號".into());
+    };
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?;
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let outcome = hermes::submit_clarify(
+        &state.http,
+        &root,
+        &key,
+        run_id,
+        request_id,
+        execution_generation,
+        &answer,
+    )
+    .await
+    .map_err(|err| match err {
+        HermesError::Http { status: 409, .. } => "答案未送出。".into(),
+        HermesError::Http { status, .. } => format!("答案未送出（{status}）。"),
+        other => explain(&other),
+    })?;
+    let status = match outcome {
+        hermes::ClarifyOutcome::Resolved => "resolved",
+        hermes::ClarifyOutcome::AlreadyResolved => "already_resolved",
+        hermes::ClarifyOutcome::Stale => "stale",
+    };
+    Ok(ClarifyAnswer {
+        status: status.to_string(),
+        prompt_id: request_id.to_string(),
+    })
+}
+
+#[tauri::command]
+async fn load_run_controls(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    run_id: String,
+) -> Result<serde_json::Value, String> {
+    let Some(run_id) = hermes::approval_run_id(&run_id) else {
+        return Ok(serde_json::json!({
+            "run_id": "",
+            "status": "",
+            "pending_controls": [],
+        }));
+    };
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?;
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    hermes::fetch_run(&state.http, &root, &key, run_id)
+        .await
+        .map_err(|_| "讀唔到未答嘅卡。".to_string())
 }
 
 #[derive(Deserialize)]
@@ -2981,6 +3104,8 @@ pub fn run() {
             select_session,
             send_chat,
             respond_approval,
+            respond_clarify,
+            load_run_controls,
             steer_run,
             stop_chat,
             list_commands,

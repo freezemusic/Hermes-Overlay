@@ -33,15 +33,18 @@ export function omitRepeatedBlockedLine(messages) {
   return kept;
 }
 
-export function approvalPost(profile, runId, requestId, choice) {
+export function approvalPost(profile, runId, requestId, choice, executionGeneration) {
   if (choice !== "once" && choice !== "deny") return null;
+  const body = { choice, request_id: requestId };
+  if (Number.isInteger(executionGeneration)) body.execution_generation = executionGeneration;
   return {
     profile,
     runId,
     requestId,
     choice,
+    executionGeneration: Number.isInteger(executionGeneration) ? executionGeneration : undefined,
     path: `/p/${profile}/v1/runs/${runId}/approval`,
-    body: { choice, request_id: requestId },
+    body,
   };
 }
 

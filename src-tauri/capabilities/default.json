@@ -22,6 +22,8 @@
     "allow-select-session",
     "allow-send-chat",
     "allow-respond-approval",
+    "allow-respond-clarify",
+    "allow-load-run-controls",
     "allow-steer-run",
     "allow-stop-chat",
     "allow-list-commands",

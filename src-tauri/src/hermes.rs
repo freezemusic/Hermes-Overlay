@@ -115,10 +115,25 @@ pub enum TurnEvent {
         request_id: String,
         description: String,
         command: String,
+        execution_generation: Option<i64>,
     },
     ApprovalResponded {
         request_id: String,
         choice: String,
+    },
+    ClarifyRequest {
+        run_id: String,
+        prompt_id: String,
+        question: String,
+        choices: Vec<String>,
+        multi_select: bool,
+        execution_generation: i64,
+        timeout_s: Option<u64>,
+    },
+    /// `approval.settled` or `clarify.settled`. The card closes; the answer is not in this event.
+    ControlSettled {
+        kind: String,
+        prompt_id: String,
     },
     Finished {
         outcome: String,
@@ -2175,7 +2190,143 @@ fn json_profile_color(item: &Value) -> String {
     json_text(nested)
 }
 
-pub async fn stream_turn<F>(
+fn is_event_stream(resp: &reqwest::Response) -> bool {
+    resp.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_ascii_lowercase().contains("text/event-stream"))
+        .unwrap_or(false)
+}
+
+/// Chat SSE names the frame. `/v1/runs/{id}/events` puts the name in JSON and the seq in `id:`.
+fn sse_name(event: &SseEvent) -> String {
+    let payload: Value = serde_json::from_str(&event.data).unwrap_or(Value::Null);
+    let raw = if !event.event.is_empty() && event.event != "message" {
+        event.event.clone()
+    } else {
+        let named = json_text(payload.get("event"));
+        if named.is_empty() {
+            event.event.clone()
+        } else {
+            named
+        }
+    };
+    match raw.as_str() {
+        "message.delta" => "assistant.delta".to_string(),
+        "message.interim" => "assistant.commentary".to_string(),
+        "message.completed" => "assistant.completed".to_string(),
+        _ => raw,
+    }
+}
+
+struct SseRead {
+    terminal: bool,
+    queued: bool,
+}
+
+async fn read_sse_body<F>(
+    resp: reqwest::Response,
+    stop: &AtomicBool,
+    run_id: &mut String,
+    streamed: &mut bool,
+    last_id: &mut String,
+    mut on_event: F,
+) -> Result<SseRead, HermesError>
+where
+    F: FnMut(TurnEvent),
+{
+    let command = resp
+        .headers()
+        .get("x-hermes-command")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !command.is_empty() {
+        on_event(TurnEvent::Command(command));
+    }
+    let mut stream = resp.bytes_stream();
+    let mut decoder = sse::ByteBuf::new();
+    let mut saw_terminal = false;
+    let mut saw_queued = false;
+    let mut pending_failure: Option<String> = None;
+    let mut take = |event: SseEvent| {
+        if !event.id.is_empty() {
+            *last_id = event.id.clone();
+        }
+        if sse_name(&event) == "run.queued" {
+            saw_queued = true;
+        }
+        if apply_sse(
+            event,
+            streamed,
+            &mut saw_terminal,
+            &mut pending_failure,
+            run_id,
+            &mut on_event,
+        ) {
+            saw_terminal = true;
+        }
+    };
+    while let Some(chunk) = stream.next().await {
+        // `stop` aborts a reader that a newer send replaced. A user stop only
+        // sets `stop_requested` and must keep reading until the server ends.
+        if stop.load(Ordering::Relaxed) {
+            return Err(HermesError::Cancelled);
+        }
+        let bytes = chunk.map_err(map_reqwest)?;
+        for event in decoder.push(&bytes) {
+            if stop.load(Ordering::Relaxed) {
+                return Err(HermesError::Cancelled);
+            }
+            take(event);
+        }
+    }
+    for event in decoder.finish() {
+        if stop.load(Ordering::Relaxed) {
+            return Err(HermesError::Cancelled);
+        }
+        take(event);
+    }
+    Ok(SseRead {
+        terminal: saw_terminal,
+        queued: saw_queued,
+    })
+}
+
+fn direct_sse_end(read: &SseRead, stop: &AtomicBool, stop_requested: &AtomicBool) -> Result<(), HermesError> {
+    if stop.load(Ordering::Relaxed) || (stop_requested.load(Ordering::Relaxed) && !read.terminal) {
+        return Err(HermesError::Cancelled);
+    }
+    if !read.terminal {
+        if read.queued {
+            return Ok(());
+        }
+        return Err(HermesError::Protocol(
+            "串流未有 run.completed / run.failed / run.cancelled 就結束".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn finish_direct_sse<F>(
+    resp: reqwest::Response,
+    stop: &AtomicBool,
+    stop_requested: &AtomicBool,
+    on_event: F,
+) -> Result<(), HermesError>
+where
+    F: FnMut(TurnEvent),
+{
+    let mut run_id = String::new();
+    let mut streamed = false;
+    let mut last_id = String::new();
+    let read = read_sse_body(resp, stop, &mut run_id, &mut streamed, &mut last_id, on_event).await?;
+    direct_sse_end(&read, stop, stop_requested)
+}
+
+/// Older gateways have no `/v1/runs`. 202 here is a queued chat admission with nothing left to read.
+async fn stream_chat_turn<F>(
     http: &Client,
     root: &str,
     key: &str,
@@ -2183,7 +2334,7 @@ pub async fn stream_turn<F>(
     text: &str,
     stop: &AtomicBool,
     stop_requested: &AtomicBool,
-    mut on_event: F,
+    on_event: F,
 ) -> Result<(), HermesError>
 where
     F: FnMut(TurnEvent),
@@ -2208,83 +2359,301 @@ where
             body: clip(&body, 400),
         });
     }
-    // 202 is the gateway's queued admission. The reply lands in the session
-    // after the active run, so this socket has nothing left to stream.
     if status.as_u16() == 202 {
         let _ = resp.bytes().await;
         return Ok(());
     }
-    let command = resp
-        .headers()
-        .get("x-hermes-command")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if !command.is_empty() {
-        on_event(TurnEvent::Command(command));
-    }
+    finish_direct_sse(resp, stop, stop_requested, on_event).await
+}
 
-    let mut stream = resp.bytes_stream();
-    let mut decoder = sse::ByteBuf::new();
-    let mut saw_terminal = false;
-    let mut saw_queued = false;
+async fn open_run_events(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+    last_id: &str,
+) -> Result<reqwest::Response, HermesError> {
+    let url = if last_id.is_empty() || !last_id.bytes().all(|byte| byte.is_ascii_digit()) {
+        format!("{root}/v1/runs/{run_id}/events")
+    } else {
+        format!("{root}/v1/runs/{run_id}/events?last_seq={last_id}")
+    };
+    let mut builder = authed(http.get(&url), key).header(reqwest::header::ACCEPT, "text/event-stream");
+    if !last_id.is_empty() {
+        builder = builder.header("Last-Event-ID", last_id);
+    }
+    let resp = builder.send().await.map_err(map_reqwest)?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let code = status.as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    Err(HermesError::Http {
+        status: code,
+        body: clip(&body, 400),
+    })
+}
+
+fn emit_one_control<F>(item: &Value, run_id: &mut String, streamed: &mut bool, on_event: &mut F)
+where
+    F: FnMut(TurnEvent),
+{
+    let mut payload = item.clone();
+    let kind = json_text(payload.get("kind"));
+    if json_text(payload.get("event")).is_empty() {
+        let event = if kind == "clarify" {
+            "clarify.request"
+        } else if kind == "approval" {
+            "approval.request"
+        } else {
+            ""
+        };
+        if event.is_empty() {
+            return;
+        }
+        payload["event"] = Value::String(event.to_string());
+    }
+    if json_text(payload.get("run_id")).is_empty() && !run_id.is_empty() {
+        payload["run_id"] = Value::String(run_id.clone());
+    }
+    let event = SseEvent {
+        event: "message".into(),
+        data: payload.to_string(),
+        id: String::new(),
+    };
+    let mut terminal = false;
+    let mut pending = None;
+    apply_sse(event, streamed, &mut terminal, &mut pending, run_id, on_event);
+}
+
+fn snapshot_is_terminal(status: &str) -> bool {
+    matches!(
+        status,
+        "completed" | "failed" | "cancelled" | "canceled" | "interrupted" | "expired"
+    )
+}
+
+fn snapshot_outcome(status: &str) -> &'static str {
+    match status {
+        "failed" => "failed",
+        "completed" => "completed",
+        _ => "cancelled",
+    }
+}
+
+async fn finish_open_run<F>(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+    streamed: bool,
+    mut on_event: F,
+) -> Result<(), HermesError>
+where
+    F: FnMut(TurnEvent),
+{
+    let value = match fetch_run(http, root, key, run_id).await {
+        Ok(value) => value,
+        Err(_) => {
+            return Err(HermesError::Protocol(
+                "串流未有 run.completed / run.failed / run.cancelled 就結束".into(),
+            ));
+        }
+    };
+    let mut streamed = streamed;
+    let mut current = run_id.to_string();
+    if let Some(controls) = value.get("pending_controls").and_then(Value::as_array) {
+        for item in controls {
+            emit_one_control(item, &mut current, &mut streamed, &mut on_event);
+        }
+    }
+    let status = json_text(value.get("status"));
+    let pending = value
+        .get("pending_controls")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false);
+    if snapshot_is_terminal(&status) {
+        let output = json_text(value.get("output"));
+        if !streamed && !output.is_empty() {
+            on_event(TurnEvent::Delta(plain_permission_detail(output)));
+        }
+        let detail = if status == "failed" {
+            plain_permission_detail(clip(&json_text(value.get("error")), 400))
+        } else {
+            String::new()
+        };
+        on_event(TurnEvent::Finished {
+            outcome: snapshot_outcome(&status).to_string(),
+            detail,
+            run_id: current,
+        });
+        return Ok(());
+    }
+    if pending || matches!(status.as_str(), "queued" | "waiting_for_approval" | "stopping") {
+        // Queued admission, or a card is still waiting. The panel stays busy.
+        return Ok(());
+    }
+    Err(HermesError::Protocol(
+        "串流未有 run.completed / run.failed / run.cancelled 就結束".into(),
+    ))
+}
+
+/// Events-SSE disconnect does not stop the run. A newer send aborts this reader
+/// and must POST `/stop`, or the previous turn keeps going beside the new one.
+async fn follow_run_events<F>(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+    stop: &AtomicBool,
+    stop_requested: &AtomicBool,
+    mut on_event: F,
+) -> Result<(), HermesError>
+where
+    F: FnMut(TurnEvent),
+{
+    let mut last_id = String::new();
     let mut streamed = false;
-    let mut pending_failure: Option<String> = None;
-    let mut run_id = String::new();
-    while let Some(chunk) = stream.next().await {
-        // `stop` aborts a reader that a newer send replaced. A user stop only
-        // sets `stop_requested` and must keep reading until the server ends.
-        if stop.load(Ordering::Relaxed) {
+    let mut current = run_id.to_string();
+    for attempt in 0..=4u32 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        if stop.load(Ordering::Relaxed) && !stop_requested.load(Ordering::Relaxed) {
+            let _ = stop_run(http, root, key, &current).await;
             return Err(HermesError::Cancelled);
         }
-        let bytes = chunk.map_err(map_reqwest)?;
-        for event in decoder.push(&bytes) {
-            if stop.load(Ordering::Relaxed) {
+        let resp = match open_run_events(http, root, key, &current, &last_id).await {
+            Ok(resp) => resp,
+            Err(HermesError::Connect(_))
+            | Err(HermesError::Timeout(_))
+            | Err(HermesError::Transport(_))
+            | Err(HermesError::Http { .. })
+                if attempt < 4 =>
+            {
+                continue;
+            }
+            Err(_) => break,
+        };
+        match read_sse_body(
+            resp,
+            stop,
+            &mut current,
+            &mut streamed,
+            &mut last_id,
+            &mut on_event,
+        )
+        .await
+        {
+            Err(HermesError::Cancelled) => {
+                if !stop_requested.load(Ordering::Relaxed) {
+                    let _ = stop_run(http, root, key, &current).await;
+                }
                 return Err(HermesError::Cancelled);
             }
-            if event.event == "run.queued" {
-                saw_queued = true;
+            Err(HermesError::Connect(_))
+            | Err(HermesError::Timeout(_))
+            | Err(HermesError::Transport(_))
+                if attempt < 4 =>
+            {
+                continue;
             }
-            if apply_sse(
-                event,
-                &mut streamed,
-                &mut saw_terminal,
-                &mut pending_failure,
-                &mut run_id,
-                &mut on_event,
-            ) {
-                saw_terminal = true;
+            Err(_) if attempt < 4 => continue,
+            Err(_) => break,
+            Ok(read) if read.terminal => return Ok(()),
+            Ok(_) if stop.load(Ordering::Relaxed) && !stop_requested.load(Ordering::Relaxed) => {
+                let _ = stop_run(http, root, key, &current).await;
+                return Err(HermesError::Cancelled);
             }
+            Ok(_) if stop.load(Ordering::Relaxed) || stop_requested.load(Ordering::Relaxed) => {
+                return Err(HermesError::Cancelled);
+            }
+            Ok(read) if read.queued => {
+                return finish_open_run(http, root, key, &current, streamed, on_event).await;
+            }
+            Ok(_) if attempt < 4 => continue,
+            Ok(_) => break,
         }
     }
-    for event in decoder.finish() {
-        if event.event == "run.queued" {
-            saw_queued = true;
-        }
-        if apply_sse(
-            event,
-            &mut streamed,
-            &mut saw_terminal,
-            &mut pending_failure,
-            &mut run_id,
-            &mut on_event,
-        ) {
-            saw_terminal = true;
-        }
+    finish_open_run(http, root, key, &current, streamed, on_event).await
+}
+
+pub async fn stream_turn<F>(
+    http: &Client,
+    root: &str,
+    key: &str,
+    session_id: &str,
+    text: &str,
+    stop: &AtomicBool,
+    stop_requested: &AtomicBool,
+    mut on_event: F,
+) -> Result<(), HermesError>
+where
+    F: FnMut(TurnEvent),
+{
+    // `clarify.request` is not forwarded on `/api/sessions/{id}/chat/stream` (0.22.5).
+    // `/v1/runs` admits the same write gate, then the events stream carries clarify and approval.
+    // 404 means an older gateway: fall back to chat/stream, including its queued 202.
+    let url = format!("{root}/v1/runs");
+    let resp = authed(
+        http.post(&url).json(&serde_json::json!({
+            "input": text,
+            "session_id": session_id
+        })),
+        key,
+    )
+    .send()
+    .await
+    .map_err(map_reqwest)?;
+    if resp.status().as_u16() == 404 {
+        let _ = resp.bytes().await;
+        return stream_chat_turn(
+            http,
+            root,
+            key,
+            session_id,
+            text,
+            stop,
+            stop_requested,
+            on_event,
+        )
+        .await;
     }
-    if stop.load(Ordering::Relaxed) || (stop_requested.load(Ordering::Relaxed) && !saw_terminal) {
-        return Err(HermesError::Cancelled);
+    let status = resp.status();
+    if !status.is_success() {
+        let code = status.as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(HermesError::Http {
+            status: code,
+            body: clip(&body, 400),
+        });
     }
-    if !saw_terminal {
-        if saw_queued {
-            return Ok(());
-        }
+    if is_event_stream(&resp) {
+        return finish_direct_sse(resp, stop, stop_requested, on_event).await;
+    }
+    let bytes = resp.bytes().await.map_err(map_reqwest)?;
+    let parsed: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let run_id = json_text(parsed.get("run_id"));
+    if approval_run_id(&run_id).is_none() {
         return Err(HermesError::Protocol(
-            "串流未有 run.completed / run.failed / run.cancelled 就結束".into(),
+            "POST /v1/runs 冇有效 run_id".into(),
         ));
     }
-    Ok(())
+    on_event(TurnEvent::Started {
+        run_id: run_id.clone(),
+    });
+    follow_run_events(
+        http,
+        root,
+        key,
+        &run_id,
+        stop,
+        stop_requested,
+        on_event,
+    )
+    .await
 }
 
 fn apply_sse<F>(
@@ -2299,7 +2668,8 @@ where
     F: FnMut(TurnEvent),
 {
     let payload: Value = serde_json::from_str(&event.data).unwrap_or(Value::Null);
-    match event.event.as_str() {
+    let name = sse_name(&event);
+    match name.as_str() {
         "run.started" => {
             let incoming = json_text(payload.get("run_id"));
             if !incoming.is_empty() {
@@ -2351,8 +2721,7 @@ where
             false
         }
         "tool.started" | "tool.completed" | "tool.failed" | "tool.progress" => {
-            let phase = event
-                .event
+            let phase = name
                 .strip_prefix("tool.")
                 .unwrap_or("started")
                 .to_string();
@@ -2377,11 +2746,84 @@ where
             if !incoming.is_empty() {
                 *run_id = incoming;
             }
+            let request_id = {
+                let id = json_text(payload.get("request_id"));
+                if id.is_empty() {
+                    json_text(payload.get("prompt_id"))
+                } else {
+                    id
+                }
+            };
             on_event(TurnEvent::ApprovalRequest {
                 run_id: run_id.clone(),
-                request_id: json_text(payload.get("request_id")),
+                request_id,
                 description: clip(&json_text(payload.get("description")), 500),
                 command: clip(&json_text(payload.get("command")), 2000),
+                execution_generation: payload.get("execution_generation").and_then(Value::as_i64),
+            });
+            false
+        }
+        "clarify.request" => {
+            let incoming = json_text(payload.get("run_id"));
+            if !incoming.is_empty() {
+                *run_id = incoming;
+            }
+            let prompt_id = {
+                let id = json_text(payload.get("prompt_id"));
+                if id.is_empty() {
+                    json_text(payload.get("request_id"))
+                } else {
+                    id
+                }
+            };
+            let choices = payload
+                .get("choices")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let timeout_s = payload.get("timeout_s").and_then(|value| {
+                value
+                    .as_u64()
+                    .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+            });
+            on_event(TurnEvent::ClarifyRequest {
+                run_id: run_id.clone(),
+                prompt_id,
+                question: clip(&json_text(payload.get("question")), 2000),
+                choices,
+                multi_select: payload
+                    .get("multi_select")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                execution_generation: payload
+                    .get("execution_generation")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                timeout_s,
+            });
+            false
+        }
+        "approval.settled" | "clarify.settled" => {
+            let prompt_id = {
+                let id = json_text(payload.get("prompt_id"));
+                if id.is_empty() {
+                    json_text(payload.get("request_id"))
+                } else {
+                    id
+                }
+            };
+            on_event(TurnEvent::ControlSettled {
+                kind: if name.starts_with("approval") {
+                    "approval".to_string()
+                } else {
+                    "clarify".to_string()
+                },
+                prompt_id,
             });
             false
         }
@@ -2393,6 +2835,12 @@ where
             false
         }
         "run.completed" => {
+            let output = json_text(payload.get("output"));
+            if !*streamed && !output.is_empty() {
+                *streamed = true;
+                *pending_failure = None;
+                on_event(TurnEvent::Delta(plain_permission_detail(output)));
+            }
             *saw_terminal = true;
             on_event(TurnEvent::Finished {
                 outcome: "completed".into(),
@@ -2520,18 +2968,20 @@ pub async fn submit_approval(
     run_id: &str,
     request_id: &str,
     choice: &str,
+    execution_generation: Option<i64>,
 ) -> Result<(), HermesError> {
     let url = format!("{root}/v1/runs/{run_id}/approval");
-    let resp = authed(
-        http.post(&url).json(&serde_json::json!({
-            "choice": choice,
-            "request_id": request_id,
-        })),
-        key,
-    )
-    .send()
-    .await
-    .map_err(map_reqwest)?;
+    let mut body = serde_json::json!({
+        "choice": choice,
+        "request_id": request_id,
+    });
+    if let Some(generation) = execution_generation {
+        body["execution_generation"] = serde_json::json!(generation);
+    }
+    let resp = authed(http.post(&url).json(&body), key)
+        .send()
+        .await
+        .map_err(map_reqwest)?;
     let status = resp.status();
     if status.is_success() {
         let _ = resp.bytes().await;
@@ -2543,6 +2993,90 @@ pub async fn submit_approval(
         status: code,
         body: String::new(),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClarifyOutcome {
+    Resolved,
+    AlreadyResolved,
+    Stale,
+}
+
+fn text_is_stale_generation(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("stale_generation")
+}
+
+/// Authority clarify body is exactly `{request_id, execution_generation, answer}`.
+/// The answer is not logged and is not kept on the error.
+pub async fn submit_clarify(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+    request_id: &str,
+    execution_generation: i64,
+    answer: &str,
+) -> Result<ClarifyOutcome, HermesError> {
+    let url = format!("{root}/v1/runs/{run_id}/clarify");
+    let resp = authed(
+        http.post(&url).json(&serde_json::json!({
+            "request_id": request_id,
+            "execution_generation": execution_generation,
+            "answer": answer,
+        })),
+        key,
+    )
+    .send()
+    .await
+    .map_err(map_reqwest)?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        if json_text(parsed.get("status")) == "already_resolved" {
+            return Ok(ClarifyOutcome::AlreadyResolved);
+        }
+        return Ok(ClarifyOutcome::Resolved);
+    }
+    let code = status.as_u16();
+    if code == 409 && text_is_stale_generation(&body) {
+        return Ok(ClarifyOutcome::Stale);
+    }
+    Err(HermesError::Http {
+        status: code,
+        body: String::new(),
+    })
+}
+
+pub async fn fetch_run(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+) -> Result<Value, HermesError> {
+    let url = format!("{root}/v1/runs/{run_id}");
+    let resp = authed(http.get(&url), key)
+        .send()
+        .await
+        .map_err(map_reqwest)?;
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return Ok(serde_json::json!({
+            "run_id": run_id,
+            "status": "",
+            "pending_controls": [],
+        }));
+    }
+    if !status.is_success() {
+        let code = status.as_u16();
+        let _ = resp.bytes().await;
+        return Err(HermesError::Http {
+            status: code,
+            body: String::new(),
+        });
+    }
+    let bytes = resp.bytes().await.map_err(map_reqwest)?;
+    Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4203,7 +4737,9 @@ data: {\"run_id\":\"run_queued\",\"completed\":true}\n\
                     );
                     let _ = sock.write_all(header.as_bytes());
                     let _ = sock.write_all(body.as_bytes());
-                } else if line.starts_with("POST") && line.contains("/api/sessions/live/chat/stream") {
+                } else if line.starts_with("POST")
+                    && (line.contains("/v1/runs") || line.contains("/api/sessions/live/chat/stream"))
+                {
                     pending = Some(sock);
                 } else {
                     let body = "{}";
@@ -4531,11 +5067,13 @@ data: {}\n\
                 request_id,
                 description,
                 command,
+                execution_generation,
             } => {
                 assert_eq!(run_id, "run_abc");
                 assert_eq!(request_id, "req_1");
                 assert_eq!(description, "list files");
                 assert_eq!(command, "ls <redacted>");
+                assert_eq!(execution_generation, &None);
             }
             other => panic!("expected approval request, got {other:?}"),
         }
@@ -4609,7 +5147,7 @@ data: {}\n\
         });
         let root = format!("http://{addr}/p/mt-coder");
         let http = Client::new();
-        submit_approval(&http, &root, "test-key", "run_abc", "req_1", "once")
+        submit_approval(&http, &root, "test-key", "run_abc", "req_1", "once", None)
             .await
             .unwrap();
         let req = seen.lock().unwrap();
@@ -4648,11 +5186,397 @@ data: {}\n\
             "run_abc",
             "req_1",
             "deny",
+            None,
         )
         .await
         .expect_err("409");
         assert!(matches!(err, HermesError::Http { status: 409, ref body } if body.is_empty()));
         assert_eq!(stale_posts.load(Ordering::SeqCst), 1);
+    }
+
+    fn write_http(sock: &mut std::net::TcpStream, status: &str, content_type: &str, body: &str) {
+        let header = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(header.as_bytes());
+        let _ = sock.write_all(body.as_bytes());
+    }
+
+    fn read_http(sock: &mut std::net::TcpStream) -> String {
+        sock.set_read_timeout(Some(Duration::from_secs(2))).ok();
+        let mut buf = vec![0u8; 16384];
+        let n = sock.read(&mut buf).unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    }
+
+    #[tokio::test]
+    async fn runs_404_falls_back_to_chat_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut sock, _) = listener.accept().unwrap();
+                let head = read_http(&mut sock);
+                let line = head.lines().next().unwrap_or("");
+                if line.contains("/v1/runs") && !line.contains("/events") {
+                    write_http(&mut sock, "404 Not Found", "application/json", r#"{"error":"no runs"}"#);
+                } else if line.contains("/chat/stream") {
+                    let body = "event: assistant.delta\ndata: {\"delta\":\"舊路\"}\n\nevent: run.completed\ndata: {}\n\n";
+                    write_http(&mut sock, "200 OK", "text/event-stream", body);
+                } else {
+                    write_http(&mut sock, "404 Not Found", "application/json", "{}");
+                }
+            }
+        });
+        let http = Client::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(
+            &http,
+            &format!("http://{addr}"),
+            "k",
+            "sid",
+            "hello",
+            &stop,
+            &stop_requested,
+            |ev| seen2.lock().unwrap().push(ev),
+        )
+        .await
+        .unwrap();
+        let seen = seen.lock().unwrap();
+        assert!(matches!(seen.first(), Some(TurnEvent::Delta(text)) if text == "舊路"));
+        assert!(matches!(seen.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
+    }
+
+    #[tokio::test]
+    async fn runs_events_carry_clarify_and_reconnect_with_last_event_id() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let head = read_http(&mut sock);
+            seen2.lock().unwrap().push(head);
+            write_http(
+                &mut sock,
+                "202 Accepted",
+                "application/json",
+                r#"{"run_id":"run_abc","status":"started","replayed":false}"#,
+            );
+            let (mut sock, _) = listener.accept().unwrap();
+            let head = read_http(&mut sock);
+            seen2.lock().unwrap().push(head);
+            let partial = "\
+id: 1\n\
+data: {\"event\":\"clarify.request\",\"run_id\":\"run_abc\",\"prompt_id\":\"p1\",\"execution_generation\":4,\"question\":\"邊個？\",\"choices\":[\"甲\",\"乙\"],\"multi_select\":false,\"timeout_s\":2}\n\
+\n";
+            write_http(&mut sock, "200 OK", "text/event-stream", partial);
+            let (mut sock, _) = listener.accept().unwrap();
+            let head = read_http(&mut sock);
+            seen2.lock().unwrap().push(head);
+            let rest = "\
+id: 2\n\
+data: {\"event\":\"approval.request\",\"run_id\":\"run_abc\",\"prompt_id\":\"req_9\",\"execution_generation\":4,\"description\":\"list\",\"command\":\"ls\",\"choices\":[\"once\",\"deny\"]}\n\
+\n\
+id: 3\n\
+data: {\"event\":\"clarify.settled\",\"run_id\":\"run_abc\",\"prompt_id\":\"p1\",\"execution_generation\":4}\n\
+\n\
+id: 4\n\
+data: {\"event\":\"run.completed\",\"run_id\":\"run_abc\",\"output\":\"\"}\n\
+\n";
+            write_http(&mut sock, "200 OK", "text/event-stream", rest);
+        });
+        let http = Client::new();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events2 = events.clone();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(
+            &http,
+            &format!("http://{addr}/p/mt-coder"),
+            "k",
+            "sid_1",
+            "hello",
+            &stop,
+            &stop_requested,
+            |ev| events2.lock().unwrap().push(ev),
+        )
+        .await
+        .unwrap();
+        let reqs = seen.lock().unwrap();
+        assert!(reqs[0].contains("POST /p/mt-coder/v1/runs "));
+        assert!(!reqs[0].contains("/chat/stream"));
+        let posted = reqs[0].split("\r\n\r\n").nth(1).unwrap_or("");
+        let body: Value = serde_json::from_str(posted.trim()).unwrap();
+        assert_eq!(body["input"], "hello");
+        assert_eq!(body["session_id"], "sid_1");
+        assert!(body.get("conversation_history").is_none());
+        assert_eq!(body.as_object().unwrap().len(), 2);
+        assert!(reqs[1].contains("GET /p/mt-coder/v1/runs/run_abc/events "));
+        assert!(!reqs[1].to_ascii_lowercase().contains("last-event-id"));
+        assert!(reqs[2].contains("last_seq=1"));
+        assert!(reqs[2].to_ascii_lowercase().contains("last-event-id: 1"));
+        drop(reqs);
+        let events = events.lock().unwrap();
+        assert!(matches!(&events[0], TurnEvent::Started { run_id } if run_id == "run_abc"));
+        match &events[1] {
+            TurnEvent::ClarifyRequest {
+                prompt_id,
+                question,
+                choices,
+                multi_select,
+                execution_generation,
+                timeout_s,
+                ..
+            } => {
+                assert_eq!(prompt_id, "p1");
+                assert_eq!(question, "邊個？");
+                assert_eq!(choices, &vec!["甲".to_string(), "乙".to_string()]);
+                assert!(!multi_select);
+                assert_eq!(*execution_generation, 4);
+                assert_eq!(*timeout_s, Some(2));
+            }
+            other => panic!("expected clarify, got {other:?}"),
+        }
+        match &events[2] {
+            TurnEvent::ApprovalRequest {
+                request_id,
+                execution_generation,
+                ..
+            } => {
+                assert_eq!(request_id, "req_9");
+                assert_eq!(*execution_generation, Some(4));
+            }
+            other => panic!("expected approval, got {other:?}"),
+        }
+        assert!(matches!(
+            &events[3],
+            TurnEvent::ControlSettled { kind, prompt_id } if kind == "clarify" && prompt_id == "p1"
+        ));
+        let src = include_str!("hermes.rs");
+        let start = src.find("pub async fn stream_turn").expect("stream");
+        let end = src[start..].find("\nfn apply_sse").expect("apply");
+        let turned = &src[start..start + end];
+        assert!(turned.contains("/v1/runs"));
+        assert!(turned.contains("session_id"));
+        assert!(turned.contains("stream_chat_turn"));
+        assert!(!turned.contains("conversation_history"));
+    }
+
+    #[tokio::test]
+    async fn replaced_runs_reader_posts_stop_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stops2 = stops.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let _ = read_http(&mut sock);
+            write_http(
+                &mut sock,
+                "202 Accepted",
+                "application/json",
+                r#"{"run_id":"run_abc","status":"started","replayed":false}"#,
+            );
+            let (mut sock, _) = listener.accept().unwrap();
+            let _ = read_http(&mut sock);
+            let body = "id: 1\ndata: {\"event\":\"clarify.request\",\"run_id\":\"run_abc\",\"prompt_id\":\"p1\",\"execution_generation\":1,\"question\":\"Q\",\"choices\":[]}\n\n";
+            write_http(&mut sock, "200 OK", "text/event-stream", body);
+            let (mut sock, _) = listener.accept().unwrap();
+            let head = read_http(&mut sock);
+            if head.contains("/stop") {
+                stops2.fetch_add(1, Ordering::SeqCst);
+            }
+            write_http(&mut sock, "200 OK", "application/json", r#"{"status":"stopping"}"#);
+        });
+        let http = Client::new();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        let err = stream_turn(
+            &http,
+            &format!("http://{addr}"),
+            "k",
+            "sid",
+            "hello",
+            &stop,
+            &stop_requested,
+            |ev| {
+                if matches!(ev, TurnEvent::ClarifyRequest { .. }) {
+                    stop.store(true, Ordering::SeqCst);
+                }
+            },
+        )
+        .await
+        .expect_err("replaced");
+        assert!(matches!(err, HermesError::Cancelled));
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert!(!stop_requested.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn clarify_post_single_multi_text_skip_stale_and_run_recovery() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        thread::spawn(move || {
+            for _ in 0..4 {
+                let (mut sock, _) = listener.accept().unwrap();
+                let head = read_http(&mut sock);
+                seen2.lock().unwrap().push(head);
+                let body = r#"{"run_id":"run_abc","status":"resolved","prompt_id":"p1"}"#;
+                write_http(&mut sock, "200 OK", "application/json", body);
+            }
+        });
+        let http = Client::new();
+        let root = format!("http://{addr}/p/mt-coder");
+        let answers = ["甲", "[\"甲\",\"乙\"]", "自己講", ""];
+        for answer in answers {
+            let outcome = submit_clarify(&http, &root, "test-key", "run_abc", "p1", 4, answer)
+                .await
+                .unwrap();
+            assert_eq!(outcome, ClarifyOutcome::Resolved);
+        }
+        let reqs = seen.lock().unwrap();
+        assert_eq!(reqs.len(), 4);
+        for (req, answer) in reqs.iter().zip(answers) {
+            assert!(req.starts_with("POST /p/mt-coder/v1/runs/run_abc/clarify "));
+            assert!(req.to_ascii_lowercase().contains("authorization: bearer "));
+            let json_body = req.split("\r\n\r\n").nth(1).unwrap_or("");
+            let value: Value = serde_json::from_str(json_body.trim()).unwrap();
+            assert_eq!(value["request_id"], "p1");
+            assert_eq!(value["execution_generation"], 4);
+            assert_eq!(value["answer"], answer);
+            assert_eq!(value.as_object().unwrap().len(), 3);
+            assert!(!json_body.contains("推薦"));
+        }
+        drop(reqs);
+
+        let stale = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stale_addr = stale.local_addr().unwrap();
+        let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let posts2 = posts.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = stale.accept().unwrap();
+            let _ = read_http(&mut sock);
+            posts2.fetch_add(1, Ordering::SeqCst);
+            let body = r#"{"error":{"message":"stale_generation","code":"stale_generation"}}"#;
+            write_http(&mut sock, "409 Conflict", "application/json", body);
+        });
+        let outcome = submit_clarify(
+            &http,
+            &format!("http://{stale_addr}/p/mt-coder"),
+            "test-key",
+            "run_abc",
+            "p1",
+            3,
+            "甲",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ClarifyOutcome::Stale);
+        assert_eq!(posts.load(Ordering::SeqCst), 1);
+
+        let settled = TcpListener::bind("127.0.0.1:0").unwrap();
+        let settled_addr = settled.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut sock, _) = settled.accept().unwrap();
+            let _ = read_http(&mut sock);
+            write_http(
+                &mut sock,
+                "200 OK",
+                "application/json",
+                r#"{"run_id":"run_abc","status":"already_resolved","prompt_id":"p1"}"#,
+            );
+        });
+        let outcome = submit_clarify(
+            &http,
+            &format!("http://{settled_addr}"),
+            "k",
+            "run_abc",
+            "p1",
+            4,
+            "",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ClarifyOutcome::AlreadyResolved);
+
+        let recover = TcpListener::bind("127.0.0.1:0").unwrap();
+        let recover_addr = recover.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut sock, _) = recover.accept().unwrap();
+            let head = read_http(&mut sock);
+            assert!(head.starts_with("GET /v1/runs/run_abc "));
+            let body = r#"{"run_id":"run_abc","status":"started","pending_controls":[{"kind":"clarify","prompt_id":"p9","execution_generation":8,"question":"幾時？","choices":[],"multi_select":false,"timeout_s":600}]}"#;
+            write_http(&mut sock, "200 OK", "application/json", body);
+        });
+        let value = fetch_run(&http, &format!("http://{recover_addr}"), "k", "run_abc")
+            .await
+            .unwrap();
+        assert_eq!(value["pending_controls"][0]["prompt_id"], "p9");
+        assert_eq!(value["pending_controls"][0]["question"], "幾時？");
+        assert_eq!(value["status"], "started");
+
+        let src = include_str!("hermes.rs");
+        let start = src.find("pub async fn submit_clarify").expect("clarify");
+        let end = src[start..].find("\npub async fn ").expect("next");
+        let body = &src[start..start + end];
+        assert!(body.contains("/v1/runs/{run_id}/clarify"));
+        assert!(body.contains("\"answer\""));
+        assert!(body.contains("execution_generation"));
+        assert!(!body.contains("resolve_all"));
+        assert!(!body.contains("println"));
+        assert!(!body.contains("eprintln"));
+        assert!(!body.contains("create_session"));
+        let lib = include_str!("lib.rs");
+        let cmd = lib.find("async fn respond_clarify").expect("command");
+        let cmd_end = lib[cmd..].find("\n#[tauri::command]").expect("next command");
+        let cmd_body = &lib[cmd..cmd + cmd_end];
+        assert!(cmd_body.contains("submit_clarify"));
+        assert!(!cmd_body.contains("println"));
+        assert!(!cmd_body.contains("resolve_all"));
+        assert!(!cmd_body.contains("create_session"));
+    }
+
+    #[tokio::test]
+    async fn approval_post_includes_execution_generation_when_present() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let seen2 = seen.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            *seen2.lock().unwrap() = read_http(&mut sock);
+            write_http(
+                &mut sock,
+                "200 OK",
+                "application/json",
+                r#"{"run_id":"run_abc","choice":"once","request_id":"req_1"}"#,
+            );
+        });
+        let http = Client::new();
+        submit_approval(
+            &http,
+            &format!("http://{addr}/p/mt-coder"),
+            "test-key",
+            "run_abc",
+            "req_1",
+            "once",
+            Some(4),
+        )
+        .await
+        .unwrap();
+        let req = seen.lock().unwrap();
+        let value: Value = serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap_or("").trim()).unwrap();
+        assert_eq!(value["choice"], "once");
+        assert_eq!(value["request_id"], "req_1");
+        assert_eq!(value["execution_generation"], 4);
+        assert_eq!(value.as_object().unwrap().len(), 3);
     }
 
     #[test]

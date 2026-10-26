@@ -1600,6 +1600,93 @@ html, body {
   box-shadow: none;
 }
 
+.bubble.clarify {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 92%;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #616191;
+  color: #14142b;
+}
+
+.clarify-heading {
+  margin: 0;
+  color: #0000f2;
+  font: 500 11px/1.2 var(--font-label);
+}
+
+.clarify-question,
+.clarify-result,
+.clarify-countdown {
+  margin: 0;
+  color: #14142b;
+  font: 400 var(--fs-body) var(--font-body);
+}
+
+.clarify-countdown,
+.clarify-timeout {
+  color: #3a3a68;
+  font-size: 11px;
+}
+
+.clarify-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.clarify-text {
+  flex: 1 0 100%;
+  min-height: 64px;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #616191;
+  border-radius: var(--r-sm);
+  color: #14142b;
+  font: 400 var(--fs-body) var(--font-body);
+  resize: vertical;
+}
+
+.clarify-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #14142b;
+  font: 400 var(--fs-body) var(--font-body);
+}
+
+.clarify-actions button {
+  height: 32px;
+  padding: 0 12px;
+  background: #fff;
+  border: 1px solid #616191;
+  border-radius: var(--r-sm);
+  color: #14142b;
+  font: 400 var(--fs-body) var(--font-body);
+}
+
+.clarify-actions button.clarify-primary {
+  background: #0000f2;
+  border-color: #0000f2;
+  color: #fff;
+}
+
+.clarify-actions button.clarify-secondary {
+  background: #fff;
+  border-color: #616191;
+  color: #616191;
+}
+
+.clarify-actions button:disabled,
+.clarify-actions button.clarify-primary:disabled {
+  background: #eee;
+  border-color: #616191;
+  color: #14142b;
+}
+
 .composer {
   position: relative;
   flex: none;

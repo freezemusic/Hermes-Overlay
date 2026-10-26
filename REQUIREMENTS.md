@@ -24,7 +24,7 @@
 
 Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattended_mode: approve`，畫面、設定、註解都唔好建議開啟。
 
-**R-AP-01** `POST /p/{profile}/api/sessions/{id}/chat/stream` 嘅 SSE 如果出 `approval.request`，面板入面即刻出一張卡。卡有小標題「要你批准」，並顯示 `description` 同 gateway 已經遮罩嘅 `command`。只有兩個掣：「批准（一次）」（body `choice` = `once`，主掣，實色藍）同「拒絕」（`deny`，次掣）。小標題至少 11px。等緊批准時狀態係「等緊批准」，唔係「思考中…」；批完如果嗰輪仲忙，先返「思考中…」。撳一次之後兩個掣停用。`approval.responded` 或者 POST 成功之後顯示「已批准」或「已拒絕」。HTTP 409 顯示「呢個批准已經過時」。唔自動重試，唔自動批准，唔送 `session`、`always`、`all` 或 `resolve_all`。
+**R-AP-01** 傳送走 `POST /v1/runs` 之後訂閱 events；舊 gateway 呢條 404 先至用 `POST /p/{profile}/api/sessions/{id}/chat/stream`。兩邊嘅 `approval.request` 都即刻出一張卡。卡有小標題「要你批准」，並顯示 `description` 同 gateway 已經遮罩嘅 `command`。只有兩個掣：「批准（一次）」（body `choice` = `once`，主掣，實色藍）同「拒絕」（`deny`，次掣）。小標題至少 11px。等緊批准時狀態係「等緊批准」，唔係「思考中…」；批完如果嗰輪仲忙，先返「思考中…」。撳一次之後兩個掣停用。`approval.responded`、`approval.settled` 或者 POST 成功之後顯示「已批准」或「已拒絕」。HTTP 409 顯示「呢個批准已經過時」。唔自動重試，唔自動批准，唔送 `session`、`always`、`all` 或 `resolve_all`。事件有 `execution_generation` 先加落 body（authority 要 `{request_id, execution_generation, choice}` 三個 key 齊；冇呢個欄位就維持兩個 key）。
 - 來源：Devon（2026-10-26，Hermes gateway 0.22.5）。`approval.request` 喺 `gateway/platforms/api_server.py`；回覆係 `POST /p/{profile}/v1/runs/{run_id}/approval`，body `{"choice","request_id"}`，用同一個 profile prefix 同 api_server Bearer。`run_id` 亦出現喺同一條串流嘅 `run.started`。
 - 驗收（盒）：模擬 `approval.request` 出卡；POST 路徑包含 profile prefix、`run_id`，body 有對應 `request_id` 同 `once` 或 `deny`。409 只顯示「呢個批准已經過時」，而且只 POST 一次。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
@@ -49,6 +49,11 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：收埋時有 pending approval，再開之後張卡喺對話底、輸入框上面。之後用戶自己捲上唔好被拉返底。
 - 狀態：❓ / ❓。
 
+**R-AP-06** Hermes `clarify`（問用戶）出一張卡，同批准卡一齊。小標題「要你答」。同一時間只得一張。有選擇時第一個標「推薦」，送出嘅係選項原文，唔係「推薦」兩個字。冇選擇就係自由文字，空嘅「送出」停用。「跳過」送 `answer: ""`。多選送 JSON array 字串。`stale_generation`（HTTP 409）顯示「呢條問題已經過時」並收起。`clarify.settled` 或 `already_resolved` 收卡。冇 `timeout_s` 就倒數 600 秒；到時顯示「時間到，個 bot 會自己繼續」，唔自動代答。等緊答時狀態係「等你答」；批卡優先於澄清卡。SSE 斷咗或者再開面板，用 `GET /v1/runs/{id}` 嘅 `pending_controls` 補卡，並且同批准卡一樣貼底。面板收埋時澄清卡共用光球 `has-approval` 標記。
+- 來源：Devon（2026-10-26，對過 NousResearch hermes-agent v0.22.5 `56b6a31`）。`session_api_turn.py` 嘅 chat sink 只轉發 `approval.request`，`clarify.request` 會掉。澄清只出現喺 `POST /v1/runs` 然後 `GET /v1/runs/{id}/events`（`id:` 係 seq，事件名喺 JSON `event`，唔係 SSE `event:`）。回覆係 `POST /v1/runs/{id}/clarify`，body 剛好 `{request_id, execution_generation, answer}`。`stale_generation` 係 409，唔係 200 嘅 status。`clarify.settled` 只有 `prompt_id` 同 `execution_generation`。`pending_controls` 只喺 admission `started` 先出現。events 斷線唔會停 run；新一次傳送頂走舊 reader 先會對嗰個 run `POST /stop`。用戶自己撳停止仍然只停一次。寫入門檻仍然係 `api_server`／`bot_room`，`permission_denied` 照舊只可以睇。
+- 驗收（盒）：mock gateway 覆蓋單選、多選、自由文字、跳過、過時、settled、逾時、SSE 重連同 `pending_controls` 恢復。唔自動批准、唔自動代答。
+- 狀態：❓ / ✅(單元測試)；Win 未再驗。
+
 ---
 
 ## 停止同忙碌發送（R-ST）
@@ -58,7 +63,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：mock gateway 見到 `POST /p/mt-coder/v1/runs/{活躍 run_id}/stop`、冇 body；已完結 id 嘅 409 之後會打去活躍 id；409 本身唔顯示「已停止」；使用者停止唔會設 reader abort。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
-**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常 `POST /api/sessions/{id}/chat/stream`。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 顯示「個 bot 仲忙，呢句未送出。」。
+**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常嗰條傳送（`POST /v1/runs`，舊 gateway 冇呢條先至 `POST /api/sessions/{id}/chat/stream`）。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 顯示「個 bot 仲忙，呢句未送出。」。
 - 來源：Devon（2026-10-26）。真用：訊息排咗 admission seq 8，約一分鐘後先答，畫面冇排隊狀態。
 - 驗收（盒）：steer 路徑同 body 只有 `input`；409 變排隊句；忙碌發送唔再係直接 `return`。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。

@@ -44,6 +44,16 @@ description = "Approve or deny one Hermes tool request by hand."
 commands.allow = ["respond_approval"]
 
 [[permission]]
+identifier = "allow-respond-clarify"
+description = "Answer one Hermes clarify card by hand."
+commands.allow = ["respond_clarify"]
+
+[[permission]]
+identifier = "allow-load-run-controls"
+description = "Read pending approval and clarify cards for one run."
+commands.allow = ["load_run_controls"]
+
+[[permission]]
 identifier = "allow-steer-run"
 description = "Steer text into the active Hermes run."
 commands.allow = ["steer_run"]
