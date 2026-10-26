@@ -118,9 +118,22 @@ struct WatchedChat {
     messages: Vec<hermes::UiMessage>,
 }
 
+#[derive(Clone)]
+struct StreamControl {
+    abort: Arc<AtomicBool>,
+    stop_requested: Arc<AtomicBool>,
+    generation: u64,
+}
+
+struct ProfileStreams {
+    generation: u64,
+    live: Vec<StreamControl>,
+}
+
 struct AppState {
     http: reqwest::Client,
-    stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    streams: Arc<Mutex<HashMap<String, ProfileStreams>>>,
+    run_ids: Arc<Mutex<HashMap<String, String>>>,
     sessions: Arc<Mutex<HashMap<String, SessionPin>>>,
     /// Last Bot Chat transcript seen by the cron poll. Locked only after HTTP awaits.
     bot_chats: Arc<Mutex<HashMap<String, WatchedChat>>>,
@@ -617,13 +630,80 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
     rows
 }
 
-fn replace_stop(state: &AppState, profile: &str) -> Arc<AtomicBool> {
-    let flag = Arc::new(AtomicBool::new(false));
-    let mut map = state.stops.lock().unwrap_or_else(|err| err.into_inner());
-    if let Some(previous) = map.insert(profile.to_string(), flag.clone()) {
-        previous.store(true, Ordering::Relaxed);
+fn begin_stream(state: &AppState, profile: &str, replace: bool) -> StreamControl {
+    let mut map = state.streams.lock().unwrap_or_else(|err| err.into_inner());
+    let slot = map.entry(profile.to_string()).or_insert_with(|| ProfileStreams {
+        generation: 0,
+        live: Vec::new(),
+    });
+    slot.generation = slot.generation.wrapping_add(1);
+    let control = StreamControl {
+        abort: Arc::new(AtomicBool::new(false)),
+        stop_requested: Arc::new(AtomicBool::new(false)),
+        generation: slot.generation,
+    };
+    if replace {
+        for previous in slot.live.drain(..) {
+            previous.abort.store(true, Ordering::Relaxed);
+        }
     }
-    flag
+    slot.live.push(control.clone());
+    control
+}
+
+fn request_stream_stop(state: &AppState, profile: &str) {
+    let map = state.streams.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(slot) = map.get(profile) {
+        for control in &slot.live {
+            control.stop_requested.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+fn end_stream(streams: &Mutex<HashMap<String, ProfileStreams>>, profile: &str, generation: u64) {
+    if let Some(slot) = streams
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .get_mut(profile)
+    {
+        slot.live.retain(|item| item.generation != generation);
+    }
+}
+
+fn stream_is_current(
+    streams: &Mutex<HashMap<String, ProfileStreams>>,
+    profile: &str,
+    generation: u64,
+) -> bool {
+    streams
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .get(profile)
+        .map(|slot| slot.generation == generation)
+        .unwrap_or(true)
+}
+
+fn remembered_run_id(state: &AppState, profile: &str) -> String {
+    state
+        .run_ids
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .get(profile)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn chat_failure_line(err: &HermesError) -> String {
+    match err {
+        HermesError::Http { body, .. } if hermes::text_is_permission_denied(body) => {
+            hermes::session_read_only_reason().into()
+        }
+        HermesError::Protocol(msg) if hermes::text_is_permission_denied(msg) => {
+            hermes::session_read_only_reason().into()
+        }
+        HermesError::Http { status: 409, .. } => "個 bot 仲忙，呢句未送出。".into(),
+        other => explain(other),
+    }
 }
 
 fn emit(app: &AppHandle, payload: serde_json::Value) {
@@ -1343,17 +1423,24 @@ async fn send_chat(
     state: State<'_, AppState>,
     profile: String,
     text: String,
+    queue: Option<bool>,
 ) -> Result<(), String> {
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err("訊息係空".into());
     }
+    let queued = queue.unwrap_or(false);
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?.clone();
     let key = profile_key(&profile)?;
     let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-    let stop = replace_stop(&state, &profile);
+    let control = begin_stream(&state, &profile, !queued);
+    let stop = Arc::clone(&control.abort);
+    let stop_requested = Arc::clone(&control.stop_requested);
+    let generation = control.generation;
+    let streams = Arc::clone(&state.streams);
+    let run_ids = Arc::clone(&state.run_ids);
     let http = state.http.clone();
     let session_cache = Arc::clone(&state.sessions);
     let config_write = Arc::clone(&state.config_write);
@@ -1377,15 +1464,39 @@ async fn send_chat(
         }
         resolved.id
     };
-    emit_status(&app, &profile, "busy", "思考中…");
+    let busy_label = if queued {
+        "排隊中，等佢講完就會行"
+    } else {
+        "思考中…"
+    };
+    emit_status(&app, &profile, "busy", busy_label);
 
     tauri::async_runtime::spawn(async move {
+        let mut emit_turn = |event: TurnEvent| {
+            if let TurnEvent::Started { run_id } = &event {
+                if let Some(id) = hermes::approval_run_id(run_id) {
+                    run_ids
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .insert(profile.clone(), id.to_string());
+                }
+            }
+            let keep_busy = matches!(event, TurnEvent::Finished { .. })
+                && !stream_is_current(&streams, &profile, generation);
+            dispatch_turn(&app, &profile, event, keep_busy);
+        };
         let run = async {
-            let first =
-                hermes::stream_turn(&http, &root, &key, &session_id, &text, &stop, |event| {
-                    dispatch_turn(&app, &profile, event)
-                })
-                .await;
+            let first = hermes::stream_turn(
+                &http,
+                &root,
+                &key,
+                &session_id,
+                &text,
+                &stop,
+                &stop_requested,
+                &mut emit_turn,
+            )
+            .await;
             if hermes::turn_is_permission_denied(&first) {
                 return Err(HermesError::Protocol(
                     hermes::session_read_only_reason().to_string(),
@@ -1418,18 +1529,30 @@ async fn send_chat(
                         anchor: 0.0,
                     },
                 );
-                hermes::stream_turn(&http, &root, &key, &pick.id, &text, &stop, |event| {
-                    dispatch_turn(&app, &profile, event)
-                })
+                hermes::stream_turn(
+                    &http,
+                    &root,
+                    &key,
+                    &pick.id,
+                    &text,
+                    &stop,
+                    &stop_requested,
+                    &mut emit_turn,
+                )
                 .await
             } else {
                 first
             }
         };
-        match run.await {
+        let result = run.await;
+        end_stream(&streams, &profile, generation);
+        match result {
             Ok(()) => {}
             Err(HermesError::Cancelled) => {
-                emit_status(&app, &profile, "idle", "已停止");
+                let keep_busy = !stream_is_current(&streams, &profile, generation);
+                if !keep_busy {
+                    emit_status(&app, &profile, "idle", "已停止");
+                }
                 emit(
                     &app,
                     serde_json::json!({
@@ -1437,20 +1560,34 @@ async fn send_chat(
                         "profile": profile,
                         "outcome": "cancelled",
                         "detail": "已停止呢次回覆。",
+                        "keep_busy": keep_busy,
                     }),
                 );
             }
             Err(err) => {
-                let message = explain(&err);
-                emit_status(&app, &profile, "error", &message);
-                emit(
-                    &app,
-                    serde_json::json!({
-                        "type": "error",
-                        "profile": profile,
-                        "message": message,
-                    }),
-                );
+                if !stream_is_current(&streams, &profile, generation) {
+                    emit(
+                        &app,
+                        serde_json::json!({
+                            "type": "done",
+                            "profile": profile,
+                            "outcome": "failed",
+                            "detail": "",
+                            "keep_busy": true,
+                        }),
+                    );
+                } else {
+                    let message = chat_failure_line(&err);
+                    emit_status(&app, &profile, "error", &message);
+                    emit(
+                        &app,
+                        serde_json::json!({
+                            "type": "error",
+                            "profile": profile,
+                            "message": message,
+                        }),
+                    );
+                }
             }
         }
     });
@@ -1489,7 +1626,7 @@ async fn respond_approval(
         })
 }
 
-fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
+fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bool) {
     match event {
         TurnEvent::Started { run_id } => emit(
             app,
@@ -1569,7 +1706,9 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
                 }
                 .to_string()
             };
-            emit_status(app, profile, state_name, &label);
+            if !keep_busy {
+                emit_status(app, profile, state_name, &label);
+            }
             emit(
                 app,
                 serde_json::json!({
@@ -1577,6 +1716,7 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent) {
                     "profile": profile,
                     "outcome": outcome,
                     "detail": detail,
+                    "keep_busy": keep_busy,
                 }),
             );
         }
@@ -2254,17 +2394,15 @@ async fn client_command(
     let args = input.args.trim().to_string();
     match command.as_str() {
         "stop" => {
-            if let Some(flag) = state
-                .stops
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .get(&input.profile)
-            {
-                flag.store(true, Ordering::Relaxed);
-            }
+            let outcome = request_stop(&app, &state, &input.profile, None).await;
+            let notice = match outcome {
+                Ok(status) if status == "not_active" => "已停止呢次回覆。".into(),
+                Ok(_) => String::new(),
+                Err(message) => message,
+            };
             Ok(ClientCommandOut {
                 command,
-                notice: "已停止呢次回覆。".into(),
+                notice,
                 session_id: cached_session(&state, &input.profile).unwrap_or_default(),
                 options: Vec::new(),
             })
@@ -2631,17 +2769,80 @@ fn reveal_overlay(app: AppHandle, state: State<'_, AppState>) {
     interaction::reapply_live_input_shape(&app, state.interaction.as_ref());
 }
 
-#[tauri::command]
-fn stop_chat(state: State<'_, AppState>, profile: String) -> Result<(), String> {
-    if let Some(flag) = state
-        .stops
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .get(&profile)
-    {
-        flag.store(true, Ordering::Relaxed);
+async fn request_stop(
+    app: &AppHandle,
+    state: &AppState,
+    profile: &str,
+    run_id: Option<String>,
+) -> Result<String, String> {
+    request_stream_stop(state, profile);
+    let hinted = run_id.unwrap_or_default();
+    let chosen = if hermes::approval_run_id(&hinted).is_some() {
+        hinted
+    } else {
+        remembered_run_id(state, profile)
+    };
+    let Some(run_id) = hermes::approval_run_id(&chosen).map(str::to_string) else {
+        return Ok("not_active".into());
+    };
+    let posted = async {
+        let cfg = load_config(app)?;
+        require_hermes(&cfg)?;
+        let bot = bot_or_err(&cfg, profile)?;
+        let key = profile_key(profile)?;
+        let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+        hermes::stop_run(&state.http, &root, &key, &run_id)
+            .await
+            .map_err(|_| "停止未送到。".to_string())
     }
-    Ok(())
+    .await;
+    match posted {
+        Ok(hermes::StopOutcome::Stopping) => Ok("stopping".into()),
+        Ok(hermes::StopOutcome::NotActive) => Ok("not_active".into()),
+        Err(_) => Err("停止未送到。".into()),
+    }
+}
+
+#[tauri::command]
+async fn steer_run(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    run_id: String,
+    text: String,
+) -> Result<String, String> {
+    let text = text.trim().to_string();
+    let Some(run_id) = hermes::approval_run_id(&run_id).map(str::to_string) else {
+        return Ok("rejected".into());
+    };
+    if text.is_empty() {
+        return Ok("rejected".into());
+    }
+    let posted = async {
+        let cfg = load_config(&app)?;
+        require_hermes(&cfg)?;
+        let bot = bot_or_err(&cfg, &profile)?;
+        let key = profile_key(&profile)?;
+        let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+        hermes::steer_run(&state.http, &root, &key, &run_id, &text)
+            .await
+            .map_err(|_| "rejected".to_string())
+    }
+    .await;
+    match posted {
+        Ok(hermes::SteerOutcome::Joined) => Ok("joined".into()),
+        _ => Ok("rejected".into()),
+    }
+}
+
+#[tauri::command]
+async fn stop_chat(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    run_id: Option<String>,
+) -> Result<String, String> {
+    request_stop(&app, &state, &profile, run_id).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2651,7 +2852,8 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState {
             http: http_client(),
-            stops: Mutex::new(HashMap::new()),
+            streams: Arc::new(Mutex::new(HashMap::new())),
+            run_ids: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             bot_chats: Arc::new(Mutex::new(HashMap::new())),
             config_write: Arc::new(Mutex::new(())),
@@ -2711,6 +2913,7 @@ pub fn run() {
             select_session,
             send_chat,
             respond_approval,
+            steer_run,
             stop_chat,
             list_commands,
             client_command,
@@ -2763,6 +2966,42 @@ mod tests {
         assert!(!body.contains("delete_profile_key"));
         assert!(!body.contains("create_session"));
         assert!(!body.contains("create_bot_chat"));
+    }
+
+    #[test]
+    fn stop_and_steer_keep_the_reader_and_do_not_log() {
+        let src = include_str!("lib.rs");
+        let stop = src.find("async fn request_stop").expect("request_stop");
+        let steer = src.find("async fn steer_run").expect("steer");
+        let stop_chat = src.find("async fn stop_chat").expect("stop_chat");
+        let request = &src[stop..steer];
+        assert!(request.contains("request_stream_stop"));
+        assert!(request.contains("stop_run"));
+        assert!(request.contains("not_active"));
+        assert!(!request.contains("abort.store"));
+        let mark = src.find("fn request_stream_stop").expect("mark");
+        let mark_end = src[mark..].find("\nfn end_stream").expect("end_stream");
+        let mark_body = &src[mark..mark + mark_end];
+        assert!(mark_body.contains("stop_requested.store(true"));
+        assert!(!mark_body.contains("abort.store"));
+        assert!(!request.contains("println"));
+        assert!(!request.contains("eprintln"));
+        assert!(!request.contains("config::save"));
+        let steer_body = &src[steer..stop_chat];
+        assert!(steer_body.contains("hermes::steer_run"));
+        assert!(steer_body.contains("\"joined\""));
+        assert!(steer_body.contains("\"rejected\""));
+        assert!(!steer_body.contains("println"));
+        assert!(!steer_body.contains("eprintln"));
+        assert!(!steer_body.contains("config::save"));
+        let send_start = src.find("async fn send_chat").expect("send");
+        let send_end = src.find("fn dispatch_turn").expect("dispatch");
+        let send = &src[send_start..send_end];
+        assert!(send.contains("begin_stream"));
+        assert!(send.contains("!queued"));
+        assert!(send.contains("stop_requested"));
+        assert!(send.contains("chat_failure_line"));
+        assert!(send.contains("keep_busy"));
     }
 
     #[test]

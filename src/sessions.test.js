@@ -14,6 +14,7 @@ import {
   sessionLabel,
   sessionReadOnly,
   storedPinAfterResolve,
+  catchUpMessages,
   unseenMessages,
 } from "./sessions.js";
 
@@ -421,4 +422,30 @@ test("foreign session sources stay readable and permission_denied stays plain", 
   assert.match(head, /turn_is_permission_denied/);
   assert.doesNotMatch(head, /ensure_bot_chat|create_session|create_bot_chat|persist_pin/);
   assert.doesNotMatch(rustSend, /create_session|create_bot_chat/);
+});
+
+test("catch-up keeps an unseen reply and does not copy the live bubble", () => {
+  const existing = [
+    { role: "user", text: "第一句" },
+    { role: "bot", text: "未講完", live: true },
+    { role: "commentary", text: "排隊中，等佢講完就會行" },
+  ];
+  const incoming = [
+    { role: "user", text: "第一句" },
+    { role: "bot", text: "未講完，而家講完" },
+    { role: "user", text: "第二句" },
+    { role: "bot", text: "第二句嘅回覆" },
+    { role: "tool", text: "ls" },
+  ];
+  const { fresh, settled } = catchUpMessages(existing, incoming);
+  assert.deepEqual(settled, { text: "未講完，而家講完" });
+  assert.deepEqual(fresh, [
+    { role: "user", text: "第二句", tool_name: "" },
+    { role: "bot", text: "第二句嘅回覆", tool_name: "" },
+  ]);
+  const again = catchUpMessages(
+    [...existing, { role: "bot", text: "第二句嘅回覆" }],
+    incoming,
+  );
+  assert.deepEqual(again.fresh, [{ role: "user", text: "第二句", tool_name: "" }]);
 });

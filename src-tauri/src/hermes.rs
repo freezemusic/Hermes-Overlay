@@ -2079,6 +2079,7 @@ pub async fn stream_turn<F>(
     session_id: &str,
     text: &str,
     stop: &AtomicBool,
+    stop_requested: &AtomicBool,
     mut on_event: F,
 ) -> Result<(), HermesError>
 where
@@ -2104,6 +2105,12 @@ where
             body: clip(&body, 400),
         });
     }
+    // 202 is the gateway's queued admission. The reply lands in the session
+    // after the active run, so this socket has nothing left to stream.
+    if status.as_u16() == 202 {
+        let _ = resp.bytes().await;
+        return Ok(());
+    }
     let command = resp
         .headers()
         .get("x-hermes-command")
@@ -2118,10 +2125,13 @@ where
     let mut stream = resp.bytes_stream();
     let mut decoder = sse::ByteBuf::new();
     let mut saw_terminal = false;
+    let mut saw_queued = false;
     let mut streamed = false;
     let mut pending_failure: Option<String> = None;
     let mut run_id = String::new();
     while let Some(chunk) = stream.next().await {
+        // `stop` aborts a reader that a newer send replaced. A user stop only
+        // sets `stop_requested` and must keep reading until the server ends.
         if stop.load(Ordering::Relaxed) {
             return Err(HermesError::Cancelled);
         }
@@ -2129,6 +2139,9 @@ where
         for event in decoder.push(&bytes) {
             if stop.load(Ordering::Relaxed) {
                 return Err(HermesError::Cancelled);
+            }
+            if event.event == "run.queued" {
+                saw_queued = true;
             }
             if apply_sse(
                 event,
@@ -2143,6 +2156,9 @@ where
         }
     }
     for event in decoder.finish() {
+        if event.event == "run.queued" {
+            saw_queued = true;
+        }
         if apply_sse(
             event,
             &mut streamed,
@@ -2154,10 +2170,13 @@ where
             saw_terminal = true;
         }
     }
-    if stop.load(Ordering::Relaxed) {
+    if stop.load(Ordering::Relaxed) || (stop_requested.load(Ordering::Relaxed) && !saw_terminal) {
         return Err(HermesError::Cancelled);
     }
     if !saw_terminal {
+        if saw_queued {
+            return Ok(());
+        }
         return Err(HermesError::Protocol(
             "串流未有 run.completed / run.failed / run.cancelled 就結束".into(),
         ));
@@ -2404,6 +2423,93 @@ pub async fn submit_approval(
     }
     let code = status.as_u16();
     let _ = resp.bytes().await;
+    Err(HermesError::Http {
+        status: code,
+        body: String::new(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    Stopping,
+    NotActive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SteerOutcome {
+    Joined,
+    Rejected,
+}
+
+fn terminal_run_status(status: &str) -> bool {
+    matches!(
+        status,
+        "completed" | "failed" | "cancelled" | "canceled" | "interrupted" | "expired"
+    )
+}
+
+/// `POST /p/{profile}/v1/runs/{run_id}/stop` with no body.
+/// 409 `run_not_active` (and an already-terminal 200) is [`StopOutcome::NotActive`].
+pub async fn stop_run(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+) -> Result<StopOutcome, HermesError> {
+    let url = format!("{root}/v1/runs/{run_id}/stop");
+    let resp = authed(http.post(&url), key)
+        .send()
+        .await
+        .map_err(map_reqwest)?;
+    let status = resp.status();
+    if status.is_success() {
+        let bytes = resp.bytes().await.unwrap_or_default();
+        let parsed: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let run_status = parsed.get("status").and_then(Value::as_str).unwrap_or("");
+        if terminal_run_status(run_status) {
+            return Ok(StopOutcome::NotActive);
+        }
+        return Ok(StopOutcome::Stopping);
+    }
+    let code = status.as_u16();
+    let _ = resp.bytes().await;
+    if code == 409 {
+        return Ok(StopOutcome::NotActive);
+    }
+    Err(HermesError::Http {
+        status: code,
+        body: String::new(),
+    })
+}
+
+/// `POST /p/{profile}/v1/runs/{run_id}/steer` with exactly `{"input": text}`.
+/// 409 (`run_not_accepting_steer` or `steer_not_accepted`) is [`SteerOutcome::Rejected`].
+pub async fn steer_run(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+    text: &str,
+) -> Result<SteerOutcome, HermesError> {
+    let url = format!("{root}/v1/runs/{run_id}/steer");
+    let resp = authed(
+        http.post(&url).json(&serde_json::json!({
+            "input": text,
+        })),
+        key,
+    )
+    .send()
+    .await
+    .map_err(map_reqwest)?;
+    let status = resp.status();
+    let _ = resp.bytes().await;
+    if status.is_success() {
+        return Ok(SteerOutcome::Joined);
+    }
+    let code = status.as_u16();
+    if code == 409 {
+        return Ok(SteerOutcome::Rejected);
+    }
     Err(HermesError::Http {
         status: code,
         body: String::new(),
@@ -3809,7 +3915,8 @@ data: {\"completed\":true}\n\
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen2 = seen.clone();
         let stop = AtomicBool::new(false);
-        stream_turn(&http, &base, "k", "sid", "hello", &stop, |ev| {
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, &stop_requested, |ev| {
             seen2.lock().unwrap().push(ev);
         })
         .await
@@ -3836,7 +3943,8 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen2 = seen.clone();
         let stop = AtomicBool::new(false);
-        stream_turn(&http, &base, "k", "sid", "hello", &stop, |ev| {
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, &stop_requested, |ev| {
             seen2.lock().unwrap().push(ev);
         })
         .await
@@ -3975,7 +4083,8 @@ data: {\"error\":\"RuntimeStoreError('permission_denied')\"}\n\
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen2 = seen.clone();
         let stop = AtomicBool::new(false);
-        stream_turn(&http, &base, "k", "sid", "hello", &stop, |ev| {
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, &stop_requested, |ev| {
             seen2.lock().unwrap().push(ev);
         })
         .await
@@ -3994,7 +4103,7 @@ data: {\"error\":\"RuntimeStoreError('permission_denied')\"}\n\
             "text/plain",
             "RuntimeStoreError('permission_denied')",
         );
-        let err = stream_turn(&http, &denied, "k", "sid", "hello", &stop, |_| {}).await;
+        let err = stream_turn(&http, &denied, "k", "sid", "hello", &stop, &stop_requested, |_| {}).await;
         assert!(turn_is_permission_denied(&err));
         assert!(matches!(err, Err(HermesError::Http { status: 500, .. })));
     }
@@ -4022,7 +4131,8 @@ data: {}\n\
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen2 = seen.clone();
         let stop = AtomicBool::new(false);
-        stream_turn(&http, &base, "k", "sid", "hello", &stop, |ev| {
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, &stop_requested, |ev| {
             seen2.lock().unwrap().push(ev);
         })
         .await
@@ -4264,13 +4374,14 @@ data: {}\n\
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen2 = seen.clone();
         let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
         stream_turn(
             &http,
             &format!("http://{addr}"),
             "k",
             "sid",
             "/arxiv q",
-            &stop,
+            &stop, &stop_requested,
             |ev| {
                 seen2.lock().unwrap().push(ev);
             },
@@ -4381,7 +4492,8 @@ data: {\"completed\":true}\n\
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen2 = seen.clone();
         let stop = AtomicBool::new(false);
-        stream_turn(&http, &base, "k", "sid", "hi", &stop, |ev| {
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hi", &stop, &stop_requested, |ev| {
             seen2.lock().unwrap().push(ev);
         })
         .await
@@ -4418,5 +4530,197 @@ data: {\"completed\":true}\n\
         let crashed_text = kanban_move_error(&crashed);
         assert_eq!(crashed_text, "看板更新失敗：overlay-slash failed");
         assert!(!crashed_text.contains('{'));
+    }
+
+    #[tokio::test]
+    async fn user_stop_keeps_the_delta_then_marks_cancelled_when_the_stream_ends() {
+        let body = "\
+event: assistant.delta\n\
+data: {\"delta\":\"未講完\"}\n\
+\n";
+        let base = oneshot("200 OK", "text/event-stream", body);
+        let http = Client::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(true);
+        let err = stream_turn(&http, &base, "k", "sid", "hello", &stop, &stop_requested, |ev| {
+            seen2.lock().unwrap().push(ev);
+        })
+        .await
+        .expect_err("ended without a terminal after stop");
+        assert!(matches!(err, HermesError::Cancelled));
+        let seen = seen.lock().unwrap();
+        assert!(matches!(seen.last(), Some(TurnEvent::Delta(text)) if text == "未講完"));
+    }
+
+    #[tokio::test]
+    async fn queued_stream_without_a_terminal_is_not_a_protocol_error() {
+        let body = "\
+event: run.queued\n\
+data: {\"status\":\"queued\"}\n\
+\n";
+        let base = oneshot("200 OK", "text/event-stream", body);
+        let http = Client::new();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, &stop_requested, |_| {})
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_post_uses_the_profile_prefix_once_and_409_is_not_active() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let seen2 = seen.clone();
+        let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let posts2 = posts.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 8192];
+            let n = sock.read(&mut buf).unwrap_or(0);
+            posts2.fetch_add(1, Ordering::SeqCst);
+            *seen2.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let body = r#"{"run_id":"run_abc","status":"stopping","token":"sk-test-secret"}"#;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(body.as_bytes());
+        });
+        let http = Client::new();
+        let outcome = stop_run(&http, &format!("http://{addr}/p/mt-coder"), "test-key", "run_abc")
+            .await
+            .unwrap();
+        assert_eq!(outcome, StopOutcome::Stopping);
+        let req = seen.lock().unwrap();
+        assert!(req.starts_with("POST /p/mt-coder/v1/runs/run_abc/stop "));
+        let req_body = req.split("\r\n\r\n").nth(1).unwrap_or("").trim();
+        assert!(req_body.is_empty());
+        assert!(req.to_ascii_lowercase().contains("authorization: bearer "));
+        assert!(!req.contains("sk-test-secret"));
+        drop(req);
+        assert_eq!(posts.load(Ordering::SeqCst), 1);
+
+        let stale = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stale_addr = stale.local_addr().unwrap();
+        let stale_posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stale_posts2 = stale_posts.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = stale.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf);
+            stale_posts2.fetch_add(1, Ordering::SeqCst);
+            let body = r#"{"error":{"code":"run_not_active","token":"sk-test-secret"}}"#;
+            let header = format!(
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(body.as_bytes());
+        });
+        let inactive = stop_run(
+            &http,
+            &format!("http://{stale_addr}/p/mt-coder"),
+            "test-key",
+            "run_abc",
+        )
+        .await
+        .unwrap();
+        assert_eq!(inactive, StopOutcome::NotActive);
+        assert_eq!(stale_posts.load(Ordering::SeqCst), 1);
+
+        let src = include_str!("hermes.rs");
+        let start = src.find("pub async fn stop_run").expect("stop_run");
+        let end = src[start..].find("pub async fn steer_run").expect("steer");
+        let body = &src[start..start + end];
+        assert!(body.contains("/v1/runs/{run_id}/stop"));
+        assert!(body.contains("body: String::new()"));
+        assert!(!body.contains("println"));
+        assert!(!body.contains("eprintln"));
+        assert!(!body.contains("config::save"));
+    }
+
+    #[tokio::test]
+    async fn steer_post_sends_only_input_and_409_is_rejected() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let seen2 = seen.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 8192];
+            let n = sock.read(&mut buf).unwrap_or(0);
+            *seen2.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let body = r#"{"object":"hermes.run.steer","run_id":"run_abc","accepted":true,"token":"sk-test-secret"}"#;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(body.as_bytes());
+        });
+        let http = Client::new();
+        let joined = steer_run(
+            &http,
+            &format!("http://{addr}/p/mt-coder"),
+            "test-key",
+            "run_abc",
+            "等陣",
+        )
+        .await
+        .unwrap();
+        assert_eq!(joined, SteerOutcome::Joined);
+        let req = seen.lock().unwrap();
+        assert!(req.starts_with("POST /p/mt-coder/v1/runs/run_abc/steer "));
+        let json_body = req.split("\r\n\r\n").nth(1).unwrap_or("");
+        let value: Value = serde_json::from_str(json_body.trim()).unwrap();
+        assert_eq!(value["input"], "等陣");
+        assert_eq!(value.as_object().unwrap().len(), 1);
+        assert!(req.to_ascii_lowercase().contains("authorization: bearer "));
+        drop(req);
+
+        let stale = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stale_addr = stale.local_addr().unwrap();
+        let stale_posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stale_posts2 = stale_posts.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = stale.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf);
+            stale_posts2.fetch_add(1, Ordering::SeqCst);
+            let body = r#"{"error":{"code":"run_not_accepting_steer","token":"sk-test-secret"}}"#;
+            let header = format!(
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(body.as_bytes());
+        });
+        let rejected = steer_run(
+            &http,
+            &format!("http://{stale_addr}/p/mt-coder"),
+            "test-key",
+            "run_abc",
+            "等陣",
+        )
+        .await
+        .unwrap();
+        assert_eq!(rejected, SteerOutcome::Rejected);
+        assert_eq!(stale_posts.load(Ordering::SeqCst), 1);
+
+        let src = include_str!("hermes.rs");
+        let start = src.find("pub async fn steer_run").expect("steer");
+        let end = src[start..].find("\nfn json_error_reason").expect("next");
+        let body = &src[start..start + end];
+        assert!(body.contains("/v1/runs/{run_id}/steer"));
+        assert!(body.contains("\"input\""));
+        assert!(body.contains("body: String::new()"));
+        assert!(!body.contains("println"));
+        assert!(!body.contains("eprintln"));
+        assert!(!body.contains("config::save"));
     }
 }

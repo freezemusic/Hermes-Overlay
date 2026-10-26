@@ -199,7 +199,7 @@ export function inlineArgsHint(value, argsHint) {
   return hint;
 }
 
-/** A running turn still accepts `/stop`. Other text waits. */
+/** `/stop` is the only busy text that is not a steer or a queued send. */
 export function sendBlockedWhileBusy(text, commands, busy) {
   if (!busy) return false;
   return resolveClient(text, commands)?.command !== "stop";

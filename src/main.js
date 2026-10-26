@@ -76,7 +76,7 @@ import {
   textIsExecuteCodeBlocked,
   EXECUTE_CODE_BLOCKED_LINE,
 } from "./approval.js";
-import { SESSION_READ_ONLY_REASON, isPermissionDeniedText, orderSessions, permissionDeniedMessage, previewLine, resolveSession, sessionLabel, sessionReadOnly, unseenMessages } from "./sessions.js";
+import { SESSION_READ_ONLY_REASON, catchUpMessages, isPermissionDeniedText, orderSessions, permissionDeniedMessage, previewLine, resolveSession, sessionLabel, sessionReadOnly, unseenMessages } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -125,7 +125,6 @@ import {
   orderSlashCommands,
   parseSlashMarker,
   resolveClient,
-  sendBlockedWhileBusy,
   shouldRefreshCatalog,
   slashEnterSubmits,
   slashFilterQuery,
@@ -5266,8 +5265,13 @@ function refreshBotChats() {
   for (const bot of state.bots) {
     if (bot.hasKey === false) continue;
     const shell = shellFor(bot.id);
-    if (visualQuiet(shell) || state.busy.has(bot.id)) continue;
     const thread = threadFor(bot.id);
+    if (visualQuiet(shell)) continue;
+    if (thread.watchReply) {
+      void catchUpSession(bot.id);
+      continue;
+    }
+    if (state.busy.has(bot.id)) continue;
     if (thread.historyPromise) continue;
     if (!thread.loaded) {
       beginBotHistory(bot.id)?.catch((err) => {
@@ -5863,7 +5867,9 @@ function openBotPanel(id) {
   const shell = shellFor(id) || (bot ? ensureBotShell(bot) : null);
   if (!shell) return null;
   abortPlanRehearsal(shell);
-  threadFor(id).followTail = true;
+  const thread = threadFor(id);
+  thread.followTail = true;
+  if (thread.loaded) void catchUpSession(id);
   state.openIds = openPanel(state.openIds, id);
   window.clearTimeout(shell._pillTimer);
   shell.dataset.intent = "open";
@@ -6285,7 +6291,14 @@ function handleHermes(payload) {
     return;
   }
   if (payload.type === "run.started") {
-    if (payload.run_id) threadFor(id).runId = payload.run_id;
+    const thread = threadFor(id);
+    const incoming = payload.run_id || "";
+    if (incoming) {
+      if (!thread.runId || !state.busy.has(id) || thread.runId === incoming) thread.runId = incoming;
+      else thread.nextRunId = incoming;
+    }
+    thread.stopNoted = false;
+    setBotStatus(id, "思考中…", "busy");
     noteActivity(id, { type: "run.started" });
     return;
   }
@@ -6365,6 +6378,21 @@ function handleHermes(payload) {
       live.live = false;
       if (textIsExecuteCodeBlocked(live.text)) live.text = EXECUTE_CODE_BLOCKED_LINE;
     }
+    if (payload.keep_busy) {
+      if (thread.nextRunId) {
+        thread.runId = thread.nextRunId;
+        thread.nextRunId = "";
+      }
+      if (payload.outcome === "cancelled") noteStopped(id, { keepBusy: true });
+      else if (panelFor(id)) renderChat(id);
+      return;
+    }
+    if (thread.nextRunId) {
+      thread.runId = thread.nextRunId;
+      thread.nextRunId = "";
+    } else {
+      thread.runId = "";
+    }
     if (panelFor(id)) renderChat(id);
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
     const detail = payload.detail || "";
@@ -6376,6 +6404,16 @@ function handleHermes(payload) {
       : "";
     if (payload.outcome === "failed" && failedText) {
       appendMessage(id, { role: "failure", text: failedText });
+    }
+    if (payload.outcome === "cancelled") {
+      noteStopped(id);
+      if (!thread.queued) thread.watchReply = false;
+      void catchUpSession(id);
+      return;
+    }
+    if (payload.outcome === "completed") {
+      thread.queued = false;
+      thread.watchReply = false;
     }
     setBotStatus(
       id,
@@ -6407,15 +6445,24 @@ async function sendActive(id = state.activeId) {
   }
   state.activeId = id;
   state.slashPanelId = id;
-  threadFor(id).followTail = true;
+  thread.followTail = true;
+  thread.stopNoted = false;
   const busy = state.mode === "hermes" && state.busy.has(id);
-  if (sendBlockedWhileBusy(text, state.catalog || [], busy)) return;
+  const action = resolveClient(text, state.catalog || []);
+  if (busy && action?.command !== "stop") {
+    closeSlash();
+    input.value = "";
+    input.placeholder = "輸入訊息給呢個 Bot…";
+    state.slashArgsHint = "";
+    syncSlashGhost();
+    await sendWhileBusy(id, text);
+    return;
+  }
   closeSlash();
   input.value = "";
   input.placeholder = "輸入訊息給呢個 Bot…";
   state.slashArgsHint = "";
   syncSlashGhost();
-  const action = resolveClient(text, state.catalog || []);
   if (action) {
     await sendClientCommand(id, text, action);
     return;
@@ -6464,10 +6511,6 @@ async function sendClientCommand(id, text, action) {
   appendMessage(id, { role: "user", text, command: action.command });
   if (action.command === "stop") {
     await stopActive(id);
-    if (!state.busy.has(id)) {
-      appendMessage(id, { role: "commentary", text: "已停止呢次回覆。" });
-      setBotStatus(id, "已停止", "idle");
-    }
     return;
   }
   if (state.mode !== "hermes" || !inTauri()) {
@@ -7073,11 +7116,129 @@ function activeSlashItems() {
   return orderSlashCommands(filterCommands(state.catalog || [], query));
 }
 
+function noteStopped(id, { keepBusy = false } = {}) {
+  const thread = threadFor(id);
+  if (!thread.stopNoted) {
+    thread.stopNoted = true;
+    appendMessage(id, { role: "commentary", text: "已停止呢次回覆。" });
+  }
+  if (!keepBusy) setBotStatus(id, "已停止", "idle");
+  if (panelFor(id)) renderChat(id);
+}
+
+function mergeCaughtUp(id, opened) {
+  const thread = threadFor(id);
+  const sessionId = opened.session_id || "";
+  if (sessionId && thread.sessionId && sessionId !== thread.sessionId) return false;
+  const incoming = (opened.messages || []).map(presentMessage);
+  const { fresh, settled } = catchUpMessages(thread.messages, incoming);
+  const busy = state.busy.has(id);
+  if (settled && !busy) {
+    const last = [...thread.messages].reverse().find((message) => message.live && message.role === "bot");
+    if (last) {
+      last.text = settled.text;
+      last.live = false;
+    }
+  }
+  const live = [...thread.messages].reverse().find((message) => message.live && message.role === "bot" && message.text);
+  const additions = fresh.filter((message) => {
+    if (!busy || message.role !== "bot" || !live) return true;
+    return !String(message.text || "").startsWith(String(live.text));
+  });
+  for (const message of additions) appendMessage(id, message);
+  if (sessionId && !thread.sessionId) thread.sessionId = sessionId;
+  thread.loaded = true;
+  const gotReply = additions.some((message) => message.role === "bot" || message.role === "failure")
+    || (!!settled && !busy);
+  if (gotReply) {
+    thread.queued = false;
+    thread.watchReply = false;
+    if (!thread.messages.some((message) => message.live)) setBotStatus(id, "閒置", "idle");
+  }
+  if ((settled || additions.length) && panelFor(id)) renderChat(id);
+  return gotReply;
+}
+
+async function catchUpSession(id) {
+  if (state.mode !== "hermes" || !inTauri() || !id) return false;
+  const token = state.reconnectToken;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const opened = await invoke("open_bot", { profile: id, quiet: true });
+    if (token !== state.reconnectToken || state.mode !== "hermes") return false;
+    return mergeCaughtUp(id, opened);
+  } catch (err) {
+    if (gatewayDown(String(err))) noteGatewayDown();
+    return false;
+  }
+}
+
+async function sendWhileBusy(id, text) {
+  const thread = threadFor(id);
+  const task = planTask(text);
+  appendMessage(id, task === null ? { role: "user", text } : { role: "user", text, command: "plan" });
+  noteActivity(id, { type: "send" });
+  if (state.mode !== "hermes" || !inTauri()) {
+    appendMessage(id, { role: "commentary", text: "排隊中，等佢講完就會行" });
+    window.setTimeout(() => {
+      const reply = task === null
+        ? `（示範回覆）收到：「${text}」。未設定 Hermes gateway。`
+        : planDemoMarkdown(task);
+      appendMessage(id, { role: "bot", text: reply });
+      noteActivity(id, { type: "completed", text: reply });
+      setBotStatus(id, "閒置", "idle");
+    }, 350);
+    return;
+  }
+  let joined = false;
+  if (thread.runId) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      joined = (await invoke("steer_run", { profile: id, runId: thread.runId, text })) === "joined";
+    } catch {
+      joined = false;
+    }
+  }
+  if (joined) {
+    appendMessage(id, { role: "commentary", text: "已加入呢一輪" });
+    if (panelFor(id)) renderChat(id);
+    return;
+  }
+  appendMessage(id, { role: "commentary", text: "排隊中，等佢講完就會行" });
+  thread.queued = true;
+  thread.watchReply = true;
+  if (panelFor(id)) renderChat(id);
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("send_chat", { profile: id, text, queue: true });
+  } catch (err) {
+    thread.queued = false;
+    const message = lockIfPermissionDenied(id, String(err));
+    noteActivity(id, { type: "failed", text: message });
+    appendMessage(id, { role: "commentary", text: message });
+    setBotStatus(id, isPermissionDeniedText(message) ? SESSION_READ_ONLY_REASON : "連線錯誤", "error");
+    setBanner(message, "error");
+  }
+}
+
 async function stopActive(id) {
   const profile = id || state.activeId;
   if (!profile || state.mode !== "hermes" || !inTauri()) return;
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("stop_chat", { profile });
+  const thread = threadFor(profile);
+  thread.watchReply = true;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke("stop_chat", { profile, runId: thread.runId || "" });
+    if (result === "not_active") {
+      noteStopped(profile);
+      if (!thread.queued) thread.watchReply = false;
+      void catchUpSession(profile);
+      return;
+    }
+    void catchUpSession(profile);
+  } catch {
+    showActionError("停止未送到。");
+  }
 }
 
 function measureInputText(text, style) {

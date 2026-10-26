@@ -44,8 +44,13 @@ description = "Approve or deny one Hermes tool request by hand."
 commands.allow = ["respond_approval"]
 
 [[permission]]
+identifier = "allow-steer-run"
+description = "Steer text into the active Hermes run."
+commands.allow = ["steer_run"]
+
+[[permission]]
 identifier = "allow-stop-chat"
-description = "Stop the local chat stream."
+description = "Stop a Hermes run and keep reading its stream."
 commands.allow = ["stop_chat"]
 
 [[permission]]

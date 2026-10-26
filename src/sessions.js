@@ -212,6 +212,34 @@ export function unseenMessages(existing, incoming) {
   };
 }
 
+/**
+ * Session rows the open thread has not shown. Tool rows stay with the stream.
+ * A live bot bubble that is a prefix of the stored reply is returned as `settled`
+ * so the caller can finish it without appending a second copy.
+ */
+export function catchUpMessages(existing, incoming) {
+  const have = existing || [];
+  const seen = new Set(have.map((message) => `${message?.role || ""}\n${message?.text || ""}`));
+  const fresh = [];
+  let settled = null;
+  for (const message of incoming || []) {
+    if (!message || (message.role !== "user" && message.role !== "bot" && message.role !== "failure")) continue;
+    const text = String(message.text || "");
+    if (!text) continue;
+    const key = `${message.role}\n${text}`;
+    if (seen.has(key)) continue;
+    const live = [...have].reverse().find((item) => item?.role === "bot" && item.live && item.text);
+    if (message.role === "bot" && live && text.startsWith(String(live.text))) {
+      settled = { text };
+      seen.add(key);
+      continue;
+    }
+    seen.add(key);
+    fresh.push({ role: message.role, text, tool_name: message.tool_name || "" });
+  }
+  return { fresh, settled };
+}
+
 export function previewLine(messages) {
   const last = [...(messages || [])].reverse().find((message) => String(message?.text || "").trim());
   if (!last) return "";

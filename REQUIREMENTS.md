@@ -46,6 +46,25 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 ---
 
+## 停止同忙碌發送（R-ST）
+
+**R-ST-01** 「停止」打 `POST /p/{profile}/v1/runs/{run_id}/stop`，冇 body（Hermes 0.22.5 `api_server.py:89`，handler `api_server_runs.py:1453`）。`run_id` 係 `run.started` 嘅 admission request id。呢下唔切斷 SSE：繼續聽直到串流 `run.cancelled` 或者結束。串流確認取消，或者 HTTP 409 `run_not_active`，先顯示「已停止」。其他失敗只顯示「停止未送到。」，唔顯示原始錯誤，唔記錄金鑰或者 body。
+- 來源：Devon（2026-10-26，Hermes gateway 0.22.5）。真用：mt-orch 撳停止之後本地只係唔再聽，gateway 嗰輪仲行。
+- 驗收（盒）：mock gateway 見到一次 `POST /p/mt-coder/v1/runs/run_abc/stop`、冇 body；409 當未在行；使用者停止唔會設 reader abort。
+- 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
+
+**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常 `POST /api/sessions/{id}/chat/stream`。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。`sendActive` 唔可以靜默返回。Chat HTTP 409 顯示「個 bot 仲忙，呢句未送出。」。
+- 來源：Devon（2026-10-26）。真用：訊息排咗 admission seq 8，約一分鐘後先答，畫面冇排隊狀態。
+- 驗收（盒）：steer 路徑同 body 只有 `input`；409 變排隊句；忙碌發送唔再係直接 `return`。
+- 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
+
+**R-ST-03** 本地停止或者面板再開之後，要再讀呢個 session 嘅訊息，把未顯示嘅回覆補上。排隊嗰輪嘅回覆唔可以因為當時冇聽住就唔見。呢條唔寫 config.json。
+- 來源：Devon（2026-10-26）。本地停止令 overlay 唔再聽，seq 8 嘅回覆後來先寫入 session。
+- 驗收（盒）：已載入嘅面板再開會補讀；`watchReply` 喺忙碌時仍會合併未見訊息；補讀唔把忙碌中嘅狀態強制改做閒置，除非補到一條完成嘅回覆而且冇直播氣泡。
+- 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
+
+---
+
 ## 1. 穿透同 Ctrl 規則（R-CT）
 
 **R-CT-01** overlay 除咗按 Ctrl 規則可以互動嘅光球／面板之外，**絕對唔可以擋住後面程式嘅點擊、hover 同滾動**。光球同面板嘅命中區可以伸出矩形外最多 12px（`HIT_MARGIN_PX`，`interaction.rs`）。再外嘅點一定要穿透。頁腳量度跌出殼外時，命中區只包住殼，唔好拉成成版高。
