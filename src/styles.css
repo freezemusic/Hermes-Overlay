@@ -2069,6 +2069,16 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   color: #0000f2;
 }
 
+.settings-panel .experimental legend::before {
+  content: none;
+}
+
+.settings-panel .bot-row input::placeholder,
+.settings-panel .field input::placeholder {
+  color: #616191;
+  opacity: 1;
+}
+
 .settings-panel input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;

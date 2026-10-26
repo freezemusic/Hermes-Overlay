@@ -816,6 +816,16 @@ test("chat is the primary panel and the hover label does not stick", () => {
   assert.match(css, /\.settings-panel \.roster-head h3 \{[^}]*12px\/1 /s);
   assert.match(css, /\.settings-panel \.roster-head h3 \{[^}]*#0000f2/s);
   assert.match(css, /\.settings-panel \.roster-head h3::before \{[^}]*content:\s*none/s);
+  assert.match(css, /\.settings-panel \.bot-row input::placeholder,\s*\n\.settings-panel \.field input::placeholder \{[^}]*#616191/s);
+  assert.match(css, /\.settings-panel \.experimental legend::before \{[^}]*content:\s*none/s);
+  assert.match(css, /\.settings-panel legend \{[^}]*12px\/1 var\(--font-label\)/s);
+  assert.match(css, /\.settings-panel legend \{[^}]*#0000f2/s);
+  assert.match(css, /\.settings-panel fieldset \{[^}]*margin:\s*24px 0 0/s);
+  assert.match(html, /placeholder="可留空"/);
+  assert.match(html, /<span>Dashboard session token<\/span>/);
+  assert.doesNotMatch(html, /Dashboard session token（可留空）/);
+  assert.match(main, /placeholder="詳情（可留空）"/);
+  assert.match(main, /placeholder="專用位址（可留空）"/);
   assert.match(css, /\.settings-panel \.bot-row \.key-missing \{[^}]*#e5484d/s);
   assert.match(css, /\.settings-panel \.bot-row \.key-missing \{[^}]*12px\/1\.5/s);
 });

@@ -186,8 +186,8 @@
 **R-AD-06** 金鑰橫額同連線膠囊。預設仍然 top 96px。呢個 home 都要避開每粒光球同佢 34px 光暈，再加 12px；冇面板開住、光暈擋到 home，就改放喺光暈外（頂邊看板光暈會將橫額同膠囊放到 y ≥ 132）。只係底邊面板開住、又冇碰到 home，唔好因為個面板搬走。撞到打開嘅面板就放喺面板外 12px、畫面中心嗰一側；放唔落先試其餘邊，再退到 header 行。唔好疊住光球或者佢 34px 光暈。金鑰橫額圓角 2px。膠囊仍然係唯一 999px 圓角。底係 `rgba(248,248,252,.92)`，字 `#14142b` 12px/1.4 Noto Sans HK，唔好用文字透明度。連結部分 `#0000f2` 加底線，其餘句子保持 `#14142b`。邊 1px `rgb(0 0 242 / .35)`。padding `6px 12px`。字同連結對住橫額底 `#f8f8fc` 至少 7:1。
 - 驗收：`keyBannerSlot` 預設 gap 12；光暈擋住中心側時改去另一邊。閒置橫額同膠囊唔疊住看板光暈。`#conn-banner[data-sticky="keys"]` 圓角 2px。`.conn-banner.ok, .conn-banner.info` 圓角 999px。`.conn-banner` 用上面嘅底、字、邊、padding。底線只喺包住「設定」嘅 `.banner-link`（`#0000f2`）。`.banner-action` 同 `.banner-copy` 都係 `text-decoration: none`。
 
-**R-AD-07** 設定。Kanban server 只得欄位標籤，唔好再加一個 legend。說明放喺個標籤下面，12px/1.5 `#616191`。「Bot 名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，上面 24px。設定開住時金鑰橫額保持收起，`keyPromptBots` 唔清空。未有金鑰嘅 profile 喺金鑰欄下面顯示 12px `#e5484d` 提示「未有 API 金鑰」。
-- 驗收：設定 HTML 冇 `<legend>Kanban server</legend>`。`.kanban-server-hint` 係 12px/1.5 `#616191`。`.settings-panel .roster-head` margin-top 24px，`.roster-head h3::before` 係 `content: none`。`rowFromBot` 喺有 profile 而 `has_key` 係 false 時加 `.key-missing`。
+**R-AD-07** 設定。Kanban server 只得欄位標籤，唔好再加一個 legend。說明放喺個標籤下面，12px/1.5 `#616191`。「Bot 名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，上面 24px。設定開住時金鑰橫額保持收起，`keyPromptBots` 唔清空。未有金鑰嘅 profile 喺金鑰欄下面顯示 12px `#e5484d` 提示「未有 API 金鑰」。Bot 列同 token 欄嘅提示（「詳情（可留空）」、「專用位址（可留空）」、「可留空」）係 `placeholder`，`::placeholder` 色 `#616191`，唔好寫入 value。實驗 legend「實驗：由 dashboard 匯入名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，fieldset 上面 24px。
+- 驗收：設定 HTML 冇 `<legend>Kanban server</legend>`。`.kanban-server-hint` 係 12px/1.5 `#616191`。`.settings-panel .roster-head` margin-top 24px，`.roster-head h3::before` 係 `content: none`。`rowFromBot` 喺有 profile 而 `has_key` 係 false 時加 `.key-missing`。`.settings-panel .bot-row input::placeholder` 同 `.settings-panel .field input::placeholder` 係 `#616191`。token 欄標籤冇「可留空」，input 嘅 placeholder 係「可留空」。`.settings-panel .experimental legend::before` 係 `content: none`。`.settings-panel legend` 係 12px Barlow Condensed `#0000f2`，`.settings-panel fieldset` margin-top 24px。
 
 ---
 
