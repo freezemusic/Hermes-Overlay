@@ -92,7 +92,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { SESSION_READ_ONLY_REASON, UNSENT_MARK, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, markUnsentDraft, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberUnsent, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
+import { SESSION_READ_ONLY_REASON, UNSENT_MARK, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, markUnsentDraft, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberSendError, rememberUnsent, rememberView, resolveSession, runTranscript, sendErrorDraft, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -2865,15 +2865,19 @@ function growPlan(shell, token) {
     if (!alive()) return false;
     presentSeamFinal(shell, anim);
     const openClip = planRevealClip(shell, 1).value;
-    let usedClip = "";
-    try { usedClip = getComputedStyle(shell).clipPath || ""; } catch { usedClip = ""; }
-    if (seamClipStillClosed(usedClip, openClip)) {
-      debugLog("seam-clip-stuck", `used=${usedClip} open=${openClip}`);
-      dropClipHold(anim);
-      holdMotion(shell);
-      shell.style.clipPath = openClip;
+    // The settle frame already wrote the ceiled outer edge. A computed-style
+    // read here yields one frame, and the unceiled reveal clip is 1px short.
+    if (!shell._seamFinal) {
+      let usedClip = "";
+      try { usedClip = getComputedStyle(shell).clipPath || ""; } catch { usedClip = ""; }
+      if (seamClipStillClosed(usedClip, openClip)) {
+        debugLog("seam-clip-stuck", `used=${usedClip} open=${openClip}`);
+        dropClipHold(anim);
+        holdMotion(shell);
+        shell.style.clipPath = openClip;
+      }
+      if (shell.style.clipPath !== openClip) shell.style.clipPath = openClip;
     }
-    if (!shell._seamFinal && shell.style.clipPath !== openClip) shell.style.clipPath = openClip;
     if (!plan.parentElement?.classList?.contains("plan-hit-host")) plan.style.pointerEvents = "";
     if (fit.style.visibility !== "visible") fit.style.visibility = "visible";
     paintOpenedHeldLook();
@@ -3838,6 +3842,7 @@ const state = {
   toastSeq: 0,
   deniedSessions: new Set(),
   unsentDrafts: new Map(),
+  sendErrors: new Map(),
   clarifyTimer: 0,
 };
 
@@ -5269,7 +5274,12 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   const messages = (opened.messages || []).map(presentMessage);
   const sessions = opened.sessions || [];
   const nextId = opened.session_id || "";
-  const shown = mergeUnsentDraft(messages, unsentDraft(state.unsentDrafts, id, nextId || thread.sessionId));
+  const sessionKey = nextId || thread.sessionId;
+  const heldError = sendErrorDraft(state.sendErrors, id, sessionKey);
+  const shown = mergeSendError(
+    mergeUnsentDraft(messages, unsentDraft(state.unsentDrafts, id, sessionKey)),
+    heldError,
+  );
   const running = state.busy.has(id);
   const switching = running && thread.sessionId && nextId && thread.sessionId !== nextId;
   if (switching) {
@@ -5308,7 +5318,10 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   }
   thread.loaded = true;
   thread.sessionId = nextId || thread.sessionId;
-  thread.messages = mergeUnsentDraft(thread.messages, unsentDraft(state.unsentDrafts, id, thread.sessionId));
+  thread.messages = mergeSendError(
+    mergeUnsentDraft(thread.messages, unsentDraft(state.unsentDrafts, id, thread.sessionId)),
+    sendErrorDraft(state.sendErrors, id, thread.sessionId),
+  );
   thread.sessionExplicit = !!opened.session_explicit;
   thread.sessionAnchor = Number(opened.session_anchor) || 0;
   const locked = readOnlyLocked(state.deniedSessions, id, thread.sessionId, !!opened.read_only);
@@ -5317,7 +5330,9 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   thread.sessions = sessions;
   thread.loading = false;
   rememberPlan(thread, thread.messages);
-  clearConnectionBanner();
+  const keptError = sendErrorDraft(state.sendErrors, id, thread.sessionId);
+  if (keptError) setBanner(keptError, "error");
+  else clearConnectionBanner();
   const shell = shellFor(id);
   const openPanel = shell?.dataset.state === "panel" && !shell.classList.contains("is-collapsing");
   if (running) {
@@ -5328,21 +5343,24 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   }
   const resting = thread.sessionReadOnly ? "只可以睇" : "閒置";
   if (openPanel) {
-    setBotStatus(id, resting, "idle");
+    if (keptError && !locked) setBotStatus(id, "連線錯誤", "error");
+    else setBotStatus(id, resting, "idle");
     renderChat(id, { force: true, tag: "session-switch" });
     return;
   }
+  const label = keptError && !locked ? "連線錯誤" : resting;
+  const tone = keptError && !locked ? "error" : "idle";
   if (shell && (visualQuiet(shell) || presentationBusy())) {
-    thread.status = resting;
-    thread.statusState = "idle";
+    thread.status = label;
+    thread.statusState = tone;
     state.busy.delete(id);
-    setStatusText(id, resting);
+    setStatusText(id, label);
     shell.dataset.chatDirty = "1";
     shell.dataset.planDirty = "1";
     armPresentationFlush();
     return;
   }
-  setBotStatus(id, resting, "idle");
+  setBotStatus(id, label, tone);
 }
 
 function beginBotHistory(id) {
@@ -6390,6 +6408,22 @@ function deliverCron(id, payload) {
   showToast(id, { kind: "message", text });
 }
 
+function noteSendFailed(id, raw) {
+  const thread = threadFor(id);
+  const text = String(raw || "連線錯誤");
+  rememberUnsent(state.unsentDrafts, id, thread.sessionId, markUnsentDraft(thread.messages));
+  rememberSendError(state.sendErrors, id, thread.sessionId, text);
+  thread.queued = false;
+  thread.watchReply = false;
+  clearRunSession(thread);
+  const messages = runMessages(id);
+  const have = messages.some((item) => item.text === text && (item.role === "commentary" || item.role === "failure"));
+  if (!have) appendOnce(id, { role: "commentary", text });
+  noteActivity(id, { type: "failed", text });
+  setBotStatus(id, "連線錯誤", "error");
+  setBanner(text, "error");
+}
+
 function noteReadOnly(id) {
   const thread = threadFor(id);
   rememberDenied(state.deniedSessions, id, thread.sessionId);
@@ -6797,6 +6831,10 @@ function handleHermes(payload) {
     if (payload.outcome === "completed") {
       thread.queued = false;
       thread.watchReply = false;
+      if (!thread.sessionReadOnly) {
+        rememberUnsent(state.unsentDrafts, id, thread.sessionId, "");
+        rememberSendError(state.sendErrors, id, thread.sessionId, "");
+      }
     }
     setBotStatus(
       id,
@@ -6813,11 +6851,7 @@ function handleHermes(payload) {
       lockIfPermissionDenied(id, raw);
       return;
     }
-    noteActivity(id, { type: "failed", text: raw });
-    appendOnce(id, { role: "commentary", text: raw });
-    clearRunSession(threadFor(id));
-    setBotStatus(id, "連線錯誤", "error");
-    setBanner(raw, "error");
+    noteSendFailed(id, raw);
   }
 }
 
@@ -6880,10 +6914,7 @@ async function sendActive(id = state.activeId) {
       lockIfPermissionDenied(sentId, raw);
       return;
     }
-    noteActivity(sentId, { type: "failed", text: raw });
-    appendMessage(sentId, { role: "commentary", text: raw });
-    clearRunSession(threadFor(sentId));
-    setBotStatus(sentId, "連線錯誤", "error");
+    noteSendFailed(sentId, raw);
     setBanner(raw, "error");
   }
 }
@@ -7656,10 +7687,7 @@ async function sendWhileBusy(id, text) {
       lockIfPermissionDenied(id, raw);
       return;
     }
-    noteActivity(id, { type: "failed", text: raw });
-    appendMessage(id, { role: "commentary", text: raw });
-    setBotStatus(id, "連線錯誤", "error");
-    setBanner(raw, "error");
+    noteSendFailed(id, raw);
   }
 }
 

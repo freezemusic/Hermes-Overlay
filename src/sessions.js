@@ -279,9 +279,45 @@ export function mergeUnsentDraft(messages, text) {
 export function rememberUnsent(store, profile, sessionId, text) {
   const key = deniedKey(profile, sessionId);
   const line = String(text || "");
-  if (!key || !line || !store) return store;
+  if (!key || !store) return store;
+  if (!line) {
+    store.delete(key);
+    return store;
+  }
   store.set(key, line);
   return store;
+}
+
+/** The error that belongs with an unsent send. Empty clears it. */
+export function rememberSendError(store, profile, sessionId, text) {
+  const key = deniedKey(profile, sessionId);
+  const line = String(text || "");
+  if (!key || !store) return store;
+  if (!line) {
+    store.delete(key);
+    return store;
+  }
+  store.set(key, line);
+  return store;
+}
+
+export function sendErrorDraft(store, profile, sessionId) {
+  const key = deniedKey(profile, sessionId);
+  if (!key || !store) return "";
+  return String(store.get(key) || "");
+}
+
+/** Put the send error back under the thread. The same text is not added twice. */
+export function mergeSendError(messages, error) {
+  const line = String(error || "");
+  const list = messages || [];
+  if (!line) return list;
+  if (list.some((message) => (
+    message?.text === line && (message.role === "commentary" || message.role === "failure")
+  ))) {
+    return list;
+  }
+  return list.concat([{ role: "commentary", text: line }]);
 }
 
 export function unsentDraft(store, profile, sessionId) {

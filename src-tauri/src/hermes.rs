@@ -2535,6 +2535,26 @@ where
     Ok(RunFollow::Dark)
 }
 
+/// A user stop on a run that has already finished must not become a cancel.
+/// The panel would flash 「已停止」 and then idle once the 409 snapshot lands.
+async fn settle_user_stop<F>(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+    streamed: bool,
+    seen: &mut HashSet<String>,
+    on_event: &mut F,
+) -> Result<(), HermesError>
+where
+    F: FnMut(TurnEvent),
+{
+    match finish_open_run(http, root, key, run_id, streamed, seen, on_event).await {
+        Ok(RunFollow::Done) => Ok(()),
+        _ => Err(HermesError::Cancelled),
+    }
+}
+
 /// Events-SSE disconnect does not stop the run. Reconnect with backoff for
 /// about a minute, and keep following a live run until it is terminal.
 /// A newer send aborts this reader and must POST `/stop`.
@@ -2562,7 +2582,16 @@ where
             return Err(HermesError::Cancelled);
         }
         if stop_requested.load(Ordering::Relaxed) {
-            return Err(HermesError::Cancelled);
+            return settle_user_stop(
+                http,
+                root,
+                key,
+                &current,
+                streamed,
+                &mut seen,
+                &mut on_event,
+            )
+            .await;
         }
         match open_run_events(http, root, key, &current, &last_id).await {
             Ok(resp) => {
@@ -2586,11 +2615,17 @@ where
                         let _ = stop_run(http, root, key, &current).await;
                         return Err(HermesError::Cancelled);
                     }
-                    Ok(_)
-                        if stop.load(Ordering::Relaxed)
-                            || stop_requested.load(Ordering::Relaxed) =>
-                    {
-                        return Err(HermesError::Cancelled);
+                    Ok(_) if stop_requested.load(Ordering::Relaxed) => {
+                        return settle_user_stop(
+                            http,
+                            root,
+                            key,
+                            &current,
+                            streamed,
+                            &mut seen,
+                            &mut on_event,
+                        )
+                        .await;
                     }
                     Ok(_) | Err(_) => {}
                 }
@@ -2602,7 +2637,16 @@ where
             return Err(HermesError::Cancelled);
         }
         if stop_requested.load(Ordering::Relaxed) {
-            return Err(HermesError::Cancelled);
+            return settle_user_stop(
+                http,
+                root,
+                key,
+                &current,
+                streamed,
+                &mut seen,
+                &mut on_event,
+            )
+            .await;
         }
         let elapsed = match outage {
             Some(start) => start.elapsed(),
@@ -5552,6 +5596,69 @@ data: {\"event\":\"run.completed\",\"run_id\":\"run_abc\",\"output\":\"\"}\n\
         .unwrap();
         let events = events.lock().unwrap();
         assert!(matches!(events.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
+    }
+
+    #[tokio::test]
+    async fn user_stop_on_a_finished_run_is_not_a_cancel() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut sock, _) = listener.accept().unwrap();
+                let head = read_http(&mut sock);
+                seen2.lock().unwrap().push(head.clone());
+                let line = head.lines().next().unwrap_or("");
+                if line.contains("POST ") {
+                    write_http(
+                        &mut sock,
+                        "202 Accepted",
+                        "application/json",
+                        r#"{"run_id":"run_abc","status":"started"}"#,
+                    );
+                } else if line.contains("/events") {
+                    let body = "id: 1\ndata: {\"event\":\"message.delta\",\"delta\":\"半句\"}\n\n";
+                    write_http(&mut sock, "200 OK", "text/event-stream", body);
+                } else {
+                    write_http(
+                        &mut sock,
+                        "200 OK",
+                        "application/json",
+                        r#"{"run_id":"run_abc","status":"completed","output":"","pending_controls":[]}"#,
+                    );
+                }
+            }
+        });
+        let http = Client::new();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events2 = events.clone();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(
+            &http,
+            &format!("http://{addr}"),
+            "k",
+            "sid",
+            "hello",
+            &stop,
+            &stop_requested,
+            |ev| {
+                if matches!(ev, TurnEvent::Delta(_)) {
+                    stop_requested.store(true, Ordering::SeqCst);
+                }
+                events2.lock().unwrap().push(ev);
+            },
+        )
+        .await
+        .unwrap();
+        let reqs = seen.lock().unwrap();
+        assert!(reqs.iter().any(|req| req.contains("GET /v1/runs/run_abc ") && !req.contains("/events")));
+        assert!(reqs.iter().all(|req| !req.contains("/stop")));
+        drop(reqs);
+        let events = events.lock().unwrap();
+        assert!(matches!(events.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
+        assert!(!events.iter().any(|ev| matches!(ev, TurnEvent::Finished { outcome, .. } if outcome == "cancelled")));
     }
 
     #[tokio::test]

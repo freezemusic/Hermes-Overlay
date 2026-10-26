@@ -58,7 +58,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 ## 停止同忙碌發送（R-ST）
 
-**R-ST-01** 「停止」打 `POST /p/{profile}/v1/runs/{run_id}/stop`，冇 body（Hermes 0.22.5 `api_server.py:89`，handler `api_server_runs.py:1453`）。`run_id` 係最新一條 `run.started` 嘅 admission request id。排隊輪完結之後再開嘅慢回覆，停止打去嗰條仲活躍嘅 id，唔好打去已經完結嘅排隊 id。呢下唔切斷 SSE：繼續聽直到串流 `run.cancelled` 或者結束。串流確認取消，先顯示「已停止」。HTTP 409 `run_not_active` 唔當停止成功：改打而家嘅活躍 id，或者再對一次；忙碌狀態保持真實，畫面唔好變「閒置」或者「已停止」而伺服器嗰輪仲行。舊 run 嘅 `done`／`status` 唔可以清走新 run 嘅忙碌。其他失敗只顯示「停止未送到。」，唔顯示原始錯誤，唔記錄金鑰或者 body。409 之後再 GET 嗰條 run；全部目標都已經完結先清忙碌（失敗顯示「回覆失敗」，否則「閒置」），唔顯示「已停止」。仲有一條未完結就保持忙碌。
+**R-ST-01** 「停止」打 `POST /p/{profile}/v1/runs/{run_id}/stop`，冇 body（Hermes 0.22.5 `api_server.py:89`，handler `api_server_runs.py:1453`）。`run_id` 係最新一條 `run.started` 嘅 admission request id。排隊輪完結之後再開嘅慢回覆，停止打去嗰條仲活躍嘅 id，唔好打去已經完結嘅排隊 id。呢下唔切斷 SSE：繼續聽直到串流 `run.cancelled` 或者結束。串流確認取消，先顯示「已停止」。HTTP 409 `run_not_active` 唔當停止成功：改打而家嘅活躍 id，或者再對一次；忙碌狀態保持真實，畫面唔好變「閒置」或者「已停止」而伺服器嗰輪仲行。舊 run 嘅 `done`／`status` 唔可以清走新 run 嘅忙碌。其他失敗只顯示「停止未送到。」，唔顯示原始錯誤，唔記錄金鑰或者 body。409 之後再 GET 嗰條 run；全部目標都已經完結先清忙碌（失敗顯示「回覆失敗」，否則「閒置」），唔顯示「已停止」。仲有一條未完結就保持忙碌。reader 見到停止時如果 run 已經完結，就當正常結束，唔好再報取消，避免「已停止」閃一閃先至「閒置」。
 - 來源：Devon（2026-10-26，Hermes gateway 0.22.5）。真用：mt-orch 撳停止之後本地只係唔再聽，gateway 嗰輪仲行。盒測 v114：慢回覆 → 排隊 → 新慢回覆 → 停止，409 打去已完結嘅排隊 `run_id`，畫面變閒置。
 - 驗收（盒）：mock gateway 見到 `POST /p/mt-coder/v1/runs/{活躍 run_id}/stop`、冇 body；已完結 id 嘅 409 之後會打去活躍 id；409 本身唔顯示「已停止」；使用者停止唔會設 reader abort。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
@@ -173,7 +173,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 ## 3. 計劃視窗（R-PL）
 
-**R-PL-01** 只有 bot 真係出咗計劃，先喺該 bot 面板**右邊**貼一個計劃視窗（右邊放唔落就貼左；兩邊都放唔落就鉗入畫面，成個計劃要留喺螢幕入面）；串流緊嘅氣泡唔算計劃；新計劃到就換成最新嗰份。`.hermes/plans/*.md` 同 `.hermes\plans\*.md` 都算路徑；`.hermes` 前面嘅反斜線被吃掉（`Workbench.hermes\plans\`）仍然算。冇 `#` 標題、但成篇至少 200 字而且有呢條路徑，都當計劃。標題跟 `#` 標題；冇標題就用檔名，去掉日期前綴同 `.md`（`2026-10-26_210008-mt5-wrapper-next.md` → `mt5-wrapper-next`），再冇就「計劃」。一行短句只提到路徑唔算。對話氣泡同計劃預覽要原樣顯示 Windows 路徑嘅反斜線。落定嗰一幀就要畫到計劃外緣（邊線、1px 環、角），唔好等下一幀先補一條 1–3px 線。落定嗰幀同時把計劃放上 hit host；之後唔好再清 `translateZ(0)`，亦唔好再寫一次已經空咗嘅 `left`／`right`。重開都要沿住同一條揭示揭開：計劃返入 shell 之後清走 hosted 嘅 `left`／`right`，唔好停喺面板下面大約十格先一次過彈出。落定嗰幀把計劃 opacity 定做 1，之後唔好用揭示 clip 蓋過已經落定嘅外緣。R-PL-04 曲線唔改。
+**R-PL-01** 只有 bot 真係出咗計劃，先喺該 bot 面板**右邊**貼一個計劃視窗（右邊放唔落就貼左；兩邊都放唔落就鉗入畫面，成個計劃要留喺螢幕入面）；串流緊嘅氣泡唔算計劃；新計劃到就換成最新嗰份。`.hermes/plans/*.md` 同 `.hermes\plans\*.md` 都算路徑；`.hermes` 前面嘅反斜線被吃掉（`Workbench.hermes\plans\`）仍然算。冇 `#` 標題、但成篇至少 200 字而且有呢條路徑，都當計劃。標題跟 `#` 標題；冇標題就用檔名，去掉日期前綴同 `.md`（`2026-10-26_210008-mt5-wrapper-next.md` → `mt5-wrapper-next`），再冇就「計劃」。一行短句只提到路徑唔算。對話氣泡同計劃預覽要原樣顯示 Windows 路徑嘅反斜線。落定嗰一幀就要畫到計劃外緣（邊線、1px 環、角），唔好等下一幀先補一條 1–3px 線。落定嗰幀同時把計劃放上 hit host；之後唔好再清 `translateZ(0)`，亦唔好再寫一次已經空咗嘅 `left`／`right`。重開都要沿住同一條揭示揭開：計劃返入 shell 之後清走 hosted 嘅 `left`／`right`，唔好停喺面板下面大約十格先一次過彈出。落定嗰幀把計劃 opacity 定做 1，之後唔好用揭示 clip 蓋過已經落定嘅外緣。落定之後，包括重開，唔好再讀 computed clip，亦唔好用未取整嘅揭示 clip 寫多次。R-PL-04 曲線唔改。
 - 來源：Devon；SPEC §6.6–6.7。2026-10-26 手提：mt-orch 把整份計劃貼成普通回覆，路徑係 `C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-10-26_210008-mt5-wrapper-next.md`，畫面未開計劃窗。驗收（盒＋Windows）：冇計劃嘅 session 唔出；送 `/plan` → 出；第二份取代第一份。上面嗰條 Windows 路徑（連吃掉 `\.` 嗰種）喺長文入面會開計劃窗，短句提到路徑唔會。狀態：❓ / ❓。
 
 **R-PL-02** 有「關閉計劃視窗」掣（✕，無障礙名稱「關閉計劃視窗」）；關咗之後對話入面「睇計劃」可以再開。撳 ✕ 同一回合就要喺命中區抽走計劃矩形，唔使收埋面板再打開。睇計劃清走 dismiss 並重新畫出計劃，唔使重開 app。
@@ -356,7 +356,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 **SS-08-d** 撳「喺 API 對話繼續」要跳過今次 app 運行入面每一條已經 `permission_denied` 嘅 session id。可寫嘅都拒絕過，先至建立一條標題 `Overlay`、`source` 係 `api_server` 嘅 session。建立只限呢一下，啟動、打開、發送都唔建立。
 
-**SS-08-e** 被拒絕嘅打字留喺對話，標「未送出」，方便抄去 API 對話。發送 HTTP 錯誤同 stream `run.failed` 兩種 `permission_denied` 都要標。標記要喺拒絕嗰下同重新打開面板都睇到，唔好等到轉 session。歷史重載唔好清走呢句。gateway 已經有同一句 user 字就唔再加多一次；嗰句未有標記就要補上，唔好再加一個氣泡。
+**SS-08-e** 被拒絕嘅打字留喺對話，標「未送出」，方便抄去 API 對話。發送 HTTP 錯誤同 stream `run.failed` 兩種 `permission_denied` 都要標。標記要喺拒絕嗰下同重新打開面板都睇到，唔好等到轉 session。歷史重載唔好清走呢句。gateway 已經有同一句 user 字就唔再加多一次；嗰句未有標記就要補上，唔好再加一個氣泡。發送 HTTP 500 或者 run 已經冇咗，打字同樣標「未送出」，錯誤留喺句下面，歷史重載都唔好清走。
 
 **SS-08-a** 只讀 session 開住時，鍵盤轉發唔好寫入已停用嘅輸入：`insertComposerKey` 見到 `field.disabled` 就返回。停用輸入要睇得出係停用（Nous `#616191` 嘅暗底同 placeholder），唔好保持白底。停用嘅「傳送」同樣要睇得出係停用（`#616191` 暗底，唔好只係半透明藍掣）。字用 `#3a3a68`，對住暗底至少 4.5:1，而且仍然唔係實色藍掣。只讀／錯誤橫額留喺開住嘅面板入面，而且喺分頁同 session 列下面，唔好蓋住佢哋，亦唔好疊出預設面板右緣。金鑰同 gateway 橫額仍然用 `keyBannerSlot`。
 - 來源：Devon 手提真用（Hermes gateway 0.22.5，CLI oneshot `source=oneshot`）。盒測 a76c65d、6a0973e 之後。

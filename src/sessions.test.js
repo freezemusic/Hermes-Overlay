@@ -27,8 +27,11 @@ import {
   refusedSessionIds,
   UNSENT_MARK,
   markUnsentDraft,
+  mergeSendError,
   mergeUnsentDraft,
+  rememberSendError,
   rememberUnsent,
+  sendErrorDraft,
   unsentDraft,
   clearRunSession,
   continueLiveTurn,
@@ -687,7 +690,26 @@ test("a refused typed line stays visible and marked unsent after history reloads
   const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
   const busy = main.slice(main.indexOf("async function sendWhileBusy"), main.indexOf("async function stopActive"));
   assert.match(send, /lockIfPermissionDenied/);
+  assert.match(send, /noteSendFailed/);
   assert.match(busy, /lockIfPermissionDenied/);
+  assert.match(busy, /noteSendFailed/);
+  assert.match(opened, /mergeSendError/);
+  const failed = [
+    { role: "user", text: "舊句" },
+    { role: "user", text: "HTTP 500" },
+  ];
+  const failedStore = new Map();
+  const errors = new Map();
+  rememberUnsent(failedStore, "mt-orch", "api_1", markUnsentDraft(failed));
+  rememberSendError(errors, "mt-orch", "api_1", "HTTP 500");
+  const kept = mergeSendError(mergeUnsentDraft([{ role: "user", text: "舊句" }], unsentDraft(failedStore, "mt-orch", "api_1")), sendErrorDraft(errors, "mt-orch", "api_1"));
+  assert.equal(kept.at(-2).text, "HTTP 500");
+  assert.equal(kept.at(-2).unsent, true);
+  assert.equal(kept.at(-1).text, "HTTP 500");
+  assert.equal(kept.at(-1).role, "commentary");
+  assert.equal(mergeSendError(kept, "HTTP 500"), kept);
+  rememberSendError(errors, "mt-orch", "api_1", "");
+  assert.equal(sendErrorDraft(errors, "mt-orch", "api_1"), "");
   const stream = main.slice(main.indexOf('if (payload.outcome === "failed" && isPermissionDeniedText(detail))'), main.indexOf('if (payload.type === "error")'));
   assert.match(stream, /lockIfPermissionDenied/);
 });
