@@ -173,7 +173,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 ## 3. 計劃視窗（R-PL）
 
-**R-PL-01** 只有 bot 真係出咗計劃，先喺該 bot 面板**右邊**貼一個計劃視窗（右邊放唔落就貼左；兩邊都放唔落就鉗入畫面，成個計劃要留喺螢幕入面）；串流緊嘅氣泡唔算計劃；新計劃到就換成最新嗰份。`.hermes/plans/*.md` 同 `.hermes\plans\*.md` 都算路徑；`.hermes` 前面嘅反斜線被吃掉（`Workbench.hermes\plans\`）仍然算。冇 `#` 標題、但成篇至少 200 字而且有呢條路徑，都當計劃。標題跟 `#` 標題；冇標題就用檔名，去掉日期前綴同 `.md`（`2026-10-26_210008-mt5-wrapper-next.md` → `mt5-wrapper-next`），再冇就「計劃」。一行短句只提到路徑唔算。對話氣泡同計劃預覽要原樣顯示 Windows 路徑嘅反斜線。落定嗰一幀就要畫到計劃外緣（邊線、1px 環、角），唔好等下一幀先補一條 1–3px 線。重開都要沿住同一條揭示揭開：計劃返入 shell 之後清走 hosted 嘅 `left`／`right`，唔好停喺面板下面大約十格先一次過彈出。R-PL-04 曲線唔改。
+**R-PL-01** 只有 bot 真係出咗計劃，先喺該 bot 面板**右邊**貼一個計劃視窗（右邊放唔落就貼左；兩邊都放唔落就鉗入畫面，成個計劃要留喺螢幕入面）；串流緊嘅氣泡唔算計劃；新計劃到就換成最新嗰份。`.hermes/plans/*.md` 同 `.hermes\plans\*.md` 都算路徑；`.hermes` 前面嘅反斜線被吃掉（`Workbench.hermes\plans\`）仍然算。冇 `#` 標題、但成篇至少 200 字而且有呢條路徑，都當計劃。標題跟 `#` 標題；冇標題就用檔名，去掉日期前綴同 `.md`（`2026-10-26_210008-mt5-wrapper-next.md` → `mt5-wrapper-next`），再冇就「計劃」。一行短句只提到路徑唔算。對話氣泡同計劃預覽要原樣顯示 Windows 路徑嘅反斜線。落定嗰一幀就要畫到計劃外緣（邊線、1px 環、角），唔好等下一幀先補一條 1–3px 線。落定嗰幀同時把計劃放上 hit host；之後唔好再清 `translateZ(0)`，亦唔好再寫一次已經空咗嘅 `left`／`right`。重開都要沿住同一條揭示揭開：計劃返入 shell 之後清走 hosted 嘅 `left`／`right`，唔好停喺面板下面大約十格先一次過彈出。R-PL-04 曲線唔改。
 - 來源：Devon；SPEC §6.6–6.7。2026-10-26 手提：mt-orch 把整份計劃貼成普通回覆，路徑係 `C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-10-26_210008-mt5-wrapper-next.md`，畫面未開計劃窗。驗收（盒＋Windows）：冇計劃嘅 session 唔出；送 `/plan` → 出；第二份取代第一份。上面嗰條 Windows 路徑（連吃掉 `\.` 嗰種）喺長文入面會開計劃窗，短句提到路徑唔會。狀態：❓ / ❓。
 
 **R-PL-02** 有「關閉計劃視窗」掣（✕，無障礙名稱「關閉計劃視窗」）；關咗之後對話入面「睇計劃」可以再開。撳 ✕ 同一回合就要喺命中區抽走計劃矩形，唔使收埋面板再打開。睇計劃清走 dismiss 並重新畫出計劃，唔使重開 app。
@@ -348,7 +348,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-SS-07** Bot Chat 以外嘅 session，每條用一粒 sub-orb 代表（將來做，見 R-SO）；主光球唔會用嚟顯示呢啲 session。
 - 來源：Devon（2026-10-21）。狀態：— / —（PR #3 唔包）。
 
-**R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢。撳下面就可以喺呢個 Bot 嘅 API 對話繼續。」同掣「喺 API 對話繼續」。兩句中間係「。」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），同一句同同一掣出現，狀態係「只可以睇」，唔出錯誤橫額、失敗氣泡或者原始錯誤，唔重試。呢個拒絕要記喺該 session id，今次開 app 期間歷史重載唔可以清走，拒絕嗰句要繼續睇到；`source` 推斷出嚟嘅只讀仍然有效。撳掣先至做：呢個 profile 已有另一條 `api_server` 或 `bot_room`（唔計而家呢條；未封存嘅 Bot Chat 優先）就轉去嗰條；冇先至 `POST /api/sessions`，`source` 係 `api_server`，標題 `Overlay`。啟動、打開、同發送都唔好自己建立。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。Session 選單要分得開同一標題嘅列：已封存加「（已封存）」；唔可以傳嘅 source 加「（Desktop／只可以睇）」呢類短後綴；可以傳嘅 `api_server`／`bot_room` 唔加。後端要把 `source` 同 `archived` 傳去前端（SS-08-c）。撳繼續掣要跳過每一條已經拒絕過嘅 session；可寫嘅都拒絕過先至建立 `Overlay`（SS-08-d）。被拒絕嘅打字標「未送出」，歷史重載都留低（SS-08-e）。
+**R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢。撳下面就可以喺呢個 Bot 嘅 API 對話繼續。」同掣「喺 API 對話繼續」。兩句中間係「。」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），同一句同同一掣出現，狀態係「只可以睇」，唔出錯誤橫額、失敗氣泡或者原始錯誤，唔重試。呢個拒絕要記喺該 session id，今次開 app 期間歷史重載唔可以清走，拒絕嗰句要繼續睇到；`source` 推斷出嚟嘅只讀仍然有效。撳掣先至做：呢個 profile 已有另一條 `api_server` 或 `bot_room`（唔計而家呢條；未封存嘅 Bot Chat 優先）就轉去嗰條；冇先至 `POST /api/sessions`，`source` 係 `api_server`，標題 `Overlay`。啟動、打開、同發送都唔好自己建立。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。Session 選單要分得開同一標題嘅列：已封存加「（已封存）」；唔可以傳嘅 source 加「（Desktop／只可以睇）」呢類短後綴；標題已經以 `(CLI)` 呢類字尾結束就只加「（只可以睇）」，唔好再寫一次來源；可以傳嘅 `api_server`／`bot_room` 唔加。後端要把 `source` 同 `archived` 傳去前端（SS-08-c）。撳繼續掣要跳過每一條已經拒絕過嘅 session；可寫嘅都拒絕過先至建立 `Overlay`（SS-08-d）。被拒絕嘅打字標「未送出」，歷史重載都留低（SS-08-e）。
 
 **SS-08-b** `permission_denied` 嘅只讀鎖跟 session id 留喺今次 app 運行，歷史重載唔好用 `source` 推斷嘅 `read_only` 清走。拒絕句同「只可以睇」保持可見。
 
@@ -356,7 +356,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 **SS-08-d** 撳「喺 API 對話繼續」要跳過今次 app 運行入面每一條已經 `permission_denied` 嘅 session id。可寫嘅都拒絕過，先至建立一條標題 `Overlay`、`source` 係 `api_server` 嘅 session。建立只限呢一下，啟動、打開、發送都唔建立。
 
-**SS-08-e** 被拒絕嘅打字留喺對話，標「未送出」，方便抄去 API 對話。發送 HTTP 錯誤同 stream `run.failed` 兩種 `permission_denied` 都要標。歷史重載唔好清走呢句。gateway 已經有同一句 user 字就唔再加多一次。
+**SS-08-e** 被拒絕嘅打字留喺對話，標「未送出」，方便抄去 API 對話。發送 HTTP 錯誤同 stream `run.failed` 兩種 `permission_denied` 都要標。標記要喺拒絕嗰下同重新打開面板都睇到，唔好等到轉 session。歷史重載唔好清走呢句。gateway 已經有同一句 user 字就唔再加多一次；嗰句未有標記就要補上，唔好再加一個氣泡。
 
 **SS-08-a** 只讀 session 開住時，鍵盤轉發唔好寫入已停用嘅輸入：`insertComposerKey` 見到 `field.disabled` 就返回。停用輸入要睇得出係停用（Nous `#616191` 嘅暗底同 placeholder），唔好保持白底。停用嘅「傳送」同樣要睇得出係停用（`#616191` 暗底，唔好只係半透明藍掣）。字用 `#3a3a68`，對住暗底至少 4.5:1，而且仍然唔係實色藍掣。只讀／錯誤橫額留喺開住嘅面板入面，而且喺分頁同 session 列下面，唔好蓋住佢哋，亦唔好疊出預設面板右緣。金鑰同 gateway 橫額仍然用 `keyBannerSlot`。
 - 來源：Devon 手提真用（Hermes gateway 0.22.5，CLI oneshot `source=oneshot`）。盒測 a76c65d、6a0973e 之後。

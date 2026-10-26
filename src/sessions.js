@@ -190,16 +190,29 @@ export function sessionLabel(session) {
   return `${title}${sessionSuffix(session)}`;
 }
 
+function sourceWord(source) {
+  if (source === "desktop") return "Desktop";
+  if (source === "cli") return "CLI";
+  if (source === "tui") return "TUI";
+  if (source === "oneshot") return "一次性";
+  return source;
+}
+
+/** `MT5 wrapper (CLI)` already names the source. The suffix stays 「只可以睇」. */
+function titleEndsWithSource(title, name) {
+  const tail = String(title || "").trim();
+  if (!tail || !name) return false;
+  const folded = tail.toLowerCase();
+  return folded.endsWith(`(${name.toLowerCase()})`) || folded.endsWith(`（${name.toLowerCase()}）`);
+}
+
 function sessionSuffix(session) {
   if (session?.hidden) return "（隱藏）";
   if (session?.archived === true) return "（已封存）";
   const source = String(session?.source || "").trim().toLowerCase();
   if (!source || sessionAcceptsSend(source)) return "";
-  const name = source === "desktop" ? "Desktop"
-    : source === "cli" ? "CLI"
-    : source === "tui" ? "TUI"
-    : source === "oneshot" ? "一次性"
-    : source;
+  const name = sourceWord(source);
+  if (titleEndsWithSource(session?.title, name)) return "（只可以睇）";
   return `（${name}／只可以睇）`;
 }
 
@@ -235,24 +248,31 @@ export function refusedSessionIds(set, profile) {
 
 export const UNSENT_MARK = "未送出";
 
-/** The latest typed line was refused. Keep that text, marked unsent. */
+/** The latest typed line was refused. Replace that object so the bubble repaints. */
 export function markUnsentDraft(messages) {
   const list = messages || [];
   for (let index = list.length - 1; index >= 0; index -= 1) {
     const message = list[index];
     if (message?.role !== "user" || !String(message.text || "").trim()) continue;
-    message.unsent = true;
-    return String(message.text);
+    if (!message.unsent) list[index] = { ...message, unsent: true };
+    return String(list[index].text);
   }
   return "";
 }
 
-/** History from the gateway does not contain a refused send. Put the line back. */
+/** History from the gateway does not contain a refused send. Put the line back.
+ *  The same user text without the mark still needs the mark, not a second bubble. */
 export function mergeUnsentDraft(messages, text) {
   const line = String(text || "");
   const list = messages || [];
   if (!line) return list;
-  if (list.some((message) => message?.role === "user" && message.text === line)) return list;
+  const index = list.findIndex((message) => message?.role === "user" && message.text === line);
+  if (index >= 0) {
+    if (list[index].unsent) return list;
+    const next = list.slice();
+    next[index] = { ...list[index], unsent: true };
+    return next;
+  }
   return list.concat([{ role: "user", text: line, unsent: true }]);
 }
 

@@ -2365,8 +2365,9 @@ function pumpSeamPresent(shell, duration) {
 }
 
 /** Last presented sample. The open clip and the hosted plan already include
- *  the outward edge, so this frame paints the right strip. A transform
- *  written on a later frame repaints that 1–3px line after the curve settles. */
+ *  the outward edge, so this frame paints the right strip. Hosting waits
+ *  until here: a transform or dock write on the next frame repaints that
+ *  1–3px line after the curve settles. */
 function presentSeamFinal(shell, anim) {
   if (!shell || shell._seamFinal) return;
   if (shell.dataset?.planOpen !== "1") return;
@@ -2383,8 +2384,10 @@ function presentSeamFinal(shell, anim) {
     }
   } catch { /* keyframes already hold the open clip */ }
   shell.style.clipPath = value;
-  if (!debugFile.enabled) return;
   const plan = planNode(shell);
+  if (plan && seamPhase(plan) !== "grown") setSeamPhase(plan, "grown", { dom: false });
+  hostOpenPlan(shell);
+  if (!debugFile.enabled) return;
   let used = "";
   let rect = "-";
   try { used = getComputedStyle(shell).clipPath || ""; } catch { used = ""; }
@@ -2869,9 +2872,9 @@ function growPlan(shell, token) {
       holdMotion(shell);
       shell.style.clipPath = openClip;
     }
-    shell.style.clipPath = openClip;
-    plan.style.pointerEvents = "";
-    fit.style.visibility = "visible";
+    if (shell.style.clipPath !== openClip) shell.style.clipPath = openClip;
+    if (!plan.parentElement?.classList?.contains("plan-hit-host")) plan.style.pointerEvents = "";
+    if (fit.style.visibility !== "visible") fit.style.visibility = "visible";
     paintOpenedHeldLook();
     seamLog("anim-finish", `flight=${flight} mode=clip raster=${plan.dataset.raster || "live"} reveal=1`);
     holdFreeze(shell, FREEZE_AFTER_GROW_MS);
@@ -3036,11 +3039,11 @@ function restorePlanGeometry(plan, snap) {
   plan.style.height = snap.height;
   plan.style.top = snap.top;
   if (plan.parentElement?.classList?.contains("plan-hit-host")) {
-    plan.style.left = snap.left;
-    plan.style.right = snap.right;
+    if (plan.style.left !== snap.left) plan.style.left = snap.left;
+    if (plan.style.right !== snap.right) plan.style.right = snap.right;
   } else {
-    plan.style.removeProperty("left");
-    plan.style.removeProperty("right");
+    if (plan.style.left) plan.style.removeProperty("left");
+    if (plan.style.right) plan.style.removeProperty("right");
   }
   plan.style.minWidth = snap.minWidth;
   plan.style.maxWidth = snap.maxWidth;
@@ -4532,7 +4535,8 @@ function chatStamp(thread) {
     .filter((message) => message.role === "clarify")
     .map((message) => `${message.promptId || ""}:${message.status || ""}`)
     .join(",");
-  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}|${approvals}|${clarifies}`;
+  const unsent = thread.messages.some((message) => message.unsent) ? 1 : 0;
+  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}|${unsent}|${approvals}|${clarifies}`;
 }
 
 function threadHasCache(thread) {
@@ -4592,9 +4596,8 @@ function syncChatInPlace(chat, thread, id, resting = false) {
       ensurePlanChip(node, message, id);
     } else if (message.role === "user") {
       const line = node.querySelector(".user-line");
-      if (line) {
-        if (line.textContent !== (message.text || "")) line.textContent = message.text || "";
-      } else {
+      const marked = !!node.querySelector(".unsent-mark");
+      if (!line || line.textContent !== (message.text || "") || marked !== !!message.unsent) {
         node.replaceChildren();
         paintUserBubble(node, message);
       }

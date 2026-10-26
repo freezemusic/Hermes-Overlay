@@ -1045,21 +1045,25 @@ export function placePlanHost(shell) {
   const hosted = planHostBox(fitted);
   shell.dataset.planSide = fitted.side;
   host.dataset.planSide = fitted.side;
-  host.style.position = "absolute";
-  host.style.top = `${fitted.y}px`;
-  host.style.width = `${hosted.w}px`;
-  host.style.height = `${fitted.h}px`;
-  host.style.left = `${hosted.x}px`;
-  plan.style.width = `${fitted.w}px`;
-  plan.style.left = fitted.side === "left" ? `${PLAN_EDGE_OUT}px` : "0px";
+  const setProp = (node, key, value) => {
+    if (node.style[key] !== value) node.style[key] = value;
+  };
+  setProp(host, "position", "absolute");
+  setProp(host, "top", `${fitted.y}px`);
+  setProp(host, "width", `${hosted.w}px`);
+  setProp(host, "height", `${fitted.h}px`);
+  setProp(host, "left", `${hosted.x}px`);
+  setProp(plan, "width", `${fitted.w}px`);
+  setProp(plan, "left", fitted.side === "left" ? `${PLAN_EDGE_OUT}px` : "0px");
   // A stacked shell can shrink. A locked plan height would keep painting
   // over the panel below (R-PN-07).
-  plan.style.height = `${fitted.h}px`;
-  plan.style.maxHeight = `${fitted.h}px`;
+  setProp(plan, "height", `${fitted.h}px`);
+  setProp(plan, "maxHeight", `${fitted.h}px`);
   shell.dataset.planHeight = String(fitted.h);
   const z = shell.style.zIndex;
-  if (z) host.style.zIndex = z;
-  else host.style.removeProperty("z-index");
+  if (z) {
+    if (host.style.zIndex !== z) host.style.zIndex = z;
+  } else if (host.style.zIndex) host.style.removeProperty("z-index");
   return true;
 }
 
@@ -1194,6 +1198,7 @@ export function sameChatSnapshot(current, opened) {
     if ((prev[i]?.role || "") !== (messages[i]?.role || "")) return false;
     if ((prev[i]?.text || "") !== (messages[i]?.text || "")) return false;
     if (!!prev[i]?.live !== !!messages[i]?.live) return false;
+    if (!!prev[i]?.unsent !== !!messages[i]?.unsent) return false;
   }
   const had = current?.sessions || [];
   const sessions = opened?.sessions || [];
@@ -1234,16 +1239,23 @@ export function hostOpenPlan(shell) {
   // clip is), and it drops 預覽/原文/× out of the hit region. Clear it only
   // after the plan has left the shell, so the shell clip still paints.
   plan.classList.remove("is-plan-parked");
-  host.style.setProperty("pointer-events", "auto", "important");
-  plan.style.setProperty("pointer-events", "auto", "important");
+  if (host.style.getPropertyValue("pointer-events") !== "auto") {
+    host.style.setProperty("pointer-events", "auto", "important");
+  }
+  if (plan.style.getPropertyValue("pointer-events") !== "auto") {
+    plan.style.setProperty("pointer-events", "auto", "important");
+  }
   plan.getAnimations?.().forEach((anim) => {
     let frames = [];
     try { frames = anim.effect?.getKeyframes?.() || []; } catch { frames = []; }
     if (!frames.some((frame) => frame?.clipPath)) return;
     try { anim.cancel(); } catch { /* the inline value below replaces it */ }
   });
-  plan.style.clipPath = "none";
-  if (/translate/i.test(plan.style.transform || "")) plan.style.transform = "none";
+  if (plan.style.clipPath !== "none") plan.style.clipPath = "none";
+  // translateZ(0) is the promoted layer from the closed seam. Clearing it
+  // on the frame after the clip settles repaints the outward 3px edge.
+  const parked = plan.style.transform || "";
+  if (/translate(?:X|Y|3d)/i.test(parked)) plan.style.transform = "none";
   return placePlanHost(shell);
 }
 
@@ -1253,8 +1265,10 @@ export function hostOpenPlan(shell) {
 export function releasePlanDock(plan) {
   if (!plan?.style) return;
   if (plan.parentElement?.classList?.contains("plan-hit-host")) return;
-  plan.style.removeProperty("left");
-  plan.style.removeProperty("right");
+  // removeProperty on an already-empty dock still invalidates the layer
+  // and repaints the outward 3px on the next frame.
+  if (plan.style.left) plan.style.removeProperty("left");
+  if (plan.style.right) plan.style.removeProperty("right");
 }
 
 /** Put the plan back inside the shell before a collapse clip reads it. */

@@ -618,6 +618,10 @@ test("the session menu separates desktop, archived, and api Bot Chats", () => {
   assert.equal(sessionLabel(archived), "Bot Chat（已封存）");
   assert.equal(sessionLabel(api), "Bot Chat");
   assert.equal(sessionLabel({ id: "c", title: "Bot Chat", source: "cli" }), "Bot Chat（CLI／只可以睇）");
+  assert.equal(sessionLabel({ id: "mt5", title: "MT5 wrapper (CLI)", source: "cli" }), "MT5 wrapper (CLI)（只可以睇）");
+  assert.equal(sessionLabel({ id: "desk2", title: "Bot Chat (Desktop)", source: "desktop" }), "Bot Chat (Desktop)（只可以睇）");
+  assert.equal(sessionLabel({ id: "tui2", title: "終端（TUI）", source: "tui" }), "終端（TUI）（只可以睇）");
+  assert.equal(sessionLabel({ id: "mid", title: "CLI notes", source: "cli" }), "CLI notes（CLI／只可以睇）");
   assert.equal(sessionLabel({ id: "t", title: "Bot Chat", source: "tui" }), "Bot Chat（TUI／只可以睇）");
   assert.equal(sessionLabel({ id: "o", title: "shot", source: "oneshot" }), "shot（一次性／只可以睇）");
   assert.equal(sessionLabel({ id: "room", title: "Bot Chat", source: "bot_room" }), "Bot Chat");
@@ -638,9 +642,14 @@ test("a refused typed line stays visible and marked unsent after history reloads
     { role: "bot", text: "舊回覆" },
     { role: "user", text: "幫我睇下個倉" },
   ];
+  const typed = messages[2];
   assert.equal(markUnsentDraft(messages), "幫我睇下個倉");
+  assert.notEqual(messages[2], typed);
+  assert.equal(messages[2].text, "幫我睇下個倉");
   assert.equal(messages[2].unsent, true);
   assert.equal(messages[0].unsent, undefined);
+  assert.equal(markUnsentDraft(messages), "幫我睇下個倉");
+  assert.equal(messages[2].unsent, true);
   assert.equal(UNSENT_MARK, "未送出");
   const history = [
     { role: "user", text: "舊句" },
@@ -650,6 +659,12 @@ test("a refused typed line stays visible and marked unsent after history reloads
   assert.equal(merged.at(-1).text, "幫我睇下個倉");
   assert.equal(merged.at(-1).unsent, true);
   assert.equal(mergeUnsentDraft(merged, "幫我睇下個倉").length, merged.length);
+  const echoed = history.concat([{ role: "user", text: "幫我睇下個倉" }]);
+  const marked = mergeUnsentDraft(echoed, "幫我睇下個倉");
+  assert.equal(marked.length, echoed.length);
+  assert.equal(marked.at(-1).unsent, true);
+  assert.notEqual(marked.at(-1), echoed.at(-1));
+  assert.equal(mergeUnsentDraft(marked, "幫我睇下個倉"), marked);
   assert.equal(mergeUnsentDraft(history, "").length, history.length);
   const store = new Map();
   const denied = new Set();
@@ -661,6 +676,14 @@ test("a refused typed line stays visible and marked unsent after history reloads
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
   assert.match(opened, /mergeUnsentDraft/);
+  const stamp = main.slice(main.indexOf("function chatStamp"), main.indexOf("function threadHasCache"));
+  assert.match(stamp, /unsent/);
+  const sync = main.slice(main.indexOf("function syncChatInPlace"), main.indexOf("function mountChat"));
+  assert.match(sync, /unsent-mark/);
+  assert.match(sync, /paintUserBubble\(node, message\)/);
+  const morph = readFileSync(new URL("./morph.js", import.meta.url), "utf8");
+  const snapshot = morph.slice(morph.indexOf("export function sameChatSnapshot"), morph.indexOf("export function hostOpenPlan"));
+  assert.match(snapshot, /unsent/);
   const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
   const busy = main.slice(main.indexOf("async function sendWhileBusy"), main.indexOf("async function stopActive"));
   assert.match(send, /lockIfPermissionDenied/);
