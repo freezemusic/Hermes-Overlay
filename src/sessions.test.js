@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  CONTINUE_API_HINT,
+  CONTINUE_API_LABEL,
   SESSION_READ_ONLY_REASON,
   canonicalBotChat,
   isPermissionDeniedText,
@@ -15,6 +17,7 @@ import {
   sessionReadOnly,
   storedPinAfterResolve,
   catchUpMessages,
+  writableContinuation,
   clearRunSession,
   continueLiveTurn,
   noteRunSession,
@@ -429,6 +432,40 @@ test("foreign session sources stay readable and permission_denied stays plain", 
   assert.match(head, /turn_is_permission_denied/);
   assert.doesNotMatch(head, /ensure_bot_chat|create_session|create_bot_chat|persist_pin/);
   assert.doesNotMatch(rustSend, /create_session|create_bot_chat/);
+  const deniedAt = send.indexOf("isPermissionDeniedText(raw)");
+  const deniedReturn = send.indexOf("return;", deniedAt);
+  assert.ok(deniedReturn < send.indexOf("setBanner", deniedAt));
+  const denied = send.slice(deniedAt, deniedReturn);
+  assert.match(denied, /lockIfPermissionDenied/);
+  assert.doesNotMatch(denied, /setBanner|appendMessage/);
+  const cont = main.slice(main.indexOf("async function continueApiSession"), main.indexOf("function botsFromSettings"));
+  assert.match(cont, /writableContinuation/);
+  assert.match(cont, /command: "continue"/);
+  assert.doesNotMatch(cont, /create_session|create_bot_chat/);
+  const open = main.slice(main.indexOf("async function loadBotHistory"), main.indexOf("function paintSessionSelect"));
+  assert.doesNotMatch(open, /continueApiSession|command: "continue"/);
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(html, new RegExp(CONTINUE_API_LABEL));
+  assert.match(paint, /CONTINUE_API_HINT/);
+  assert.match(paint, /cont\.hidden = !locked/);
+});
+
+test("a read-only chat continues in another api session of the same bot", () => {
+  const cli = { id: "local-mt5", title: "MT5 wrapper (CLI)", source: "cli", last_active: 9 };
+  const desktop = { id: "20261015_011713_2242f9", title: "Bot Chat", source: "desktop", last_active: 8 };
+  const notes = { id: "api_notes", title: "notes", source: "api_server", last_active: 7 };
+  const chat = { id: "api_1792573589_0c14ed12", title: "Bot Chat", source: "api_server", last_active: 3 };
+  assert.equal(writableContinuation([cli, desktop, notes, chat], desktop.id).id, chat.id);
+  assert.equal(writableContinuation([cli, desktop], cli.id), null);
+  assert.equal(
+    writableContinuation(
+      [{ id: "api_refused", title: "Bot Chat", source: "api_server", last_active: 12 }, notes],
+      "api_refused",
+    ).id,
+    notes.id,
+  );
+  assert.equal(CONTINUE_API_LABEL, "喺 API 對話繼續");
+  assert.match(CONTINUE_API_HINT, /API 對話繼續/);
 });
 
 test("catch-up keeps an unseen reply and does not copy the live bubble", () => {

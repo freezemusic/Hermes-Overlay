@@ -197,6 +197,34 @@ pub fn session_read_only_reason() -> &'static str {
     "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢"
 }
 
+pub const OVERLAY_CONTINUE_TITLE: &str = "Overlay";
+
+/// Another session of this profile that accepts a chat. A live Bot Chat wins.
+/// `avoid_id` is the row on screen, which is read-only or was just refused.
+pub fn writable_continuation<'a>(
+    sessions: &'a [SessionSummary],
+    avoid_id: &str,
+) -> Option<&'a SessionSummary> {
+    let avoid = avoid_id.trim();
+    let writable: Vec<&SessionSummary> = sessions
+        .iter()
+        .filter(|session| session.id != avoid && session_accepts_send(&session.source))
+        .collect();
+    let live: Vec<&SessionSummary> = writable
+        .iter()
+        .copied()
+        .filter(|session| !session.archived)
+        .collect();
+    let pool: Vec<&SessionSummary> = if live.is_empty() { writable } else { live };
+    let chats: Vec<&SessionSummary> = pool
+        .iter()
+        .copied()
+        .filter(|session| is_bot_chat_title(&session.title))
+        .collect();
+    let pick_from: &[ &SessionSummary] = if chats.is_empty() { &pool } else { &chats };
+    pick_from.iter().copied().max_by(|a, b| session_rank(a, b))
+}
+
 pub fn text_is_permission_denied(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("permission_denied")
@@ -4295,6 +4323,44 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
         assert!(!head.contains("persist_pin"));
         assert!(!send.contains("create_session"));
         assert!(!send.contains("create_bot_chat"));
+    }
+
+    #[test]
+    fn continue_uses_an_existing_api_session_before_creating_one() {
+        let cli = summary_source("local-mt5", "MT5 wrapper (CLI)", 9.0, "cli");
+        let desktop = summary_source("20261015_011713_2242f9", "Bot Chat", 8.0, "desktop");
+        let notes = summary_source("api_notes", "notes", 7.0, "api_server");
+        let chat = summary_source("api_1792573589_0c14ed12", "Bot Chat", 3.0, "api_server");
+        let sessions = [cli.clone(), desktop.clone(), notes.clone(), chat.clone()];
+        let picked = writable_continuation(&sessions, "20261015_011713_2242f9").unwrap();
+        assert_eq!(picked.id, "api_1792573589_0c14ed12");
+        let foreign = [cli.clone(), desktop.clone()];
+        assert!(writable_continuation(&foreign, "local-mt5").is_none());
+        let refused = summary_source("api_refused", "Bot Chat", 12.0, "api_server");
+        let after_deny = [refused, notes.clone()];
+        let next = writable_continuation(&after_deny, "api_refused").unwrap();
+        assert_eq!(next.id, "api_notes");
+        let room = summary_source("room", "stand", 1.0, "bot_room");
+        let room_only = [desktop.clone(), room];
+        assert_eq!(
+            writable_continuation(&room_only, "20261015_011713_2242f9")
+                .unwrap()
+                .id,
+            "room"
+        );
+
+        let lib = include_str!("lib.rs");
+        let arm = lib.find("\"continue\" =>").expect("continue");
+        let body = &lib[arm..arm + 900];
+        let pick_at = body.find("writable_continuation").expect("pick");
+        let create_at = body.find("create_session").expect("create");
+        assert!(pick_at < create_at);
+        assert!(body.contains("OVERLAY_CONTINUE_TITLE"));
+        let open_at = lib.find("async fn open_bot").expect("open");
+        let open_end = lib.find("async fn select_session").expect("select");
+        let open = &lib[open_at..open_end];
+        assert!(!open.contains("\"continue\""));
+        assert!(!open.contains("create_session"));
     }
 
     #[tokio::test]

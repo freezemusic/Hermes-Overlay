@@ -33,6 +33,25 @@ export function sessionReadOnly(source) {
 
 export const SESSION_READ_ONLY_REASON = "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢";
 
+export const CONTINUE_API_LABEL = "喺 API 對話繼續";
+
+export const CONTINUE_API_HINT = "撳下面就可以喺呢個 Bot 嘅 API 對話繼續。";
+
+/**
+ * Another session of this bot that the gateway will accept a chat into.
+ * A live Bot Chat wins. `avoidId` is the row that is read-only or was just refused.
+ */
+export function writableContinuation(sessions, avoidId = "") {
+  const avoid = String(avoidId || "");
+  const writable = (sessions || []).filter(
+    (session) => session && session.id && session.id !== avoid && sessionAcceptsSend(session.source),
+  );
+  const live = writable.filter((session) => session.archived !== true);
+  const pool = live.length ? live : writable;
+  const chats = pool.filter((session) => isBotChat(session));
+  return mostRecentSession(chats.length ? chats : pool);
+}
+
 export const TUI_READ_ONLY_REASON = SESSION_READ_ONLY_REASON;
 
 export function isPermissionDeniedText(text) {

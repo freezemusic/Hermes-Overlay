@@ -78,7 +78,7 @@ import {
   APPROVAL_WAIT_LABEL,
   EXECUTE_CODE_BLOCKED_LINE,
 } from "./approval.js";
-import { SESSION_READ_ONLY_REASON, catchUpMessages, clearRunSession, continueLiveTurn, isPermissionDeniedText, noteRunSession, orderSessions, permissionDeniedMessage, previewLine, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, unseenMessages, viewingRun } from "./sessions.js";
+import { CONTINUE_API_HINT, SESSION_READ_ONLY_REASON, catchUpMessages, clearRunSession, continueLiveTurn, isPermissionDeniedText, noteRunSession, orderSessions, permissionDeniedMessage, previewLine, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, unseenMessages, viewingRun, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -4670,11 +4670,15 @@ function renderChat(id = state.activeId, options = {}) {
   const send = role(panel, "send");
   const input = role(panel, "input");
   const note = role(panel, "readonly");
+  const cont = role(panel, "continue");
   const locked = !!thread.sessionReadOnly && !!thread.sessionId;
   if (note) {
     note.hidden = !locked;
-    note.textContent = locked ? (thread.sessionReadOnlyReason || SESSION_READ_ONLY_REASON) : "";
+    note.textContent = locked
+      ? `${thread.sessionReadOnlyReason || SESSION_READ_ONLY_REASON} ${CONTINUE_API_HINT}`
+      : "";
   }
+  if (cont) cont.hidden = !locked;
   if (input) {
     input.disabled = locked;
     input.placeholder = locked ? "只可以睇" : "輸入訊息給呢個 Bot…";
@@ -6026,6 +6030,7 @@ function wireBotPanel(panel, id) {
     noteChatScroll(id, chat, chat.dataset.userScroll === "1");
   });
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
+  role(panel, "continue")?.addEventListener("click", () => continueApiSession(id));
   role(panel, "stop")?.addEventListener("click", () => stopActive(id));
   role(panel, "save")?.addEventListener("click", () => saveBotPanel(id));
   const sessionSelect = role(panel, "session");
@@ -6299,12 +6304,20 @@ function deliverCron(id, payload) {
   showToast(id, { kind: "message", text });
 }
 
-function lockIfPermissionDenied(id, raw) {
-  const text = permissionDeniedMessage(raw);
-  if (!isPermissionDeniedText(raw)) return text;
+function noteReadOnly(id) {
   const thread = threadFor(id);
   thread.sessionReadOnly = true;
   thread.sessionReadOnlyReason = SESSION_READ_ONLY_REASON;
+  thread.queued = false;
+  thread.watchReply = false;
+  clearRunSession(thread);
+  setBotStatus(id, "只可以睇", "idle");
+}
+
+function lockIfPermissionDenied(id, raw) {
+  const text = permissionDeniedMessage(raw);
+  if (!isPermissionDeniedText(raw)) return text;
+  noteReadOnly(id);
   return SESSION_READ_ONLY_REASON;
 }
 
@@ -6496,11 +6509,13 @@ function handleHermes(payload) {
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
     const detail = payload.detail || "";
     const blocked = textIsExecuteCodeBlocked(detail) || detail === EXECUTE_CODE_BLOCKED_LINE;
+    if (payload.outcome === "failed" && isPermissionDeniedText(detail)) {
+      lockIfPermissionDenied(id, detail);
+      return;
+    }
     noteActivity(id, { type: outcome, text: outcome === "completed" ? live?.text || "" : plainToolText(detail) });
     if (payload.outcome === "completed") clearConnectionBanner();
-    const failedText = payload.outcome === "failed"
-      ? (isPermissionDeniedText(detail) ? lockIfPermissionDenied(id, detail) : plainToolText(detail))
-      : "";
+    const failedText = payload.outcome === "failed" ? plainToolText(detail) : "";
     if (payload.outcome === "failed" && failedText) {
       appendOnce(id, { role: "failure", text: failedText });
     }
@@ -6518,19 +6533,23 @@ function handleHermes(payload) {
     setBotStatus(
       id,
       payload.outcome === "failed"
-        ? (isPermissionDeniedText(failedText) ? SESSION_READ_ONLY_REASON : blocked || failedText === EXECUTE_CODE_BLOCKED_LINE ? EXECUTE_CODE_BLOCKED_LINE : "回覆失敗")
+        ? (blocked || failedText === EXECUTE_CODE_BLOCKED_LINE ? EXECUTE_CODE_BLOCKED_LINE : "回覆失敗")
         : payload.outcome === "cancelled" ? "已停止" : "閒置",
       payload.outcome === "failed" ? "error" : "idle",
     );
     return;
   }
   if (payload.type === "error") {
-    const message = lockIfPermissionDenied(id, payload.message || "未知錯誤");
-    noteActivity(id, { type: "failed", text: message });
-    appendOnce(id, { role: "commentary", text: message });
+    const raw = payload.message || "未知錯誤";
+    if (isPermissionDeniedText(raw)) {
+      lockIfPermissionDenied(id, raw);
+      return;
+    }
+    noteActivity(id, { type: "failed", text: raw });
+    appendOnce(id, { role: "commentary", text: raw });
     clearRunSession(threadFor(id));
-    setBotStatus(id, isPermissionDeniedText(message) ? SESSION_READ_ONLY_REASON : "連線錯誤", "error");
-    setBanner(message, "error");
+    setBotStatus(id, "連線錯誤", "error");
+    setBanner(raw, "error");
   }
 }
 
@@ -6588,12 +6607,50 @@ async function sendActive(id = state.activeId) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("send_chat", { profile: sentId, text });
   } catch (err) {
-    const message = lockIfPermissionDenied(sentId, String(err));
-    noteActivity(sentId, { type: "failed", text: message });
-    appendMessage(sentId, { role: "commentary", text: message });
+    const raw = String(err);
+    if (isPermissionDeniedText(raw)) {
+      lockIfPermissionDenied(sentId, raw);
+      return;
+    }
+    noteActivity(sentId, { type: "failed", text: raw });
+    appendMessage(sentId, { role: "commentary", text: raw });
     clearRunSession(threadFor(sentId));
-    setBotStatus(sentId, isPermissionDeniedText(message) ? SESSION_READ_ONLY_REASON : "連線錯誤", "error");
-    setBanner(message, "error");
+    setBotStatus(sentId, "連線錯誤", "error");
+    setBanner(raw, "error");
+  }
+}
+
+async function continueApiSession(id) {
+  const thread = threadFor(id);
+  if (!id || !thread.sessionReadOnly || continueApiSession.busy) return;
+  continueApiSession.busy = true;
+  const button = role(panelFor(id), "continue");
+  if (button) button.disabled = true;
+  try {
+    const existing = writableContinuation(thread.sessions, thread.sessionId);
+    if (existing) {
+      await pickSession(id, existing.id);
+      return;
+    }
+    if (state.mode !== "hermes" || !inTauri()) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke("client_command", {
+      input: {
+        profile: id,
+        command: "continue",
+        args: thread.sessionId || "",
+        model: "",
+        provider: "",
+      },
+    });
+    const sessionId = result?.session_id || "";
+    if (sessionId && sessionId !== thread.sessionId) await pickSession(id, sessionId);
+  } catch (err) {
+    showActionError(String(err));
+  } finally {
+    continueApiSession.busy = false;
+    const next = role(panelFor(id), "continue");
+    if (next) next.disabled = false;
   }
 }
 
@@ -7324,11 +7381,15 @@ async function sendWhileBusy(id, text) {
     await invoke("send_chat", { profile: id, text, queue: true });
   } catch (err) {
     thread.queued = false;
-    const message = lockIfPermissionDenied(id, String(err));
-    noteActivity(id, { type: "failed", text: message });
-    appendMessage(id, { role: "commentary", text: message });
-    setBotStatus(id, isPermissionDeniedText(message) ? SESSION_READ_ONLY_REASON : "連線錯誤", "error");
-    setBanner(message, "error");
+    const raw = String(err);
+    if (isPermissionDeniedText(raw)) {
+      lockIfPermissionDenied(id, raw);
+      return;
+    }
+    noteActivity(id, { type: "failed", text: raw });
+    appendMessage(id, { role: "commentary", text: raw });
+    setBotStatus(id, "連線錯誤", "error");
+    setBanner(raw, "error");
   }
 }
 

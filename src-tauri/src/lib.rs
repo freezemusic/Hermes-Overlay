@@ -2428,6 +2428,38 @@ async fn client_command(
                 options: Vec::new(),
             })
         }
+        "continue" => {
+            let sessions = hermes::list_sessions_for_bot_chat(&state.http, &root, &key)
+                .await
+                .map_err(|err| hermes::explain(&err))?;
+            if let Some(found) = hermes::writable_continuation(&sessions, &args) {
+                pin_explicit(&app, &state, &input.profile, &root, &key, &found.id).await;
+                return Ok(ClientCommandOut {
+                    command,
+                    notice: "已轉去可以傳嘢嘅對話".into(),
+                    session_id: found.id.clone(),
+                    options: Vec::new(),
+                });
+            }
+            let session_id = hermes::create_session(
+                &state.http,
+                &root,
+                &key,
+                Some(hermes::OVERLAY_CONTINUE_TITLE),
+            )
+            .await
+            .map_err(|err| match &err {
+                HermesError::Http { status: 400, .. } => "開唔到新對話。".into(),
+                _ => hermes::explain(&err),
+            })?;
+            pin_explicit(&app, &state, &input.profile, &root, &key, &session_id).await;
+            Ok(ClientCommandOut {
+                command,
+                notice: "已開新對話".into(),
+                session_id,
+                options: Vec::new(),
+            })
+        }
         "new" => {
             let title = if args.is_empty() {
                 None
