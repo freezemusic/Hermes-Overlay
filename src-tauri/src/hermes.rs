@@ -2000,6 +2000,52 @@ pub async fn list_dashboard_profiles_timeout(
     Ok(parse_dashboard_profiles(&value))
 }
 
+/// `GET /api/profiles` on the Hermes 0.22.5 dashboard.
+/// Gated mode accepts the native access token as `Authorization: Bearer`
+/// (`dashboard_auth/middleware.py` `_extract_bearer`). The body is discarded
+/// on failure and is not logged.
+#[derive(Debug)]
+pub enum ProfileBearer {
+    Listed(Vec<DiscoveredProfile>),
+    Expired,
+    Missed,
+}
+
+pub async fn list_profiles_with_bearer(
+    http: &Client,
+    origin: &str,
+    access_token: &str,
+    timeout: Duration,
+) -> ProfileBearer {
+    let token = access_token.trim();
+    if token.is_empty() {
+        return ProfileBearer::Expired;
+    }
+    let url = format!("{}/api/profiles", origin.trim_end_matches('/'));
+    let response = match http
+        .get(url)
+        .timeout(timeout)
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => return ProfileBearer::Missed,
+    };
+    let status = response.status().as_u16();
+    if status == 401 {
+        return ProfileBearer::Expired;
+    }
+    if !(200..300).contains(&status) {
+        return ProfileBearer::Missed;
+    }
+    let Ok(value) = response.json::<Value>().await else {
+        return ProfileBearer::Missed;
+    };
+    ProfileBearer::Listed(parse_dashboard_profiles(&value))
+}
+
 pub fn parse_dashboard_profiles(value: &Value) -> Vec<DiscoveredProfile> {
     let items = value
         .get("profiles")
@@ -3797,6 +3843,86 @@ mod tests {
         assert_eq!(colored[0].color, "hsl(326 68% 58%)");
         assert_eq!(colored[1].color, "#ABC");
         assert_eq!(colored[2].color, "rgb(10, 20, 30)");
+        let src = include_str!("hermes.rs");
+        let start = src
+            .find("pub async fn list_profiles_with_bearer")
+            .expect("bearer");
+        let end = src[start..]
+            .find("\npub fn parse_dashboard_profiles")
+            .expect("parse");
+        let body = &src[start..start + end];
+        assert!(body.contains("/api/profiles"));
+        assert!(body.contains("Authorization"));
+        assert!(body.contains("Bearer"));
+        assert!(!body.contains("X-Hermes-Session-Token"));
+        assert!(!body.contains("println"));
+        assert!(!body.contains("eprintln"));
+        assert!(!body.contains("config::save"));
+    }
+
+    #[tokio::test]
+    async fn bearer_profile_list_sends_the_native_token_and_stops_on_401() {
+        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let captured = seen.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = sock.read(&mut buf).unwrap_or(0);
+            *captured.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"{"profiles":[{"name":"hr-8words","display_name":"人事"}]}"#;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(body.as_bytes());
+        });
+        let http = Client::new();
+        let listed = list_profiles_with_bearer(
+            &http,
+            &format!("http://{addr}"),
+            "native-access",
+            Duration::from_secs(4),
+        )
+        .await;
+        let head = seen.lock().unwrap().clone();
+        let lower = head.to_ascii_lowercase();
+        assert!(head.starts_with("GET /api/profiles "), "{head}");
+        assert!(lower.contains("authorization: bearer native-access"), "{head}");
+        assert!(!lower.contains("x-hermes-session-token"), "{head}");
+        match listed {
+            ProfileBearer::Listed(rows) => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].profile, "hr-8words");
+                assert_eq!(rows[0].display_name, "人事");
+            }
+            other => panic!("expected profiles, got {other:?}"),
+        }
+
+        let denied = TcpListener::bind("127.0.0.1:0").unwrap();
+        let denied_addr = denied.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut sock, _) = denied.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf);
+            let body = r#"{"error":"session_expired","access_token":"must-not-echo"}"#;
+            let header = format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(body.as_bytes());
+        });
+        let expired = list_profiles_with_bearer(
+            &http,
+            &format!("http://{denied_addr}"),
+            "stale-access",
+            Duration::from_secs(4),
+        )
+        .await;
+        assert!(matches!(expired, ProfileBearer::Expired));
     }
 
     fn oneshot(status: &str, content_type: &str, body: &str) -> String {

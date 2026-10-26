@@ -1142,6 +1142,17 @@ async fn discover_profiles(
         .collect())
 }
 
+fn push_discovered(hints: &mut Vec<config::ProfileHint>, found: Vec<hermes::DiscoveredProfile>) {
+    for item in found {
+        hints.push(config::ProfileHint {
+            profile: item.profile,
+            display_name: item.display_name,
+            detail: item.detail,
+            color: item.color,
+        });
+    }
+}
+
 #[tauri::command]
 async fn sync_profiles(
     app: AppHandle,
@@ -1176,6 +1187,7 @@ async fn sync_profiles(
         Ok(Lookup::Value(value)) if !value.trim().is_empty() => Some(value),
         _ => None,
     };
+    let mut saw_dashboard = false;
     if let Some(token) = token.as_deref() {
         if let Ok(found) = hermes::list_dashboard_profiles_timeout(
             &state.http,
@@ -1185,15 +1197,24 @@ async fn sync_profiles(
         )
         .await
         {
-            for item in found {
-                hints.push(config::ProfileHint {
-                    profile: item.profile,
-                    display_name: item.display_name,
-                    detail: item.detail,
-                    color: item.color,
-                });
-            }
+            saw_dashboard = true;
+            push_discovered(&mut hints, found);
         }
+    }
+    // Laptop has the Kanban native token, not a dashboard session token.
+    // Hermes 0.22.5 gated dashboard accepts that bearer on GET /api/profiles.
+    if !saw_dashboard {
+        let origin = kanban_server::origin(&gateway, &initial.kanban_base_url);
+        let read = kanban_server::read_native_profiles(
+            &state.http,
+            &origin,
+            load_kanban_secrets(),
+        )
+        .await;
+        if read.changed {
+            let _ = store_kanban_secrets(&read.secrets);
+        }
+        push_discovered(&mut hints, read.profiles);
     }
     hints.extend(config::local_hermes_profiles(&hermes_home_dir()));
 
@@ -2962,6 +2983,12 @@ mod tests {
         assert!(body.contains("quiet"));
         assert!(body.contains("require_gateway"));
         assert!(body.contains("apply_quiet_roster"));
+        assert!(body.contains("read_native_profiles"));
+        assert!(body.contains("kanban_server::origin"));
+        assert!(body.contains("store_kanban_secrets"));
+        assert!(!body.contains("password_login"));
+        assert!(!body.contains("println"));
+        assert!(!body.contains("eprintln"));
         assert!(!body.contains("set_profile_key"));
         assert!(!body.contains("delete_profile_key"));
         assert!(!body.contains("create_session"));

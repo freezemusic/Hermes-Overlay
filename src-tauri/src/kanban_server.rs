@@ -2,7 +2,8 @@
 //! Reads are GET only. Tokens and the basic password stay in this app's keyring.
 
 use crate::hermes::{
-    parse_kanban_board, KanbanBoard, KanbanTask, HermesError, KANBAN_LOGIN, KANBAN_UNAVAILABLE,
+    parse_kanban_board, DiscoveredProfile, HermesError, KanbanBoard, KanbanTask, ProfileBearer,
+    KANBAN_LOGIN, KANBAN_UNAVAILABLE,
 };
 use reqwest::header::{HeaderMap, AUTHORIZATION, COOKIE, SET_COOKIE};
 use reqwest::Client;
@@ -483,29 +484,43 @@ fn missing_board(board: &str) -> KanbanBoard {
     }
 }
 
+/// One native refresh. A rejected token is remembered so later polls do not POST it again.
+pub async fn refresh_access_once(
+    http: &Client,
+    origin: &str,
+    secrets: &mut KanbanSecrets,
+) -> Result<bool, HermesError> {
+    if secrets.refresh_token.trim().is_empty() {
+        return Ok(false);
+    }
+    let token = secrets.refresh_token.trim().to_string();
+    if refresh_is_rejected(&token) {
+        return Ok(false);
+    }
+    match refresh_tokens(http, origin, &token).await {
+        Ok(tokens) => {
+            forget_rejected_refresh(&token);
+            secrets.access_token = tokens.access_token;
+            if !tokens.refresh_token.is_empty() {
+                secrets.refresh_token = tokens.refresh_token;
+            }
+            Ok(true)
+        }
+        Err(HermesError::Http { status: 401 | 403, .. }) => {
+            note_rejected_refresh(&token);
+            Ok(false)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 async fn renew(
     http: &Client,
     origin: &str,
     secrets: &mut KanbanSecrets,
 ) -> Result<bool, HermesError> {
-    if !secrets.refresh_token.trim().is_empty() {
-        let token = secrets.refresh_token.trim().to_string();
-        if !refresh_is_rejected(&token) {
-            match refresh_tokens(http, origin, &token).await {
-                Ok(tokens) => {
-                    forget_rejected_refresh(&token);
-                    secrets.access_token = tokens.access_token;
-                    if !tokens.refresh_token.is_empty() {
-                        secrets.refresh_token = tokens.refresh_token;
-                    }
-                    return Ok(true);
-                }
-                Err(HermesError::Http { status: 401 | 403, .. }) => {
-                    note_rejected_refresh(&token);
-                }
-                Err(err) => return Err(err),
-            }
-        }
+    if refresh_access_once(http, origin, secrets).await? {
+        return Ok(true);
     }
     if !secrets.username.trim().is_empty() && !secrets.password.is_empty() {
         let username = secrets.username.trim().to_string();
@@ -527,6 +542,67 @@ async fn renew(
         }
     }
     Ok(false)
+}
+
+pub struct NativeProfileRead {
+    pub profiles: Vec<DiscoveredProfile>,
+    pub secrets: KanbanSecrets,
+    pub changed: bool,
+}
+
+/// `GET {origin}/api/profiles` with the Kanban native access token.
+/// A 401 refreshes once via `POST /auth/native/refresh`, then retries that GET once.
+/// The profiles call itself stays GET. A miss returns no rows and does not fail the roster.
+pub async fn read_native_profiles(
+    http: &Client,
+    origin: &str,
+    mut secrets: KanbanSecrets,
+) -> NativeProfileRead {
+    if secrets.access_token.trim().is_empty() && secrets.refresh_token.trim().is_empty() {
+        return NativeProfileRead {
+            profiles: Vec::new(),
+            secrets,
+            changed: false,
+        };
+    }
+    let timeout = Duration::from_secs(4);
+    let mut changed = false;
+    let mut listed = if secrets.access_token.trim().is_empty() {
+        ProfileBearer::Expired
+    } else {
+        crate::hermes::list_profiles_with_bearer(http, origin, &secrets.access_token, timeout).await
+    };
+    if matches!(listed, ProfileBearer::Expired) {
+        match refresh_access_once(http, origin, &mut secrets).await {
+            Ok(true) => {
+                changed = true;
+                listed = crate::hermes::list_profiles_with_bearer(
+                    http,
+                    origin,
+                    &secrets.access_token,
+                    timeout,
+                )
+                .await;
+            }
+            Ok(false) => {}
+            Err(_) => {
+                return NativeProfileRead {
+                    profiles: Vec::new(),
+                    secrets,
+                    changed,
+                };
+            }
+        }
+    }
+    let profiles = match listed {
+        ProfileBearer::Listed(rows) => rows,
+        ProfileBearer::Expired | ProfileBearer::Missed => Vec::new(),
+    };
+    NativeProfileRead {
+        profiles,
+        secrets,
+        changed,
+    }
 }
 
 /// GET the board. A 401 refreshes or renews once. Still unauthorized is a calm login state.
@@ -949,6 +1025,89 @@ mod tests {
         assert_eq!(detail.comments[0].body, "睇過");
         assert_eq!(detail.events, vec!["moved".to_string()]);
         assert!(posts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_401_on_profiles_refreshes_once_then_gets_the_roster() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        let base = serve(move |head| {
+            let line = head.lines().next().unwrap_or("").to_string();
+            seen.lock().unwrap().push(line.clone());
+            if line.starts_with("POST") && line.contains("/api/profiles") {
+                return (500, "", r#"{"error":"roster must stay GET"}"#.into());
+            }
+            if line.starts_with("POST") && line.contains("/auth/native/refresh") {
+                assert!(head.contains("refresh-roster-old"));
+                assert!(!head.contains("access-roster-old"));
+                return (
+                    200,
+                    "",
+                    r#"{"access_token":"access-roster-new","refresh_token":"refresh-roster-new"}"#
+                        .into(),
+                );
+            }
+            if line.starts_with("GET") && line.contains("/api/profiles") {
+                let lower = head.to_ascii_lowercase();
+                assert!(lower.contains("authorization: bearer "), "{head}");
+                assert!(!lower.contains("x-hermes-session-token"), "{head}");
+                if head.contains("Bearer access-roster-new") {
+                    return (
+                        200,
+                        "",
+                        r#"{"profiles":[{"name":"mt-coder","display_name":"mt-coder"},{"name":"hr-8words","display_name":"hr-8words","description":"人事"}]}"#
+                            .into(),
+                    );
+                }
+                return (401, "", r#"{"error":"session_expired"}"#.into());
+            }
+            (404, "", "{}".into())
+        });
+        let http = Client::new();
+        let secrets = KanbanSecrets {
+            access_token: "access-roster-old".into(),
+            refresh_token: "refresh-roster-old".into(),
+            ..KanbanSecrets::default()
+        };
+        let read = read_native_profiles(&http, &base, secrets).await;
+        assert!(read.changed);
+        assert_eq!(read.secrets.access_token, "access-roster-new");
+        assert_eq!(read.secrets.refresh_token, "refresh-roster-new");
+        let names: Vec<_> = read.profiles.iter().map(|item| item.profile.as_str()).collect();
+        assert_eq!(names, vec!["mt-coder", "hr-8words"]);
+        assert_eq!(read.profiles[1].detail, "人事");
+        let log = calls.lock().unwrap().clone();
+        assert_eq!(log.iter().filter(|line| line.contains("/auth/native/refresh")).count(), 1);
+        assert!(log.iter().all(|line| !line.starts_with("POST") || line.contains("/auth/native/refresh")));
+        assert_eq!(log.iter().filter(|line| line.starts_with("GET") && line.contains("/api/profiles")).count(), 2);
+
+        let refreshes = Arc::new(Mutex::new(0u32));
+        let counted = refreshes.clone();
+        let again = serve(move |head| {
+            let line = head.lines().next().unwrap_or("");
+            if line.starts_with("POST") && line.contains("/auth/native/refresh") {
+                *counted.lock().unwrap() += 1;
+                return (401, "", r#"{"error":"invalid_or_expired_session"}"#.into());
+            }
+            if line.starts_with("POST") {
+                return (500, "", r#"{"error":"roster must stay GET"}"#.into());
+            }
+            if line.starts_with("GET") && line.contains("/api/profiles") {
+                return (401, "", r#"{"error":"session_expired"}"#.into());
+            }
+            (404, "", "{}".into())
+        });
+        let dead = KanbanSecrets {
+            access_token: "access-roster-dead".into(),
+            refresh_token: "refresh-roster-dead".into(),
+            ..KanbanSecrets::default()
+        };
+        let first = read_native_profiles(&http, &again, dead.clone()).await;
+        assert!(first.profiles.is_empty());
+        let second = read_native_profiles(&http, &again, dead).await;
+        assert!(second.profiles.is_empty());
+        assert!(!second.changed);
+        assert_eq!(*refreshes.lock().unwrap(), 1);
     }
 
     #[tokio::test]

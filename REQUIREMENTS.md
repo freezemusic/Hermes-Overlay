@@ -427,6 +427,8 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 **R-SY-09** 連住 Hermes 時，大約每 60 秒（上下 20%）靜靜對一次 profile 名單，唔使重開程式。用 `claimProfiles(["roster"])`，同看板、排程、其他 Bot 嘅探測唔重疊。Gateway 落咗就跳過呢一輪，交給 R-SY-08。
 
+遠端機冇本機 `~/.hermes`、gateway `GET /health` 又冇 `profiles` 陣列、亦冇 dashboard session token 時，用 Kanban 同一個 origin（設咗嘅 Kanban 位址，否則 gateway host 埠 9119）打 `GET /api/profiles`。認證係鑰匙圈入面嘅 Kanban native access token，`Authorization: Bearer`（Hermes 0.22.5 gated dashboard middleware 收呢種 bearer；唔係 `X-Hermes-Session-Token`）。GET 回 401 就用同一條 refresh token `POST /auth/native/refresh` 一次，寫返新 access 同新 refresh，然後同一個 GET 再試一次。已拒嘅 refresh 唔好每個輪詢再 POST。呢下對 `/api/profiles` 只可以 GET。已經喺名單入面嘅 `enabled` 唔改。
+
 新 profile 出光球，然後用現有 `profilesNeedingKeys` 提示 Devon 自己填金鑰。唔自動填金鑰，唔改共用鑰匙圈項目。對 Hermes 只讀，唔建立 session。
 
 config.json 只有名單真係多咗 profile 先寫。冇變動嘅每一輪，檔案位元組保持一樣。已有 Bot 嘅 sessionId、enabled、顏色、次序、名稱、詳情都唔改。計時器唔刪走消失或者隱藏嘅 profile，亦唔因為今次搵唔到就標做不可用（一次讀取失敗唔可以隱藏晒所有人）。
@@ -436,7 +438,7 @@ config.json 只有名單真係多咗 profile 先寫。冇變動嘅每一輪，�
 頭四粒光球用經典邊位（一粒喺頂邊 t=0.21；四粒係頂、右、底、左），加 profile 唔好郁呢四粒。第五粒起放入空位：中心距要大過光碟直徑加兩個 72px 淡出半徑，72px 淡出先唔會同時捉到兩粒；新位亦唔好落入打開咗嘅看板面板。6 粒或以上唔好疊到看板、排程、設定光球。`profiles/` 入面以點開頭嘅目錄（例如 `.deleted`）唔算 profile。
 
 - 來源：Devon。8cf5af4 盒：恢復先跑同步，3 個新 profile 有 2 個冇金鑰提示；加光球會重排，6 粒時 researcher 疊住 cron；`.deleted` 被當成 profile。f1ebd03 盒：金鑰提示約 60ms／340ms 就被歷史載入或 gateway 膠囊清走；穩定槽把原有四粒推去角落，新粒相距約 70px 一齊淡，打開看板蓋住預設光球。afb21e2 盒：平常點擊橫額開到設定；Ctrl+click 穿透係面板規則，`interaction.rs` 維持只放行光球同 `pill:`。eafdd1e 盒：計劃打開之後 Goal 行搬入 `.plan-hit-host`，橫額 y 109–142 仍然蓋住 Goal y 110–118。fbcb44c 盒：橫額 y=133 蓋住計劃步驟 1 同 Bot Chat 下拉右緣；已登入看板橫額 top y=794 疊住面板底邊 y=801 約 7px。
-- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額預設 top 96px，打開面板就放喺外緣外面至少 12px（優先畫面中心嗰側），光暈擋住就換邊，放唔落先用 header 行，唔好壓住計劃步驟、Bot Chat 下拉、看板底邊或者光球光暈；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
+- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；`GET /api/profiles` 帶 `Authorization: Bearer`，401 只 `POST /auth/native/refresh` 一次然後再 GET 一次，`/api/profiles` 冇 POST，已有列嘅 `enabled` 保持原值；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額預設 top 96px，打開面板就放喺外緣外面至少 12px（優先畫面中心嗰側），光暈擋住就換邊，放唔落先用 header 行，唔好壓住計劃步驟、Bot Chat 下拉、看板底邊或者光球光暈；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
 - 狀態：❓ / ❓。
 
 ---
