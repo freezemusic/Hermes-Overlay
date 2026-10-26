@@ -42,6 +42,9 @@ export const MIN_PANEL_H = 240;
 export const CRON_MIN_H = 140;
 /** HUD corner L sits this far outside the frame. Both sides count toward the visible gap. */
 export const FRAME_BLEED = 3;
+/** Border plus the 1px ring, covered by the corner that sits this far outside the paper.
+ *  The settle frame has to paint this strip. Do not add it a frame later. */
+export const PLAN_EDGE_OUT = FRAME_BLEED;
 export const EASE = "cubic-bezier(.2,.8,.2,1)";
 export const COLLAPSE_EASE = "cubic-bezier(.4,0,1,1)";
 export const PREVIEW_MS = 5_000;
@@ -1000,6 +1003,20 @@ export function fitPlanBox({
   return { side, x, y, w, h };
 }
 
+/** Host box that includes the outward edge. The paper stays on `fitted`. */
+export function planHostBox(fitted) {
+  const edge = PLAN_EDGE_OUT;
+  const w = Math.max(0, Math.round(Number(fitted?.w) || 0));
+  const x = Number(fitted?.x) || 0;
+  if (fitted?.side === "left") return { ...fitted, x: x - edge, w: w + edge };
+  return { ...fitted, w: w + edge };
+}
+
+/** Open clip reach: plan width plus the outward edge and the hairline. */
+export function settledPlanReach(planWidth) {
+  return Math.ceil((Number(planWidth) || 0) + PLAN_EDGE_OUT + HAIRLINE);
+}
+
 /** Screen box of an open plan. The shell's own box is not widened. */
 export function placePlanHost(shell) {
   const host = shell?._planHost;
@@ -1025,13 +1042,16 @@ export function placePlanHost(shell) {
     screenW: Number(view?.innerWidth) || 0,
     screenH: Number(view?.innerHeight) || 0,
   });
+  const hosted = planHostBox(fitted);
   shell.dataset.planSide = fitted.side;
   host.dataset.planSide = fitted.side;
   host.style.position = "absolute";
   host.style.top = `${fitted.y}px`;
-  host.style.width = `${fitted.w}px`;
+  host.style.width = `${hosted.w}px`;
   host.style.height = `${fitted.h}px`;
-  host.style.left = `${fitted.x}px`;
+  host.style.left = `${hosted.x}px`;
+  plan.style.width = `${fitted.w}px`;
+  plan.style.left = fitted.side === "left" ? `${PLAN_EDGE_OUT}px` : "0px";
   // A stacked shell can shrink. A locked plan height would keep painting
   // over the panel below (R-PN-07).
   plan.style.height = `${fitted.h}px`;

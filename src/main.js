@@ -57,6 +57,7 @@ import {
   ORB_HALO_PX,
   FRAME_BLEED,
   HAIRLINE,
+  settledPlanReach,
   STACK_GAP,
   MIN_PANEL_H,
   CRON_MIN_H,
@@ -78,7 +79,7 @@ import {
   APPROVAL_WAIT_LABEL,
   EXECUTE_CODE_BLOCKED_LINE,
 } from "./approval.js";
-import { CONTINUE_API_HINT, SESSION_READ_ONLY_REASON, catchUpMessages, clearRunSession, continueLiveTurn, isPermissionDeniedText, noteRunSession, orderSessions, permissionDeniedMessage, previewLine, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, unseenMessages, viewingRun, writableContinuation } from "./sessions.js";
+import { SESSION_READ_ONLY_REASON, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, noteRunSession, noteRunStarted, orderSessions, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, rememberDenied, rememberView, resolveSession, runTranscript, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, viewingRun, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -1271,7 +1272,7 @@ function fittedPlanPane(hostBox, width) {
 function planRevealClip(shell, t) {
   const reveal = t <= 0 ? 0 : t >= 1 ? 1 : planEase(t);
   const base = bleedInsets(insetsFor("panel", shellGeom(shell)), FRAME_BLEED + HAIRLINE);
-  const extra = (Number(shell.dataset.planWidth) || planWidthPx()) + FRAME_BLEED + HAIRLINE;
+  const extra = settledPlanReach(Number(shell.dataset.planWidth) || planWidthPx());
   const shown = extra * reveal;
   if (shell.dataset.planSide === "left") base.left = -shown;
   else base.right = -shown;
@@ -2349,11 +2350,9 @@ function pumpSeamPresent(shell, duration) {
   }
 }
 
-/** Last presented sample. fill:both keeps a short end keyframe over the
- *  inline clip, and a clip-only damage rect misses the new right strip.
- *  Write the fully open exact-px clip on the effect and the inline style
- *  in this frame, then nudge the plan layer so its full rect is presented.
- *  GTK after-paint confirms that frame. The nudge is removed after the log. */
+/** Last presented sample. The open clip and the hosted plan already include
+ *  the outward edge, so this frame paints the right strip. A transform
+ *  written on a later frame repaints that 1–3px line after the curve settles. */
 function presentSeamFinal(shell, anim) {
   if (!shell || shell._seamFinal) return;
   if (shell.dataset?.planOpen !== "1") return;
@@ -2370,26 +2369,18 @@ function presentSeamFinal(shell, anim) {
     }
   } catch { /* keyframes already hold the open clip */ }
   shell.style.clipPath = value;
+  if (!debugFile.enabled) return;
   const plan = planNode(shell);
-  if (plan) plan.style.transform = "translate3d(0, 0, 1px)";
-  const logPresented = () => {
-    if (debugFile.enabled) {
-      let used = "";
-      let rect = "-";
-      try { used = getComputedStyle(shell).clipPath || ""; } catch { used = ""; }
-      try {
-        const box = plan?.getBoundingClientRect();
-        if (box) {
-          rect = `${Math.round(box.x)},${Math.round(box.y)} ${Math.round(box.width)}x${Math.round(box.height)}`;
-        }
-      } catch { rect = "-"; }
-      debugLog("seam-final", `clip=${used || "-"} rect=${rect}`);
+  let used = "";
+  let rect = "-";
+  try { used = getComputedStyle(shell).clipPath || ""; } catch { used = ""; }
+  try {
+    const box = plan?.getBoundingClientRect();
+    if (box) {
+      rect = `${Math.round(box.x)},${Math.round(box.y)} ${Math.round(box.width)}x${Math.round(box.height)}`;
     }
-    if (plan?.isConnected) plan.style.transform = "none";
-  };
-  waitPresentedFrames(1).then(() => {
-    requestAnimationFrame(logPresented);
-  });
+  } catch { rect = "-"; }
+  debugLog("seam-final", `clip=${used || "-"} rect=${rect}`);
 }
 
 /** Anchor t=0 to the first frame that can be presented. A pause that is
@@ -2980,7 +2971,7 @@ function deferredParts(shell) {
   const sessions = orderSessions(thread?.sessions || []);
   const sessionKey = JSON.stringify([
     thread?.sessionId || "",
-    sessions.map((session) => [session.id, session.title, session.hidden]),
+    sessions.map((session) => [session.id, session.title, session.hidden, session.archived, session.source]),
   ]);
   const sessionPart = select && select.dataset.key !== sessionKey ? "rebuild" : "same";
   const soul = role(panel, "soul");
@@ -3820,6 +3811,7 @@ const state = {
   cronRunMarks: new Map(),
   cronPrimed: false,
   toastSeq: 0,
+  deniedSessions: new Set(),
 };
 
 const probeGate = createProbeGate();
@@ -4675,7 +4667,7 @@ function renderChat(id = state.activeId, options = {}) {
   if (note) {
     note.hidden = !locked;
     note.textContent = locked
-      ? `${thread.sessionReadOnlyReason || SESSION_READ_ONLY_REASON} ${CONTINUE_API_HINT}`
+      ? readOnlyNote(thread.sessionReadOnlyReason || SESSION_READ_ONLY_REASON)
       : "";
   }
   if (cont) cont.hidden = !locked;
@@ -5230,8 +5222,9 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   thread.sessionId = nextId || thread.sessionId;
   thread.sessionExplicit = !!opened.session_explicit;
   thread.sessionAnchor = Number(opened.session_anchor) || 0;
-  thread.sessionReadOnly = !!opened.read_only;
-  thread.sessionReadOnlyReason = opened.read_only_reason || "";
+  const locked = readOnlyLocked(state.deniedSessions, id, thread.sessionId, !!opened.read_only);
+  thread.sessionReadOnly = locked;
+  thread.sessionReadOnlyReason = locked ? (opened.read_only_reason || SESSION_READ_ONLY_REASON) : "";
   thread.sessions = sessions;
   thread.loading = false;
   rememberPlan(thread, thread.messages);
@@ -5244,22 +5237,23 @@ function applyOpened(id, opened, { quiet = false } = {}) {
     renderBots();
     return;
   }
+  const resting = thread.sessionReadOnly ? "只可以睇" : "閒置";
   if (openPanel) {
-    setBotStatus(id, "閒置", "idle");
+    setBotStatus(id, resting, "idle");
     renderChat(id, { force: true, tag: "session-switch" });
     return;
   }
   if (shell && (visualQuiet(shell) || presentationBusy())) {
-    thread.status = "閒置";
+    thread.status = resting;
     thread.statusState = "idle";
     state.busy.delete(id);
-    setStatusText(id, "閒置");
+    setStatusText(id, resting);
     shell.dataset.chatDirty = "1";
     shell.dataset.planDirty = "1";
     armPresentationFlush();
     return;
   }
-  setBotStatus(id, "閒置", "idle");
+  setBotStatus(id, resting, "idle");
 }
 
 function beginBotHistory(id) {
@@ -5390,7 +5384,7 @@ function paintSessionSelect(id) {
   if (!select || document.activeElement === select) return;
   const thread = threadFor(id);
   const sessions = orderSessions(thread.sessions || []);
-  const key = JSON.stringify([thread.sessionId, sessions.map((session) => [session.id, session.title, session.hidden])]);
+  const key = JSON.stringify([thread.sessionId, sessions.map((session) => [session.id, session.title, session.hidden, session.archived, session.source])]);
   if (select.dataset.key === key) return;
   select.replaceChildren();
   const rows = sessions.length
@@ -5431,8 +5425,9 @@ async function pickSession(id, sessionId) {
     showSession(thread, sessionId, (stored || [{ role: "bot", text: "（舊對話）" }]).map((message) => ({ ...message })));
     thread.sessionExplicit = true;
     thread.sessionAnchor = anchor;
-    thread.sessionReadOnly = sessionReadOnly(picked?.source);
-    thread.sessionReadOnlyReason = thread.sessionReadOnly ? SESSION_READ_ONLY_REASON : "";
+    const locked = readOnlyLocked(state.deniedSessions, id, sessionId, sessionReadOnly(picked?.source));
+    thread.sessionReadOnly = locked;
+    thread.sessionReadOnlyReason = locked ? SESSION_READ_ONLY_REASON : "";
     thread.loaded = true;
     if (select) delete select.dataset.key;
     renderChat(id);
@@ -6306,6 +6301,7 @@ function deliverCron(id, payload) {
 
 function noteReadOnly(id) {
   const thread = threadFor(id);
+  rememberDenied(state.deniedSessions, id, thread.sessionId);
   thread.sessionReadOnly = true;
   thread.sessionReadOnlyReason = SESSION_READ_ONLY_REASON;
   thread.queued = false;
@@ -6386,11 +6382,7 @@ function handleHermes(payload) {
   }
   if (payload.type === "run.started") {
     const thread = threadFor(id);
-    const incoming = payload.run_id || "";
-    if (incoming) {
-      if (!thread.runId || !state.busy.has(id) || thread.runId === incoming) thread.runId = incoming;
-      else thread.nextRunId = incoming;
-    }
+    noteRunStarted(thread, payload.run_id || "");
     if (!thread.liveSessionId) noteRunSession(thread);
     thread.stopNoted = false;
     setBotStatus(id, "思考中…", "busy");
@@ -6470,7 +6462,9 @@ function handleHermes(payload) {
     return;
   }
   if (payload.type === "status") {
-    const pending = threadFor(id).messages.some(approvalPending);
+    const thread = threadFor(id);
+    if (payload.run_id && !finishApplies(thread, payload.run_id) && payload.state !== "busy") return;
+    const pending = thread.messages.some(approvalPending);
     const errored = payload.state === "error";
     let label = payload.detail || (payload.state === "busy" ? "思考中…" : "閒置");
     let statusState = payload.state === "busy" ? "busy" : errored ? "error" : "idle";
@@ -6483,6 +6477,7 @@ function handleHermes(payload) {
   }
   if (payload.type === "done") {
     const thread = threadFor(id);
+    if (payload.run_id && !finishApplies(thread, payload.run_id)) return;
     const live = [...runMessages(id)].reverse().find((m) => m.live);
     painterFor(id).flush();
     if (live) {
@@ -6491,20 +6486,11 @@ function handleHermes(payload) {
     }
     settleBlockedCopies(id);
     if (payload.keep_busy) {
-      if (thread.nextRunId) {
-        thread.runId = thread.nextRunId;
-        thread.nextRunId = "";
-      }
       if (payload.outcome === "cancelled") noteStopped(id, { keepBusy: true });
       else if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
       return;
     }
-    if (thread.nextRunId) {
-      thread.runId = thread.nextRunId;
-      thread.nextRunId = "";
-    } else {
-      thread.runId = "";
-    }
+    if (!payload.run_id || payload.run_id === thread.runId) thread.runId = "";
     if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
     const detail = payload.detail || "";
@@ -7398,12 +7384,15 @@ async function stopActive(id) {
   if (!profile || state.mode !== "hermes" || !inTauri()) return;
   const thread = threadFor(profile);
   thread.watchReply = true;
+  const posted = thread.runId || "";
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const result = await invoke("stop_chat", { profile, runId: thread.runId || "" });
+    let result = await invoke("stop_chat", { profile, runId: posted });
+    const again = stopAfterMiss(thread, posted);
+    if (result === "not_active" && again.retry) {
+      result = await invoke("stop_chat", { profile, runId: again.retry });
+    }
     if (result === "not_active") {
-      noteStopped(profile);
-      if (!thread.queued) thread.watchReply = false;
       void catchUpSession(profile);
       return;
     }

@@ -179,9 +179,76 @@ export function resolveSession(sessions, pin = {}) {
   return null;
 }
 
+/** Hidden wins, then archived, then a source the gateway will not accept. */
 export function sessionLabel(session) {
   const title = String(session?.title || "").trim() || session?.id || "";
-  return session?.hidden ? `${title}（隱藏）` : title;
+  return `${title}${sessionSuffix(session)}`;
+}
+
+function sessionSuffix(session) {
+  if (session?.hidden) return "（隱藏）";
+  if (session?.archived === true) return "（已封存）";
+  const source = String(session?.source || "").trim().toLowerCase();
+  if (!source || sessionAcceptsSend(source)) return "";
+  const name = source === "desktop" ? "Desktop"
+    : source === "cli" ? "CLI"
+    : source === "tui" ? "TUI"
+    : source === "oneshot" ? "一次性"
+    : source;
+  return `（${name}／只可以睇）`;
+}
+
+/** The read-only reason and the continue hint are two sentences. */
+export function readOnlyNote(reason = SESSION_READ_ONLY_REASON) {
+  const line = String(reason || SESSION_READ_ONLY_REASON).replace(/。+$/u, "");
+  return `${line}。${CONTINUE_API_HINT}`;
+}
+
+export function deniedKey(profile, sessionId) {
+  const id = String(sessionId || "");
+  if (!profile || !id) return "";
+  return `${profile}:${id}`;
+}
+
+/** `permission_denied` sticks for this app run, even when metadata source is writable. */
+export function rememberDenied(set, profile, sessionId) {
+  const key = deniedKey(profile, sessionId);
+  if (key && set) set.add(key);
+  return set;
+}
+
+export function readOnlyLocked(set, profile, sessionId, sourceReadOnly) {
+  const key = deniedKey(profile, sessionId);
+  return !!sourceReadOnly || (!!key && !!set?.has(key));
+}
+
+/** The latest `run.started` is the run 「停止」 must post. */
+export function noteRunStarted(thread, runId) {
+  const incoming = String(runId || "");
+  if (!thread || !incoming) return thread;
+  if (thread.runId && thread.runId !== incoming) thread.staleRunId = thread.runId;
+  thread.runId = incoming;
+  thread.nextRunId = "";
+  return thread;
+}
+
+/** A finish for some other run must not idle the bot or drop the active id. */
+export function finishApplies(thread, runId) {
+  const finished = String(runId || "");
+  const active = String(thread?.runId || "");
+  if (finished && active && finished !== active) return false;
+  return true;
+}
+
+/**
+ * 409 means that id was already finished. It is not 「已停止」.
+ * Retry when the active id has moved on.
+ */
+export function stopAfterMiss(thread, postedId) {
+  const posted = String(postedId || "");
+  const active = String(thread?.runId || "");
+  if (active && active !== posted) return { retry: active, stopped: false };
+  return { retry: "", stopped: false };
 }
 
 /**

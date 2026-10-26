@@ -23,9 +23,10 @@ test("a busy send steers, and a rejected steer is queued out loud", () => {
 test("stop waits for the gateway and a reopened panel still catches up", () => {
   const stop = main.slice(main.indexOf("async function stopActive"), main.indexOf("function measureInputText"));
   assert.match(stop, /stop_chat/);
-  assert.match(stop, /runId: thread\.runId/);
+  assert.match(stop, /runId: posted/);
   assert.match(stop, /result === "not_active"/);
-  assert.match(stop, /noteStopped/);
+  assert.match(stop, /stopAfterMiss/);
+  assert.doesNotMatch(stop, /noteStopped/);
   assert.match(stop, /catchUpSession/);
   assert.match(stop, /停止未送到。/);
   assert.doesNotMatch(stop, /已停止呢次回覆/);
@@ -38,7 +39,16 @@ test("stop waits for the gateway and a reopened panel still catches up", () => {
   assert.match(main, /thread\.watchReply/);
   const rustStop = lib.slice(lib.indexOf("async fn request_stop"), lib.indexOf("async fn steer_run"));
   assert.match(rustStop, /stop_run/);
+  assert.match(rustStop, /stop_target_ids/);
   assert.doesNotMatch(rustStop, /abort\.store/);
+  const started = main.slice(main.indexOf('payload.type === "run.started"'), main.indexOf('payload.type === "approval.request"'));
+  assert.match(started, /noteRunStarted/);
+  assert.doesNotMatch(started, /nextRunId/);
+  const done = main.slice(main.indexOf('payload.type === "done"'), main.indexOf('payload.type === "error"'));
+  assert.match(done, /finishApplies/);
+  assert.doesNotMatch(done, /nextRunId/);
+  const status = main.slice(main.indexOf('payload.type === "status"'), main.indexOf('payload.type === "done"'));
+  assert.match(status, /finishApplies/);
 });
 
 test("switching session while a bot is replying is not a dead end", () => {
@@ -50,8 +60,9 @@ test("switching session while a bot is replying is not a dead end", () => {
   assert.doesNotMatch(pick, /state\.busy\.has\(id\)\) \{/);
   const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
   const guard = opened.indexOf("if (running)");
-  const idle = opened.indexOf('setBotStatus(id, "閒置", "idle")');
-  assert.ok(guard > 0 && guard < idle);
+  const idle = opened.indexOf('setBotStatus(id, resting, "idle")');
+  assert.ok(guard > 0 && idle > guard);
+  assert.match(opened, /sessionReadOnly \? "只可以睇" : "閒置"/);
   const selectBot = main.slice(main.indexOf("async function selectBot"), main.indexOf("function openBotPanel"));
   assert.doesNotMatch(selectBot, /state\.busy/);
   const live = main.slice(main.indexOf("function ensureLiveBubble"), main.indexOf("function paintLiveNow"));

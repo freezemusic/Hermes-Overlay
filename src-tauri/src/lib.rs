@@ -1704,7 +1704,7 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
                 "preview": preview,
             }),
         ),
-        TurnEvent::Finished { outcome, detail } => {
+        TurnEvent::Finished { outcome, detail, run_id } => {
             let denied = hermes::text_is_permission_denied(&detail)
                 || detail == hermes::session_read_only_reason();
             let blocked = hermes::text_is_execute_code_blocked(&detail)
@@ -1728,7 +1728,16 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
                 .to_string()
             };
             if !keep_busy {
-                emit_status(app, profile, state_name, &label);
+                emit(
+                    app,
+                    serde_json::json!({
+                        "type": "status",
+                        "profile": profile,
+                        "state": state_name,
+                        "detail": label,
+                        "run_id": &run_id,
+                    }),
+                );
             }
             emit(
                 app,
@@ -1737,6 +1746,7 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
                     "profile": profile,
                     "outcome": outcome,
                     "detail": detail,
+                    "run_id": &run_id,
                     "keep_busy": keep_busy,
                 }),
             );
@@ -2830,30 +2840,26 @@ async fn request_stop(
 ) -> Result<String, String> {
     request_stream_stop(state, profile);
     let hinted = run_id.unwrap_or_default();
-    let chosen = if hermes::approval_run_id(&hinted).is_some() {
-        hinted
-    } else {
-        remembered_run_id(state, profile)
-    };
-    let Some(run_id) = hermes::approval_run_id(&chosen).map(str::to_string) else {
+    let remembered = remembered_run_id(state, profile);
+    let targets = hermes::stop_target_ids(&hinted, &remembered);
+    if targets.is_empty() {
         return Ok("not_active".into());
-    };
-    let posted = async {
-        let cfg = load_config(app)?;
-        require_hermes(&cfg)?;
-        let bot = bot_or_err(&cfg, profile)?;
-        let key = profile_key(profile)?;
-        let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-        hermes::stop_run(&state.http, &root, &key, &run_id)
+    }
+    let cfg = load_config(app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, profile)?;
+    let key = profile_key(profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    for run_id in targets {
+        match hermes::stop_run(&state.http, &root, &key, &run_id)
             .await
-            .map_err(|_| "停止未送到。".to_string())
+            .map_err(|_| "停止未送到。".to_string())?
+        {
+            hermes::StopOutcome::Stopping => return Ok("stopping".into()),
+            hermes::StopOutcome::NotActive => {}
+        }
     }
-    .await;
-    match posted {
-        Ok(hermes::StopOutcome::Stopping) => Ok("stopping".into()),
-        Ok(hermes::StopOutcome::NotActive) => Ok("not_active".into()),
-        Err(_) => Err("停止未送到。".into()),
-    }
+    Ok("not_active".into())
 }
 
 #[tauri::command]

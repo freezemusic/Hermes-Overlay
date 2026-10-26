@@ -53,9 +53,9 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 ## 停止同忙碌發送（R-ST）
 
-**R-ST-01** 「停止」打 `POST /p/{profile}/v1/runs/{run_id}/stop`，冇 body（Hermes 0.22.5 `api_server.py:89`，handler `api_server_runs.py:1453`）。`run_id` 係 `run.started` 嘅 admission request id。呢下唔切斷 SSE：繼續聽直到串流 `run.cancelled` 或者結束。串流確認取消，或者 HTTP 409 `run_not_active`，先顯示「已停止」。其他失敗只顯示「停止未送到。」，唔顯示原始錯誤，唔記錄金鑰或者 body。
-- 來源：Devon（2026-10-26，Hermes gateway 0.22.5）。真用：mt-orch 撳停止之後本地只係唔再聽，gateway 嗰輪仲行。
-- 驗收（盒）：mock gateway 見到一次 `POST /p/mt-coder/v1/runs/run_abc/stop`、冇 body；409 當未在行；使用者停止唔會設 reader abort。
+**R-ST-01** 「停止」打 `POST /p/{profile}/v1/runs/{run_id}/stop`，冇 body（Hermes 0.22.5 `api_server.py:89`，handler `api_server_runs.py:1453`）。`run_id` 係最新一條 `run.started` 嘅 admission request id。排隊輪完結之後再開嘅慢回覆，停止打去嗰條仲活躍嘅 id，唔好打去已經完結嘅排隊 id。呢下唔切斷 SSE：繼續聽直到串流 `run.cancelled` 或者結束。串流確認取消，先顯示「已停止」。HTTP 409 `run_not_active` 唔當停止成功：改打而家嘅活躍 id，或者再對一次；忙碌狀態保持真實，畫面唔好變「閒置」或者「已停止」而伺服器嗰輪仲行。舊 run 嘅 `done`／`status` 唔可以清走新 run 嘅忙碌。其他失敗只顯示「停止未送到。」，唔顯示原始錯誤，唔記錄金鑰或者 body。
+- 來源：Devon（2026-10-26，Hermes gateway 0.22.5）。真用：mt-orch 撳停止之後本地只係唔再聽，gateway 嗰輪仲行。盒測 v114：慢回覆 → 排隊 → 新慢回覆 → 停止，409 打去已完結嘅排隊 `run_id`，畫面變閒置。
+- 驗收（盒）：mock gateway 見到 `POST /p/mt-coder/v1/runs/{活躍 run_id}/stop`、冇 body；已完結 id 嘅 409 之後會打去活躍 id；409 本身唔顯示「已停止」；使用者停止唔會設 reader abort。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
 **R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常 `POST /api/sessions/{id}/chat/stream`。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 顯示「個 bot 仲忙，呢句未送出。」。
@@ -168,7 +168,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 ## 3. 計劃視窗（R-PL）
 
-**R-PL-01** 只有 bot 真係出咗計劃，先喺該 bot 面板**右邊**貼一個計劃視窗（右邊放唔落就貼左；兩邊都放唔落就鉗入畫面，成個計劃要留喺螢幕入面）；串流緊嘅氣泡唔算計劃；新計劃到就換成最新嗰份。`.hermes/plans/*.md` 同 `.hermes\plans\*.md` 都算路徑；`.hermes` 前面嘅反斜線被吃掉（`Workbench.hermes\plans\`）仍然算。冇 `#` 標題、但成篇至少 200 字而且有呢條路徑，都當計劃。標題跟 `#` 標題；冇標題就用檔名，去掉日期前綴同 `.md`（`2026-10-26_210008-mt5-wrapper-next.md` → `mt5-wrapper-next`），再冇就「計劃」。一行短句只提到路徑唔算。對話氣泡同計劃預覽要原樣顯示 Windows 路徑嘅反斜線。R-PL-04 曲線唔改。
+**R-PL-01** 只有 bot 真係出咗計劃，先喺該 bot 面板**右邊**貼一個計劃視窗（右邊放唔落就貼左；兩邊都放唔落就鉗入畫面，成個計劃要留喺螢幕入面）；串流緊嘅氣泡唔算計劃；新計劃到就換成最新嗰份。`.hermes/plans/*.md` 同 `.hermes\plans\*.md` 都算路徑；`.hermes` 前面嘅反斜線被吃掉（`Workbench.hermes\plans\`）仍然算。冇 `#` 標題、但成篇至少 200 字而且有呢條路徑，都當計劃。標題跟 `#` 標題；冇標題就用檔名，去掉日期前綴同 `.md`（`2026-10-26_210008-mt5-wrapper-next.md` → `mt5-wrapper-next`），再冇就「計劃」。一行短句只提到路徑唔算。對話氣泡同計劃預覽要原樣顯示 Windows 路徑嘅反斜線。落定嗰一幀就要畫到計劃外緣（邊線、1px 環、角），唔好等下一幀先補一條 1–3px 線。R-PL-04 曲線唔改。
 - 來源：Devon；SPEC §6.6–6.7。2026-10-26 手提：mt-orch 把整份計劃貼成普通回覆，路徑係 `C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-10-26_210008-mt5-wrapper-next.md`，畫面未開計劃窗。驗收（盒＋Windows）：冇計劃嘅 session 唔出；送 `/plan` → 出；第二份取代第一份。上面嗰條 Windows 路徑（連吃掉 `\.` 嗰種）喺長文入面會開計劃窗，短句提到路徑唔會。狀態：❓ / ❓。
 
 **R-PL-02** 有「關閉計劃視窗」掣（✕，無障礙名稱「關閉計劃視窗」）；關咗之後對話入面「睇計劃」可以再開。撳 ✕ 同一回合就要喺命中區抽走計劃矩形，唔使收埋面板再打開。睇計劃清走 dismiss 並重新畫出計劃，唔使重開 app。
@@ -343,7 +343,9 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-SS-07** Bot Chat 以外嘅 session，每條用一粒 sub-orb 代表（將來做，見 R-SO）；主光球唔會用嚟顯示呢啲 session。
 - 來源：Devon（2026-10-21）。狀態：— / —（PR #3 唔包）。
 
-**R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢。撳下面就可以喺呢個 Bot 嘅 API 對話繼續。」同掣「喺 API 對話繼續」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），同一句同同一掣出現，狀態係「只可以睇」，唔出錯誤橫額、失敗氣泡或者原始錯誤，唔重試。撳掣先至做：呢個 profile 已有另一條 `api_server` 或 `bot_room`（唔計而家呢條；未封存嘅 Bot Chat 優先）就轉去嗰條；冇先至 `POST /api/sessions`，`source` 係 `api_server`，標題 `Overlay`。啟動、打開、同發送都唔好自己建立。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。
+**R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢。撳下面就可以喺呢個 Bot 嘅 API 對話繼續。」同掣「喺 API 對話繼續」。兩句中間係「。」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），同一句同同一掣出現，狀態係「只可以睇」，唔出錯誤橫額、失敗氣泡或者原始錯誤，唔重試。呢個拒絕要記喺該 session id，今次開 app 期間歷史重載唔可以清走，拒絕嗰句要繼續睇到；`source` 推斷出嚟嘅只讀仍然有效。撳掣先至做：呢個 profile 已有另一條 `api_server` 或 `bot_room`（唔計而家呢條；未封存嘅 Bot Chat 優先）就轉去嗰條；冇先至 `POST /api/sessions`，`source` 係 `api_server`，標題 `Overlay`。啟動、打開、同發送都唔好自己建立。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。Session 選單要分得開同一標題嘅列：已封存加「（已封存）」；唔可以傳嘅 source 加「（Desktop／只可以睇）」呢類短後綴；可以傳嘅 `api_server`／`bot_room` 唔加。
+
+**SS-08-b** `permission_denied` 嘅只讀鎖跟 session id 留喺今次 app 運行，歷史重載唔好用 `source` 推斷嘅 `read_only` 清走。拒絕句同「只可以睇」保持可見。
 
 **SS-08-a** 只讀 session 開住時，鍵盤轉發唔好寫入已停用嘅輸入：`insertComposerKey` 見到 `field.disabled` 就返回。停用輸入要睇得出係停用（Nous `#616191` 嘅暗底同 placeholder），唔好保持白底。停用嘅「傳送」同樣要睇得出係停用（`#616191` 暗底，唔好只係半透明藍掣）。字用 `#3a3a68`，對住暗底至少 4.5:1，而且仍然唔係實色藍掣。只讀／錯誤橫額留喺開住嘅面板入面，而且喺分頁同 session 列下面，唔好蓋住佢哋，亦唔好疊出預設面板右緣。金鑰同 gateway 橫額仍然用 `keyBannerSlot`。
 - 來源：Devon 手提真用（Hermes gateway 0.22.5，CLI oneshot `source=oneshot`）。盒測 a76c65d、6a0973e 之後。

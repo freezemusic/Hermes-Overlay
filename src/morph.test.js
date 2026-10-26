@@ -47,6 +47,9 @@ import {
   placeShell,
   clampDroppedBox,
   fitPlanBox,
+  planHostBox,
+  PLAN_EDGE_OUT,
+  settledPlanReach,
   previewBlocked,
   FRAME_BLEED,
   includePlan,
@@ -1027,7 +1030,7 @@ test("open plan controls are the hit target outside the shell clip", () => {
   const after = boxOf(plan);
   assert.equal(after.x, before.x);
   assert.equal(after.y, before.y);
-  assert.equal(after.w, before.w);
+  assert.equal(after.w, before.w + PLAN_EDGE_OUT);
   assert.equal(after.h, before.h);
   for (const control of [preview, source, close]) {
     assert.equal(getComputedStyle(control).pointerEvents, "auto", control.dataset.role);
@@ -1064,7 +1067,8 @@ test("open plan controls are the hit target outside the shell clip", () => {
   plan._seamPhase = "grown";
   const leftBefore = boxOf(plan).x;
   assert.equal(hostOpenPlan(shell), true);
-  assert.equal(boxOf(plan).x, leftBefore);
+  assert.equal(boxOf(plan).x, leftBefore - PLAN_EDGE_OUT);
+  assert.equal(boxOf(plan).w, 420 + PLAN_EDGE_OUT);
   assert.equal(shell.style.left, "500px");
   assert.equal(shell.style.width, "420px");
   assert.equal(shell.dataset.ax, "22");
@@ -1073,4 +1077,44 @@ test("open plan controls are the hit target outside the shell clip", () => {
   assert.equal(shell.style.left, "500px");
   assert.equal(shell.style.width, "420px");
   assert.equal(plan.parentElement, shell);
+});
+
+test("the settled plan host includes the outward edge in the same frame", () => {
+  const fitted = fitPlanBox({
+    shellLeft: 100,
+    shellTop: 40,
+    shellW: 420,
+    shellH: 560,
+    planW: 420,
+    screenW: 1400,
+    screenH: 900,
+  });
+  const hosted = planHostBox(fitted);
+  assert.equal(fitted.side, "right");
+  assert.equal(hosted.x, fitted.x);
+  assert.equal(hosted.w, fitted.w + PLAN_EDGE_OUT);
+  assert.ok(hosted.w >= fitted.w + 2);
+  const left = fitPlanBox({
+    shellLeft: 500,
+    shellTop: 40,
+    shellW: 420,
+    shellH: 560,
+    planW: 420,
+    screenW: 800,
+    screenH: 900,
+  });
+  assert.equal(left.side, "left");
+  const hostedLeft = planHostBox(left);
+  assert.equal(hostedLeft.x, left.x - PLAN_EDGE_OUT);
+  assert.equal(hostedLeft.w, left.w + PLAN_EDGE_OUT);
+  assert.equal(settledPlanReach(420), 420 + PLAN_EDGE_OUT + 1);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const present = main.slice(main.indexOf("function presentSeamFinal"), main.indexOf("function alignSeamClock"));
+  assert.match(present, /exactOpenClip/);
+  assert.doesNotMatch(present, /translate3d/);
+  assert.doesNotMatch(present, /waitPresentedFrames/);
+  assert.match(main, /PLAN_GROW_MS = 280|PLAN_GROW_MS/);
+  const morph = readFileSync(new URL("./morph.js", import.meta.url), "utf8");
+  assert.match(morph, /PLAN_GROW_MS = 280/);
+  assert.match(morph, /cubic-bezier\(\.3,\.6,\.2,1\)/);
 });

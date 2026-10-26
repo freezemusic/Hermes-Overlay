@@ -15,6 +15,12 @@ import {
   resolveSession,
   sessionLabel,
   sessionReadOnly,
+  readOnlyNote,
+  readOnlyLocked,
+  rememberDenied,
+  noteRunStarted,
+  finishApplies,
+  stopAfterMiss,
   storedPinAfterResolve,
   catchUpMessages,
   writableContinuation,
@@ -446,7 +452,7 @@ test("foreign session sources stay readable and permission_denied stays plain", 
   assert.doesNotMatch(open, /continueApiSession|command: "continue"/);
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   assert.match(html, new RegExp(CONTINUE_API_LABEL));
-  assert.match(paint, /CONTINUE_API_HINT/);
+  assert.match(paint, /readOnlyNote/);
   assert.match(paint, /cont\.hidden = !locked/);
 });
 
@@ -550,4 +556,52 @@ test("a steered or queued line does not split the live reply", () => {
   assert.equal(next.message, messages.at(-1));
   next.message.text = "下一輪";
   assert.equal(messages[1].text, "一半完成");
+});
+
+test("stop follows the latest run and a 409 is not a stop", () => {
+  const thread = { runId: "", nextRunId: "" };
+  noteRunStarted(thread, "run_slow");
+  noteRunStarted(thread, "run_queued");
+  noteRunStarted(thread, "run_live");
+  assert.equal(thread.runId, "run_live");
+  assert.equal(thread.nextRunId, "");
+  assert.equal(thread.staleRunId, "run_queued");
+  assert.equal(finishApplies(thread, "run_queued"), false);
+  assert.equal(finishApplies(thread, "run_live"), true);
+  assert.equal(finishApplies(thread, ""), true);
+  assert.deepEqual(stopAfterMiss(thread, "run_queued"), { retry: "run_live", stopped: false });
+  assert.deepEqual(stopAfterMiss(thread, "run_live"), { retry: "", stopped: false });
+});
+
+test("permission_denied stays read-only after history says the source is writable", () => {
+  const denied = new Set();
+  rememberDenied(denied, "mt-orch", "api_refused");
+  assert.equal(readOnlyLocked(denied, "mt-orch", "api_refused", false), true);
+  assert.equal(readOnlyLocked(denied, "mt-orch", "api_other", false), false);
+  assert.equal(readOnlyLocked(new Set(), "mt-orch", "desk", true), true);
+  assert.equal(readOnlyLocked(denied, "ff-daily", "api_refused", false), false);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
+  assert.match(opened, /readOnlyLocked/);
+  assert.doesNotMatch(opened, /sessionReadOnly = !!opened\.read_only/);
+  const note = main.slice(main.indexOf("function noteReadOnly"), main.indexOf("function lockIfPermissionDenied"));
+  assert.match(note, /rememberDenied/);
+  assert.equal(readOnlyNote(SESSION_READ_ONLY_REASON), `${SESSION_READ_ONLY_REASON}。${CONTINUE_API_HINT}`);
+  assert.equal(readOnlyNote().includes("傳嘢。撳下面"), true);
+  assert.equal(readOnlyNote().includes("傳嘢 撳"), false);
+});
+
+test("the session menu separates desktop, archived, and api Bot Chats", () => {
+  const desktop = { id: "desk", title: "Bot Chat", source: "desktop" };
+  const archived = { id: "old", title: "Bot Chat", source: "api_server", archived: true };
+  const api = { id: "api", title: "Bot Chat", source: "api_server" };
+  assert.equal(sessionLabel(desktop), "Bot Chat（Desktop／只可以睇）");
+  assert.equal(sessionLabel(archived), "Bot Chat（已封存）");
+  assert.equal(sessionLabel(api), "Bot Chat");
+  assert.equal(sessionLabel({ id: "c", title: "Bot Chat", source: "cli" }), "Bot Chat（CLI／只可以睇）");
+  assert.equal(sessionLabel({ id: "t", title: "Bot Chat", source: "tui" }), "Bot Chat（TUI／只可以睇）");
+  assert.equal(sessionLabel({ id: "o", title: "shot", source: "oneshot" }), "shot（一次性／只可以睇）");
+  assert.equal(sessionLabel({ id: "room", title: "Bot Chat", source: "bot_room" }), "Bot Chat");
+  assert.notEqual(sessionLabel(desktop), sessionLabel(archived));
+  assert.notEqual(sessionLabel(archived), sessionLabel(api));
 });

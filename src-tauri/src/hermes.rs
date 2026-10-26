@@ -123,7 +123,23 @@ pub enum TurnEvent {
     Finished {
         outcome: String,
         detail: String,
+        run_id: String,
     },
+}
+
+/// Stop posts the latest started run first. A stale hint is only a fallback
+/// after that id answers 409 `run_not_active`.
+pub fn stop_target_ids(hinted: &str, remembered: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let remember = approval_run_id(remembered).unwrap_or("");
+    let hint = approval_run_id(hinted).unwrap_or("");
+    if !remember.is_empty() {
+        ids.push(remember.to_string());
+    }
+    if !hint.is_empty() && hint != remember {
+        ids.push(hint.to_string());
+    }
+    ids
 }
 
 pub fn route_root(gateway: &str, profile: &str, bot_base: &str) -> String {
@@ -2376,6 +2392,7 @@ where
             on_event(TurnEvent::Finished {
                 outcome: "completed".into(),
                 detail: String::new(),
+                run_id: finished_run_id(&payload, run_id),
             });
             true
         }
@@ -2385,6 +2402,7 @@ where
             on_event(TurnEvent::Finished {
                 outcome: "failed".into(),
                 detail,
+                run_id: finished_run_id(&payload, run_id),
             });
             true
         }
@@ -2393,6 +2411,7 @@ where
             on_event(TurnEvent::Finished {
                 outcome: "cancelled".into(),
                 detail: String::new(),
+                run_id: finished_run_id(&payload, run_id),
             });
             true
         }
@@ -2406,10 +2425,20 @@ where
             on_event(TurnEvent::Finished {
                 outcome: "failed".into(),
                 detail: plain_permission_detail(clip(&detail, 400)),
+                run_id: finished_run_id(&payload, run_id),
             });
             true
         }
         _ => false,
+    }
+}
+
+fn finished_run_id(payload: &Value, current: &str) -> String {
+    let named = json_text(payload.get("run_id"));
+    if named.is_empty() {
+        current.to_string()
+    } else {
+        named
     }
 }
 
@@ -4098,6 +4127,52 @@ data: {\"completed\":true}\n\
     }
 
     #[tokio::test]
+    async fn a_later_run_started_is_the_stop_target() {
+        let body = "\
+event: run.started\n\
+data: {\"run_id\":\"run_queued\"}\n\
+\n\
+event: run.started\n\
+data: {\"run_id\":\"run_live\"}\n\
+\n\
+event: assistant.delta\n\
+data: {\"delta\":\"仍然講\"}\n\
+\n\
+event: run.completed\n\
+data: {\"run_id\":\"run_queued\",\"completed\":true}\n\
+\n";
+        let base = oneshot("200 OK", "text/event-stream", body);
+        let http = Client::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, &stop_requested, |ev| {
+            seen2.lock().unwrap().push(ev);
+        })
+        .await
+        .unwrap();
+        let seen = seen.lock().unwrap();
+        let started: Vec<_> = seen
+            .iter()
+            .filter_map(|ev| match ev {
+                TurnEvent::Started { run_id } => Some(run_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started, vec!["run_queued", "run_live"]);
+        assert!(seen.iter().any(|ev| matches!(ev, TurnEvent::Delta(text) if text == "仍然講")));
+        assert!(matches!(
+            seen.last(),
+            Some(TurnEvent::Finished { outcome, run_id, .. }) if outcome == "completed" && run_id == "run_queued"
+        ));
+        assert_eq!(
+            stop_target_ids("run_queued", "run_live"),
+            vec!["run_live".to_string(), "run_queued".to_string()]
+        );
+    }
+
+    #[tokio::test]
     async fn another_session_read_does_not_stop_the_open_stream() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -4208,7 +4283,7 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
             "a failed turn must not render as a normal reply"
         );
         match seen.last() {
-            Some(TurnEvent::Finished { outcome, detail }) => {
+            Some(TurnEvent::Finished { outcome, detail, .. }) => {
                 assert_eq!(outcome, "failed");
                 assert!(detail.contains("does-not-exist-model"));
                 assert!(detail.contains("Your request was not processed."));
@@ -4382,7 +4457,7 @@ data: {\"error\":\"RuntimeStoreError('permission_denied')\"}\n\
         .unwrap();
         let seen = seen.lock().unwrap();
         match seen.last() {
-            Some(TurnEvent::Finished { outcome, detail }) => {
+            Some(TurnEvent::Finished { outcome, detail, .. }) => {
                 assert_eq!(outcome, "failed");
                 assert_eq!(detail, session_read_only_reason());
             }
@@ -4923,6 +4998,48 @@ data: {\"status\":\"queued\"}\n\
         .unwrap();
         assert_eq!(inactive, StopOutcome::NotActive);
         assert_eq!(stale_posts.load(Ordering::SeqCst), 1);
+
+        assert_eq!(
+            stop_target_ids("run_queued", "run_live"),
+            vec!["run_live".to_string(), "run_queued".to_string()]
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let paths = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let paths2 = paths.clone();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = sock.read(&mut buf).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            let line = head.lines().next().unwrap_or("").to_string();
+            let queued = line.contains("/runs/run_queued/stop");
+            paths2.lock().unwrap().push(line);
+            let (status, body) = if queued {
+                ("409 Conflict", r#"{"error":{"code":"run_not_active"}}"#)
+            } else {
+                ("200 OK", r#"{"run_id":"run_live","status":"stopping"}"#)
+            };
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(body.as_bytes());
+        });
+        let root = format!("http://{addr}/p/mt-coder");
+        let mut outcome = StopOutcome::NotActive;
+        for id in stop_target_ids("run_queued", "run_live") {
+            outcome = stop_run(&http, &root, "test-key", &id).await.unwrap();
+            if outcome == StopOutcome::Stopping {
+                break;
+            }
+        }
+        assert_eq!(outcome, StopOutcome::Stopping);
+        let seen_paths = paths.lock().unwrap();
+        assert_eq!(seen_paths.len(), 1);
+        assert!(seen_paths[0].contains("POST /p/mt-coder/v1/runs/run_live/stop "));
+        drop(seen_paths);
 
         let src = include_str!("hermes.rs");
         let start = src.find("pub async fn stop_run").expect("stop_run");
