@@ -4693,6 +4693,9 @@ function renderChat(id = state.activeId, options = {}) {
     else mountChat(chat, thread, bot.id, resting);
     stickChat(id);
   } else {
+    // The stamp already counts 未送出. A commentary append can set that
+    // stamp without repainting the user line, so repair the mark here.
+    repaintUnsent(bot.id);
     chat.querySelectorAll(".bubble").forEach((node, index) => {
       const message = thread.messages[index];
       if (resting) restBubble(node);
@@ -5304,6 +5307,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
       messages: shown,
       sessions,
     }) && thread.statusState !== "busy") {
+      if (panelShowing(id)) restoreSendErrorBanner(id);
       return;
     }
     thread.messages = shown;
@@ -5331,8 +5335,10 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   thread.loading = false;
   rememberPlan(thread, thread.messages);
   const keptError = sendErrorDraft(state.sendErrors, id, thread.sessionId);
-  if (keptError) setBanner(keptError, "error");
-  else clearConnectionBanner();
+  if (panelShowing(id)) {
+    if (keptError) setBanner(keptError, "error");
+    else clearConnectionBanner();
+  }
   const shell = shellFor(id);
   const openPanel = shell?.dataset.state === "panel" && !shell.classList.contains("is-collapsing");
   if (running) {
@@ -5757,6 +5763,9 @@ function placeKeyBanner() {
   const banner = $("#conn-banner");
   if (!banner) return;
   const sticky = banner.dataset.sticky || "";
+  if (!banner.hidden && !bannerSticky(banner) && !(banner.textContent || "").trim() && !banner.querySelector(".banner-action")) {
+    banner.hidden = true;
+  }
   if (banner.hidden || sticky === "keyring") {
     resetKeyBannerShift(banner);
     return;
@@ -6006,6 +6015,7 @@ async function selectBot(id) {
     if (!state.openIds.includes(id)) state.openIds = openPanel(state.openIds, id);
     raisePanel(shell);
     renderBots();
+    applySendErrorBanner(id);
     return;
   }
   const thread = threadFor(id);
@@ -6054,6 +6064,7 @@ function openBotPanel(id) {
   // The card painted while closed is below the restored scroll, under the composer.
   if (thread.messages.some(approvalPending)) pinChat(id);
   if (thread.messages.some(clarifyPending) || thread.messages.some((message) => message.role === "clarify" && message.status === "timeout")) pinChat(id);
+  applySendErrorBanner(id);
   void recoverRunControls(id);
   void loadSoul(id);
   scheduleHitSync();
@@ -6408,11 +6419,65 @@ function deliverCron(id, payload) {
   showToast(id, { kind: "message", text });
 }
 
+function bannerSticky(banner) {
+  const held = banner?.dataset.sticky || "";
+  return held === "keyring" || held === "gateway" || held === "keys";
+}
+
+function panelShowing(id) {
+  const shell = shellFor(id);
+  if (!shell || shell.classList.contains("is-collapsing")) return false;
+  if (shell.dataset.state !== "panel" && shell.dataset.visual !== "panel") return false;
+  return !state.activeId || state.activeId === id;
+}
+
+/** Put this session's send error back on the banner. A blank banner hides. */
+function restoreSendErrorBanner(id) {
+  const banner = $("#conn-banner");
+  if (!banner || bannerSticky(banner)) return;
+  const text = sendErrorDraft(state.sendErrors, id, threadFor(id).sessionId);
+  if (text) {
+    if (banner.hidden || banner.textContent !== text) setBanner(text, "error");
+    return;
+  }
+  if (!banner.hidden && !(banner.textContent || "").trim()) setBanner("");
+}
+
+/** This open panel owns the banner: show its send error, or clear one that is not sticky. */
+function applySendErrorBanner(id) {
+  const banner = $("#conn-banner");
+  if (!banner || bannerSticky(banner)) return;
+  const text = sendErrorDraft(state.sendErrors, id, threadFor(id).sessionId);
+  if (text) {
+    if (banner.hidden || banner.textContent !== text) setBanner(text, "error");
+    return;
+  }
+  clearConnectionBanner();
+}
+
+/** The user line gained 未送出 after it was painted. Rewrite that bubble. */
+function repaintUnsent(id) {
+  const thread = threadFor(id);
+  const chat = chatOf(id);
+  if (!thread || !chat) return;
+  thread.messages.forEach((message, index) => {
+    if (message?.role !== "user") return;
+    const node = chat.children[index];
+    if (!node) return;
+    const marked = !!node.querySelector(".unsent-mark");
+    if (marked === !!message.unsent) return;
+    node.replaceChildren();
+    paintUserBubble(node, message);
+  });
+}
+
 function noteSendFailed(id, raw) {
   const thread = threadFor(id);
   const text = String(raw || "連線錯誤");
   rememberUnsent(state.unsentDrafts, id, thread.sessionId, markUnsentDraft(thread.messages));
   rememberSendError(state.sendErrors, id, thread.sessionId, text);
+  // appendMessage stamps the chat, including 未送出, without repainting this line.
+  repaintUnsent(id);
   thread.queued = false;
   thread.watchReply = false;
   clearRunSession(thread);
