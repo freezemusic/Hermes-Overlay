@@ -2215,6 +2215,9 @@ function primePanelTail(shell) {
   shell.classList.add("is-content-promoted", "is-orb-moving");
   shell.classList.remove("is-orb-docked");
   armPlanSeam(shell);
+  if (shell?.dataset.kind === "bot" && shell.dataset.botId && threadFor(shell.dataset.botId).followTail !== false) {
+    pinChat(shell.dataset.botId);
+  }
 }
 
 function nextPaint() {
@@ -3276,6 +3279,9 @@ function settleShell(shell, target) {
   if (target === "panel") {
     if (!(clockAt(shell, "freeze") > performance.now())) holdFreeze(shell, FREEZE_AFTER_GROW_MS);
     holdQuiet(shell, FREEZE_AFTER_GROW_MS);
+    if (shell.dataset.kind === "bot" && shell.dataset.botId && threadFor(shell.dataset.botId).followTail !== false) {
+      pinChat(shell.dataset.botId);
+    }
   }
   // Freeze is already a timestamp. Clearing motion after it keeps the hit
   // gate closed; this function does not touch animations or listeners.
@@ -6123,6 +6129,7 @@ function openBotPanel(id) {
   abortPlanRehearsal(shell);
   const thread = threadFor(id);
   thread.followTail = true;
+  pinChat(id);
   if (thread.loaded) void catchUpSession(id);
   state.openIds = openPanel(state.openIds, id);
   window.clearTimeout(shell._pillTimer);

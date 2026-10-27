@@ -389,7 +389,7 @@ config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細�
 **R-PF-03** Hermes 連線設定（gateway、dashboard、名單、API key、修飾鍵、置頂、結束）只喺獨立嘅設定光球；bot 面板只改該 bot 嘅顯示名、詳情、`SOUL.md` 同 per-bot 設定，冇 gateway／key 欄。
 - 來源：Devon；SPEC §3.1–3.4。驗收：改 `SOUL.md` 後喺磁碟路徑（`$HERMES_HOME` 或 `~/.hermes`，其他 profile `profiles/<id>/SOUL.md`）見到。狀態：❓ / ❓。
 
-**R-PF-04** Bot 面板主畫面：標題、session picker、可捲動訊息列表、釘底輸入列；列表跟住最新訊息，用戶上捲就停。用戶用滾輪或鍵盤向上捲，就算第一步仍然喺底部 80px 內，都即刻鬆開釘底，唔好拉返落去。
+**R-PF-04** Bot 面板主畫面：標題、session picker、可捲動訊息列表、釘底輸入列；列表跟住最新訊息，用戶上捲就停。用戶用滾輪或鍵盤向上捲，就算第一步仍然喺底部 80px 內，都即刻鬆開釘底，唔好拉返落去。新開嘅面板如果已經有長歷史，一打開就釘喺底部。
 - 來源：SPEC §3.3。狀態：❓ / ❓。
 
 **R-PF-05** 再次發現唔可以覆蓋用戶改過嘅名、詳情、位址、session。

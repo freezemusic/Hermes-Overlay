@@ -341,6 +341,15 @@ export function chatTailAction({ followTail = true, userGesture = false, nearTai
  * scrollTop alone: the reader has moved up, or the tail is already pinned
  * (rewriting it is the one-pixel jitter).
  */
+/** A freshly opened panel follows the tail. Long history starts at the bottom. */
+export function openedScrollTop(chat, followTail = true) {
+  if (!chat) return 0;
+  if (followTail === false) return Number(chat.scrollTop) || 0;
+  const height = Number(chat.scrollHeight) || 0;
+  const client = Number(chat.clientHeight) || 0;
+  return Math.max(0, height - client);
+}
+
 export function pinnedScrollTop(chat, followTail = true) {
   if (followTail === false || !chat) return null;
   const height = Number(chat.scrollHeight) || 0;

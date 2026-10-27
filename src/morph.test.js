@@ -63,6 +63,7 @@ import {
   seamWidthPx,
   cronShellHeight,
   chatTailAction,
+  openedScrollTop,
   pinnedScrollTop,
   hostOpenPlan,
   releasePlanDock,
@@ -535,6 +536,15 @@ test("plan seam and cron height and chat tail use explicit pixels", () => {
   assert.equal(pinnedScrollTop(grown, true), 460);
   assert.equal(pinnedScrollTop(grown, false), null);
   assert.equal(pinnedScrollTop({ scrollHeight: 200, clientHeight: 400, scrollTop: 12 }, false), null);
+  assert.equal(openedScrollTop({ scrollHeight: 4000, clientHeight: 400, scrollTop: 0 }, true), 3600);
+  assert.equal(openedScrollTop({ scrollHeight: 4000, clientHeight: 400, scrollTop: 12 }, false), 12);
+  assert.equal(openedScrollTop({ scrollHeight: 200, clientHeight: 400, scrollTop: 0 }, true), 0);
+  const open = main.slice(main.indexOf("function openBotPanel"), main.indexOf("function closeBotPanel"));
+  assert.match(open, /followTail = true;\n  pinChat\(id\)/);
+  const prime = main.slice(main.indexOf("function primePanelTail"), main.indexOf("function nextPaint"));
+  assert.match(prime, /pinChat\(shell\.dataset\.botId\)/);
+  const settle = main.slice(main.indexOf("function settleShell"), main.indexOf("function stopShellTransition"));
+  assert.match(settle, /pinChat\(shell\.dataset\.botId\)/);
 });
 
 test("collapse is one ease-in and the clock is pinned per edge", () => {
