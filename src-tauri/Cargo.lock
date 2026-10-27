@@ -1614,6 +1614,7 @@ dependencies = [
  "futures-util",
  "gtk",
  "keyring",
+ "libc",
  "raw-window-handle",
  "reqwest 0.12.28",
  "serde",

@@ -1028,14 +1028,75 @@ pub fn kept_replacement_title(old_title: &str, new_title: &str) -> Option<String
     Some(old_title.to_string())
 }
 
-/// One `PATCH /api/sessions/{id}` title. Canonical `Bot Chat` stays a label only:
-/// that name is another row's identity, and a second write is not attempted.
+/// One title handover. Canonical `Bot Chat` stays a label only: that name is
+/// another row's identity, and the gateway refuses to rename it.
 pub fn title_to_patch(old_title: &str, new_title: &str) -> Option<String> {
     let kept = kept_replacement_title(old_title, new_title)?;
     if kept == BOT_CHAT_TITLE {
         None
     } else {
         Some(kept)
+    }
+}
+
+/// `<title>_YYYYMMDDHHMM` at the switch, matching renew's default `_%Y%m%d%H%M`
+/// on the local clock. A title that is already taken gains the seconds once.
+pub fn retired_session_title(title: &str, ymdhm: &str, seconds: &str, existing: &[String]) -> String {
+    let title = title.trim();
+    let base = format!("{title}_{ymdhm}");
+    if existing.iter().any(|item| item.trim() == base) {
+        format!("{base}{seconds}")
+    } else {
+        base
+    }
+}
+
+/// Local clock as `(YYYYMMDDHHMM, SS)`. renew's default zone is this computer.
+pub fn local_renew_stamp() -> (String, String) {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|dur| dur.as_secs() as libc::time_t)
+        .unwrap_or(0);
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    fill_local_tm(secs, &mut tm);
+    let ymdhm = format!(
+        "{:04}{:02}{:02}{:02}{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min
+    );
+    let seconds = format!("{:02}", tm.tm_sec);
+    (ymdhm, seconds)
+}
+
+fn fill_local_tm(secs: libc::time_t, tm: &mut libc::tm) {
+    #[cfg(unix)]
+    unsafe {
+        if libc::localtime_r(&secs, tm).is_null() {
+            libc::gmtime_r(&secs, tm);
+        }
+    }
+    #[cfg(windows)]
+    unsafe {
+        if libc::localtime_s(tm, &secs) != 0 {
+            libc::gmtime_s(tm, &secs);
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (secs, tm);
+    }
+}
+
+pub fn is_title_conflict(err: &HermesError) -> bool {
+    match err {
+        HermesError::Http { status: 400, body } => {
+            let lower = body.to_ascii_lowercase();
+            lower.contains("invalid_title") || lower.contains("already in use")
+        }
+        _ => false,
     }
 }
 
@@ -2124,6 +2185,23 @@ pub async fn patch_session_title(
         http.patch(url)
             .timeout(Duration::from_secs(20))
             .json(&serde_json::json!({ "title": title })),
+        key,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn patch_session_archived(
+    http: &Client,
+    root: &str,
+    key: &str,
+    session_id: &str,
+) -> Result<(), HermesError> {
+    let url = format!("{root}/api/sessions/{session_id}");
+    let _ = send(
+        http.patch(url)
+            .timeout(Duration::from_secs(20))
+            .json(&serde_json::json!({ "archived": true })),
         key,
     )
     .await?;
@@ -4977,6 +5055,29 @@ mod tests {
         assert_eq!(title_to_patch(BOT_CHAT_TITLE, GATEWAY_FORK_TITLE), None);
         assert!(!is_gateway_fork_title("MT5 wrapper"));
         assert!(is_gateway_fork_title(GATEWAY_FORK_TITLE));
+        let existing = vec!["MT5 wrapper_202610271237".to_string()];
+        assert_eq!(
+            retired_session_title("MT5 wrapper", "202610271237", "45", &[]),
+            "MT5 wrapper_202610271237"
+        );
+        assert_eq!(
+            retired_session_title("MT5 wrapper", "202610271237", "45", &existing),
+            "MT5 wrapper_20261027123745"
+        );
+        assert!(!retired_session_title("MT5 wrapper", "202610271237", "45", &[]).contains("已閉"));
+        let (ymdhm, seconds) = local_renew_stamp();
+        assert_eq!(ymdhm.len(), 12);
+        assert!(ymdhm.chars().all(|ch| ch.is_ascii_digit()));
+        assert_eq!(seconds.len(), 2);
+        assert!(seconds.chars().all(|ch| ch.is_ascii_digit()));
+        assert!(is_title_conflict(&HermesError::Http {
+            status: 400,
+            body: r#"{"error":{"code":"invalid_title","message":"Title 'MT5 wrapper' is already in use by session api_1"}}"#.into(),
+        }));
+        assert!(!is_title_conflict(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"code":"admission_conflict"}}"#.into(),
+        }));
     }
 
     #[test]

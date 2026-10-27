@@ -1528,6 +1528,55 @@ fn remember_replacement_title(rows: &mut [SessionChoice], session_id: &str, kept
     }
 }
 
+/// renew: the closed row becomes `<title>_YYYYMMDDHHMM` and is archived; the replacement
+/// takes the old title exactly. A failed rename changes nothing. A failed retitle
+/// puts the old title back and does not archive. `false` means the picker label
+/// still has to show the old name.
+async fn hand_title_to_replacement(
+    http: &reqwest::Client,
+    root: &str,
+    key: &str,
+    old_id: &str,
+    new_id: &str,
+    old_title: &str,
+    new_title: &str,
+    sessions: &[hermes::SessionSummary],
+) -> bool {
+    let Some(title) = hermes::title_to_patch(old_title, new_title) else {
+        return false;
+    };
+    if old_id.trim().is_empty() || old_id == new_id {
+        return false;
+    }
+    let (ymdhm, seconds) = hermes::local_renew_stamp();
+    let existing: Vec<String> = sessions.iter().map(|session| session.title.clone()).collect();
+    let primary = format!("{title}_{ymdhm}");
+    let with_seconds = format!("{primary}{seconds}");
+    let mut retired = hermes::retired_session_title(&title, &ymdhm, &seconds, &existing);
+    match hermes::patch_session_title(http, root, key, old_id, &retired).await {
+        Ok(()) => {}
+        Err(err) if hermes::is_title_conflict(&err) && retired != with_seconds => {
+            retired = with_seconds;
+            if hermes::patch_session_title(http, root, key, old_id, &retired)
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+        Err(_) => return false,
+    }
+    if hermes::patch_session_title(http, root, key, new_id, &title)
+        .await
+        .is_err()
+    {
+        let _ = hermes::patch_session_title(http, root, key, old_id, &title).await;
+        return false;
+    }
+    let _ = hermes::patch_session_archived(http, root, key, old_id).await;
+    true
+}
+
 /// After a turn, follow a session the server wrote instead of the one Devon picked.
 /// The write is the explicit picker path (`persist_pin`), and only that profile's session fields.
 async fn note_landed_session(
@@ -1565,9 +1614,10 @@ async fn note_landed_session(
         .map(|session| session.title.clone())
         .unwrap_or_default();
     let kept = hermes::kept_replacement_title(&old_title, &new_title);
-    if let Some(title) = hermes::title_to_patch(&old_title, &new_title) {
-        let _ = hermes::patch_session_title(http, root, key, &next, &title).await;
-    }
+    hand_title_to_replacement(
+        http, root, key, posted, &next, &old_title, &new_title, &after,
+    )
+    .await;
     match open_explicit_session(
         app, http, sessions, config_write, profile, root, key, &next,
     )
@@ -3413,8 +3463,19 @@ mod tests {
         assert!(note_body.contains("MOVED_SESSION_LINE"));
         assert!(note_body.contains("kept_title"));
         assert!(note_body.contains("kept_replacement_title"));
-        assert_eq!(note_body.matches("patch_session_title").count(), 1);
+        assert!(note_body.contains("hand_title_to_replacement"));
+        assert!(!note_body.contains("patch_session_title"));
+        assert!(!note_body.contains("（已閉）"));
         assert!(!note_body.contains("config::save"));
+        let hand = src.find("async fn hand_title_to_replacement").expect("hand");
+        let hand_body = &src[hand..note];
+        assert!(hand_body.contains("retired_session_title"));
+        assert!(hand_body.contains("patch_session_archived"));
+        assert!(hand_body.contains("is_title_conflict"));
+        assert_eq!(hand_body.matches("patch_session_title").count(), 4);
+        assert!(!hand_body.contains("（已閉）"));
+        assert!(!hand_body.contains("config::save"));
+        assert!(!hand_body.contains("POST /api/sessions"));
         assert!(!note_body.contains("store_show_bot_names"));
     }
 

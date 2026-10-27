@@ -752,8 +752,23 @@ test("the session menu separates desktop, archived, and api Bot Chats", () => {
   const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
   assert.match(opened, /stampKeptTitles/);
   const note = lib.slice(lib.indexOf("async fn note_landed_session"), lib.indexOf("async fn send_chat"));
-  assert.equal(note.split("patch_session_title").length - 1, 1);
+  assert.match(note, /hand_title_to_replacement/);
   assert.match(note, /kept_replacement_title/);
+  assert.doesNotMatch(note, /patch_session_title/);
+  const hand = lib.slice(lib.indexOf("async fn hand_title_to_replacement"), lib.indexOf("async fn note_landed_session"));
+  assert.equal(hand.split("patch_session_title").length - 1, 4);
+  assert.match(hand, /patch_session_archived/);
+  assert.match(hand, /retired_session_title/);
+  assert.doesNotMatch(hand, /已閉/);
+  assert.doesNotMatch(main, /已閉/);
+  assert.doesNotMatch(sessionLabel({
+    id: "old",
+    title: "MT5 wrapper_202610271237",
+    source: "api_server",
+    archived: true,
+    ended: true,
+    end_reason: "tui_shutdown",
+  }), /已閉/);
   const choice = lib.slice(lib.indexOf("struct SessionChoice"), lib.indexOf("struct DiscoveredBot"));
   assert.match(choice, /source:\s*String/);
   assert.match(choice, /archived:\s*bool/);
