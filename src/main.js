@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, finishApplies, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, finishApplies, finishLiveBubble, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -4598,11 +4598,11 @@ function syncChatInPlace(chat, thread, id, resting = false) {
     let node = chat.children[i];
     if (!node) {
       const created = bubbleEl(message, id);
-      if (resting) restBubble(created);
+      restBubble(created);
       chat.appendChild(created);
       continue;
     }
-    if (resting) restBubble(node);
+    restBubble(node);
     if (message.role === "tool-run") {
       paintToolRun(node, message, toolRunHooks(id));
       if (message.live) node.dataset.live = "1";
@@ -6407,10 +6407,43 @@ function presentTranscript(list) {
   return foldToolRuns((list || []).map(presentMessage), { detail: !!state.showToolDetail });
 }
 
+function settleFinishedBubble(id, finished) {
+  if (!runIsOnScreen(id)) return;
+  const thread = threadFor(id);
+  const messages = runMessages(id);
+  if (messages !== thread.messages) return;
+  const chat = chatOf(id);
+  if (!chat) return;
+  const node = chat.querySelector("[data-live]");
+  if (finished) {
+    if (node) {
+      delete node.dataset.live;
+      paintBotBubble(node, finished.text);
+      ensurePlanChip(node, finished, id);
+    }
+    chat.dataset.stamp = chatStamp(thread);
+    paintPlan(id);
+    return;
+  }
+  if (node && !messages.some((message) => message.live)) node.remove();
+}
+
+/** Flush, close the open bot bubble, then detect a plan before the interrupting row. */
+function endLiveTurn(id) {
+  painterFor(id).flush();
+  const finished = finishLiveBubble(runMessages(id));
+  settleFinishedBubble(id, finished);
+  return finished;
+}
+
 function ensureLiveBubble(id) {
   const messages = runMessages(id);
   const turn = continueLiveTurn(messages);
   const live = turn.message;
+  if (turn.finished) settleFinishedBubble(id, turn.finished);
+  else if (turn.created && runIsOnScreen(id)) {
+    chatOf(id)?.querySelectorAll("[data-live]").forEach((node) => node.remove());
+  }
   if (turn.created) {
     if (!runIsOnScreen(id)) return live;
     const shell = shellFor(id);
@@ -6892,6 +6925,8 @@ function noteTool(id, payload) {
   } else {
     noteActivity(id, { type: "tool" });
   }
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "tool-run") endLiveTurn(id);
   const { created, run } = absorbToolEvent(messages, {
     phase,
     name: payload.name,
@@ -6956,6 +6991,7 @@ function handleHermes(payload) {
       status: "pending",
     };
     if (!existing) {
+      endLiveTurn(id);
       if (runIsOnScreen(id)) appendMessage(id, card);
       else messages.push(card);
     }
@@ -6996,6 +7032,7 @@ function handleHermes(payload) {
         draft: "",
         selected: [],
       };
+      endLiveTurn(id);
       if (runIsOnScreen(id)) appendMessage(id, card);
       else messages.push(card);
     }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, latestPlan, looksLikePlan, nextComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, planSource, plansIn, planTask, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
+import { continueLiveTurn, finishLiveBubble } from "./sessions.js";
 
 test("plan markdown is recognized and a short ack is not", () => {
   const body = planDemoMarkdown("整理設定");
@@ -188,6 +189,42 @@ test("compose modes prefix plan and btw, and leave slash commands alone", () => 
   assert.deepEqual(offeredComposeModes([{ name: "/plan", enabled: false, aliases: [] }], true), { plan: false, btw: false });
   assert.deepEqual(offeredComposeModes([], false), { plan: true, btw: true });
   assert.deepEqual(offeredComposeModes([{ name: "ask", enabled: true, aliases: ["/btw"] }], true), { plan: false, btw: true });
+});
+
+test("a streamed plan followed by clarify is a plan before the run ends", () => {
+  const plan = [
+    "# 計劃",
+    "",
+    "檔案：`.hermes\\plans\\2026-10-27_125416-wrapper.md`",
+    "",
+    "x".repeat(220),
+  ].join("\n");
+  const messages = [{ role: "user", text: "寫計劃", command: "plan" }, { role: "bot", text: plan, live: true }];
+  assert.equal(plansIn(messages).length, 0);
+  const finished = finishLiveBubble(messages);
+  assert.equal(finished.live, false);
+  assert.equal(plansIn(messages).length, 1);
+  messages.push({ role: "clarify", question: "邊個？" });
+  const next = continueLiveTurn(messages);
+  assert.equal(next.created, true);
+  next.message.text = "澄清之後先至講";
+  assert.equal(messages.map((message) => message.role).join(","), "user,bot,clarify,bot");
+  assert.ok(messages.findIndex((message) => message.role === "clarify") < messages.findIndex((message) => message.text === "澄清之後先至講"));
+  assert.equal(plansIn(messages).length, 1);
+  assert.equal(plansIn(messages)[0].markdown.includes("澄清之後"), false);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const clarify = main.slice(main.indexOf('payload.type === "clarify.request"'), main.indexOf('payload.type === "clarify.settled"'));
+  const approval = main.slice(main.indexOf('payload.type === "approval.request"'), main.indexOf('payload.type === "approval.responded"'));
+  const tool = main.slice(main.indexOf("function noteTool"), main.indexOf("function handleHermes"));
+  assert.ok(clarify.indexOf("endLiveTurn(id)") >= 0 && clarify.indexOf("endLiveTurn(id)") < clarify.indexOf("appendMessage(id, card)"));
+  assert.ok(approval.indexOf("endLiveTurn(id)") >= 0 && approval.indexOf("endLiveTurn(id)") < approval.indexOf("appendMessage(id, card)"));
+  assert.ok(tool.indexOf("endLiveTurn(id)") >= 0 && tool.indexOf("endLiveTurn(id)") < tool.indexOf("absorbToolEvent"));
+  const sync = main.slice(main.indexOf("function syncChatInPlace"), main.indexOf("function mountChat"));
+  assert.match(sync, /restBubble\(node\)/);
+  assert.match(sync, /restBubble\(created\)/);
+  const done = main.slice(main.indexOf('payload.type === "done"'), main.indexOf('payload.type === "error"'));
+  assert.match(done, /renderChat\(id\)/);
+  assert.doesNotMatch(done, /replaceChildren|mountChat/);
 });
 
 test("the composer mode chip cycles, and a side question skips the busy queue", () => {

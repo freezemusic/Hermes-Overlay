@@ -52,6 +52,8 @@ import {
   unsentDraft,
   clearRunSession,
   continueLiveTurn,
+  finishLiveBubble,
+  interruptsLiveRow,
   noteRunSession,
   rememberView,
   runTranscript,
@@ -627,6 +629,44 @@ test("a steered or queued line does not split the live reply", () => {
   assert.equal(next.message, messages.at(-1));
   next.message.text = "下一輪";
   assert.equal(messages[1].text, "一半完成");
+});
+
+test("a tool row ends the live bubble and later text starts below it", () => {
+  const messages = [
+    { role: "user", text: "找" },
+    { role: "bot", text: "Looking into it.", live: true },
+  ];
+  const finished = finishLiveBubble(messages);
+  assert.equal(finished.live, false);
+  assert.equal(finished.text, "Looking into it.");
+  messages.push({ role: "tool-run", text: "用咗 1 個工具 · search_files", tools: [{ name: "search_files" }] });
+  const next = continueLiveTurn(messages);
+  assert.equal(next.created, true);
+  next.message.text = "Done: found 40 matches.";
+  assert.deepEqual(messages.map((message) => message.role), ["user", "bot", "tool-run", "bot"]);
+  assert.equal(messages[1].text, "Looking into it.");
+  assert.equal(messages[3].text, "Done: found 40 matches.");
+  const stuck = [
+    { role: "bot", text: "之前", live: true },
+    { role: "tool-run", text: "工具" },
+  ];
+  const again = continueLiveTurn(stuck);
+  assert.equal(again.created, true);
+  assert.equal(again.finished, stuck[0]);
+  assert.equal(stuck[0].live, false);
+  assert.equal(stuck.at(-1).live, true);
+  assert.equal(interruptsLiveRow({ role: "clarify" }), true);
+  assert.equal(interruptsLiveRow({ role: "approval" }), true);
+  assert.equal(interruptsLiveRow({ role: "commentary" }), false);
+  const reloaded = [
+    { role: "user", text: "找" },
+    { role: "bot", text: "Looking into it." },
+    { role: "tool", text: "40" },
+    { role: "bot", text: "Done: found 40 matches." },
+  ];
+  const { fresh, settled } = catchUpMessages(messages, reloaded);
+  assert.equal(fresh.length, 0);
+  assert.equal(settled, null);
 });
 
 test("stop follows the latest run and a 409 is not a stop", () => {

@@ -656,18 +656,53 @@ export function noteRunSession(thread) {
   return thread;
 }
 
+/** Tool fold, approval card, or clarify card. Commentary and a steered line do not. */
+export function interruptsLiveRow(message) {
+  const role = message?.role;
+  return role === "tool" || role === "tool-run" || role === "approval" || role === "clarify";
+}
+
+/**
+ * The open bot bubble is finished. Plan detection can see it.
+ * An empty live bubble is dropped. Returns the finished message, or null.
+ */
+export function finishLiveBubble(messages) {
+  const list = messages || [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const message = list[index];
+    if (!message || message.role !== "bot" || !message.live) continue;
+    if (!String(message.text || "").trim()) {
+      list.splice(index, 1);
+      return null;
+    }
+    message.live = false;
+    return message;
+  }
+  return null;
+}
+
 /**
  * Keep streaming into the open bot bubble. A steered or queued line sits in
  * the thread without splitting that reply into a second bubble.
- * A finished turn (`live` cleared) starts the next bubble.
+ * A tool row, approval card, or clarify card after the bubble ends it, and
+ * the next text starts a new bubble below that row.
  */
 export function continueLiveTurn(messages) {
   const list = messages || [];
-  const live = [...list].reverse().find((message) => message?.role === "bot" && message.live);
-  if (live) return { message: live, created: false };
+  let liveIndex = -1;
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (list[index]?.role === "bot" && list[index].live) {
+      liveIndex = index;
+      break;
+    }
+  }
+  if (liveIndex >= 0 && !list.slice(liveIndex + 1).some(interruptsLiveRow)) {
+    return { message: list[liveIndex], created: false, finished: null };
+  }
+  const finished = liveIndex >= 0 ? finishLiveBubble(list) : null;
   const message = { role: "bot", text: "", live: true };
   list.push(message);
-  return { message, created: true };
+  return { message, created: true, finished };
 }
 
 export function clearRunSession(thread) {
