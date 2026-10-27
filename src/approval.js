@@ -19,11 +19,39 @@ export function plainToolText(text) {
   return textIsExecuteCodeBlocked(value) ? EXECUTE_CODE_BLOCKED_LINE : value;
 }
 
+function toolRunHasBlocked(message) {
+  if (message?.role !== "tool-run") return false;
+  let hit = false;
+  for (const tool of message.tools || []) {
+    const result = String(tool?.result || "");
+    const label = String(tool?.label || "");
+    const raw = textIsExecuteCodeBlocked(result)
+      || textIsExecuteCodeBlocked(`${tool?.name || ""} ${label}`)
+      || result === EXECUTE_CODE_BLOCKED_LINE;
+    if (!raw) continue;
+    tool.result = EXECUTE_CODE_BLOCKED_LINE;
+    if (textIsExecuteCodeBlocked(label)) tool.label = "";
+    hit = true;
+  }
+  return hit;
+}
+
 /** Keep the first exact blocked sentence. A later tool or bot bubble must not repeat it. */
 export function omitRepeatedBlockedLine(messages) {
   let seen = false;
   const kept = [];
   for (const message of messages || []) {
+    if (message?.role === "tool-run") {
+      const hit = toolRunHasBlocked(message);
+      if (hit && !seen) {
+        message.blockedLine = true;
+        seen = true;
+      } else {
+        message.blockedLine = false;
+      }
+      kept.push(message);
+      continue;
+    }
     if (message?.text === EXECUTE_CODE_BLOCKED_LINE) {
       if (seen) continue;
       seen = true;

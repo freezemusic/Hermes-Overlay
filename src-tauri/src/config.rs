@@ -86,6 +86,10 @@ pub struct AppConfig {
     /// R-OB-06. Omitted while off so an unchanged file stays byte-identical.
     #[serde(default, skip_serializing_if = "skip_false")]
     pub show_bot_names: bool,
+    /// R-MD-06. Omitted while off so an unchanged file stays byte-identical.
+    /// Per-run expand flags are not stored here.
+    #[serde(default, skip_serializing_if = "skip_false")]
+    pub show_tool_detail: bool,
 }
 
 fn skip_false(value: &bool) -> bool {
@@ -149,6 +153,7 @@ impl Default for AppConfig {
             bots: Vec::new(),
             interaction: InteractionConfig::default(),
             show_bot_names: false,
+            show_tool_detail: false,
         }
     }
 }
@@ -586,6 +591,26 @@ fn insert_show_bot_names(text: &str) -> Result<String, String> {
     Ok(out)
 }
 
+fn insert_show_tool_detail(text: &str) -> Result<String, String> {
+    let bytes = text.as_bytes();
+    let close = root_object_close(bytes).ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    let mut j = close;
+    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    let mut out = String::with_capacity(text.len() + 32);
+    if j > 0 && bytes[j - 1] == b'{' {
+        out.push_str(&text[..j]);
+        out.push_str("\n  \"show_tool_detail\": true\n");
+        out.push_str(&text[close..]);
+        return Ok(out);
+    }
+    out.push_str(&text[..j]);
+    out.push_str(",\n  \"show_tool_detail\": true\n");
+    out.push_str(&text[close..]);
+    Ok(out)
+}
+
 fn remove_top_level_field(text: &str, span: &JsonField) -> String {
     let bytes = text.as_bytes();
     let after = skip_ws(bytes, span.value_end);
@@ -730,6 +755,50 @@ pub fn store_show_bot_names(path: &Path, enabled: bool) -> Result<bool, String> 
         }
     } else {
         let span = top_level_field(&text, "show_bot_names")
+            .ok_or_else(|| "設定檔格式唔啱".to_string())?;
+        remove_top_level_field(&text, &span)
+    };
+    write_config_text(path, &patched)?;
+    Ok(true)
+}
+
+/// Writes `show_tool_detail` only when the stored value changes.
+/// Splices that one key. Expand flags on a chat run are not config.
+pub fn store_show_tool_detail(path: &Path, enabled: bool) -> Result<bool, String> {
+    if !path.exists() {
+        if !enabled {
+            return Ok(false);
+        }
+        let mut cfg = AppConfig::default();
+        cfg.show_tool_detail = true;
+        save(path, &cfg)?;
+        return Ok(true);
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    if !value.is_object() {
+        return Err("設定檔格式唔啱".to_string());
+    }
+    let current = value
+        .get("show_tool_detail")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if current == enabled {
+        return Ok(false);
+    }
+    let patched = if enabled {
+        if let Some(span) = top_level_field(&text, "show_tool_detail") {
+            let mut out = String::with_capacity(text.len() + 8);
+            out.push_str(&text[..span.value_start]);
+            out.push_str("true");
+            out.push_str(&text[span.value_end..]);
+            out
+        } else {
+            insert_show_tool_detail(&text)?
+        }
+    } else {
+        let span = top_level_field(&text, "show_tool_detail")
             .ok_or_else(|| "設定檔格式唔啱".to_string())?;
         remove_top_level_field(&text, &span)
     };
@@ -1488,6 +1557,53 @@ other:
                 < turned_off.find("\"gateway_base_url\"").unwrap()
         );
         assert!(load(&ordered).unwrap().gateway_base_url.contains("8642"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn show_tool_detail_is_written_only_when_the_toggle_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-tool-detail-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let cfg = AppConfig {
+            bots: vec![BotConfig {
+                profile: "mt-coder".into(),
+                display_name: "Coder".into(),
+                color: "#112233".into(),
+                base_url: String::new(),
+                detail: String::new(),
+                session_id: "api_1792573589_f1c99a3b".into(),
+                session_explicit: false,
+                session_anchor: 4.0,
+                enabled: true,
+            }],
+            ..AppConfig::default()
+        };
+        save(&path, &cfg).unwrap();
+        let before = fs::read(&path).unwrap();
+        let text = String::from_utf8(before.clone()).unwrap();
+        assert!(!text.contains("show_tool_detail"));
+        assert!(!load(&path).unwrap().show_tool_detail);
+        assert_eq!(store_show_tool_detail(&path, false).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(store_show_tool_detail(&path, true).unwrap(), true);
+        let on = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+        assert!(on.contains("\"show_tool_detail\": true"));
+        assert!(!on.contains("\"open\""));
+        assert_eq!(load(&path).unwrap().bots[0].session_id, "api_1792573589_f1c99a3b");
+        assert_eq!(store_show_tool_detail(&path, true).unwrap(), false);
+        assert_eq!(store_show_tool_detail(&path, false).unwrap(), true);
+        let off = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+        assert!(!off.contains("show_tool_detail"));
+        assert_eq!(load(&path).unwrap().bots[0].session_id, "api_1792573589_f1c99a3b");
         let _ = fs::remove_dir_all(&dir);
     }
 

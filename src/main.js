@@ -81,6 +81,7 @@ import {
   APPROVAL_WAIT_LABEL,
   EXECUTE_CODE_BLOCKED_LINE,
 } from "./approval.js";
+import { absorbToolEvent, foldToolRuns, paintToolRun, toolRunDomSig } from "./tools.js";
 import {
   CLARIFY_SEND_FAIL,
   CLARIFY_TIMEOUT_S,
@@ -3793,6 +3794,7 @@ const state = {
   osModifierDown: false,
   modifierHeld: false,
   showBotNames: false,
+  showToolDetail: false,
   workInsets: { top: 0, right: 0, bottom: 0, left: 0 },
   latchedOrbId: "",
   pressFrozen: false,
@@ -4545,7 +4547,10 @@ function chatStamp(thread) {
     .map((message) => `${message.promptId || ""}:${message.status || ""}`)
     .join(",");
   const unsent = thread.messages.some((message) => message.unsent) ? 1 : 0;
-  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}|${unsent}|${approvals}|${clarifies}`;
+  const tools = thread.messages.map((message) => (
+    message?.role === "tool-run" ? toolRunDomSig(message) : ""
+  )).filter(Boolean).join("~");
+  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}|${unsent}|${approvals}|${clarifies}|${tools}`;
 }
 
 function threadHasCache(thread) {
@@ -4597,6 +4602,12 @@ function syncChatInPlace(chat, thread, id, resting = false) {
       continue;
     }
     if (resting) restBubble(node);
+    if (message.role === "tool-run") {
+      paintToolRun(node, message, toolRunHooks(id));
+      if (message.live) node.dataset.live = "1";
+      else delete node.dataset.live;
+      continue;
+    }
     const want = message.role === "user" ? "user" : message.role === "bot" ? "bot" : message.role;
     const nextClass = `bubble ${want}`;
     if (node.className !== nextClass) node.className = nextClass;
@@ -4968,9 +4979,24 @@ function paintClarifyBubble(bubble, message, id) {
   }));
 }
 
+function toolRunHooks(id) {
+  return {
+    onChange() {
+      const thread = threadFor(id);
+      const chat = chatOf(id);
+      if (chat && thread) chat.dataset.stamp = chatStamp(thread);
+      if (thread?.followTail !== false) pinChat(id);
+    },
+  };
+}
+
 function bubbleEl(m, id) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${m.role === "user" ? "user" : m.role === "bot" ? "bot" : m.role}`;
+  if (m.role === "tool-run") {
+    paintToolRun(bubble, m, id ? toolRunHooks(id) : {});
+    return bubble;
+  }
   if (m.role === "approval") {
     paintApprovalBubble(bubble, m, id);
     return bubble;
@@ -5275,7 +5301,7 @@ function cancelReconnect() {
 
 function applyOpened(id, opened, { quiet = false } = {}) {
   const thread = threadFor(id);
-  const messages = (opened.messages || []).map(presentMessage);
+  const messages = presentTranscript(opened.messages);
   const sessions = opened.sessions || [];
   const nextId = opened.session_id || "";
   if (keepManualSession(
@@ -5302,7 +5328,8 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   const keptApprovals = !switching && thread.sessionId === nextId
     ? thread.messages.filter((message) => approvalPending(message) || clarifyKept(message))
     : [];
-  if (!switching && !(running && thread.messages.some((message) => message.live))) {
+  const liveTools = thread.messages.some((message) => message.role === "tool-run" && message.running);
+  if (!switching && !(running && (thread.messages.some((message) => message.live) || liveTools))) {
     if (quiet && sameChatSnapshot({
       sessionId: thread.sessionId,
       sessionExplicit: thread.sessionExplicit,
@@ -6327,8 +6354,8 @@ async function saveBotPanel(id) {
 
 function presentMessage(m) {
   if (m.role === "tool") {
-    const name = m.tool_name || m.toolName || "tool";
-    return { role: "tool", text: `工具 ${name}：${m.text}` };
+    const name = m.tool_name || m.toolName || m.name || "tool";
+    return { role: "tool", name, tool_name: name, text: plainToolText(m.text || "") };
   }
   if (m.role === "user") {
     const marker = parseSlashMarker(m.text);
@@ -6343,6 +6370,10 @@ function presentMessage(m) {
     }
   }
   return { role: m.role, text: m.text };
+}
+
+function presentTranscript(list) {
+  return foldToolRuns((list || []).map(presentMessage), { detail: !!state.showToolDetail });
 }
 
 function ensureLiveBubble(id) {
@@ -6402,7 +6433,7 @@ function shellBlocksPreview(shell) {
 
 function deliverCron(id, payload) {
   const sessionId = String(payload?.session_id || "").trim();
-  const incoming = (payload?.messages || []).map(presentMessage);
+  const incoming = presentTranscript(payload?.messages);
   if (!id || !sessionId || !incoming.length) return;
   const thread = threadFor(id);
   const viewing = thread.sessionId === sessionId;
@@ -6763,6 +6794,48 @@ async function recoverRunControls(id) {
   }
 }
 
+function noteTool(id, payload) {
+  const thread = threadFor(id);
+  const messages = runMessages(id);
+  const phase = payload.phase || "started";
+  if (phase === "progress") {
+    noteActivity(id, { type: "tool.progress", name: payload.name || "", text: payload.name || "工具" });
+  } else {
+    noteActivity(id, { type: "tool" });
+  }
+  const { created, run } = absorbToolEvent(messages, {
+    phase,
+    name: payload.name,
+    preview: payload.preview,
+  }, { detail: !!state.showToolDetail });
+  if (!runIsOnScreen(id) || messages !== thread.messages || !run) return;
+  const shell = shellFor(id);
+  if (shell && (deferShellWork(shell) || presentationBusy())) {
+    shell.dataset.chatDirty = "1";
+    if (presentationBusy()) armPresentationFlush();
+    return;
+  }
+  const chat = chatOf(id);
+  if (!chat) return;
+  const index = messages.length - 1;
+  if (created) {
+    if (chat.childElementCount !== index) {
+      renderChat(id);
+      return;
+    }
+    chat.appendChild(bubbleEl(run, id));
+  } else {
+    const node = chat.children[index];
+    if (!node || !node.classList.contains("tool-run")) {
+      renderChat(id);
+      return;
+    }
+    paintToolRun(node, run, toolRunHooks(id));
+  }
+  chat.dataset.stamp = chatStamp(thread);
+  if (thread.followTail !== false) pinChat(id);
+}
+
 function handleHermes(payload) {
   if (!payload || !payload.profile) return;
   const id = payload.profile;
@@ -6890,18 +6963,7 @@ function handleHermes(payload) {
     return;
   }
   if (payload.type === "tool") {
-    const raw = `${payload.name || ""} ${payload.preview || ""}`;
-    const blocked = textIsExecuteCodeBlocked(raw) || payload.preview === EXECUTE_CODE_BLOCKED_LINE;
-    const preview = payload.preview ? ` — ${plainToolText(payload.preview)}` : "";
-    const text = blocked ? EXECUTE_CODE_BLOCKED_LINE : `${payload.name || "tool"}${preview}`;
-    if (payload.phase === "progress") {
-      noteActivity(id, { type: "tool.progress", name: payload.name || "", text });
-      return;
-    }
-    noteActivity(id, { type: "tool" });
-    const phase = payload.phase === "completed" ? "完成" : payload.phase === "failed" ? "失敗" : "開始";
-    appendOnce(id, { role: "tool", text: blocked ? EXECUTE_CODE_BLOCKED_LINE : `${phase} ${text}` });
-    if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
+    noteTool(id, payload);
     return;
   }
   if (payload.type === "status") {
@@ -7193,6 +7255,7 @@ function useHermes(settings) {
   state.settings = settings;
   adoptKanbanPick(settings);
   state.showBotNames = !!settings?.show_bot_names;
+  state.showToolDetail = !!settings?.show_tool_detail;
   state.bots = botsFromSettings(settings);
   state.threads = new Map();
   state.busy.clear();
@@ -7468,6 +7531,8 @@ function fillSettings(settings) {
   $("#interaction-min-opacity").value = String(Math.round(Number(min) * 100));
   const showNames = $("#show-bot-names");
   if (showNames) showNames.checked = !!settings?.show_bot_names;
+  const showTools = $("#show-tool-detail");
+  if (showTools) showTools.checked = !!settings?.show_tool_detail;
   const support = $("#interaction-support");
   const supported = interaction.supported !== false;
     support.textContent = supported
@@ -7561,6 +7626,7 @@ async function saveSettings(event) {
         clear_dashboard_token: false,
         interaction: readInteractionForm(),
         show_bot_names: !!$("#show-bot-names")?.checked,
+        show_tool_detail: !!$("#show-tool-detail")?.checked,
         bots,
       },
     });
@@ -7729,7 +7795,7 @@ function mergeCaughtUp(id, opened) {
   const thread = threadFor(id);
   const sessionId = opened.session_id || "";
   if (sessionId && thread.sessionId && sessionId !== thread.sessionId) return false;
-  const incoming = (opened.messages || []).map(presentMessage);
+  const incoming = presentTranscript(opened.messages);
   const { fresh, settled } = catchUpMessages(thread.messages, incoming);
   const busy = state.busy.has(id);
   if (settled && !busy) {
@@ -8274,6 +8340,9 @@ function setupComposer() {
   $("#btn-discover").addEventListener("click", discoverProfiles);
   $("#show-bot-names")?.addEventListener("change", (event) => {
     void setShowBotNames(event.target.checked);
+  });
+  $("#show-tool-detail")?.addEventListener("change", (event) => {
+    void setShowToolDetail(event.target.checked);
   });
   $("#btn-kanban-signin")?.addEventListener("click", () => {
     void signInKanban();
@@ -9722,6 +9791,46 @@ async function setShowBotNames(enabled) {
     paintOrbNames();
   } catch (err) {
     if (generation !== showBotNamesWrite) return;
+    setBanner(String(err), "error");
+  }
+}
+
+function applyToolDetail(value) {
+  const on = !!value;
+  state.showToolDetail = on;
+  if (state.settings) state.settings.show_tool_detail = on;
+  for (const thread of state.threads.values()) {
+    const lists = [thread.messages];
+    if (thread.bySession) lists.push(...thread.bySession.values());
+    for (const list of lists) {
+      for (const message of list || []) {
+        if (message?.role === "tool-run") message.open = !!value;
+      }
+    }
+  }
+  document.querySelectorAll('.morph[data-kind="bot"]').forEach((shell) => {
+    const id = shell.dataset.botId;
+    if (id && panelFor(id)) renderChat(id);
+  });
+  const box = $("#show-tool-detail");
+  if (box) box.checked = on;
+}
+
+let showToolDetailWrite = 0;
+
+async function setShowToolDetail(enabled) {
+  const value = !!enabled;
+  applyToolDetail(value);
+  if (!inTauri()) return;
+  const generation = ++showToolDetailWrite;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const settings = await invoke("set_show_tool_detail", { enabled: value });
+    if (generation !== showToolDetailWrite || !settings) return;
+    state.settings = settings;
+    applyToolDetail(!!settings.show_tool_detail);
+  } catch (err) {
+    if (generation !== showToolDetailWrite) return;
     setBanner(String(err), "error");
   }
 }
@@ -11688,6 +11797,7 @@ async function boot() {
     state.settings = settings;
     adoptKanbanPick(settings);
     state.showBotNames = !!settings?.show_bot_names;
+    state.showToolDetail = !!settings?.show_tool_detail;
     applyInteraction(settings.interaction);
     if (settings.needs_setup) {
       useMock(SETUP_BANNER, "settings");

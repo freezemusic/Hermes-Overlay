@@ -1513,7 +1513,6 @@ html, body {
   animation: blink 1s steps(2) infinite;
 }
 
-.bubble.tool,
 .bubble.commentary {
   align-self: flex-start;
   max-width: 92%;
@@ -1521,6 +1520,77 @@ html, body {
   background: transparent;
   border: 1px dashed var(--bot-40);
   color: var(--text-muted);
+}
+
+.bubble.tool-run {
+  align-self: flex-start;
+  max-width: 92%;
+  padding: 1px 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font: 400 var(--fs-meta)/1.4 var(--font-mono);
+}
+
+.tool-run-toggle,
+.tool-call-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 1px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-chevron {
+  display: block;
+  width: 10px;
+  height: 10px;
+  flex: none;
+}
+
+.tool-run.is-open > .tool-run-toggle .tool-chevron,
+.tool-call.is-open > .tool-call-toggle .tool-chevron {
+  transform: rotate(90deg);
+}
+
+.tool-run-label,
+.tool-call-line {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tool-run-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 0 16px;
+}
+
+.tool-result {
+  margin: 0 0 4px;
+  max-height: calc(10 * 1.4em);
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.4;
+  white-space: pre;
+  color: var(--text-muted);
+}
+
+.tool-blocked {
+  margin: 2px 0 0;
+  color: #14142b;
+  font: 400 var(--fs-body)/var(--lh-body) var(--font-body);
 }
 
 .bubble.failure {

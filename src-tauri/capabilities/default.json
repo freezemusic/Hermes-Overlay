@@ -16,6 +16,7 @@
     "allow-get-settings",
     "allow-save-settings",
     "allow-set-show-bot-names",
+    "allow-set-show-tool-detail",
     "allow-probe-gateway",
     "allow-discover-profiles",
     "allow-open-bot",

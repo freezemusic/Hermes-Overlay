@@ -14,6 +14,11 @@ description = "Persist the always-show bot name toggle."
 commands.allow = ["set_show_bot_names"]
 
 [[permission]]
+identifier = "allow-set-show-tool-detail"
+description = "Persist the show-tool-detail toggle."
+commands.allow = ["set_show_tool_detail"]
+
+[[permission]]
 identifier = "allow-probe-gateway"
 description = "Probe the Hermes gateway and saved bot keys."
 commands.allow = ["probe_gateway"]

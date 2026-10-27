@@ -199,6 +199,7 @@ struct PublicSettings {
     bots: Vec<PublicBot>,
     needs_setup: bool,
     show_bot_names: bool,
+    show_tool_detail: bool,
 }
 
 #[derive(Deserialize)]
@@ -249,6 +250,8 @@ struct SaveSettings {
     interaction: Option<SaveInteraction>,
     #[serde(default)]
     show_bot_names: bool,
+    #[serde(default)]
+    show_tool_detail: bool,
     bots: Vec<SaveBot>,
 }
 
@@ -884,6 +887,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         bots,
         needs_setup,
         show_bot_names: cfg.show_bot_names,
+        show_tool_detail: cfg.show_tool_detail,
     })
 }
 
@@ -901,6 +905,28 @@ async fn set_show_bot_names(app: AppHandle, enabled: bool) -> Result<PublicSetti
     tauri::async_runtime::spawn_blocking(move || set_show_bot_names_sync(app, enabled))
         .await
         .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+#[tauri::command]
+async fn set_show_tool_detail(app: AppHandle, enabled: bool) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || set_show_tool_detail_sync(app, enabled))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn set_show_tool_detail_sync(app: AppHandle, enabled: bool) -> Result<PublicSettings, String> {
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    config::store_show_tool_detail(&path, enabled)?;
+    drop(_guard);
+    drop(state);
+    load_public_settings(app)
 }
 
 fn set_show_bot_names_sync(app: AppHandle, enabled: bool) -> Result<PublicSettings, String> {
@@ -1030,6 +1056,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         bots,
         interaction,
         show_bot_names: input.show_bot_names,
+        show_tool_detail: input.show_tool_detail,
     };
     config::save(&config_path(&app)?, &cfg)?;
     if let Some(state) = state.as_ref() {
@@ -3123,6 +3150,7 @@ pub fn run() {
             get_settings,
             save_settings,
             set_show_bot_names,
+            set_show_tool_detail,
             probe_gateway,
             discover_profiles,
             sync_profiles,

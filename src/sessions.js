@@ -466,11 +466,19 @@ export function unseenMessages(existing, incoming) {
     }
   }
   return {
-    fresh: next.slice(matched).map((message) => ({
-      role: message.role,
-      text: String(message.text || ""),
-      tool_name: message.tool_name || "",
-    })),
+    fresh: next.slice(matched).map((message) => {
+      if (message.role === "tool-run") {
+        return {
+          ...message,
+          tools: (message.tools || []).map((tool) => ({ ...tool })),
+        };
+      }
+      return {
+        role: message.role,
+        text: String(message.text || ""),
+        tool_name: message.tool_name || "",
+      };
+    }),
     settled,
   };
 }
