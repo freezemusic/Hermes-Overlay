@@ -14,6 +14,7 @@ import {
   permissionDeniedMessage,
   previewLine,
   resolveSession,
+  keepManualSession,
   sessionLabel,
   sessionReadOnly,
   readOnlyNote,
@@ -158,6 +159,45 @@ test("Devon Bot Chats: the hidden titled row wins, including an empty one", () =
   const ffOpened = resolveSession(ffDaily, { id: "20261013_180130_88f994", explicit: false, anchor: 1791914490 });
   assert.equal(ffOpened.id, "api_1792573589_0c14ed12");
   assert.equal(ffOpened.readOnly, false);
+});
+
+test("a manual pick beats the latest row across a quiet refresh", () => {
+  const sessions = [
+    { id: "manual", title: "Notes", source: "api_server", last_active: 10 },
+    { id: "latest", title: "Bot Chat", source: "api_server", last_active: 900, hidden: true },
+  ];
+  const picked = resolveSession(sessions, { id: "manual", explicit: true, anchor: 10 });
+  assert.equal(picked.id, "manual");
+  assert.equal(picked.explicit, true);
+  const latest = resolveSession(sessions, { id: "manual", explicit: false, anchor: 10 });
+  assert.equal(latest.id, "latest");
+  assert.equal(keepManualSession(
+    { id: "manual", explicit: true },
+    { id: "latest", session_id: "latest" },
+    true,
+  ), true);
+  assert.equal(keepManualSession(
+    { id: "manual", explicit: true },
+    { id: "manual" },
+    true,
+  ), false);
+  assert.equal(keepManualSession(
+    { id: "manual", explicit: true },
+    { id: "latest" },
+    false,
+  ), false);
+  assert.equal(keepManualSession(
+    { id: "manual", explicit: false },
+    { id: "latest" },
+    true,
+  ), false);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
+  assert.match(opened, /keepManualSession\(/);
+  const quiet = main.slice(main.indexOf("function refreshBotQuiet"), main.indexOf("function kickGateway"));
+  assert.match(quiet, /quiet: true/);
+  const roster = main.slice(main.indexOf("async function tickRoster"), main.indexOf("async function refreshBotQuiet"));
+  assert.match(roster, /sync_profiles", \{ quiet: true \}/);
 });
 
 test("laptop session check keeps a configured id and an explicit pick", () => {

@@ -3822,6 +3822,9 @@ mod tests {
         assert!(!absent.contains("remember_pin("));
         assert!(!absent.contains("persist_pin"));
         assert!(!absent.contains("config::save"));
+        let explicit_keep = absent.find("existing.explicit").expect("explicit keep");
+        let rewrite = absent.find("if !stored_on_server").expect("rewrite");
+        assert!(explicit_keep < rewrite, "a manual pin returns before an auto id rewrite");
         let pin_at = open_src.find("fn persist_pin").expect("persist_pin");
         let pin_end = open_src.find("fn session_choices").expect("session_choices");
         let pin_body = &open_src[pin_at..pin_end];

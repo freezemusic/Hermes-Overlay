@@ -145,6 +145,17 @@ export function orderSessions(sessions) {
   return chats.concat(rest);
 }
 
+/**
+ * A quiet reload or roster refresh must not replace a manual pick with the
+ * auto-latest row. A non-quiet open may still resolve a missing id.
+ */
+export function keepManualSession(current, opened, quiet = false) {
+  if (!quiet || current?.explicit !== true) return false;
+  const id = String(current?.id || "").trim();
+  const next = String(opened?.id || opened?.session_id || "").trim();
+  return !!id && !!next && id !== next;
+}
+
 export function resolveSession(sessions, pin = {}) {
   const remembered = String(pin.id || "").trim();
   const explicit = pin.explicit === true;

@@ -486,6 +486,11 @@ fn remember_pin_if_absent(
     stored_on_server: bool,
 ) {
     let existing = load_pin(app, state, profile);
+    // A manual pick stays through reload and the quiet roster. Startup
+    // resolution must not replace that id with the latest row.
+    if existing.explicit && !existing.id.trim().is_empty() {
+        return;
+    }
     if !existing.id.trim().is_empty() {
         if !stored_on_server {
             return;
