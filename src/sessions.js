@@ -212,6 +212,32 @@ export function sessionEnded(session) {
 
 export const CLOSED_SESSION_LINE = "呢個對話已經喺伺服器關閉，回覆唔會出現喺呢度。";
 export const MOVED_SESSION_LINE = "回覆寫入咗另一個對話，已轉過去。";
+/** Title Hermes stamps when it recreates a session for a closed chat. */
+export const GATEWAY_FORK_TITLE = "Continue previous conversation";
+
+export function isGatewayForkTitle(title) {
+  const text = String(title || "").trim();
+  return !text || text === GATEWAY_FORK_TITLE;
+}
+
+/** Picker text. A followed replacement keeps the closed chat's name. */
+export function sessionTitleText(session) {
+  const kept = String(session?.kept_title || "").trim();
+  const title = String(session?.title || "").trim();
+  if (kept && isGatewayForkTitle(title)) return kept;
+  return title || session?.id || "";
+}
+
+/** Remember a followed session's old name across a later list that still has the gateway title. */
+export function stampKeptTitles(sessions, keptTitles) {
+  const map = keptTitles || {};
+  return (sessions || []).map((session) => {
+    if (!session || !session.id) return session;
+    const kept = String(map[session.id] || session.kept_title || "").trim();
+    if (!kept || session.kept_title === kept) return session;
+    return { ...session, kept_title: kept };
+  });
+}
 
 export function isClosedSendText(text) {
   return String(text || "").includes("已經喺伺服器關閉");
@@ -233,8 +259,7 @@ export function closedSwitchTarget(sessions, currentId) {
 
 /** Hidden wins, then archived, then a source the gateway will not accept. */
 export function sessionLabel(session) {
-  const title = String(session?.title || "").trim() || session?.id || "";
-  return `${title}${sessionSuffix(session)}`;
+  return `${sessionTitleText(session)}${sessionSuffix(session)}`;
 }
 
 function sourceWord(source) {

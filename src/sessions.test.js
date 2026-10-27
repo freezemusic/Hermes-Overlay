@@ -16,11 +16,16 @@ import {
   resolveSession,
   keepManualSession,
   CLOSED_SESSION_LINE,
+  GATEWAY_FORK_TITLE,
   closedSwitchTarget,
+  isBotChat,
   isClosedSendText,
+  isGatewayForkTitle,
   sendErrorKind,
   sessionEnded,
   sessionLabel,
+  sessionTitleText,
+  stampKeptTitles,
   sessionReadOnly,
   readOnlyNote,
   readOnlyLocked,
@@ -721,6 +726,34 @@ test("the session menu separates desktop, archived, and api Bot Chats", () => {
   const failure = lib.slice(lib.indexOf("fn chat_failure_line"), lib.indexOf("fn chat_failure_line") + 180);
   assert.match(failure, /send_failure/);
   assert.doesNotMatch(failure, /個 bot 仲忙/);
+  const replaced = {
+    id: "20261027_200326_8166f64d",
+    title: GATEWAY_FORK_TITLE,
+    kept_title: "MT5 wrapper",
+    source: "api_server",
+  };
+  assert.equal(isGatewayForkTitle(GATEWAY_FORK_TITLE), true);
+  assert.equal(isGatewayForkTitle("Continue previous plan work #3"), false);
+  assert.equal(sessionTitleText(replaced), "MT5 wrapper");
+  assert.equal(sessionLabel(replaced), "MT5 wrapper");
+  assert.equal(isBotChat(replaced), false);
+  assert.equal(sessionLabel({ id: "named", title: "notes", kept_title: "MT5 wrapper" }), "notes");
+  const stamped = stampKeptTitles(
+    [{ id: replaced.id, title: GATEWAY_FORK_TITLE, source: "api_server" }],
+    { [replaced.id]: "MT5 wrapper" },
+  );
+  assert.equal(stamped[0].title, GATEWAY_FORK_TITLE);
+  assert.equal(stamped[0].kept_title, "MT5 wrapper");
+  assert.equal(sessionLabel(stamped[0]), "MT5 wrapper");
+  const moved = main.slice(main.indexOf('if (payload.type === "session.moved")'), main.indexOf('if (payload.type === "session.offer")'));
+  assert.match(moved, /kept_title/);
+  assert.match(moved, /paintSessionSelect\(id, \{ force: true \}\)/);
+  assert.match(moved, /delete select\.dataset\.key/);
+  const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
+  assert.match(opened, /stampKeptTitles/);
+  const note = lib.slice(lib.indexOf("async fn note_landed_session"), lib.indexOf("async fn send_chat"));
+  assert.equal(note.split("patch_session_title").length - 1, 1);
+  assert.match(note, /kept_replacement_title/);
   const choice = lib.slice(lib.indexOf("struct SessionChoice"), lib.indexOf("struct DiscoveredBot"));
   assert.match(choice, /source:\s*String/);
   assert.match(choice, /archived:\s*bool/);

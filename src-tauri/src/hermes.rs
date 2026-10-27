@@ -872,6 +872,8 @@ pub fn session_id_from_create(value: &Value) -> Option<String> {
 pub const BUSY_SEND_LINE: &str = "個 bot 仲忙，呢句未送出。";
 /// The picked session is closed on the server, or the gateway forked it (`admission_conflict`).
 pub const CLOSED_SESSION_LINE: &str = "呢個對話已經喺伺服器關閉，回覆唔會出現喺呢度。";
+/// Title Hermes puts on a session it recreated after a stale route. Not a user name.
+pub const GATEWAY_FORK_TITLE: &str = "Continue previous conversation";
 /// A completed turn was written to a different session than the one Devon picked.
 pub const MOVED_SESSION_LINE: &str = "回覆寫入咗另一個對話，已轉過去。";
 
@@ -1004,6 +1006,37 @@ fn conflict_switch_id(body: &str) -> String {
         }
     }
     conflict_session_id(body).unwrap_or_default()
+}
+
+/// Empty, or the title Hermes stamps on a session it recreated for a closed chat.
+pub fn is_gateway_fork_title(title: &str) -> bool {
+    let title = title.trim();
+    title.is_empty() || title == GATEWAY_FORK_TITLE
+}
+
+/// The closed chat's name, when the replacement still wears the gateway default.
+/// `None` when the old name is empty or is itself that default, or the new row
+/// already has a name of its own.
+pub fn kept_replacement_title(old_title: &str, new_title: &str) -> Option<String> {
+    let old_title = old_title.trim();
+    if old_title.is_empty() || is_gateway_fork_title(old_title) {
+        return None;
+    }
+    if !is_gateway_fork_title(new_title) {
+        return None;
+    }
+    Some(old_title.to_string())
+}
+
+/// One `PATCH /api/sessions/{id}` title. Canonical `Bot Chat` stays a label only:
+/// that name is another row's identity, and a second write is not attempted.
+pub fn title_to_patch(old_title: &str, new_title: &str) -> Option<String> {
+    let kept = kept_replacement_title(old_title, new_title)?;
+    if kept == BOT_CHAT_TITLE {
+        None
+    } else {
+        Some(kept)
+    }
 }
 
 /// Where a finished turn actually landed.
@@ -4920,6 +4953,30 @@ mod tests {
             closed_switch_id(&[ended, open], "api_1793024902_e96976d4"),
             "api_1792573589_bot"
         );
+        assert_eq!(
+            kept_replacement_title("MT5 wrapper", GATEWAY_FORK_TITLE).as_deref(),
+            Some("MT5 wrapper")
+        );
+        assert_eq!(
+            title_to_patch("MT5 wrapper", GATEWAY_FORK_TITLE).as_deref(),
+            Some("MT5 wrapper")
+        );
+        assert_eq!(kept_replacement_title("MT5 wrapper", "").as_deref(), Some("MT5 wrapper"));
+        assert_eq!(kept_replacement_title("MT5 wrapper", "MT5 wrapper"), None);
+        assert_eq!(kept_replacement_title("MT5 wrapper", "notes"), None);
+        assert_eq!(kept_replacement_title(GATEWAY_FORK_TITLE, GATEWAY_FORK_TITLE), None);
+        assert_eq!(kept_replacement_title("", GATEWAY_FORK_TITLE), None);
+        assert_eq!(
+            kept_replacement_title("Continue previous plan work #3", "MT5 wrapper"),
+            None
+        );
+        assert_eq!(
+            kept_replacement_title(BOT_CHAT_TITLE, GATEWAY_FORK_TITLE).as_deref(),
+            Some(BOT_CHAT_TITLE)
+        );
+        assert_eq!(title_to_patch(BOT_CHAT_TITLE, GATEWAY_FORK_TITLE), None);
+        assert!(!is_gateway_fork_title("MT5 wrapper"));
+        assert!(is_gateway_fork_title(GATEWAY_FORK_TITLE));
     }
 
     #[test]

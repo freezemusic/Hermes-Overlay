@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, finishApplies, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKind, sendErrorSwitch, sessionEnded, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, finishApplies, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKind, sendErrorSwitch, sessionEnded, sessionLabel, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -5308,13 +5308,13 @@ function cancelReconnect() {
 function applyOpened(id, opened, { quiet = false } = {}) {
   const thread = threadFor(id);
   const messages = presentTranscript(opened.messages);
-  const sessions = opened.sessions || [];
   const nextId = opened.session_id || "";
   if (keepManualSession(
     { id: thread.sessionId, explicit: thread.sessionExplicit },
     { id: nextId },
     quiet,
   )) return;
+  const sessions = stampKeptTitles(opened.sessions || [], thread.keptTitles);
   const sessionKey = nextId || thread.sessionId;
   const heldError = sendErrorDraft(state.sendErrors, id, sessionKey);
   const shown = mergeSendError(
@@ -5553,12 +5553,12 @@ async function loadBotHistory(id, token, { quiet = false } = {}) {
   return true;
 }
 
-function paintSessionSelect(id) {
+function paintSessionSelect(id, options = {}) {
   const select = role(panelFor(id), "session");
-  if (!select || document.activeElement === select) return;
+  if (!select || (!options.force && document.activeElement === select)) return;
   const thread = threadFor(id);
   const sessions = orderSessions(thread.sessions || []);
-  const key = JSON.stringify([thread.sessionId, sessions.map((session) => [session.id, session.title, session.hidden, session.archived, session.source, session.ended, session.end_reason])]);
+  const key = JSON.stringify([thread.sessionId, sessions.map((session) => [session.id, session.title, session.kept_title, session.hidden, session.archived, session.source, session.ended, session.end_reason])]);
   if (select.dataset.key === key) return;
   select.replaceChildren();
   const rows = sessions.length
@@ -7122,6 +7122,11 @@ function handleHermes(payload) {
     return;
   }
   if (payload.type === "session.moved") {
+    const thread = threadFor(id);
+    const kept = String(payload.kept_title || "").trim();
+    if (kept && payload.session_id) {
+      thread.keptTitles = Object.assign(thread.keptTitles || {}, { [payload.session_id]: kept });
+    }
     applyOpened(id, payload);
     const line = payload.notice || MOVED_SESSION_LINE;
     appendOnce(id, { role: "commentary", text: line });
@@ -7129,13 +7134,33 @@ function handleHermes(payload) {
       const banner = $("#conn-banner");
       if (!bannerSticky(banner)) setBanner(line, "info");
     }
+    const select = role(panelFor(id), "session");
+    if (select) delete select.dataset.key;
+    paintSessionSelect(id, { force: true });
     setBotStatus(id, "閒置", "idle");
     return;
   }
   if (payload.type === "session.offer") {
+    const thread = threadFor(id);
+    const switchId = payload.switch_session_id || "";
+    const kept = String(payload.kept_title || "").trim();
+    if (kept && switchId) {
+      thread.keptTitles = Object.assign(thread.keptTitles || {}, { [switchId]: kept });
+    }
+    if (switchId && !(thread.sessions || []).some((session) => session.id === switchId)) {
+      thread.sessions = stampKeptTitles([
+        ...(thread.sessions || []),
+        { id: switchId, title: GATEWAY_FORK_TITLE, source: "api_server", ended: false },
+      ], thread.keptTitles);
+    } else {
+      thread.sessions = stampKeptTitles(thread.sessions, thread.keptTitles);
+    }
     const line = payload.notice || CLOSED_SESSION_LINE;
-    showClosedWarning(id, line, payload.switch_session_id || "");
+    showClosedWarning(id, line, switchId);
     appendOnce(id, { role: "commentary", text: line });
+    const select = role(panelFor(id), "session");
+    if (select) delete select.dataset.key;
+    paintSessionSelect(id, { force: true });
     return;
   }
   if (payload.type === "error") {

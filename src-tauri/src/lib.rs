@@ -302,6 +302,8 @@ struct SessionChoice {
     archived: bool,
     ended: bool,
     end_reason: String,
+    /// Closed chat's title when this row still has the gateway default. Empty otherwise.
+    kept_title: String,
 }
 
 #[derive(Serialize)]
@@ -629,6 +631,7 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
             archived: session.archived,
             ended: session.ended,
             end_reason: session.end_reason.clone(),
+            kept_title: String::new(),
         })
         .collect();
     if !active.is_empty() && !rows.iter().any(|row| row.id == active) {
@@ -644,6 +647,7 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
                 archived: false,
                 ended: false,
                 end_reason: String::new(),
+                kept_title: String::new(),
             },
         );
     }
@@ -1499,7 +1503,7 @@ async fn select_session(
     .await
 }
 
-fn emit_session_offer(app: &AppHandle, profile: &str, switch_id: &str) {
+fn emit_session_offer(app: &AppHandle, profile: &str, switch_id: &str, kept_title: &str) {
     emit(
         app,
         serde_json::json!({
@@ -1508,8 +1512,20 @@ fn emit_session_offer(app: &AppHandle, profile: &str, switch_id: &str) {
             "kind": "closed",
             "notice": hermes::CLOSED_SESSION_LINE,
             "switch_session_id": switch_id,
+            "kept_title": kept_title,
         }),
     );
+}
+
+fn remember_replacement_title(rows: &mut [SessionChoice], session_id: &str, kept: &str) {
+    let Some(row) = rows.iter_mut().find(|row| row.id == session_id) else {
+        return;
+    };
+    let unnamed = hermes::is_gateway_fork_title(&row.title)
+        || (row.source.is_empty() && row.title == config::BOT_CHAT_TITLE);
+    if unnamed {
+        row.kept_title = kept.to_string();
+    }
 }
 
 /// After a turn, follow a session the server wrote instead of the one Devon picked.
@@ -1529,29 +1545,49 @@ async fn note_landed_session(
     let after = hermes::list_sessions_for_bot_chat(http, root, key)
         .await
         .unwrap_or_default();
-    if let Some(next) = hermes::landed_session_id(posted, reported, known_ids, &after) {
-        match open_explicit_session(
-            app, http, sessions, config_write, profile, root, key, &next,
-        )
-        .await
+    let Some(next) = hermes::landed_session_id(posted, reported, known_ids, &after) else {
+        if after
+            .iter()
+            .any(|session| session.id == posted && session.ended)
         {
-            Ok(opened) => {
-                let mut payload = serde_json::to_value(&opened).unwrap_or(serde_json::json!({}));
-                if let Some(object) = payload.as_object_mut() {
-                    object.insert("type".into(), serde_json::json!("session.moved"));
-                    object.insert("notice".into(), serde_json::json!(hermes::MOVED_SESSION_LINE));
-                }
-                emit(app, payload);
-            }
-            Err(_) => emit_session_offer(app, profile, &next),
+            emit_session_offer(app, profile, &hermes::closed_switch_id(&after, posted), "");
         }
         return;
-    }
-    if after
+    };
+    let old_title = after
         .iter()
-        .any(|session| session.id == posted && session.ended)
+        .find(|session| session.id == posted)
+        .map(|session| session.title.clone())
+        .unwrap_or_default();
+    let new_title = after
+        .iter()
+        .find(|session| session.id == next)
+        .map(|session| session.title.clone())
+        .unwrap_or_default();
+    let kept = hermes::kept_replacement_title(&old_title, &new_title);
+    if let Some(title) = hermes::title_to_patch(&old_title, &new_title) {
+        let _ = hermes::patch_session_title(http, root, key, &next, &title).await;
+    }
+    match open_explicit_session(
+        app, http, sessions, config_write, profile, root, key, &next,
+    )
+    .await
     {
-        emit_session_offer(app, profile, &hermes::closed_switch_id(&after, posted));
+        Ok(mut opened) => {
+            if let Some(title) = kept.clone() {
+                remember_replacement_title(&mut opened.sessions, &opened.session_id, &title);
+            }
+            let mut payload = serde_json::to_value(&opened).unwrap_or(serde_json::json!({}));
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("type".into(), serde_json::json!("session.moved"));
+                object.insert("notice".into(), serde_json::json!(hermes::MOVED_SESSION_LINE));
+                if let Some(title) = &kept {
+                    object.insert("kept_title".into(), serde_json::json!(title));
+                }
+            }
+            emit(app, payload);
+        }
+        Err(_) => emit_session_offer(app, profile, &next, kept.as_deref().unwrap_or("")),
     }
 }
 
@@ -3375,6 +3411,9 @@ mod tests {
         assert!(note_body.contains("open_explicit_session"));
         assert!(note_body.contains("session.moved"));
         assert!(note_body.contains("MOVED_SESSION_LINE"));
+        assert!(note_body.contains("kept_title"));
+        assert!(note_body.contains("kept_replacement_title"));
+        assert_eq!(note_body.matches("patch_session_title").count(), 1);
         assert!(!note_body.contains("config::save"));
         assert!(!note_body.contains("store_show_bot_names"));
     }
