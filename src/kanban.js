@@ -11,6 +11,21 @@ export function kanbanRequestSlug(explicit) {
   return String(explicit || "").trim();
 }
 
+/**
+ * A newer pick or refresh owns the board. An older ticket, or a ticket whose
+ * slug no longer matches the explicit pick, must not paint.
+ */
+export function kanbanFetchApplies(ticket, active, requested, explicit) {
+  if (Number(ticket) !== Number(active)) return false;
+  return kanbanRequestSlug(requested) === kanbanRequestSlug(explicit);
+}
+
+/** Aborted or cancelled reads are not a connection failure. */
+export function kanbanFetchAborted(message) {
+  const text = String(message || "").toLowerCase();
+  return text.includes("abort") || text.includes("cancel");
+}
+
 /** Done starts collapsed so a long done column stays a count. */
 export function columnCollapsed(name, doneOpen) {
   return String(name || "") === "done" && !doneOpen;

@@ -106,6 +106,8 @@ import {
   columnCollapsed,
   kanbanChangeLine,
   kanbanErrorText,
+  kanbanFetchAborted,
+  kanbanFetchApplies,
   kanbanRequestSlug,
   kanbanUnavailable,
   moveTask,
@@ -5921,23 +5923,30 @@ async function recoverGateway() {
   if (state.mode !== "hermes" || !inTauri()) return true;
   const { invoke } = await import("@tauri-apps/api/core");
   if (!probeGate.tryBegin("kanban")) return "busy";
+  const fetch = beginKanbanFetch();
   let board;
+  let skipBoard = false;
   try {
-    board = await readKanbanPayload(invoke);
+    const read = await readKanbanPayload(invoke);
+    if (!takeKanbanRead(fetch, read)) skipBoard = true;
+    else board = read.payload;
   } catch (err) {
     const message = String(err);
-    board = message.includes(KANBAN_LOGIN)
-      ? { needs_login: true, message: KANBAN_LOGIN }
-      : {
-          unavailable: true,
-          message: gatewayDown(message)
-            ? "連唔到 Kanban。"
-            : (kanbanUnavailable(message) ? KANBAN_UNAVAILABLE : message),
-        };
+    if (!kanbanReadLive(fetch) || kanbanFetchAborted(message)) skipBoard = true;
+    else {
+      board = message.includes(KANBAN_LOGIN)
+        ? { needs_login: true, message: KANBAN_LOGIN }
+        : {
+            unavailable: true,
+            message: gatewayDown(message)
+              ? "連唔到 Kanban。"
+              : (kanbanUnavailable(message) ? KANBAN_UNAVAILABLE : message),
+          };
+    }
   } finally {
     probeGate.end("kanban");
   }
-  commitKanban(normalizeBoard(board));
+  if (!skipBoard) commitKanban(normalizeBoard(board));
   const roster = await claimProfiles(["roster"], async () => {
     const before = state.settings?.bots || [];
     try {
@@ -10725,19 +10734,41 @@ function kanbanBoardArgs() {
   return board ? { board } : {};
 }
 
+function beginKanbanFetch() {
+  const ticket = (state.kanban.fetchGen || 0) + 1;
+  state.kanban.fetchGen = ticket;
+  return { ticket, requested: kanbanRequestSlug(state.kanban.explicit) };
+}
+
+function kanbanReadLive(fetch) {
+  return kanbanFetchApplies(fetch?.ticket, state.kanban.fetchGen || 0, fetch?.requested, state.kanban.explicit);
+}
+
+function takeKanbanRead(fetch, read) {
+  if (!kanbanReadLive(fetch) || !read) return false;
+  if (read.boardsOk) {
+    state.kanban.boards = read.boards;
+    state.kanban.current = read.current;
+  }
+  return true;
+}
+
 async function readKanbanPayload(invoke) {
   const payload = await invoke("get_kanban_board", kanbanBoardArgs());
+  let boards = [];
+  let current = "";
+  let boardsOk = false;
   try {
     const list = await invoke("get_kanban_boards");
-    const boards = Array.isArray(list?.boards)
+    boards = Array.isArray(list?.boards)
       ? list.boards.map((slug) => kanbanRequestSlug(slug)).filter(Boolean)
       : [];
-    state.kanban.boards = boards;
-    state.kanban.current = kanbanRequestSlug(list?.current);
+    current = kanbanRequestSlug(list?.current);
+    boardsOk = true;
   } catch {
     // The board GET already follows the current board. A boards-list miss leaves the picker.
   }
-  return payload;
+  return { payload, boards, current, boardsOk };
 }
 
 async function pickKanbanBoard(slug) {
@@ -10773,15 +10804,19 @@ async function refreshKanban() {
   }
   if (state.kanban.saving || state.kanban.dragging) return;
   if (gateway.isDown("gateway") || probeGate.has("kanban")) return;
+  const fetch = beginKanbanFetch();
   let payload;
   if (state.mode !== "hermes" || !inTauri()) {
     payload = state.kanban.board || mockKanban();
   } else {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      payload = await readKanbanPayload(invoke);
+      const read = await readKanbanPayload(invoke);
+      if (!takeKanbanRead(fetch, read)) return;
+      payload = read.payload;
     } catch (err) {
       const message = String(err);
+      if (!kanbanReadLive(fetch) || kanbanFetchAborted(message)) return;
       if (message.includes(KANBAN_LOGIN)) {
         payload = { needs_login: true, message: KANBAN_LOGIN };
       } else if (kanbanUnavailable(message)) {
@@ -10793,6 +10828,7 @@ async function refreshKanban() {
       }
     }
   }
+  if (!kanbanReadLive(fetch)) return;
   commitKanban(normalizeBoard(payload));
 }
 

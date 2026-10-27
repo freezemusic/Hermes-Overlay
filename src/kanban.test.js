@@ -10,6 +10,8 @@ import {
   boardFingerprint,
   kanbanChangeLine,
   kanbanRequestSlug,
+  kanbanFetchApplies,
+  kanbanFetchAborted,
   boardOptionLabel,
   columnCollapsed,
   pickerSelection,
@@ -145,6 +147,12 @@ test("an omitted slug follows the current board and done starts collapsed", () =
   assert.equal(kanbanRequestSlug(undefined), "");
   assert.equal(kanbanRequestSlug("  "), "");
   assert.equal(kanbanRequestSlug("mt4"), "mt4");
+  assert.equal(kanbanFetchApplies(2, 2, "mt4", "mt4"), true);
+  assert.equal(kanbanFetchApplies(1, 2, "mt4", "mt4"), false);
+  assert.equal(kanbanFetchApplies(2, 2, "", "mt4"), false);
+  assert.equal(kanbanFetchAborted("AbortError: The operation was aborted"), true);
+  assert.equal(kanbanFetchAborted("request cancelled"), true);
+  assert.equal(kanbanFetchAborted("連唔到 Kanban。"), false);
   assert.equal(kanbanRequestSlug(" default "), "default");
   const board = normalizeBoard({
     board: "mt4",
@@ -191,6 +199,10 @@ test("an omitted slug follows the current board and done starts collapsed", () =
   assert.match(pick, /set_kanban_board/);
   const refresh = main.slice(main.indexOf("async function refreshKanban"), main.indexOf("function commitKanban"));
   assert.match(refresh, /readKanbanPayload/);
+  assert.match(refresh, /kanbanReadLive/);
+  assert.match(refresh, /kanbanFetchAborted/);
+  assert.ok(refresh.indexOf("kanbanReadLive") < refresh.lastIndexOf("commitKanban"));
+  assert.ok(refresh.indexOf("kanbanFetchAborted") < refresh.indexOf("連唔到 Kanban。"));
   assert.doesNotMatch(refresh, /set_kanban_board/);
   assert.doesNotMatch(refresh, /"default"/);
   const paint = main.slice(main.indexOf("function paintKanban"), main.indexOf("function kanbanCard"));
