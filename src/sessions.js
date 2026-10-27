@@ -716,19 +716,58 @@ function isAnchorRow(message) {
   return role === "user" || role === "bot" || role === "tool" || role === "tool-run" || role === "failure";
 }
 
-/** The main row a /btw followed. Refresh puts that pair back after this row. */
+/**
+ * The main row a /btw followed. A reply that is still streaming is not a
+ * stable anchor: the pair follows the user message of that turn, and
+ * `afterAnchor` waits until the reply is in the list.
+ */
 export function sideAnchor(messages) {
-  const list = messages || [];
-  let index = -1;
-  let at = -1;
-  for (let i = 0; i < list.length; i += 1) {
-    if (!isAnchorRow(list[i])) continue;
-    index += 1;
-    at = i;
+  return settledAnchor((messages || []).filter(isAnchorRow));
+}
+
+function settledAnchor(mains) {
+  if (!mains.length) return null;
+  let at = mains.length - 1;
+  const last = mains[at];
+  if (last?.role === "bot" && last.live) {
+    for (let i = at - 1; i >= 0; i -= 1) {
+      if (mains[i]?.role === "user") {
+        at = i;
+        break;
+      }
+    }
   }
-  if (at < 0) return null;
-  const message = list[at];
-  return { index, role: message.role || "", text: String(message.text || "") };
+  const message = mains[at];
+  return { index: at, role: message.role || "", text: String(message.text || "") };
+}
+
+/** A stored anchor that still points at a streaming reply moves to that turn's user message. */
+function releaseStreamingAnchor(mains, anchor) {
+  if (!anchor || anchor.role !== "bot") return anchor;
+  const want = String(anchor.text || "");
+  const recorded = Number(anchor.index);
+  const target = Number.isInteger(recorded) ? recorded : mains.length - 1;
+  let liveAt = -1;
+  let liveDist = Infinity;
+  let settledDist = Infinity;
+  for (let i = 0; i < mains.length; i += 1) {
+    const message = mains[i];
+    if (message?.role !== "bot" || String(message.text || "") !== want) continue;
+    const dist = Math.abs(i - target);
+    if (message.live) {
+      if (dist < liveDist || (dist === liveDist && i > liveAt)) {
+        liveAt = i;
+        liveDist = dist;
+      }
+    } else if (dist < settledDist) settledDist = dist;
+  }
+  if (liveAt < 0 || settledDist <= liveDist) return anchor;
+  for (let i = liveAt - 1; i >= 0; i -= 1) {
+    if (mains[i]?.role === "user") {
+      return { index: i, role: "user", text: String(mains[i].text || "") };
+    }
+  }
+  return anchor;
 }
 
 /** The local /btw question and its answer. The main turn stays with the server list. */
@@ -775,8 +814,7 @@ function textsRelate(left, right) {
 function sidePairs(list) {
   const messages = list || [];
   const pairs = [];
-  let mainCount = -1;
-  let lastMain = null;
+  const mains = [];
   let index = 0;
   while (index < messages.length) {
     const message = messages[index];
@@ -791,31 +829,79 @@ function sidePairs(list) {
         if (next?.role === "bot") break;
       }
       const recorded = message.anchor;
-      const anchor = recorded && Number.isInteger(Number(recorded.index))
+      const stored = recorded && Number.isInteger(Number(recorded.index))
         ? { index: Number(recorded.index), role: recorded.role || "", text: String(recorded.text || "") }
-        : (lastMain
-          ? { index: mainCount, role: lastMain.role || "", text: String(lastMain.text || "") }
-          : null);
+        : null;
+      const anchor = stored ? releaseStreamingAnchor(mains, stored) : settledAnchor(mains);
       pairs.push({ messages: turn, anchor });
       continue;
     }
-    if (isAnchorRow(message)) {
-      mainCount += 1;
-      lastMain = message;
-    }
+    if (isAnchorRow(message)) mains.push(message);
     index += 1;
   }
   return pairs;
 }
 
+function relationRank(message, anchor) {
+  if (!message || !anchor) return 0;
+  if (anchor.role && message.role !== anchor.role) return 0;
+  const text = String(message.text || "");
+  const want = String(anchor.text || "");
+  if (text === want) return 2;
+  if (textsRelate(text, want)) return 1;
+  return 0;
+}
+
+/**
+ * Exact text wins over a shared prefix. Among those, the row closest to the
+ * recorded index wins, so a cancelled turn the server dropped does not leave
+ * the pair on the first earlier prefix. A tie keeps the later row.
+ */
 function locateAnchor(main, anchor) {
-  if (!anchor) return -1;
-  const index = Number(anchor.index);
-  if (Number.isInteger(index) && index >= 0 && index < main.length) {
-    const at = main[index];
-    if (at && (!anchor.role || at.role === anchor.role) && textsRelate(at.text, anchor.text)) return index;
+  if (!anchor || !main?.length) return -1;
+  const role = anchor.role || "";
+  const want = String(anchor.text || "");
+  const hits = [];
+  for (let i = 0; i < main.length; i += 1) {
+    const message = main[i];
+    if (!message) continue;
+    if (role && message.role !== role) continue;
+    const text = String(message.text || "");
+    if (text === want) hits.push({ index: i, exact: true });
+    else if (textsRelate(text, want)) hits.push({ index: i, exact: false });
   }
-  return main.findIndex((message) => message?.role === anchor.role && textsRelate(message.text, anchor.text));
+  if (!hits.length) return -1;
+  const exact = hits.filter((hit) => hit.exact);
+  const pool = exact.length ? exact : hits;
+  const recorded = Number(anchor.index);
+  const target = Number.isInteger(recorded) ? recorded : main.length - 1;
+  let best = pool[0];
+  for (const hit of pool) {
+    const dist = Math.abs(hit.index - target);
+    const bestDist = Math.abs(best.index - target);
+    if (dist < bestDist || (dist === bestDist && hit.index > best.index)) best = hit;
+  }
+  return best.index;
+}
+
+function retargetAnchor(pair, main, located) {
+  const head = pair.messages?.[0];
+  const anchor = pair.anchor;
+  if (!head || !anchor || located < 0) return;
+  const row = main[located];
+  const locatedRank = relationRank(row, anchor);
+  if (!locatedRank) return;
+  const recorded = Number(anchor.index);
+  const recordedRank = Number.isInteger(recorded) ? relationRank(main[recorded], anchor) : 0;
+  if (locatedRank < recordedRank) return;
+  if (locatedRank === recordedRank && recorded === located) return;
+  const next = {
+    index: located,
+    role: row.role || "",
+    text: locatedRank >= 2 ? String(row.text || "") : String(anchor.text || ""),
+  };
+  head.anchor = next;
+  pair.anchor = next;
 }
 
 /** A user anchor waits for that turn's reply. A bot anchor is the reply. */
@@ -836,7 +922,9 @@ function placeSidePairs(main, pairs) {
   const slots = main.map(() => []);
   const tail = [];
   for (const pair of pairs) {
-    const after = afterAnchor(main, locateAnchor(main, pair.anchor));
+    const located = locateAnchor(main, pair.anchor);
+    retargetAnchor(pair, main, located);
+    const after = afterAnchor(main, located);
     if (after < 0) tail.push(pair);
     else slots[after].push(pair);
   }
@@ -855,7 +943,9 @@ function placeSidePairs(main, pairs) {
  * Keep the live order in that case. A server transcript that places the
  * side question before the main question is the stored order.
  * A different session id shows that session alone. Each side pair is put
- * back after the main reply it followed. A missing anchor stays at the end.
+ * back after the main reply it followed. A streaming reply anchors to that
+ * turn's user message. A missing anchor stays at the end. A better match
+ * replaces a stale anchor.
  */
 export function reconcileSideQuestion(local, incoming, sessionId, nextSessionId) {
   const have = local || [];

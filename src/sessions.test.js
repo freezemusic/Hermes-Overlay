@@ -848,6 +848,48 @@ test("a side pair stays after the reply it followed", () => {
   assert.deepEqual(missing.map((message) => message.text), ["U1", "B1", "U2", "B2", "S0", "Sb0"]);
 });
 
+test("a side question after a stopped turn stays on the reply that was streaming", () => {
+  const prefix = "slow part 1/25.";
+  const local = [
+    { role: "user", text: "U1" },
+    { role: "bot", text: `${prefix} older` },
+    { role: "user", text: "Ustop" },
+    { role: "bot", text: prefix },
+    { role: "user", text: "U2" },
+    { role: "bot", text: prefix, live: true },
+    { role: "user", text: "S", command: "btw" },
+    { role: "bot", text: "Sb", side: true },
+  ];
+  const server = [
+    { role: "user", text: "U1" },
+    { role: "bot", text: `${prefix} older` },
+    { role: "user", text: "U2" },
+    { role: "bot", text: `${prefix} newer` },
+  ];
+  assert.deepEqual(sideAnchor(local.slice(0, 6)), { index: 4, role: "user", text: "U2" });
+  const kept = reconcileSideQuestion(local, server);
+  assert.deepEqual(kept.map((message) => message.text), ["U1", `${prefix} older`, "U2", `${prefix} newer`, "S", "Sb"]);
+  const stamped = local.map((message) => ({ ...message }));
+  stamped[6].anchor = { index: 5, role: "bot", text: prefix };
+  const fromPartial = reconcileSideQuestion(stamped, server);
+  assert.deepEqual(fromPartial.map((message) => message.text), ["U1", `${prefix} older`, "U2", `${prefix} newer`, "S", "Sb"]);
+  assert.equal(stamped[6].anchor.role, "user");
+  assert.equal(stamped[6].anchor.text, "U2");
+  const stuck = [
+    { role: "user", text: "U1" },
+    { role: "bot", text: `${prefix} older` },
+    { role: "user", text: "U2" },
+    { role: "bot", text: prefix },
+    { role: "user", text: "S", command: "btw", anchor: { index: 0, role: "bot", text: prefix } },
+    { role: "bot", text: "Sb", side: true },
+  ];
+  const exact = reconcileSideQuestion(stuck, server.slice(0, 3).concat([{ role: "bot", text: prefix }]));
+  assert.deepEqual(exact.map((message) => message.text), ["U1", `${prefix} older`, "U2", prefix, "S", "Sb"]);
+  assert.equal(stuck[4].anchor.index, 3);
+  const again = reconcileSideQuestion(exact, server.slice(0, 3).concat([{ role: "bot", text: `${prefix} newer` }]));
+  assert.deepEqual(again.map((message) => message.text), ["U1", `${prefix} older`, "U2", `${prefix} newer`, "S", "Sb"]);
+});
+
 test("two turns with the same reply both stay on screen", () => {
   const turns = [
     { role: "user", text: "找一次" },

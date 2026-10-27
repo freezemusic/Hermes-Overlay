@@ -528,6 +528,19 @@ test("plan seam and cron height and chat tail use explicit pixels", () => {
   const note = main.slice(main.indexOf("function noteChatScroll"), main.indexOf("function armUserScroll"));
   assert.match(note, /scrollingUp/);
   assert.match(note, /dataset\.scrollUp/);
+  const guard = "if (userGesture && !flagged && Number.isFinite(previous) && Math.abs(now - previous) < 0.5 && thread.followTail === false) return;";
+  assert.ok(note.includes(guard));
+  assert.ok(note.indexOf(guard) < note.indexOf("chatTailAction"));
+  assert.ok(note.indexOf(guard) < note.indexOf("pinChat(id)"));
+  const samePosition = (userGesture, flagged, previous, now, followTail) => (
+    userGesture && !flagged && Number.isFinite(previous) && Math.abs(now - previous) < 0.5 && followTail === false
+  );
+  assert.equal(samePosition(true, false, 400, 400, false), true);
+  assert.equal(samePosition(true, false, 400, 400.4, false), true);
+  assert.equal(samePosition(true, false, 400, 350, false), false);
+  assert.equal(samePosition(true, true, 400, 400, false), false);
+  assert.equal(samePosition(true, false, 400, 400, true), false);
+  assert.equal(samePosition(false, false, 400, 400, false), false);
   const wire = main.slice(main.indexOf("function wireBotPanel"), main.indexOf("async function saveBotPanel"));
   assert.match(wire, /deltaY < 0\) chat(?:Box)?\.dataset\.scrollUp = "1"/);
   assert.match(wire, /ArrowUp/);

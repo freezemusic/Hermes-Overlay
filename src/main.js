@@ -5192,6 +5192,7 @@ function noteChatScroll(id, chat, userGesture = false) {
   const flagged = chat?.dataset.scrollUp === "1";
   const movedUp = Number.isFinite(previous) && now < previous - 0.5;
   const scrollingUp = !!userGesture && !!(flagged || movedUp);
+  if (userGesture && !flagged && Number.isFinite(previous) && Math.abs(now - previous) < 0.5 && thread.followTail === false) return;
   if (chat && (!flagged || movedUp)) delete chat.dataset.scrollUp;
   if (chat) chat.dataset.lastTop = String(now);
   const action = chatTailAction({
