@@ -668,29 +668,70 @@ export function finishApplies(thread, runId) {
   return true;
 }
 
-/** Drop a later bot copy of a reply that is already on screen. */
+/**
+ * Drop a second copy of a reply inside one run.
+ * The same words in a later run stay. A row with no run id is a stored turn
+ * and is never removed.
+ */
 export function dedupeShownReply(messages) {
   const list = messages || [];
-  const seen = new Set();
+  const seen = new Map();
   for (let index = 0; index < list.length; index += 1) {
     const message = list[index];
     if (!message || message.role !== "bot") continue;
+    const runId = String(message.runId || "");
+    if (!runId) continue;
     const text = String(message.text || "").trim();
     if (!text) continue;
-    if (seen.has(text)) {
+    let bucket = seen.get(runId);
+    if (!bucket) {
+      bucket = new Set();
+      seen.set(runId, bucket);
+    }
+    if (bucket.has(text)) {
       list.splice(index, 1);
       index -= 1;
       continue;
     }
-    seen.add(text);
+    bucket.add(text);
   }
   return list;
 }
 
+function isSideMessage(message) {
+  return !!(
+    message?.side
+    || message?.command === "btw"
+    || /^\/btw\b/i.test(String(message?.text || ""))
+  );
+}
+
 function sideQuestionIndex(list) {
-  return (list || []).findIndex((message) => (
-    message?.command === "btw" || /^\/btw\b/i.test(String(message?.text || ""))
-  ));
+  return (list || []).findIndex((message) => message?.role === "user" && isSideMessage(message));
+}
+
+/** The local /btw question and its answer. The main turn stays with the server list. */
+function sideTurnMessages(list) {
+  const messages = list || [];
+  const turns = [];
+  let index = 0;
+  while (index < messages.length) {
+    const message = messages[index];
+    if (!(message?.role === "user" && isSideMessage(message))) {
+      index += 1;
+      continue;
+    }
+    turns.push(message);
+    index += 1;
+    while (index < messages.length) {
+      const next = messages[index];
+      if (next?.role === "user" && !isSideMessage(next)) break;
+      turns.push(next);
+      index += 1;
+      if (next?.role === "bot") break;
+    }
+  }
+  return turns;
 }
 
 function mainQuestionBefore(list, sideAt) {
@@ -707,36 +748,35 @@ function mainQuestionBefore(list, sideAt) {
  * A runs-API `/btw` is stored with the main turn, after the main question.
  * Keep the live order in that case. A server transcript that places the
  * side question before the main question is the stored order.
+ * A different session id shows that session alone. The side turn is the only
+ * local row kept on top of the server transcript.
  */
-export function reconcileSideQuestion(local, incoming) {
+export function reconcileSideQuestion(local, incoming, sessionId, nextSessionId) {
   const have = local || [];
   const next = incoming || [];
-  const localSide = sideQuestionIndex(have);
-  if (localSide < 0) return next.slice();
-  const serverSide = sideQuestionIndex(next);
-  if (serverSide >= 0 && mainQuestionBefore(next, serverSide) < 0) return next.slice();
-  const seen = new Set(have.map((message) => `${message?.role || ""}\n${String(message?.text || "").replace(/^\/btw\b\s*/i, "")}`));
-  const extra = [];
-  for (const message of next) {
-    const role = message?.role || "";
-    const text = String(message?.text || "");
-    const stripped = text.replace(/^\/btw\b\s*/i, "");
-    const key = `${role}\n${stripped}`;
-    if (seen.has(key) || seen.has(`${role}\n${text}`)) continue;
-    if (role === "bot") {
-      const grown = [...have].reverse().find((item) => (
-        item?.role === "bot" && item.text && text.startsWith(String(item.text))
-      ));
-      if (grown) {
-        if (text !== grown.text) grown.text = text;
-        seen.add(key);
-        continue;
-      }
-    }
-    seen.add(key);
-    extra.push(message);
-  }
-  return have.concat(extra);
+  const current = String(sessionId || "");
+  const opened = nextSessionId === undefined ? current : String(nextSessionId || "");
+  if (current && opened && current !== opened) return next.slice();
+  const side = sideTurnMessages(have);
+  if (!side.length) return next.slice();
+  const serverAt = sideQuestionIndex(next);
+  if (serverAt >= 0 && mainQuestionBefore(next, serverAt) < 0) return next.slice();
+  const storedSide = sideTurnMessages(next);
+  const serverMain = next.filter((message) => !storedSide.includes(message));
+  const localMain = have.filter((message) => !side.includes(message));
+  const main = serverMain.length ? growMainReply(serverMain, localMain) : localMain;
+  return main.concat(side);
+}
+
+function growMainReply(serverMain, localMain) {
+  const out = serverMain.map((message) => ({ ...message }));
+  const localBot = [...localMain].reverse().find((message) => message?.role === "bot" && message.text);
+  const serverBot = [...out].reverse().find((message) => message?.role === "bot" && message.text);
+  if (!localBot || !serverBot) return out;
+  const localText = String(localBot.text);
+  const serverText = String(serverBot.text);
+  if (localText.startsWith(serverText) && localText !== serverText) serverBot.text = localText;
+  return out;
 }
 
 /** A refused send is idle. An in-flight run id is still busy. */
@@ -771,7 +811,7 @@ function sameOrGrowth(have, next) {
 }
 
 export function unseenMessages(existing, incoming) {
-  const have = (existing || []).filter(Boolean);
+  const have = (existing || []).filter((message) => message && !isSideMessage(message));
   const next = (incoming || []).filter((message) => message && message.role);
   let matched = 0;
   let settled = null;

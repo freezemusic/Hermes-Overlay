@@ -5267,9 +5267,17 @@ function settleBlockedCopies(id) {
   return true;
 }
 
+function rememberRunOn(thread, message) {
+  if (!message || message.runId || message.side || message.command === "btw") return;
+  if (message.role !== "bot") return;
+  const runId = String(thread?.runId || "");
+  if (runId) message.runId = runId;
+}
+
 function appendOnce(id, message) {
   const thread = threadFor(id);
   const messages = runMessages(id);
+  rememberRunOn(thread, message);
   if (message?.text === EXECUTE_CODE_BLOCKED_LINE && messages.some((item) => item.text === EXECUTE_CODE_BLOCKED_LINE)) {
     if (settleBlockedCopies(id) && runIsOnScreen(id) && panelFor(id)) renderChat(id);
     return;
@@ -5283,6 +5291,7 @@ function appendOnce(id, message) {
 
 function appendMessage(id, message) {
   const thread = threadFor(id);
+  rememberRunOn(thread, message);
   thread.messages.push(message);
   const shell = shellFor(id);
   if (shell && (deferShellWork(shell) || presentationBusy())) {
@@ -5384,7 +5393,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
       if (panelShowing(id)) restoreSendErrorBanner(id);
       return;
     }
-    thread.messages = reconcileSideQuestion(thread.messages, shown);
+    thread.messages = reconcileSideQuestion(thread.messages, shown, thread.sessionId, nextId || thread.sessionId);
     for (const card of keptApprovals) {
       const same = thread.messages.some((message) => {
         if (card.role === "approval") return message.role === "approval" && message.requestId === card.requestId;
@@ -6239,12 +6248,14 @@ function wireBotPanel(panel, id) {
     armUserScroll(chatBox);
     if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") {
       chatBox.dataset.scrollUp = "1";
+      delete chatBox.dataset.programmaticScroll;
+      noteChatScroll(id, chatBox, true);
     }
   });
   chatBox?.addEventListener("scroll", (event) => {
     const chat = event.currentTarget;
-    if (chat.dataset.programmaticScroll === "1") return;
-    noteChatScroll(id, chat, chat.dataset.userScroll === "1");
+    if (chat.dataset.programmaticScroll === "1" && chat.dataset.scrollUp !== "1") return;
+    noteChatScroll(id, chat, chat.dataset.userScroll === "1" || chat.dataset.scrollUp === "1");
   });
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
   role(panel, "compose-mode")?.addEventListener("click", () => {
@@ -6492,6 +6503,7 @@ function ensureLiveBubble(id) {
   const messages = runMessages(id);
   const turn = continueLiveTurn(messages);
   const live = turn.message;
+  rememberRunOn(threadFor(id), live);
   if (turn.finished) settleFinishedBubble(id, turn.finished);
   else if (turn.created && runIsOnScreen(id)) {
     chatOf(id)?.querySelectorAll("[data-live]").forEach((node) => node.remove());
@@ -7224,6 +7236,7 @@ function handleHermes(payload) {
     dedupeShownReply(runMessages(id));
     settleBlockedCopies(id);
     if (promoted) {
+      if (payload.outcome === "cancelled") noteStopped(id, { keepBusy: true });
       if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
       setBotStatus(id, "思考中…", "busy");
       return;

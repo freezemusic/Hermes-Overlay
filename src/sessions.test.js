@@ -733,8 +733,8 @@ test("a queued run becomes active when the streaming run ends", () => {
   assert.equal(streamingRunId(thread), "run_queued");
   assert.equal(finishApplies(thread, "run_queued"), true);
   const messages = [
-    { role: "bot", text: "排隊回覆" },
-    { role: "bot", text: "排隊回覆" },
+    { role: "bot", text: "排隊回覆", runId: "run_queued" },
+    { role: "bot", text: "排隊回覆", runId: "run_queued" },
   ];
   dedupeShownReply(messages);
   assert.equal(messages.length, 1);
@@ -775,6 +775,63 @@ test("history keeps a side question after the main question unless the server st
   const adopted = reconcileSideQuestion(local, storedFirst);
   assert.equal(adopted[0].text, "/btw 旁問");
   assert.equal(adopted[2].text, "主問題");
+  const other = [
+    { role: "user", text: "另一個" },
+    { role: "bot", text: "另一個回覆" },
+  ];
+  const switched = reconcileSideQuestion(local, other, "sess-a", "sess-b");
+  assert.deepEqual(switched.map((message) => message.text), ["另一個", "另一個回覆"]);
+  const withNote = local.concat([{ role: "commentary", text: "已停止呢次回覆。" }]);
+  const same = reconcileSideQuestion(withNote, notPersisted, "sess-a", "sess-a");
+  assert.equal(same.some((message) => message.text === "已停止呢次回覆。"), false);
+  assert.equal(same[1].text, "主回覆完整");
+  assert.equal(same[2].command, "btw");
+  assert.equal(same.at(-1).text, "旁答");
+});
+
+test("two turns with the same reply both stay on screen", () => {
+  const turns = [
+    { role: "user", text: "找一次" },
+    { role: "bot", text: "Looking into it." },
+    { role: "tool-run", text: "用咗 1 個工具 · search_files" },
+    { role: "bot", text: "Done: found 40 matches.", runId: "run_1" },
+    { role: "user", text: "再找" },
+    { role: "bot", text: "Looking into it." },
+    { role: "tool-run", text: "用咗 1 個工具 · search_files" },
+    { role: "bot", text: "Done: found 40 matches.", runId: "run_2" },
+  ];
+  dedupeShownReply(turns);
+  assert.equal(turns.filter((message) => message.text === "Done: found 40 matches.").length, 2);
+  assert.equal(turns.filter((message) => message.text === "Looking into it.").length, 2);
+  const again = unseenMessages(turns, turns.map((message) => ({ ...message })));
+  assert.equal(again.fresh.length, 0);
+  const bare = [
+    { role: "bot", text: "OK" },
+    { role: "bot", text: "OK" },
+  ];
+  dedupeShownReply(bare);
+  assert.equal(bare.length, 2);
+});
+
+test("a side question is left out of the history alignment", () => {
+  const local = [
+    { role: "user", text: "主問題" },
+    { role: "bot", text: "主回覆" },
+    { role: "user", text: "旁問", command: "btw" },
+    { role: "bot", text: "旁答", side: true },
+  ];
+  const poll = unseenMessages(local, [
+    { role: "user", text: "主問題" },
+    { role: "bot", text: "主回覆" },
+  ]);
+  assert.equal(poll.fresh.length, 0);
+  const later = unseenMessages(local, [
+    { role: "user", text: "主問題" },
+    { role: "bot", text: "主回覆" },
+    { role: "user", text: "之後" },
+    { role: "bot", text: "新回覆" },
+  ]);
+  assert.deepEqual(later.fresh.map((message) => message.text), ["之後", "新回覆"]);
 });
 
 test("stop follows the latest run and a 409 is not a stop", () => {

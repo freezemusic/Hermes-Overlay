@@ -532,6 +532,9 @@ test("plan seam and cron height and chat tail use explicit pixels", () => {
   assert.match(wire, /deltaY < 0\) chat(?:Box)?\.dataset\.scrollUp = "1"/);
   assert.match(wire, /ArrowUp/);
   assert.match(wire, /PageUp/);
+  assert.match(wire, /delete chatBox\.dataset\.programmaticScroll/);
+  assert.match(wire, /noteChatScroll\(id, chatBox, true\)/);
+  assert.match(wire, /programmaticScroll === "1" && chat\.dataset\.scrollUp !== "1"/);
   const grown = { scrollHeight: 800, clientHeight: 400, scrollTop: 400 };
   assert.equal(pinnedScrollTop(grown, true), null);
   grown.scrollHeight = 860;
