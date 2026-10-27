@@ -4457,6 +4457,77 @@ mod tests {
         assert!(!css_point_hits(&armed, 470.0, 40.0));
     }
 
+    #[test]
+    fn open_panel_docked_orb_stays_in_the_ctrl_shape() {
+        let cfg = fade_cfg();
+        // The header disc sits inside the panel. Its z is below the panel, so
+        // an unheld click still belongs to the card. Ctrl drops panel: and
+        // close: and keeps this bot: disc on Windows and Linux.
+        let rects = vec![
+            HitRect {
+                id: "panel:default".into(),
+                x: 80.0,
+                y: 40.0,
+                w: 420.0,
+                h: 560.0,
+                z: 4,
+                round: false,
+            },
+            HitRect {
+                id: "close:default".into(),
+                x: 460.0,
+                y: 48.0,
+                w: 28.0,
+                h: 28.0,
+                z: 24,
+                round: false,
+            },
+            HitRect {
+                id: "bot:default".into(),
+                x: 92.0,
+                y: 52.0,
+                w: 28.0,
+                h: 28.0,
+                z: 3,
+                round: true,
+            },
+        ];
+        let on_orb = Some((100.0, 60.0));
+        let on_body = Some((200.0, 300.0));
+        let held = interaction_frame(true, &[], on_orb, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(frame_of(&held, "bot:default").capture);
+        assert!((frame_of(&held, "panel:default").opacity - 0.18).abs() < 0.001);
+        assert!(!frame_of(&held, "panel:default").capture);
+        assert!(!frame_of(&held, "close:default").capture);
+        let shape = os_input_rects(true, &rects, &held);
+        assert!(shape.iter().any(|rect| rect.id == "bot:default"));
+        assert!(!shape
+            .iter()
+            .any(|rect| rect.id == "panel:default" || rect.id == "close:default"));
+        assert!(css_point_hits(&shape, 100.0, 60.0));
+        assert!(!css_point_hits(&shape, 200.0, 300.0));
+        assert!(!windows_cursor_ignored(
+            on_orb, &held, &rects, 1920.0, 1080.0, false
+        ));
+        let body = interaction_frame(true, &[], on_body, &rects, HIT_MARGIN_PX, &cfg);
+        let passed = os_input_rects(true, &rects, &body);
+        assert!(passed.is_empty());
+        assert!(windows_cursor_ignored(
+            on_body, &body, &rects, 1920.0, 1080.0, false
+        ));
+        let idle = interaction_frame(false, &[], on_orb, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(!frame_of(&idle, "bot:default").capture);
+        assert!(frame_of(&idle, "panel:default").capture);
+        assert!((frame_of(&idle, "panel:default").opacity - 1.0).abs() < 0.001);
+        let region = os_input_rects(false, &rects, &idle);
+        assert!(region.iter().any(|rect| rect.id == "panel:default"));
+        assert!(!region.iter().any(|rect| rect.id == "bot:default"));
+        assert!(css_point_hits(&region, 100.0, 60.0));
+        assert!(!windows_cursor_ignored(
+            on_orb, &idle, &rects, 1920.0, 1080.0, false
+        ));
+    }
+
     fn orb_at(id: &str, x: f64, y: f64) -> HitRect {
         HitRect {
             id: id.into(),

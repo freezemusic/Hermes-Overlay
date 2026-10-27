@@ -485,6 +485,29 @@ test("the close button passes through while the modifier is held", () => {
   assert.equal(byId(away, "panel:a").capture, false);
 });
 
+test("an open panel's docked orb is the ctrl hit and the panel stays the idle hit", () => {
+  const rects = [
+    { id: "panel:default", x: 80, y: 40, w: 420, h: 560, z: 4 },
+    { id: "close:default", x: 460, y: 48, w: 28, h: 28, z: 24 },
+    { id: "bot:default", x: 92, y: 52, w: 28, h: 28, z: 3, round: true },
+  ];
+  const onOrb = { x: 100, y: 60 };
+  const onBody = { x: 200, y: 300 };
+  const held = elementStates({ held: true, cursor: onOrb, rects, ...fadeOpts });
+  assert.equal(byId(held, "bot:default").capture, true);
+  assert.equal(byId(held, "panel:default").capture, false);
+  assert.equal(byId(held, "panel:default").opacity, 0.18);
+  assert.equal(byId(held, "close:default").capture, false);
+  const body = elementStates({ held: true, cursor: onBody, rects, ...fadeOpts });
+  assert.equal(byId(body, "bot:default").capture, false);
+  assert.equal(byId(body, "panel:default").capture, false);
+  assert.equal(byId(body, "panel:default").opacity, 0.18);
+  const idle = elementStates({ held: false, cursor: onOrb, rects, ...fadeOpts });
+  assert.equal(byId(idle, "bot:default").capture, false);
+  assert.equal(byId(idle, "panel:default").capture, true);
+  assert.equal(byId(idle, "panel:default").opacity, 1);
+});
+
 test("a message preview pill stays solid and click-through until the modifier is held", () => {
   const rects = [
     { id: "pill:a", x: 0, y: 0, w: 320, h: 44 },

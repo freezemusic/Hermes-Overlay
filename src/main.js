@@ -8397,6 +8397,35 @@ function coverBottomFooter(rect, shell) {
   return rect;
 }
 
+/** Header disc of an open bot panel. Published as `bot:<id>` so the Ctrl-held
+ *  input shape can keep it after `panel:` and `close:` drop out. z stays
+ *  under the panel, so an unheld click still belongs to the panel. */
+function dockedPanelOrb(shell, level = 1) {
+  if (!shell || shell.dataset.kind !== "bot") return null;
+  const id = shell.dataset.botId || "";
+  if (!id) return null;
+  const button = shell.querySelector(".morph-orb")?.getBoundingClientRect();
+  let box = null;
+  if (button && button.width >= 1 && button.height >= 1) {
+    box = { x: button.x, y: button.y, w: button.width, h: button.height };
+  } else {
+    const host = shell.getBoundingClientRect();
+    const ax = Number(shell.dataset.ax) || ORB / 2;
+    const ay = Number(shell.dataset.ay) || ORB / 2;
+    box = { x: host.x + ax - ORB / 2, y: host.y + ay - ORB / 2, w: ORB, h: ORB };
+  }
+  if (!box || box.w < 1 || box.h < 1) return null;
+  return {
+    id: `bot:${id}`,
+    x: box.x,
+    y: box.y,
+    w: box.w,
+    h: box.h,
+    z: level - 1,
+    round: true,
+  };
+}
+
 function pushCloseHit(rects, shell, level) {
   const close = shell.querySelector("[data-hit-id^='close:']");
   if (!close || close.hidden || close.closest("[hidden]")) return;
@@ -8626,6 +8655,8 @@ function collectHits() {
       const slash = role(shell, "slash");
       if (slash?.dataset.hitId) push(slash.dataset.hitId, slash, level + 20);
       pushCloseHit(rects, shell, level);
+      const docked = dockedPanelOrb(shell, level);
+      if (docked && !rects.some((item) => item.id === docked.id)) rects.push(docked);
     }
   });
   const banner = $("#conn-banner");
@@ -9062,7 +9093,9 @@ function announcePanelHits(shell) {
   }
   coverBottomFooter(rect, shell);
   const closeId = `close:${shell.dataset.botId || ""}`;
-  const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id && item.id !== closeId);
+  const docked = dockedPanelOrb(shell);
+  const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id && item.id !== closeId && item.id !== docked?.id);
+  if (docked) keep.push(docked);
   keep.push(rect);
   // No close: rect in this frozen set. The button sits inside the panel rect,
   // so it clicks when Ctrl is up and passes through while Ctrl is held.

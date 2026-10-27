@@ -795,6 +795,15 @@ test("ctrl-click on an open panel orb raises that panel", () => {
   assert.match(back, /raisedPanelShell\(id\)/);
   assert.match(back, /applySendErrorBanner/);
   assert.match(back, /raisePanel/);
+  const collect = main.slice(main.indexOf("function collectHits"), main.indexOf("let hitFrame"));
+  assert.match(collect, /dockedPanelOrb\(shell, level\)/);
+  const docked = main.slice(main.indexOf("function dockedPanelOrb"), main.indexOf("function pushCloseHit"));
+  assert.match(docked, /dataset\.kind !== "bot"/);
+  assert.match(docked, /id: `bot:\$\{id\}`/);
+  assert.match(docked, /round: true/);
+  assert.match(docked, /z: level - 1/);
+  const announce = main.slice(main.indexOf("function announcePanelHits"), main.indexOf("function announceOrbHits"));
+  assert.match(announce, /dockedPanelOrb\(shell\)/);
 });
 
 test("an in-flight typed line survives a re-render", () => {
