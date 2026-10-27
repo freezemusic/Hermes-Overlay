@@ -1208,6 +1208,7 @@ html, body {
   box-sizing: border-box;
   padding: 0;
   background: transparent;
+  border-color: transparent;
 }
 
 .morph .plan-window.is-seam-grow > .plan-fit {
@@ -1215,6 +1216,8 @@ html, body {
   height: 100%;
   box-sizing: border-box;
   padding: 8px;
+  transform: translateZ(0);
+  box-shadow: inset 0 0 0 1px #0000f2;
   background:
     linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
     linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
@@ -3389,6 +3392,7 @@ html[data-pass="1"] .plan-hit-host * {
   box-sizing: border-box;
   padding: 0;
   background: transparent;
+  border-color: transparent;
 }
 
 .plan-hit-host > .plan-window.is-seam-grow > .plan-fit {
@@ -3396,6 +3400,8 @@ html[data-pass="1"] .plan-hit-host * {
   height: 100%;
   box-sizing: border-box;
   padding: 8px;
+  transform: translateZ(0);
+  box-shadow: inset 0 0 0 1px #0000f2;
   background:
     linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
     linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),

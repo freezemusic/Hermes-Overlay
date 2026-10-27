@@ -2779,6 +2779,14 @@ function prelayoutOpenPlan(shell, plan) {
   return width;
 }
 
+/** 1px ring on the plan body layer, promoted before the 280ms clip's frame 0. */
+function pinPlanEdge(fit) {
+  if (!fit) return;
+  fit.style.willChange = "transform";
+  fit.style.transform = "translateZ(0)";
+  fit.style.boxShadow = "inset 0 0 0 1px #0000f2";
+}
+
 function growPlan(shell, token) {
   const plan = planNode(shell);
   if (!plan || shell.dataset.planOpen !== "1") return Promise.resolve();
@@ -2823,7 +2831,7 @@ function growPlan(shell, token) {
   fit.style.height = "100%";
   fit.style.alignSelf = side === "left" ? "flex-end" : "flex-start";
   fit.style.transformOrigin = origin;
-  fit.style.transform = "none";
+  pinPlanEdge(fit);
   fit.style.visibility = "visible";
   fit.style.willChange = "transform";
   plan.style.transformOrigin = origin;
@@ -2852,6 +2860,7 @@ function growPlan(shell, token) {
     shell._seamFinal = 0;
     const locked = prelayoutOpenPlan(shell, plan);
     plan.style.width = `${Math.round(locked)}px`;
+    pinPlanEdge(fit);
     await promoteClosedSeam(shell);
     if (!alive()) return false;
     // Geometry is final before the first reveal sample. No layout read here.

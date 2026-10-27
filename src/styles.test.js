@@ -672,6 +672,14 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(interactionRs, /hit-ctrl/);
   assert.match(mainSrc, /hit-ctrl/);
   assert.match(css, /\.plan-window\.is-seam-grow > \.plan-fit \{[^}]*flex:\s*none/s);
+  assert.match(css, /\.morph \.plan-window\.is-seam-grow > \.plan-fit \{[^}]*transform:\s*translateZ\(0\)/s);
+  assert.match(css, /\.morph \.plan-window\.is-seam-grow > \.plan-fit \{[^}]*box-shadow:\s*inset 0 0 0 1px #0000f2/s);
+  assert.match(css, /\.plan-hit-host > \.plan-window\.is-seam-grow > \.plan-fit \{[^}]*translateZ\(0\)/s);
+  const planEdge = mainSrc.slice(mainSrc.indexOf("function pinPlanEdge"), mainSrc.indexOf("function growPlan"));
+  assert.match(planEdge, /translateZ\(0\)/);
+  assert.match(planEdge, /inset 0 0 0 1px #0000f2/);
+  assert.ok(grow.indexOf("pinPlanEdge(fit)") >= 0 && grow.indexOf("pinPlanEdge(fit)") < grow.indexOf("promoteClosedSeam"));
+  assert.match(grow, /PLAN_GROW_MS/);
   assert.match(interactionRs, /fn shape_after_flush/);
   assert.match(interactionRs, /fn should_keep_hit_rects/);
   assert.match(interactionRs, /fn orb_or_pill_under_cursor/);
