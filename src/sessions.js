@@ -222,6 +222,26 @@ export function readOnlyNote(reason = SESSION_READ_ONLY_REASON) {
   return `${line}。${CONTINUE_API_HINT}`;
 }
 
+/**
+ * The open panel the error banner follows. A focused panel that is still open
+ * wins. With no focus, the front panel (highest z) owns it — not every open panel.
+ */
+export function bannerOwner(activeId, panels) {
+  const open = (panels || []).filter((panel) => panel && panel.open && !panel.collapsing && panel.id);
+  const focus = String(activeId || "");
+  if (focus && open.some((panel) => panel.id === focus)) return focus;
+  let best = "";
+  let bestZ = -Infinity;
+  for (const panel of open) {
+    const z = Number.isFinite(panel.z) ? panel.z : 0;
+    if (z >= bestZ) {
+      bestZ = z;
+      best = panel.id;
+    }
+  }
+  return best;
+}
+
 export function deniedKey(profile, sessionId) {
   const id = String(sessionId || "");
   if (!profile || !id) return "";

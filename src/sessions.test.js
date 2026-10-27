@@ -5,6 +5,7 @@ import {
   CONTINUE_API_HINT,
   CONTINUE_API_LABEL,
   SESSION_READ_ONLY_REASON,
+  bannerOwner,
   canonicalBotChat,
   isPermissionDeniedText,
   mostRecentBotChat,
@@ -733,4 +734,45 @@ test("a refused typed line stays visible and marked unsent after history reloads
   const back = main.slice(main.indexOf("async function selectBot"), main.indexOf("function openBotPanel"));
   assert.match(back, /applySendErrorBanner/);
   assert.match(main.slice(main.indexOf("function placeKeyBanner"), main.indexOf("function reconcileKeyPrompt")), /banner\.hidden = true/);
+});
+
+test("the error banner follows the focused open panel", () => {
+  const panels = [
+    { id: "default", open: true, z: 2 },
+    { id: "researcher", open: true, z: 5 },
+  ];
+  assert.equal(bannerOwner("default", panels), "default");
+  assert.equal(bannerOwner("researcher", panels), "researcher");
+  assert.equal(bannerOwner("", panels), "researcher");
+  assert.equal(bannerOwner(null, panels), "researcher");
+  assert.equal(bannerOwner("missing", panels), "researcher");
+  const front = [
+    { id: "default", open: true, z: 9 },
+    { id: "researcher", open: true, z: 5 },
+  ];
+  assert.equal(bannerOwner("", front), "default");
+  const closed = [
+    { id: "default", open: false, z: 9 },
+    { id: "researcher", open: true, collapsing: true, z: 8 },
+    { id: "other", open: true, z: 3 },
+  ];
+  assert.equal(bannerOwner("default", closed), "other");
+  assert.equal(bannerOwner("", [{ id: "default", open: true, collapsing: true, z: 4 }]), "");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const showing = main.slice(main.indexOf("function panelShowing"), main.indexOf("function focusOpenPanel"));
+  assert.match(showing, /bannerOwner/);
+  assert.doesNotMatch(showing, /!state\.activeId/);
+  const focus = main.slice(main.indexOf("function focusOpenPanel"), main.indexOf("function restoreSendErrorBanner"));
+  assert.match(focus, /state\.activeId = id/);
+  assert.match(focus, /applySendErrorBanner/);
+  assert.match(focus, /raisePanel/);
+  const hit = main.slice(main.indexOf("function attachShell"), main.indexOf("function mountBotPanel"));
+  assert.match(hit, /focusOpenPanel\(id\)/);
+  assert.doesNotMatch(hit, /state === "panel" && !orb\) return/);
+  const proxAt = main.indexOf("function setupProximity");
+  const down = main.slice(proxAt, main.indexOf('window.addEventListener("pointerdown"', proxAt));
+  assert.match(down, /focusOpenPanel\(botId\)/);
+  const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
+  assert.match(opened, /panelShowing\(id\)/);
+  assert.match(opened, /clearConnectionBanner\(\)/);
 });

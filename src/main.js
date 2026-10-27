@@ -92,7 +92,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { SESSION_READ_ONLY_REASON, UNSENT_MARK, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, markUnsentDraft, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberSendError, rememberUnsent, rememberView, resolveSession, runTranscript, sendErrorDraft, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
+import { SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, markUnsentDraft, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberSendError, rememberUnsent, rememberView, resolveSession, runTranscript, sendErrorDraft, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -4021,9 +4021,8 @@ function attachShell(shell, id) {
       return;
     }
     const orb = event.target.closest?.(".morph-orb");
-    if (shell.dataset.state === "panel" && !orb) return;
     if (shell.dataset.state === "panel") {
-      raisePanel(shell);
+      focusOpenPanel(id);
       return;
     }
     if (!orb && shell.dataset.state === "orb") return;
@@ -6425,10 +6424,28 @@ function bannerSticky(banner) {
 }
 
 function panelShowing(id) {
+  const panels = [];
+  document.querySelectorAll(".morph[data-kind='bot']").forEach((shell) => {
+    panels.push({
+      id: shell.dataset.botId || "",
+      open: shell.dataset.state === "panel" || shell.dataset.visual === "panel",
+      collapsing: shell.classList.contains("is-collapsing"),
+      z: Number.parseInt(shell.style.zIndex, 10),
+    });
+  });
+  return !!id && bannerOwner(state.activeId, panels) === id;
+}
+
+/** Bring an already-open bot panel to the front and point the error banner at it. */
+function focusOpenPanel(id) {
+  if (!id || id === "settings" || id === "kanban" || id === "cron") return;
   const shell = shellFor(id);
-  if (!shell || shell.classList.contains("is-collapsing")) return false;
-  if (shell.dataset.state !== "panel" && shell.dataset.visual !== "panel") return false;
-  return !state.activeId || state.activeId === id;
+  if (!shell || shell.classList.contains("is-collapsing")) return;
+  if (shell.dataset.state !== "panel" && shell.dataset.visual !== "panel") return;
+  state.activeId = id;
+  state.slashPanelId = id;
+  raisePanel(shell);
+  applySendErrorBanner(id);
 }
 
 /** Put this session's send error back on the banner. A blank banner hides. */
@@ -9797,7 +9814,11 @@ function setupProximity() {
   });
   document.addEventListener("pointerdown", (event) => {
     const shell = event.target.closest?.(".morph") || event.target.closest?.(".plan-hit-host")?._planShell;
-    if (shell && shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) raisePanel(shell);
+    if (shell && shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) {
+      const botId = shell.dataset.kind === "bot" ? shell.dataset.botId || "" : "";
+      if (botId) focusOpenPanel(botId);
+      else raisePanel(shell);
+    }
     const hit = event.target.closest?.("[data-hit-id]");
     if (hit) state.pointerHitId = hit.dataset.hitId || "";
     else {
