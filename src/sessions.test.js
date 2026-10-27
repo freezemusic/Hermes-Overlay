@@ -28,8 +28,11 @@ import {
   refusedSessionIds,
   UNSENT_MARK,
   markUnsentDraft,
+  mergePendingSend,
   mergeSendError,
   mergeUnsentDraft,
+  pendingSend,
+  rememberPendingSend,
   rememberSendError,
   rememberUnsent,
   sendErrorDraft,
@@ -775,4 +778,58 @@ test("the error banner follows the focused open panel", () => {
   const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
   assert.match(opened, /panelShowing\(id\)/);
   assert.match(opened, /clearConnectionBanner\(\)/);
+});
+
+test("ctrl-click on an open panel orb raises that panel", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const press = main.slice(main.indexOf("function openPressedOrb"), main.indexOf("function abortLiveRehearsals"));
+  const focusAt = press.indexOf("focusOpenPanel");
+  const early = press.indexOf("if (orbOpenedThisPress()) return");
+  assert.ok(focusAt >= 0 && early > focusAt);
+  assert.match(press, /raisedPanelShell/);
+  const gate = main.slice(main.indexOf("function raisedPanelShell"), main.indexOf("function focusOpenPanel"));
+  assert.match(gate, /openIds/);
+  assert.match(gate, /dataset\.visual === "panel"/);
+  assert.match(gate, /dataset\.state === "panel"/);
+  const back = main.slice(main.indexOf("async function selectBot"), main.indexOf("function openBotPanel"));
+  assert.match(back, /raisedPanelShell\(id\)/);
+  assert.match(back, /applySendErrorBanner/);
+  assert.match(back, /raisePanel/);
+});
+
+test("an in-flight typed line survives a re-render", () => {
+  const history = [{ role: "user", text: "舊句" }, { role: "bot", text: "之前" }];
+  const typed = "HTTP 500 呢句";
+  const store = new Map();
+  rememberPendingSend(store, "default", "api_1", typed);
+  assert.equal(pendingSend(store, "default", "api_1"), typed);
+  const raced = mergePendingSend(history, pendingSend(store, "default", "api_1"));
+  assert.equal(raced.at(-1).text, typed);
+  assert.equal(raced.at(-1).unsent, undefined);
+  assert.equal(mergePendingSend(raced, typed).length, raced.length);
+  assert.equal(mergePendingSend(history, "").length, history.length);
+  const marked = mergeUnsentDraft(raced, typed);
+  assert.equal(marked.at(-1).unsent, true);
+  assert.equal(marked.length, raced.length);
+  rememberPendingSend(store, "researcher", "", typed);
+  assert.equal(pendingSend(store, "researcher", "api_later"), typed);
+  rememberPendingSend(store, "default", "api_1", "");
+  assert.equal(pendingSend(store, "default", "api_1"), "");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
+  const appendAt = send.indexOf("appendMessage");
+  const holdAt = send.indexOf("holdOutgoing", appendAt);
+  const invokeAt = send.indexOf('await invoke("send_chat"', appendAt);
+  assert.ok(appendAt >= 0 && holdAt > appendAt && holdAt < invokeAt);
+  const busy = main.slice(main.indexOf("async function sendWhileBusy"), main.indexOf("async function stopActive"));
+  const busyAppend = busy.indexOf("appendMessage");
+  const busyHold = busy.indexOf("holdOutgoing", busyAppend);
+  const busyInvoke = busy.indexOf("await invoke", busyAppend);
+  assert.ok(busyAppend >= 0 && busyHold > busyAppend && busyHold < busyInvoke);
+  const paint = main.slice(main.indexOf("function renderChat"), main.indexOf("function logPlanChip"));
+  assert.ok(paint.indexOf("retainOutgoing") >= 0 && paint.indexOf("retainOutgoing") < paint.indexOf("chatStamp"));
+  const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
+  assert.match(opened, /mergePendingSend/);
+  const failedNote = main.slice(main.indexOf("function noteSendFailed"), main.indexOf("function noteReadOnly"));
+  assert.ok(failedNote.indexOf("retainOutgoing") >= 0 && failedNote.indexOf("retainOutgoing") < failedNote.indexOf("markUnsentDraft"));
 });

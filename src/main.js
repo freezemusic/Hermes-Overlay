@@ -92,7 +92,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, markUnsentDraft, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberSendError, rememberUnsent, rememberView, resolveSession, runTranscript, sendErrorDraft, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
+import { SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, runTranscript, sendErrorDraft, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -3842,6 +3842,7 @@ const state = {
   toastSeq: 0,
   deniedSessions: new Set(),
   unsentDrafts: new Map(),
+  pendingSends: new Map(),
   sendErrors: new Map(),
   clarifyTimer: 0,
 };
@@ -4661,6 +4662,7 @@ function renderChat(id = state.activeId, options = {}) {
   if (!bot || !chat) return;
   if (debugFile.enabled) debugLog("render-panel", `id=${id} force=${force ? 1 : 0} tag=${tag} call=${callerTag("renderChat")}`);
   const thread = threadFor(bot.id);
+  retainOutgoing(bot.id);
   const title = role(panel, "name");
   if (title && title.textContent !== bot.name) title.textContent = bot.name;
   const statusEl = role(panel, "status");
@@ -5279,7 +5281,10 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   const sessionKey = nextId || thread.sessionId;
   const heldError = sendErrorDraft(state.sendErrors, id, sessionKey);
   const shown = mergeSendError(
-    mergeUnsentDraft(messages, unsentDraft(state.unsentDrafts, id, sessionKey)),
+    mergeUnsentDraft(
+      mergePendingSend(messages, pendingSend(state.pendingSends, id, sessionKey)),
+      unsentDraft(state.unsentDrafts, id, sessionKey),
+    ),
     heldError,
   );
   const running = state.busy.has(id);
@@ -5322,7 +5327,10 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   thread.loaded = true;
   thread.sessionId = nextId || thread.sessionId;
   thread.messages = mergeSendError(
-    mergeUnsentDraft(thread.messages, unsentDraft(state.unsentDrafts, id, thread.sessionId)),
+    mergeUnsentDraft(
+      mergePendingSend(thread.messages, pendingSend(state.pendingSends, id, thread.sessionId)),
+      unsentDraft(state.unsentDrafts, id, thread.sessionId),
+    ),
     sendErrorDraft(state.sendErrors, id, thread.sessionId),
   );
   thread.sessionExplicit = !!opened.session_explicit;
@@ -6010,7 +6018,8 @@ async function selectBot(id) {
   state.activeId = id;
   state.slashPanelId = id;
   const shell = shellFor(id);
-  if (shell && shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) {
+  // Ctrl draws an open panel as an orb, so dataset.state is not enough.
+  if (raisedPanelShell(id)) {
     if (!state.openIds.includes(id)) state.openIds = openPanel(state.openIds, id);
     raisePanel(shell);
     renderBots();
@@ -6436,16 +6445,47 @@ function panelShowing(id) {
   return !!id && bannerOwner(state.activeId, panels) === id;
 }
 
+/** An open bot panel, including one Ctrl is currently drawing as an orb. */
+function raisedPanelShell(id) {
+  if (!id || id === "settings" || id === "kanban" || id === "cron") return null;
+  const shell = shellFor(id);
+  if (!shell || shell.classList.contains("is-collapsing")) return null;
+  if (shell.dataset.intent === "close") return null;
+  const open = state.openIds.includes(id)
+    || shell.dataset.state === "panel"
+    || shell.dataset.visual === "panel"
+    || shell.dataset.opening === "panel";
+  return open ? shell : null;
+}
+
 /** Bring an already-open bot panel to the front and point the error banner at it. */
 function focusOpenPanel(id) {
-  if (!id || id === "settings" || id === "kanban" || id === "cron") return;
-  const shell = shellFor(id);
-  if (!shell || shell.classList.contains("is-collapsing")) return;
-  if (shell.dataset.state !== "panel" && shell.dataset.visual !== "panel") return;
+  const shell = raisedPanelShell(id);
+  if (!shell) return;
   state.activeId = id;
   state.slashPanelId = id;
   raisePanel(shell);
   applySendErrorBanner(id);
+}
+
+/** Keep the in-flight typed line in the thread so a racing re-render can paint it. */
+function retainOutgoing(id) {
+  const thread = threadFor(id);
+  if (!thread) return;
+  const line = pendingSend(state.pendingSends, id, thread.sessionId);
+  if (!line) return;
+  const next = mergePendingSend(thread.messages, line);
+  if (next !== thread.messages) thread.messages = next;
+}
+
+function holdOutgoing(id, text) {
+  const thread = threadFor(id);
+  rememberPendingSend(state.pendingSends, id, thread?.sessionId || "", text);
+}
+
+function releaseOutgoing(id) {
+  const thread = threadFor(id);
+  rememberPendingSend(state.pendingSends, id, thread?.sessionId || "", "");
 }
 
 /** Put this session's send error back on the banner. A blank banner hides. */
@@ -6490,9 +6530,11 @@ function repaintUnsent(id) {
 
 function noteSendFailed(id, raw) {
   const thread = threadFor(id);
+  retainOutgoing(id);
   const text = String(raw || "連線錯誤");
   rememberUnsent(state.unsentDrafts, id, thread.sessionId, markUnsentDraft(thread.messages));
   rememberSendError(state.sendErrors, id, thread.sessionId, text);
+  releaseOutgoing(id);
   // appendMessage stamps the chat, including 未送出, without repainting this line.
   repaintUnsent(id);
   thread.queued = false;
@@ -6508,8 +6550,10 @@ function noteSendFailed(id, raw) {
 
 function noteReadOnly(id) {
   const thread = threadFor(id);
+  retainOutgoing(id);
   rememberDenied(state.deniedSessions, id, thread.sessionId);
   rememberUnsent(state.unsentDrafts, id, thread.sessionId, markUnsentDraft(thread.messages));
+  releaseOutgoing(id);
   thread.sessionReadOnly = true;
   thread.sessionReadOnlyReason = SESSION_READ_ONLY_REASON;
   thread.queued = false;
@@ -6916,6 +6960,7 @@ function handleHermes(payload) {
       if (!thread.sessionReadOnly) {
         rememberUnsent(state.unsentDrafts, id, thread.sessionId, "");
         rememberSendError(state.sendErrors, id, thread.sessionId, "");
+        releaseOutgoing(id);
       }
     }
     setBotStatus(
@@ -6985,6 +7030,7 @@ async function sendActive(id = state.activeId) {
     }, 350);
     return;
   }
+  holdOutgoing(sentId, text);
   noteRunSession(threadFor(sentId));
   setBotStatus(sentId, "思考中…", "busy");
   try {
@@ -7741,6 +7787,7 @@ async function sendWhileBusy(id, text) {
     }, 350);
     return;
   }
+  holdOutgoing(id, text);
   let joined = false;
   if (thread.runId) {
     try {
@@ -8746,10 +8793,17 @@ function rememberOrbOpen(id) {
 }
 
 function openPressedOrb(id, fallback = "") {
-  if (orbOpenedThisPress()) return;
   const primary = id && shellFor(id) ? id : "";
   const next = primary || (fallback && fallback !== id && shellFor(fallback) ? fallback : "");
   if (!next) return;
+  // Ctrl-click is logged as an orb open. The shell click then bails on
+  // orbOpenedThisPress, and selectBot misses a panel Ctrl is drawing as an orb.
+  if (raisedPanelShell(next)) {
+    if (!orbOpenedThisPress()) rememberOrbOpen(next);
+    focusOpenPanel(next);
+    return;
+  }
+  if (orbOpenedThisPress()) return;
   const shell = shellFor(next);
   rememberOrbOpen(next);
   abortPlanRehearsal(shell);

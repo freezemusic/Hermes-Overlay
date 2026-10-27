@@ -346,6 +346,43 @@ export function unsentDraft(store, profile, sessionId) {
   return String(store.get(key) || "");
 }
 
+/**
+ * The typed line of a send that has not returned. A history reload during
+ * that wait must paint this line. It is not 未送出 until the send fails.
+ */
+export function mergePendingSend(messages, text) {
+  const line = String(text || "");
+  const list = messages || [];
+  if (!line) return list;
+  if (list.some((message) => message?.role === "user" && message.text === line)) return list;
+  return list.concat([{ role: "user", text: line }]);
+}
+
+export function rememberPendingSend(store, profile, sessionId, text) {
+  if (!profile || !store) return store;
+  const line = String(text || "");
+  const key = `${profile}:${String(sessionId || "*")}`;
+  if (!line) {
+    store.delete(key);
+    store.delete(`${profile}:*`);
+    if (sessionId) store.delete(`${profile}:${sessionId}`);
+    return store;
+  }
+  store.set(key, line);
+  if (sessionId) store.delete(`${profile}:*`);
+  return store;
+}
+
+export function pendingSend(store, profile, sessionId) {
+  if (!profile || !store) return "";
+  const id = String(sessionId || "");
+  if (id) {
+    const exact = store.get(`${profile}:${id}`);
+    if (exact) return String(exact);
+  }
+  return String(store.get(`${profile}:*`) || "");
+}
+
 export function readOnlyLocked(set, profile, sessionId, sourceReadOnly) {
   const key = deniedKey(profile, sessionId);
   return !!sourceReadOnly || (!!key && !!set?.has(key));
