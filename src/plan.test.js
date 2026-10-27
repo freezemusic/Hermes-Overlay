@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { latestPlan, looksLikePlan, noteNewestPlan, planBodyLead, planBubble, planChipText, planDemoMarkdown, planForPanel, planModeWire, planSource, plansIn, planTask, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, latestPlan, looksLikePlan, nextComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, planSource, plansIn, planTask, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
 
 test("plan markdown is recognized and a short ack is not", () => {
   const body = planDemoMarkdown("整理設定");
@@ -142,62 +142,91 @@ test("睇計劃 clears a dismiss so the same plan shows again", () => {
   assert.equal(planForPanel(thread).key, plan.key);
 });
 
-test("plan mode prefixes plain text and leaves slash commands alone", () => {
-  assert.equal(planModeWire("整理設定", true), "/plan 整理設定");
-  assert.equal(planModeWire("  整理設定  ", true), "/plan 整理設定");
-  assert.equal(planModeWire("/plan 已有", true), "/plan 已有");
-  assert.equal(planModeWire("/Plan 已有", true), "/Plan 已有");
-  assert.equal(planModeWire("/plan", true), "/plan");
-  assert.equal(planModeWire("/renew 舊題", true), "/renew 舊題");
-  assert.equal(planModeWire("/stop", true), "/stop");
-  assert.equal(planModeWire("/title 新名", true), "/title 新名");
-  assert.equal(planModeWire("/", true), "/");
-  assert.equal(planModeWire("整理設定", false), "整理設定");
-  assert.equal(planModeWire("/plan 已有", false), "/plan 已有");
-  assert.equal(planModeWire("", true), "");
-  assert.deepEqual(planBubble("/plan 整理設定"), { text: "整理設定", command: "plan" });
-  assert.deepEqual(planBubble("/Plan 整理設定"), { text: "整理設定", command: "plan" });
-  assert.deepEqual(planBubble("整理設定"), { text: "整理設定", command: "" });
-  assert.deepEqual(planBubble("/renew 舊題"), { text: "/renew 舊題", command: "" });
+test("compose modes prefix plan and btw, and leave slash commands alone", () => {
+  const both = { plan: true, btw: true };
+  assert.equal(nextComposeMode("", both), "plan");
+  assert.equal(nextComposeMode("plan", both), "btw");
+  assert.equal(nextComposeMode("btw", both), "");
+  assert.equal(nextComposeMode("plan", { plan: true, btw: false }), "");
+  assert.equal(nextComposeMode("", { plan: false, btw: true }), "btw");
+  assert.equal(nextComposeMode("btw", { plan: false, btw: true }), "");
+  assert.equal(nextComposeMode("plan", { plan: false, btw: false }), "");
+  assert.equal(nextComposeMode("debug", both), "plan");
+  assert.equal(nextComposeMode("yolo", both), "plan");
+  assert.equal(composeModeLabel(""), "一般");
+  assert.equal(composeModeLabel("plan"), "Plan");
+  assert.equal(composeModeLabel("btw"), "旁問");
+  assert.equal(composeModeWire("整理設定", ""), "整理設定");
+  assert.equal(composeModeWire("整理設定", "plan"), "/plan 整理設定");
+  assert.equal(composeModeWire("  整理設定  ", "plan"), "/plan 整理設定");
+  assert.equal(composeModeWire("/plan 已有", "plan"), "/plan 已有");
+  assert.equal(composeModeWire("/Plan 已有", "plan"), "/Plan 已有");
+  assert.equal(composeModeWire("順便問", "btw"), "/btw 順便問");
+  assert.equal(composeModeWire("/btw 已有", "btw"), "/btw 已有");
+  assert.equal(composeModeWire("/renew 舊題", "btw"), "/renew 舊題");
+  assert.equal(composeModeWire("/stop", "plan"), "/stop");
+  assert.equal(composeModeWire("/title 新名", "btw"), "/title 新名");
+  assert.equal(composeModeWire("/", "plan"), "/");
+  assert.equal(composeModeWire("整理設定", "debug"), "整理設定");
+  assert.equal(composeModeWire("整理設定", "yolo"), "整理設定");
+  assert.equal(composeSkipsBusyQueue("/btw 順便問"), true);
+  assert.equal(composeSkipsBusyQueue("/BTW 順便問"), true);
+  assert.equal(composeSkipsBusyQueue("/plan 整理設定"), false);
+  assert.equal(composeSkipsBusyQueue("/stop"), false);
+  assert.equal(composeSkipsBusyQueue("順便問"), false);
+  assert.deepEqual(composeBubble("/plan 整理設定"), { text: "整理設定", command: "plan" });
+  assert.deepEqual(composeBubble("/btw 順便問"), { text: "順便問", command: "btw" });
+  assert.deepEqual(composeBubble("整理設定"), { text: "整理設定", command: "" });
   assert.equal(planChipText("plan"), "Plan");
+  assert.equal(planChipText("btw"), "旁問");
   assert.equal(planChipText("stop"), "stop");
-  assert.equal(planChipText(""), "");
+  const listed = [
+    { name: "/plan", enabled: true, aliases: [] },
+    { name: "/stop", enabled: true, aliases: [] },
+  ];
+  assert.deepEqual(offeredComposeModes(listed, true), { plan: true, btw: false });
+  assert.deepEqual(offeredComposeModes([{ name: "/plan", enabled: false, aliases: [] }], true), { plan: false, btw: false });
+  assert.deepEqual(offeredComposeModes([], false), { plan: true, btw: true });
+  assert.deepEqual(offeredComposeModes([{ name: "ask", enabled: true, aliases: ["/btw"] }], true), { plan: false, btw: true });
 });
 
-test("plan mode is a per-bot composer toggle and busy sends keep the prefix", () => {
+test("the composer mode chip cycles, and a side question skips the busy queue", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const rust = readFileSync(new URL("../src-tauri/src/config.rs", import.meta.url), "utf8");
   const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
-  assert.match(html, /data-role="plan-mode"[^>]*>Plan Mode</);
-  assert.match(css, /\.plan-mode-chip\[aria-pressed="true"\][^}]*background:\s*var\(--bot-10\)/);
-  assert.match(css, /\.plan-mode-chip\[aria-pressed="true"\][^}]*#0000f2/);
-  assert.match(css, /\.composer\.is-plan-mode input[^}]*#0000f2/);
+  assert.match(html, /data-role="compose-mode"[^>]*>一般</);
+  assert.doesNotMatch(html, /Debug|\/yolo|\/debug/);
+  assert.match(css, /\.compose-mode-chip\[aria-pressed="true"\][^}]*background:\s*var\(--bot-10\)/);
+  assert.match(css, /\.compose-mode-chip\[aria-pressed="true"\][^}]*#0000f2/);
+  assert.match(css, /\.composer\.is-compose-mode input[^}]*#0000f2/);
   const keys = main.slice(main.indexOf('input?.addEventListener("keydown"'), main.indexOf("async function loadSoul"));
   const shift = keys.indexOf('event.key === "Tab" && event.shiftKey');
   const slashTab = keys.indexOf('event.key === "Tab" || event.key === "Enter"');
   assert.ok(shift >= 0 && shift < slashTab);
-  assert.match(keys, /togglePlanMode\(id\)/);
+  assert.match(keys, /cycleComposeMode\(id\)/);
   const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
-  const wireAt = send.indexOf("planModeWire");
+  const wireAt = send.indexOf("composeModeWire");
   const resolveAt = send.indexOf("resolveClient");
-  assert.ok(wireAt >= 0 && wireAt < resolveAt);
-  assert.match(send, /sendWhileBusy\(id, text\)/);
+  const busyAt = send.indexOf("sendWhileBusy");
+  assert.ok(wireAt >= 0 && wireAt < resolveAt && resolveAt < busyAt);
+  assert.match(send, /action\?\.command !== "stop" && !composeSkipsBusyQueue\(text\)/);
   assert.match(send, /invoke\("send_chat", \{ profile: sentId, text \}\)/);
   const busy = main.slice(main.indexOf("async function sendWhileBusy"), main.indexOf("async function stopActive"));
-  assert.doesNotMatch(busy, /planModeWire/);
-  assert.match(busy, /userPlanMessage\(text\)/);
+  assert.doesNotMatch(busy, /composeModeWire/);
   assert.match(busy, /steer_run", \{ profile: id, runId: thread\.runId, text \}/);
   assert.match(busy, /send_chat", \{ profile: id, text, queue: true \}/);
   const bubble = main.slice(main.indexOf("function paintUserBubble"), main.indexOf("function paintBotBubble"));
   assert.match(bubble, /planChipText\(message\.command\)/);
   const present = main.slice(main.indexOf("function presentMessage"), main.indexOf("function presentTranscript"));
-  assert.match(present, /planBubble\(m\.text\)/);
-  assert.equal(main.split("set_plan_mode").length - 1, 1);
-  const store = rust.slice(rust.indexOf("pub fn store_plan_mode"), rust.indexOf("pub fn fill_empty_details"));
-  assert.match(store, /plan_mode/);
-  assert.doesNotMatch(store, /config::save\(/);
-  assert.match(lib, /set_plan_mode/);
-  assert.match(lib, /previous_bot\.map\(\|bot\| bot\.plan_mode\)/);
+  assert.match(present, /composeBubble\(m\.text\)/);
+  assert.equal(main.split("set_compose_mode").length - 1, 1);
+  assert.doesNotMatch(main, /set_plan_mode|\/yolo|composeMode === "debug"/);
+  const store = rust.slice(rust.indexOf("pub fn store_compose_mode"), rust.indexOf("pub fn fill_empty_details"));
+  assert.match(store, /compose_mode/);
+  assert.doesNotMatch(store, /config::save\(|"yolo"|"debug"/);
+  assert.match(lib, /set_compose_mode/);
+  assert.match(lib, /bot\.compose_mode\.clone\(\)/);
+  assert.doesNotMatch(lib, /set_plan_mode/);
 });

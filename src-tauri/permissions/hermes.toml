@@ -19,9 +19,9 @@ description = "Persist the show-tool-detail toggle."
 commands.allow = ["set_show_tool_detail"]
 
 [[permission]]
-identifier = "allow-set-plan-mode"
-description = "Persist one bot's Plan Mode toggle."
-commands.allow = ["set_plan_mode"]
+identifier = "allow-set-compose-mode"
+description = "Persist one bot's composer mode."
+commands.allow = ["set_compose_mode"]
 
 [[permission]]
 identifier = "allow-probe-gateway"

@@ -1834,7 +1834,7 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   box-shadow: 0 0 0 3px var(--bot-10);
 }
 
-.plan-mode-chip {
+.compose-mode-chip {
   flex: none;
   height: 28px;
   padding: 0 8px;
@@ -1848,15 +1848,15 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   cursor: pointer;
 }
 
-.plan-mode-chip[aria-pressed="true"] {
+.compose-mode-chip[aria-pressed="true"] {
   background: var(--bot-10);
   border-color: #0000f2;
   color: #14142b;
   box-shadow: 0 0 0 1px #0000f2;
 }
 
-.composer.is-plan-mode input,
-.composer.is-plan-mode input:focus {
+.composer.is-compose-mode input,
+.composer.is-compose-mode input:focus {
   border-color: #0000f2;
   box-shadow: 0 0 0 3px var(--bot-10);
 }

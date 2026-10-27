@@ -85,27 +85,104 @@ export function planTask(text) {
   return match[1].trim();
 }
 
-/**
- * Text the gateway should receive. Plan Mode prefixes plain text with `/plan`.
- * A line that already starts with `/` (including `/plan`, `/renew`, `/stop`) stays as typed.
- */
-export function planModeWire(text, enabled) {
-  const line = String(text ?? "").trim();
-  if (!enabled || !line || line.startsWith("/")) return line;
-  return `/plan ${line}`;
+/** Composer modes. Empty is 「一般」. Debug and yolo are never modes. */
+export const COMPOSE_GENERAL = "";
+export const COMPOSE_PLAN = "plan";
+export const COMPOSE_BTW = "btw";
+
+const COMPOSE_ORDER = [COMPOSE_GENERAL, COMPOSE_PLAN, COMPOSE_BTW];
+
+export function normalizeComposeMode(mode) {
+  const value = String(mode || "").trim().toLowerCase();
+  if (value === COMPOSE_PLAN) return COMPOSE_PLAN;
+  if (value === COMPOSE_BTW) return COMPOSE_BTW;
+  return COMPOSE_GENERAL;
 }
 
-/** Bubble copy for a `/plan` send. `command` stays `plan` so plan linking still matches. */
-export function planBubble(text) {
+export function composeModeLabel(mode) {
+  const id = normalizeComposeMode(mode);
+  if (id === COMPOSE_PLAN) return "Plan";
+  if (id === COMPOSE_BTW) return "旁問";
+  return "一般";
+}
+
+function commandToken(name) {
+  return String(name || "").trim().replace(/^\//, "").toLowerCase();
+}
+
+/**
+ * Which prefixed modes the gateway list offers.
+ * A missing list (`exposed` false) keeps both. A listed command with enabled false is hidden.
+ */
+export function offeredComposeModes(commands, exposed) {
+  if (!exposed) return { plan: true, btw: true };
+  const names = new Set();
+  for (const command of commands || []) {
+    if (!command || command.enabled === false) continue;
+    names.add(commandToken(command.name));
+    for (const alias of command.aliases || []) names.add(commandToken(alias));
+  }
+  return { plan: names.has("plan"), btw: names.has("btw") };
+}
+
+export function effectiveComposeMode(mode, offered) {
+  const id = normalizeComposeMode(mode);
+  if (id === COMPOSE_PLAN && offered && offered.plan === false) return COMPOSE_GENERAL;
+  if (id === COMPOSE_BTW && offered && offered.btw === false) return COMPOSE_GENERAL;
+  return id;
+}
+
+/** Shift+Tab and the chip advance through the modes the server still offers. */
+export function nextComposeMode(mode, offered) {
+  const visible = COMPOSE_ORDER.filter((id) => {
+    if (id === COMPOSE_PLAN) return !offered || offered.plan !== false;
+    if (id === COMPOSE_BTW) return !offered || offered.btw !== false;
+    return true;
+  });
+  const current = effectiveComposeMode(mode, offered);
+  const index = Math.max(0, visible.indexOf(current));
+  return visible[(index + 1) % visible.length];
+}
+
+/**
+ * Text the gateway should receive.
+ * A line that already starts with `/` (including `/plan`, `/btw`, `/renew`, `/stop`) stays as typed.
+ */
+export function composeModeWire(text, mode) {
+  const line = String(text ?? "").trim();
+  const id = normalizeComposeMode(mode);
+  if (!line || !id || line.startsWith("/")) return line;
+  if (id === COMPOSE_PLAN) return `/plan ${line}`;
+  if (id === COMPOSE_BTW) return `/btw ${line}`;
+  return line;
+}
+
+/** Task text after `/btw`, or null when the message is not that command. */
+export function sideQuestionTask(text) {
+  const match = String(text || "").trim().match(/^\/btw\b\s*(.*)$/i);
+  if (!match) return null;
+  return match[1].trim();
+}
+
+/** `/btw` is a side question and goes out on its own, even while a turn is running. */
+export function composeSkipsBusyQueue(text) {
+  return sideQuestionTask(text) !== null;
+}
+
+/** Bubble copy. `command` stays `plan` or `btw` so plan linking still matches. */
+export function composeBubble(text) {
   const line = String(text ?? "").trim();
   const task = planTask(line);
-  if (task === null) return { text: line, command: "" };
-  return { text: task, command: "plan" };
+  if (task !== null) return { text: task, command: "plan" };
+  const side = sideQuestionTask(line);
+  if (side !== null) return { text: side, command: "btw" };
+  return { text: line, command: "" };
 }
 
-/** Chip on a user bubble. Plan Mode shows 「Plan」, not the raw `/plan` prefix. */
+/** Chip on a user bubble. Plan shows 「Plan」, a side question shows 「旁問」. */
 export function planChipText(command) {
   if (command === "plan") return "Plan";
+  if (command === "btw") return "旁問";
   return String(command || "");
 }
 

@@ -17,7 +17,7 @@
     "allow-save-settings",
     "allow-set-show-bot-names",
     "allow-set-show-tool-detail",
-    "allow-set-plan-mode",
+    "allow-set-compose-mode",
     "allow-probe-gateway",
     "allow-discover-profiles",
     "allow-open-bot",

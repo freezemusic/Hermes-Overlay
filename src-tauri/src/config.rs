@@ -29,10 +29,10 @@ pub struct BotConfig {
     /// Hidden profiles stay in the roster (and keep their key) but are not orbs.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// R-MD-07. Composer Plan Mode for this profile.
-    /// Omitted while off so an untouched bot object stays byte-identical.
-    #[serde(default, skip_serializing_if = "skip_false")]
-    pub plan_mode: bool,
+    /// R-MD-07. Composer mode for this profile: empty is 一般, `plan`, or `btw`.
+    /// Omitted while empty so an untouched bot object stays byte-identical.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub compose_mode: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,7 +380,7 @@ pub fn merge_discovered_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint
             session_explicit: false,
             session_anchor: 0.0,
             enabled: true,
-            plan_mode: false,
+            compose_mode: String::new(),
         });
     }
 }
@@ -413,7 +413,7 @@ pub fn append_new_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint]) -> 
             session_explicit: false,
             session_anchor: 0.0,
             enabled: true,
-            plan_mode: false,
+            compose_mode: String::new(),
         });
         added = true;
     }
@@ -913,12 +913,23 @@ fn insert_into_object(text: &str, obj_end: usize, field: &str) -> Result<String,
     Ok(out)
 }
 
-/// Writes `plan_mode` on one bot only when that bot's stored value changes.
+/// `一般` is omitted. Only `plan` and `btw` are stored. Debug and yolo are rejected.
+pub fn normalize_compose_mode(mode: &str) -> Result<String, String> {
+    match mode.trim() {
+        "" | "general" => Ok(String::new()),
+        "plan" => Ok("plan".into()),
+        "btw" => Ok("btw".into()),
+        _ => Err("撰寫模式唔合法".into()),
+    }
+}
+
+/// Writes `compose_mode` on one bot only when that bot's stored value changes.
 /// Splices the key inside that object. Sibling keys, other bots, and key
-/// order stay as they are. Off removes the key so a false flag is not stored.
-pub fn store_plan_mode(path: &Path, profile: &str, enabled: bool) -> Result<bool, String> {
+/// order stay as they are. 一般 removes the key.
+pub fn store_compose_mode(path: &Path, profile: &str, mode: &str) -> Result<bool, String> {
     let profile = profile.trim();
     validate_profile(profile)?;
+    let mode = normalize_compose_mode(mode)?;
     if !path.exists() {
         return Err(format!("名單冇 profile「{profile}」"));
     }
@@ -936,27 +947,29 @@ pub fn store_plan_mode(path: &Path, profile: &str, enabled: bool) -> Result<bool
         return Err(format!("名單冇 profile「{profile}」"));
     };
     let current = bot
-        .get("plan_mode")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    if current == enabled {
+        .get("compose_mode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if current == mode {
         return Ok(false);
     }
     let (start, end) = bot_object_bounds(&text, profile)?;
-    let patched = if enabled {
-        if let Some(span) = object_field(&text, start, "plan_mode") {
-            let mut out = String::with_capacity(text.len());
-            out.push_str(&text[..span.value_start]);
-            out.push_str("true");
-            out.push_str(&text[span.value_end..]);
-            out
-        } else {
-            insert_into_object(&text, end, "\"plan_mode\": true")?
-        }
-    } else {
-        let span = object_field(&text, start, "plan_mode")
+    let patched = if mode.is_empty() {
+        let span = object_field(&text, start, "compose_mode")
             .ok_or_else(|| "設定檔格式唔啱".to_string())?;
         remove_top_level_field(&text, &span)
+    } else if let Some(span) = object_field(&text, start, "compose_mode") {
+        let mut out = String::with_capacity(text.len() + mode.len());
+        out.push_str(&text[..span.value_start]);
+        out.push('"');
+        out.push_str(&mode);
+        out.push('"');
+        out.push_str(&text[span.value_end..]);
+        out
+    } else {
+        insert_into_object(&text, end, &format!("\"compose_mode\": \"{mode}\""))?
     };
     write_config_text(path, &patched)?;
     Ok(true)
@@ -1237,7 +1250,7 @@ mod tests {
                 session_explicit: false,
                 session_anchor: 0.0,
                 enabled: true,
-                plan_mode: false,
+                compose_mode: String::new(),
             }],
             ..AppConfig::default()
         };
@@ -1337,7 +1350,7 @@ mod tests {
                 session_explicit: true,
                 session_anchor: 40.0,
                 enabled: false,
-                plan_mode: false,
+                compose_mode: String::new(),
             },
             BotConfig {
                 profile: "remote".into(),
@@ -1349,7 +1362,7 @@ mod tests {
                 session_explicit: false,
                 session_anchor: 0.0,
                 enabled: true,
-                plan_mode: false,
+                compose_mode: String::new(),
             },
         ];
         merge_discovered_profiles(
@@ -1439,7 +1452,7 @@ other:
             session_explicit: false,
             session_anchor: 0.0,
             enabled: true,
-            plan_mode: false,
+            compose_mode: String::new(),
         }];
         merge_discovered_profiles(
             &mut bots,
@@ -1497,7 +1510,7 @@ other:
                 session_explicit: true,
                 session_anchor: 12.5,
                 enabled: false,
-                plan_mode: false,
+                compose_mode: String::new(),
             }],
             gateway_base_url: "http://10.10.24.33:8642".into(),
             ..AppConfig::default()
@@ -1578,7 +1591,7 @@ other:
                 session_explicit: true,
                 session_anchor: 3.0,
                 enabled: false,
-                plan_mode: false,
+                compose_mode: String::new(),
             }],
             ..AppConfig::default()
         };
@@ -1635,7 +1648,7 @@ other:
                 session_explicit: false,
                 session_anchor: 4.0,
                 enabled: true,
-                plan_mode: false,
+                compose_mode: String::new(),
             }],
             ..AppConfig::default()
         };
@@ -1747,7 +1760,7 @@ other:
                 session_explicit: false,
                 session_anchor: 4.0,
                 enabled: true,
-                plan_mode: false,
+                compose_mode: String::new(),
             }],
             ..AppConfig::default()
         };
@@ -1795,7 +1808,7 @@ other:
                 session_explicit: false,
                 session_anchor: 4.0,
                 enabled: true,
-                plan_mode: false,
+                compose_mode: String::new(),
             }],
             gateway_base_url: "http://10.10.24.33:8642".into(),
             ..AppConfig::default()
@@ -1891,7 +1904,7 @@ other:
     }
 
     #[test]
-    fn plan_mode_is_written_only_on_the_toggled_bot() {
+    fn compose_mode_is_written_only_on_the_changed_bot() {
         let dir = std::env::temp_dir().join(format!(
             "hermes-plan-mode-{}-{}",
             std::process::id(),
@@ -1927,46 +1940,58 @@ other:
 "##;
         fs::write(&path, original).unwrap();
         let before = fs::read(&path).unwrap();
-        assert!(!load(&path).unwrap().bots[0].plan_mode);
-        assert_eq!(store_plan_mode(&path, "alpha", false).unwrap(), false);
+        assert!(load(&path).unwrap().bots[0].compose_mode.is_empty());
+        assert_eq!(store_compose_mode(&path, "alpha", "").unwrap(), false);
+        assert_eq!(store_compose_mode(&path, "alpha", "general").unwrap(), false);
         assert_eq!(fs::read(&path).unwrap(), before);
-        assert!(store_plan_mode(&path, "nope", true).is_err());
+        assert!(store_compose_mode(&path, "alpha", "debug").is_err());
+        assert!(store_compose_mode(&path, "alpha", "yolo").is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
-        assert!(store_plan_mode(&path, "../x", true).is_err());
+        assert!(store_compose_mode(&path, "nope", "plan").is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(store_compose_mode(&path, "../x", "plan").is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
         let missing = dir.join("missing.json");
-        assert!(store_plan_mode(&missing, "alpha", true).is_err());
+        assert!(store_compose_mode(&missing, "alpha", "plan").is_err());
         assert!(!missing.exists());
 
         let beta_before = {
             let (start, end) = bot_object_bounds(original, "beta").unwrap();
             original[start..end].to_string()
         };
-        assert_eq!(store_plan_mode(&path, "alpha", true).unwrap(), true);
+        assert_eq!(store_compose_mode(&path, "alpha", "plan").unwrap(), true);
         let on = fs::read_to_string(&path).unwrap();
-        assert_eq!(on.matches("\"plan_mode\"").count(), 1);
+        assert_eq!(on.matches("\"compose_mode\"").count(), 1);
+        assert!(!on.contains("yolo"));
+        assert!(!on.contains("debug"));
         let (a0, a1) = bot_object_bounds(&on, "alpha").unwrap();
         let alpha = &on[a0..a1];
-        assert!(alpha.contains("\"plan_mode\": true"), "{alpha}");
-        assert!(alpha.find("\"session_id\"").unwrap() < alpha.find("\"plan_mode\"").unwrap());
-        assert!(alpha.find("\"color\"").unwrap() < alpha.find("\"plan_mode\"").unwrap());
+        assert!(alpha.contains("\"compose_mode\": \"plan\""), "{alpha}");
+        assert!(alpha.find("\"session_id\"").unwrap() < alpha.find("\"compose_mode\"").unwrap());
+        assert!(alpha.find("\"color\"").unwrap() < alpha.find("\"compose_mode\"").unwrap());
         assert!(alpha.contains("\"session_id\": \"api_alpha\""));
         assert!(alpha.contains("\"color\": \"#112233\""));
         let (b0, b1) = bot_object_bounds(&on, "beta").unwrap();
         assert_eq!(&on[b0..b1], beta_before);
         assert!(on.contains("\"show_bot_names\": true"));
         let loaded = load(&path).unwrap();
-        assert!(loaded.bots[0].plan_mode);
-        assert!(!loaded.bots[1].plan_mode);
+        assert_eq!(loaded.bots[0].compose_mode, "plan");
+        assert!(loaded.bots[1].compose_mode.is_empty());
         assert_eq!(loaded.bots[0].session_id, "api_alpha");
         assert_eq!(loaded.bots[1].session_id, "api_beta");
         assert_eq!(loaded.bots[1].color, "#445566");
         let on_bytes = fs::read(&path).unwrap();
-        assert_eq!(store_plan_mode(&path, "alpha", true).unwrap(), false);
+        assert_eq!(store_compose_mode(&path, "alpha", "plan").unwrap(), false);
         assert_eq!(fs::read(&path).unwrap(), on_bytes);
-        assert_eq!(store_plan_mode(&path, "alpha", false).unwrap(), true);
+        assert_eq!(store_compose_mode(&path, "alpha", "btw").unwrap(), true);
+        let switched = fs::read_to_string(&path).unwrap();
+        assert_eq!(switched.matches("\"compose_mode\"").count(), 1);
+        assert!(switched.contains("\"compose_mode\": \"btw\""));
+        let (b0, b1) = bot_object_bounds(&switched, "beta").unwrap();
+        assert_eq!(&switched[b0..b1], beta_before);
+        assert_eq!(store_compose_mode(&path, "alpha", "").unwrap(), true);
         assert_eq!(fs::read(&path).unwrap(), before);
-        assert!(!load(&path).unwrap().bots.iter().any(|bot| bot.plan_mode));
+        assert!(load(&path).unwrap().bots.iter().all(|bot| bot.compose_mode.is_empty()));
 
         let held = r##"{
   "version": 1,
@@ -1976,7 +2001,7 @@ other:
       "display_name": "Alpha",
       "color": "#112233",
       "session_id": "api_alpha",
-      "plan_mode": false,
+      "compose_mode": "plan",
       "enabled": true
     },
     {
@@ -1984,7 +2009,7 @@ other:
       "display_name": "Beta",
       "color": "#445566",
       "session_id": "api_beta",
-      "plan_mode": true
+      "compose_mode": "btw"
     }
   ]
 }
@@ -1994,18 +2019,18 @@ other:
             let (start, end) = bot_object_bounds(held, "beta").unwrap();
             held[start..end].to_string()
         };
-        assert_eq!(store_plan_mode(&path, "alpha", false).unwrap(), false);
+        assert_eq!(store_compose_mode(&path, "alpha", "plan").unwrap(), false);
         assert_eq!(fs::read(&path).unwrap(), held.as_bytes());
-        assert_eq!(store_plan_mode(&path, "alpha", true).unwrap(), true);
+        assert_eq!(store_compose_mode(&path, "alpha", "btw").unwrap(), true);
         let flipped = fs::read_to_string(&path).unwrap();
         let (start, end) = bot_object_bounds(&flipped, "alpha").unwrap();
         let alpha = &flipped[start..end];
-        assert!(alpha.contains("\"plan_mode\": true"), "{alpha}");
-        assert!(alpha.find("\"color\"").unwrap() < alpha.find("\"plan_mode\"").unwrap());
-        assert!(alpha.find("\"plan_mode\"").unwrap() < alpha.find("\"enabled\"").unwrap());
+        assert!(alpha.contains("\"compose_mode\": \"btw\""), "{alpha}");
+        assert!(alpha.find("\"color\"").unwrap() < alpha.find("\"compose_mode\"").unwrap());
+        assert!(alpha.find("\"compose_mode\"").unwrap() < alpha.find("\"enabled\"").unwrap());
         let (start, end) = bot_object_bounds(&flipped, "beta").unwrap();
         assert_eq!(&flipped[start..end], beta_on);
-        assert!(load(&path).unwrap().bots[1].plan_mode);
+        assert_eq!(load(&path).unwrap().bots[1].compose_mode, "btw");
         let _ = fs::remove_dir_all(&dir);
     }
 }

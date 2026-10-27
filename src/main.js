@@ -5,7 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { latestPlan, noteNewestPlan, planBodyLead, planBubble, planChipText, planDemoMarkdown, planForPanel, planModeWire, plansIn, rememberPlan } from "./plan.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, plansIn, rememberPlan } from "./plan.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
   CONTENT_IN_MS,
@@ -3804,6 +3804,7 @@ const state = {
   catalog: null,
   catalogHint: "",
   catalogProfile: "",
+  composeCatalogs: new Map(),
   slashIndex: 0,
   slashArgsHint: "",
   reconnectToken: 0,
@@ -4745,7 +4746,7 @@ function renderChat(id = state.activeId, options = {}) {
   }
   if (stop) stop.hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
   if (send) send.disabled = locked || (state.mode === "hermes" && state.busy.has(bot.id));
-  paintPlanMode(id);
+  paintComposeMode(id);
   if (!quietChrome) syncActivityChrome(id);
   if (!shell || !visualQuiet(shell)) scheduleHitSync();
   paintApprovalBadge(id);
@@ -5957,7 +5958,7 @@ function applyRoster(synced) {
   if (prev === ids) {
     state.bots = next.map((bot) => {
       const old = state.bots.find((item) => item.id === bot.id);
-      return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, hasKey: bot.hasKey, planMode: bot.planMode } : bot;
+      return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, hasKey: bot.hasKey, composeMode: bot.composeMode } : bot;
     });
   } else {
     state.bots = next;
@@ -6194,9 +6195,9 @@ function wireBotPanel(panel, id) {
     noteChatScroll(id, chat, chat.dataset.userScroll === "1");
   });
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
-  role(panel, "plan-mode")?.addEventListener("click", () => {
+  role(panel, "compose-mode")?.addEventListener("click", () => {
     state.activeId = id;
-    togglePlanMode(id);
+    cycleComposeMode(id);
   });
   role(panel, "continue")?.addEventListener("click", () => continueApiSession(id));
   role(panel, "switch")?.addEventListener("click", () => switchClosedSession(id));
@@ -6269,7 +6270,7 @@ function wireBotPanel(panel, id) {
     if (event.key === "Tab" && event.shiftKey) {
       event.preventDefault();
       event.stopPropagation();
-      togglePlanMode(id);
+      cycleComposeMode(id);
       return;
     }
     if (slashPopupOpen()) {
@@ -6396,7 +6397,7 @@ function presentMessage(m) {
         expanded: false,
       };
     }
-    const plan = planBubble(m.text);
+    const plan = composeBubble(m.text);
     if (plan.command) return { role: "user", text: plan.text, command: plan.command };
   }
   return { role: m.role, text: m.text };
@@ -7183,51 +7184,94 @@ function handleHermes(payload) {
   }
 }
 
-function planModeOn(id) {
-  return !!state.bots.find((bot) => bot.id === id)?.planMode;
+function noteComposeCatalog(id, commands, hint) {
+  if (!id) return;
+  const exposed = state.mode === "hermes" && !String(hint || "").trim();
+  state.composeCatalogs.set(id, { commands: commands || [], exposed });
 }
 
-function paintPlanMode(id) {
-  const panel = panelFor(id);
-  if (!panel) return;
-  const on = planModeOn(id);
-  const chip = role(panel, "plan-mode");
-  const composer = panel.querySelector(".composer");
-  if (chip) chip.setAttribute("aria-pressed", on ? "true" : "false");
-  if (composer) composer.classList.toggle("is-plan-mode", on);
+function offeredFor(id) {
+  const entry = state.composeCatalogs.get(id);
+  if (!entry?.exposed) return { plan: true, btw: true };
+  return offeredComposeModes(entry.commands, true);
 }
 
-const planModeWrite = new Map();
+function composeModeOf(id) {
+  const stored = state.bots.find((bot) => bot.id === id)?.composeMode;
+  return effectiveComposeMode(stored, offeredFor(id));
+}
 
-async function togglePlanMode(id) {
-  const bot = state.bots.find((item) => item.id === id);
-  if (!bot) return;
-  const next = !bot.planMode;
-  bot.planMode = next;
-  paintPlanMode(id);
-  if (state.mode !== "hermes" || !inTauri()) return;
-  const generation = (planModeWrite.get(id) || 0) + 1;
-  planModeWrite.set(id, generation);
+const composeCatalogLoads = new Set();
+
+async function loadComposeCatalog(id) {
+  if (!id || state.mode !== "hermes" || !inTauri()) return;
+  if (state.composeCatalogs.has(id) || composeCatalogLoads.has(id)) return;
+  composeCatalogLoads.add(id);
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const settings = await invoke("set_plan_mode", { profile: id, enabled: next });
-    if (planModeWrite.get(id) !== generation) return;
-    const row = (settings?.bots || []).find((item) => item.profile === id);
-    if (row) bot.planMode = !!row.plan_mode;
-    paintPlanMode(id);
+    const result = await invoke("list_commands", { profile: id });
+    noteComposeCatalog(id, result.commands || [], result.hint || "");
   } catch (err) {
-    if (planModeWrite.get(id) !== generation) return;
-    bot.planMode = !next;
-    paintPlanMode(id);
+    noteComposeCatalog(id, [], String(err));
+  } finally {
+    composeCatalogLoads.delete(id);
+  }
+  paintComposeMode(id);
+}
+
+function paintComposeMode(id) {
+  const panel = panelFor(id);
+  if (!panel) return;
+  const mode = composeModeOf(id);
+  const chip = role(panel, "compose-mode");
+  const composer = panel.querySelector(".composer");
+  if (chip) {
+    chip.textContent = composeModeLabel(mode);
+    chip.setAttribute("aria-pressed", mode ? "true" : "false");
+  }
+  if (composer) composer.classList.toggle("is-compose-mode", !!mode);
+  void loadComposeCatalog(id);
+}
+
+const composeModeWrite = new Map();
+
+async function cycleComposeMode(id) {
+  const bot = state.bots.find((item) => item.id === id);
+  if (!bot) return;
+  const prev = normalizeComposeMode(bot.composeMode);
+  const next = nextComposeMode(prev, offeredFor(id));
+  if (next === prev) return;
+  bot.composeMode = next;
+  paintComposeMode(id);
+  if (state.mode !== "hermes" || !inTauri()) return;
+  const generation = (composeModeWrite.get(id) || 0) + 1;
+  composeModeWrite.set(id, generation);
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const settings = await invoke("set_compose_mode", { profile: id, mode: next });
+    if (composeModeWrite.get(id) !== generation) return;
+    const row = (settings?.bots || []).find((item) => item.profile === id);
+    if (row) bot.composeMode = normalizeComposeMode(row.compose_mode);
+    paintComposeMode(id);
+  } catch (err) {
+    if (composeModeWrite.get(id) !== generation) return;
+    bot.composeMode = prev;
+    paintComposeMode(id);
     showActionError(String(err));
   }
 }
 
-function userPlanMessage(wire) {
-  const shown = planBubble(wire);
+function composeUserMessage(wire) {
+  const shown = composeBubble(wire);
   return shown.command
     ? { role: "user", text: shown.text, command: shown.command }
     : { role: "user", text: shown.text };
+}
+
+function demoReply(shown) {
+  if (shown.command === "plan") return planDemoMarkdown(shown.text);
+  if (shown.command === "btw") return `（示範旁問）${shown.text}`;
+  return `（示範回覆）收到：「${shown.text}」。未設定 Hermes gateway。`;
 }
 
 async function sendActive(id = state.activeId) {
@@ -7248,10 +7292,10 @@ async function sendActive(id = state.activeId) {
   state.slashPanelId = id;
   thread.followTail = true;
   thread.stopNoted = false;
-  const text = planModeWire(typed, planModeOn(id));
+  const text = composeModeWire(typed, composeModeOf(id));
   const busy = state.mode === "hermes" && state.busy.has(id);
   const action = resolveClient(text, state.catalog || []);
-  if (busy && action?.command !== "stop") {
+  if (busy && action?.command !== "stop" && !composeSkipsBusyQueue(text)) {
     closeSlash();
     input.value = "";
     input.placeholder = "輸入訊息給呢個 Bot…";
@@ -7269,15 +7313,13 @@ async function sendActive(id = state.activeId) {
     await sendClientCommand(id, text, action);
     return;
   }
-  const shown = userPlanMessage(text);
+  const shown = composeUserMessage(text);
   appendMessage(id, shown);
   const sentId = id;
   noteActivity(sentId, { type: "send" });
   if (state.mode !== "hermes" || !inTauri()) {
     setTimeout(() => {
-      const reply = shown.command
-        ? planDemoMarkdown(shown.text)
-        : `（示範回覆）收到：「${shown.text}」。未設定 Hermes gateway。`;
+      const reply = demoReply(shown);
       appendMessage(sentId, { role: "bot", text: reply });
       noteActivity(sentId, { type: "completed", text: reply });
     }, 350);
@@ -7350,7 +7392,7 @@ function botsFromSettings(settings) {
     detail: bot.detail || `profile ${bot.profile}`,
     float: null,
     hasKey: bot.has_key,
-    planMode: !!bot.plan_mode,
+    composeMode: normalizeComposeMode(bot.compose_mode),
   }));
 }
 
@@ -7402,6 +7444,7 @@ function useMock(reason, bannerAction = "") {
   window.clearInterval(state.chatRefresh);
   state.chatRefresh = 0;
   state.mode = "mock";
+  state.composeCatalogs.clear();
   state.bots = MOCK_BOTS.map((bot) => ({
     ...bot,
     messages: bot.messages.map((m) => ({ ...m })),
@@ -7447,6 +7490,7 @@ function useHermes(settings) {
   adoptKanbanPick(settings);
   state.showBotNames = !!settings?.show_bot_names;
   state.showToolDetail = !!settings?.show_tool_detail;
+  state.composeCatalogs.clear();
   state.bots = botsFromSettings(settings);
   state.threads = new Map();
   state.busy.clear();
@@ -8034,15 +8078,13 @@ async function catchUpSession(id) {
 
 async function sendWhileBusy(id, text) {
   const thread = threadFor(id);
-  const shown = userPlanMessage(text);
+  const shown = composeUserMessage(text);
   appendMessage(id, shown);
   noteActivity(id, { type: "send" });
   if (state.mode !== "hermes" || !inTauri()) {
     appendMessage(id, { role: "commentary", text: "排隊中，等佢講完就會行" });
     window.setTimeout(() => {
-      const reply = shown.command
-        ? planDemoMarkdown(shown.text)
-        : `（示範回覆）收到：「${shown.text}」。未設定 Hermes gateway。`;
+      const reply = demoReply(shown);
       appendMessage(id, { role: "bot", text: reply });
       noteActivity(id, { type: "completed", text: reply });
       setBotStatus(id, "閒置", "idle");
@@ -8153,6 +8195,7 @@ async function ensureCatalog() {
     state.catalog = PREVIEW_COMMANDS;
     state.catalogHint = "";
     state.catalogProfile = state.activeId || "";
+    noteComposeCatalog(state.catalogProfile, state.catalog, state.catalogHint);
     return;
   }
   try {
@@ -8166,6 +8209,8 @@ async function ensureCatalog() {
     state.catalogHint = String(err);
     state.catalogProfile = state.activeId;
   }
+  noteComposeCatalog(state.catalogProfile, state.catalog, state.catalogHint);
+  paintComposeMode(state.catalogProfile);
 }
 
 function renderSlashPopup() {
