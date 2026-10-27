@@ -65,6 +65,7 @@ import {
   tighten,
   cronShellHeight,
   chatTailAction,
+  pinnedScrollTop,
 } from "./morph.js";
 import { isProfileEnabled, keyBannerSlot, panelErrorSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
 import {
@@ -5092,24 +5093,21 @@ function pinChat(id) {
   const apply = () => {
     const thread = threadFor(id);
     const chat = chatOf(id);
-    if (!chat || thread.followTail === false) return;
+    const top = pinnedScrollTop(chat, thread.followTail !== false);
+    if (top == null || !chat) return false;
     markProgrammaticScroll(chat);
-    chat.scrollTop = chat.scrollHeight;
+    chat.scrollTop = top;
+    return true;
   };
-  apply();
+  if (!apply()) return;
   const token = (pinTokens.get(id) || 0) + 1;
   pinTokens.set(id, token);
   requestAnimationFrame(() => {
     if (pinTokens.get(id) !== token) return;
     apply();
     requestAnimationFrame(() => {
-      if (pinTokens.get(id) !== token) return;
-      apply();
-      requestAnimationFrame(() => {
-        if (pinTokens.get(id) !== token) return;
-        const chat = chatOf(id);
-        if (chat) delete chat.dataset.programmaticScroll;
-      });
+      const chat = chatOf(id);
+      if (chat) delete chat.dataset.programmaticScroll;
     });
   });
 }

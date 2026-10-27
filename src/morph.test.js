@@ -63,6 +63,7 @@ import {
   seamWidthPx,
   cronShellHeight,
   chatTailAction,
+  pinnedScrollTop,
   hostOpenPlan,
   releasePlanDock,
   planControlUnder,
@@ -518,6 +519,12 @@ test("plan seam and cron height and chat tail use explicit pixels", () => {
   assert.equal(chatTailAction({ followTail: false, userGesture: false, nearTail: false }), "restore");
   assert.equal(chatTailAction({ followTail: true, userGesture: true, nearTail: false }), "remember");
   assert.equal(chatTailAction({ followTail: false, userGesture: true, nearTail: true }), "pin");
+  const grown = { scrollHeight: 800, clientHeight: 400, scrollTop: 400 };
+  assert.equal(pinnedScrollTop(grown, true), null);
+  grown.scrollHeight = 860;
+  assert.equal(pinnedScrollTop(grown, true), 460);
+  assert.equal(pinnedScrollTop(grown, false), null);
+  assert.equal(pinnedScrollTop({ scrollHeight: 200, clientHeight: 400, scrollTop: 12 }, false), null);
 });
 
 test("collapse is one ease-in and the clock is pinned per edge", () => {

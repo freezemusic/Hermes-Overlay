@@ -336,6 +336,21 @@ export function chatTailAction({ followTail = true, userGesture = false, nearTai
 }
 
 /**
+ * Scroll offset that keeps the newest token in view. `null` means leave
+ * scrollTop alone: the reader has moved up, or the tail is already pinned
+ * (rewriting it is the one-pixel jitter).
+ */
+export function pinnedScrollTop(chat, followTail = true) {
+  if (followTail === false || !chat) return null;
+  const height = Number(chat.scrollHeight) || 0;
+  const client = Number(chat.clientHeight) || 0;
+  const top = Number(chat.scrollTop) || 0;
+  const target = Math.max(0, height - client);
+  if (target - top <= 1) return null;
+  return target;
+}
+
+/**
  * Clip that reveals one shape inside the final box. Pill and orb insets use
  * `--pill-h` / `--pill-w` so a bottom-left anchor starts at
  * `inset(calc(100% - var(--pill-h)) calc(100% - var(--pill-w)) 0 0 round 999px)`.
