@@ -300,6 +300,8 @@ struct SessionChoice {
     preview: String,
     source: String,
     archived: bool,
+    ended: bool,
+    end_reason: String,
 }
 
 #[derive(Serialize)]
@@ -625,6 +627,8 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
             preview: session.preview.clone(),
             source: session.source.clone(),
             archived: session.archived,
+            ended: session.ended,
+            end_reason: session.end_reason.clone(),
         })
         .collect();
     if !active.is_empty() && !rows.iter().any(|row| row.id == active) {
@@ -638,6 +642,8 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
                 preview: String::new(),
                 source: String::new(),
                 archived: false,
+                ended: false,
+                end_reason: String::new(),
             },
         );
     }
@@ -708,16 +714,7 @@ fn remembered_run_id(state: &AppState, profile: &str) -> String {
 }
 
 fn chat_failure_line(err: &HermesError) -> String {
-    match err {
-        HermesError::Http { body, .. } if hermes::text_is_permission_denied(body) => {
-            hermes::session_read_only_reason().into()
-        }
-        HermesError::Protocol(msg) if hermes::text_is_permission_denied(msg) => {
-            hermes::session_read_only_reason().into()
-        }
-        HermesError::Http { status: 409, .. } => "個 bot 仲忙，呢句未送出。".into(),
-        other => explain(other),
-    }
+    hermes::send_failure(err).line
 }
 
 fn emit(app: &AppHandle, payload: serde_json::Value) {
@@ -1418,26 +1415,26 @@ async fn open_bot(
     }
 }
 
-#[tauri::command]
-async fn select_session(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    profile: String,
-    session_id: String,
+/// The manual picker write. Only this profile's session id, explicit flag, and
+/// the existing anchor are stored. Other config keys stay as they were.
+async fn open_explicit_session(
+    app: &AppHandle,
+    http: &reqwest::Client,
+    sessions: &std::sync::Mutex<HashMap<String, SessionPin>>,
+    config_write: &std::sync::Mutex<()>,
+    profile: &str,
+    root: &str,
+    key: &str,
+    session_id: &str,
 ) -> Result<OpenedChat, String> {
     let session_id = session_id.trim().to_string();
     if session_id.is_empty() {
         return Err("未揀對話".into());
     }
-    let cfg = load_config(&app)?;
-    require_hermes(&cfg)?;
-    let bot = bot_or_err(&cfg, &profile)?;
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-    let sessions = hermes::list_sessions_for_bot_chat(&state.http, &root, &key)
+    let listed = hermes::list_sessions_for_bot_chat(http, root, key)
         .await
         .map_err(|err| explain(&err))?;
-    let Some(chosen) = sessions.iter().find(|session| session.id == session_id) else {
+    let Some(chosen) = listed.iter().find(|session| session.id == session_id) else {
         return Err("搵唔到呢個對話".into());
     };
     let read_only = hermes::session_read_only(&chosen.source);
@@ -1447,16 +1444,17 @@ async fn select_session(
         String::new()
     };
     let source = chosen.source.clone();
-    let anchor = hermes::most_recent_session(&sessions)
+    let anchor = hermes::most_recent_session(&listed)
         .map(|session| session.last_active)
         .unwrap_or(0.0);
-    let messages = hermes::fetch_messages(&state.http, &root, &key, &session_id)
+    let messages = hermes::fetch_messages(http, root, key, &session_id)
         .await
         .map_err(|err| explain(&err))?;
-    remember_pin(
-        &app,
-        &state,
-        &profile,
+    persist_pin(
+        app,
+        sessions,
+        config_write,
+        profile,
         SessionPin {
             id: session_id.clone(),
             explicit: true,
@@ -1464,8 +1462,8 @@ async fn select_session(
         },
     );
     Ok(OpenedChat {
-        sessions: session_choices(&sessions, &session_id),
-        profile,
+        sessions: session_choices(&listed, &session_id),
+        profile: profile.to_string(),
         session_id,
         session_explicit: true,
         session_anchor: anchor,
@@ -1474,6 +1472,87 @@ async fn select_session(
         read_only_reason,
         messages,
     })
+}
+
+#[tauri::command]
+async fn select_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    session_id: String,
+) -> Result<OpenedChat, String> {
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?;
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    open_explicit_session(
+        &app,
+        &state.http,
+        &state.sessions,
+        &state.config_write,
+        &profile,
+        &root,
+        &key,
+        &session_id,
+    )
+    .await
+}
+
+fn emit_session_offer(app: &AppHandle, profile: &str, switch_id: &str) {
+    emit(
+        app,
+        serde_json::json!({
+            "type": "session.offer",
+            "profile": profile,
+            "kind": "closed",
+            "notice": hermes::CLOSED_SESSION_LINE,
+            "switch_session_id": switch_id,
+        }),
+    );
+}
+
+/// After a turn, follow a session the server wrote instead of the one Devon picked.
+/// The write is the explicit picker path (`persist_pin`), and only that profile's session fields.
+async fn note_landed_session(
+    app: &AppHandle,
+    http: &reqwest::Client,
+    sessions: &Mutex<HashMap<String, SessionPin>>,
+    config_write: &Mutex<()>,
+    profile: &str,
+    root: &str,
+    key: &str,
+    posted: &str,
+    reported: &str,
+    known_ids: &[String],
+) {
+    let after = hermes::list_sessions_for_bot_chat(http, root, key)
+        .await
+        .unwrap_or_default();
+    if let Some(next) = hermes::landed_session_id(posted, reported, known_ids, &after) {
+        match open_explicit_session(
+            app, http, sessions, config_write, profile, root, key, &next,
+        )
+        .await
+        {
+            Ok(opened) => {
+                let mut payload = serde_json::to_value(&opened).unwrap_or(serde_json::json!({}));
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert("type".into(), serde_json::json!("session.moved"));
+                    object.insert("notice".into(), serde_json::json!(hermes::MOVED_SESSION_LINE));
+                }
+                emit(app, payload);
+            }
+            Err(_) => emit_session_offer(app, profile, &next),
+        }
+        return;
+    }
+    if after
+        .iter()
+        .any(|session| session.id == posted && session.ended)
+    {
+        emit_session_offer(app, profile, &hermes::closed_switch_id(&after, posted));
+    }
 }
 
 #[tauri::command]
@@ -1523,6 +1602,13 @@ async fn send_chat(
         }
         resolved.id
     };
+    if sessions
+        .iter()
+        .any(|session| session.id == session_id && session.ended)
+    {
+        return Err(hermes::CLOSED_SESSION_LINE.into());
+    }
+    let before_ids: Vec<String> = sessions.iter().map(|session| session.id.clone()).collect();
     let busy_label = if queued {
         "排隊中，等佢講完就會行"
     } else {
@@ -1606,7 +1692,21 @@ async fn send_chat(
         let result = run.await;
         end_stream(&streams, &profile, generation);
         match result {
-            Ok(()) => {}
+            Ok(landed) => {
+                note_landed_session(
+                    &app,
+                    &http,
+                    &session_cache,
+                    &config_write,
+                    &profile,
+                    &root,
+                    &key,
+                    &session_id,
+                    &landed,
+                    &before_ids,
+                )
+                .await;
+            }
             Err(HermesError::Cancelled) => {
                 let keep_busy = !stream_is_current(&streams, &profile, generation);
                 if !keep_busy {
@@ -1636,14 +1736,22 @@ async fn send_chat(
                         }),
                     );
                 } else {
+                    let failure = hermes::send_failure(&err);
                     let message = chat_failure_line(&err);
-                    emit_status(&app, &profile, "error", &message);
+                    if failure.kind == "closed" {
+                        emit_status(&app, &profile, "idle", "對話已關閉");
+                    } else {
+                        emit_status(&app, &profile, "error", &message);
+                    }
                     emit(
                         &app,
                         serde_json::json!({
                             "type": "error",
                             "profile": profile,
                             "message": message,
+                            "kind": failure.kind,
+                            "code": failure.code,
+                            "switch_session_id": failure.switch_session_id,
                         }),
                     );
                 }
@@ -3229,12 +3337,46 @@ mod tests {
         let rest = &src[start..];
         let end = rest.find("async fn send_chat").expect("send");
         let body = &rest[..end];
-        assert!(body.contains("fetch_messages"));
+        assert!(body.contains("open_explicit_session"));
         assert!(!body.contains("stop_run"));
         assert!(!body.contains("begin_stream"));
         assert!(!body.contains("request_stream_stop"));
         assert!(!body.contains("println"));
         assert!(!body.contains("eprintln"));
+        let open = src.find("async fn open_explicit_session").expect("open");
+        let open_body = &src[open..start];
+        assert!(open_body.contains("fetch_messages"));
+        assert!(open_body.contains("persist_pin"));
+        assert!(open_body.contains("explicit: true"));
+        assert!(!open_body.contains("store_show_bot_names"));
+        assert!(!open_body.contains("store_kanban_board"));
+        assert!(!open_body.contains("store_show_tool_detail"));
+        assert!(!open_body.contains("config::save"));
+    }
+
+    #[test]
+    fn a_closed_or_forked_send_is_not_called_busy() {
+        let src = include_str!("lib.rs");
+        let fail = src.find("fn chat_failure_line").expect("line");
+        let fail_body = &src[fail..fail + 200];
+        assert!(fail_body.contains("send_failure"));
+        assert!(!fail_body.contains("個 bot 仲忙"));
+        let send = src.find("async fn send_chat").expect("send");
+        let send_end = src.find("async fn respond_approval").expect("approval");
+        let body = &src[send..send_end];
+        assert!(body.contains("session.ended"));
+        assert!(body.contains("CLOSED_SESSION_LINE"));
+        assert!(body.contains("note_landed_session"));
+        assert!(body.contains("failure.kind"));
+        assert!(body.contains("switch_session_id"));
+        let note = src.find("async fn note_landed_session").expect("note");
+        let note_body = &src[note..send];
+        assert!(note_body.contains("landed_session_id"));
+        assert!(note_body.contains("open_explicit_session"));
+        assert!(note_body.contains("session.moved"));
+        assert!(note_body.contains("MOVED_SESSION_LINE"));
+        assert!(!note_body.contains("config::save"));
+        assert!(!note_body.contains("store_show_bot_names"));
     }
 
     #[test]
@@ -3450,6 +3592,8 @@ mod tests {
             delivery: false,
             parent_session_id: String::new(),
             archived: false,
+            ended: false,
+            end_reason: String::new(),
         };
         let archived = crate::hermes::SessionSummary {
             id: "old".into(),
@@ -3463,6 +3607,8 @@ mod tests {
             delivery: false,
             parent_session_id: String::new(),
             archived: true,
+            ended: false,
+            end_reason: String::new(),
         };
         let rows = super::session_choices(&[desktop, archived], "missing");
         assert_eq!(rows[0].id, "missing");

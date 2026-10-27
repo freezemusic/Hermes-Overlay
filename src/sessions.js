@@ -195,6 +195,42 @@ export function resolveSession(sessions, pin = {}) {
   return null;
 }
 
+/** The server closed this row (`ended_at` or `end_reason`, including `tui_shutdown`). */
+export function sessionEnded(session) {
+  if (!session) return false;
+  if (session.ended === true) return true;
+  const reason = String(session.end_reason || session.endReason || "").trim();
+  if (reason) return true;
+  const at = session.ended_at ?? session.endedAt;
+  if (typeof at === "number") return at > 0;
+  if (typeof at === "string") {
+    const text = at.trim();
+    return !!text && text !== "0" && text !== "null";
+  }
+  return false;
+}
+
+export const CLOSED_SESSION_LINE = "呢個對話已經喺伺服器關閉，回覆唔會出現喺呢度。";
+export const MOVED_SESSION_LINE = "回覆寫入咗另一個對話，已轉過去。";
+
+export function isClosedSendText(text) {
+  return String(text || "").includes("已經喺伺服器關閉");
+}
+
+/** A live writable chat to open after a closed one. Bot Chat wins. */
+export function closedSwitchTarget(sessions, currentId) {
+  const current = String(currentId || "");
+  const rows = (sessions || []).filter((session) => (
+    session
+    && session.id
+    && session.id !== current
+    && !sessionEnded(session)
+    && session.archived !== true
+    && !sessionReadOnly(session.source)
+  ));
+  return rows.find(isBotChat) || rows.slice().sort(byRecent)[0] || null;
+}
+
 /** Hidden wins, then archived, then a source the gateway will not accept. */
 export function sessionLabel(session) {
   const title = String(session?.title || "").trim() || session?.id || "";
@@ -218,13 +254,14 @@ function titleEndsWithSource(title, name) {
 }
 
 function sessionSuffix(session) {
-  if (session?.hidden) return "（隱藏）";
-  if (session?.archived === true) return "（已封存）";
+  const closed = sessionEnded(session) ? "（已結束）" : "";
+  if (session?.hidden) return closed ? "（隱藏／已結束）" : "（隱藏）";
+  if (session?.archived === true) return `（已封存）${closed}`;
   const source = String(session?.source || "").trim().toLowerCase();
-  if (!source || sessionAcceptsSend(source)) return "";
+  if (!source || sessionAcceptsSend(source)) return closed;
   const name = sourceWord(source);
-  if (titleEndsWithSource(session?.title, name)) return "（只可以睇）";
-  return `（${name}／只可以睇）`;
+  if (titleEndsWithSource(session?.title, name)) return `（只可以睇）${closed}`;
+  return `（${name}／只可以睇）${closed}`;
 }
 
 /** The read-only reason and the continue hint are two sentences. */
@@ -320,7 +357,7 @@ export function rememberUnsent(store, profile, sessionId, text) {
 }
 
 /** The error that belongs with an unsent send. Empty clears it. */
-export function rememberSendError(store, profile, sessionId, text) {
+export function rememberSendError(store, profile, sessionId, text, meta = {}) {
   const key = deniedKey(profile, sessionId);
   const line = String(text || "");
   if (!key || !store) return store;
@@ -328,14 +365,36 @@ export function rememberSendError(store, profile, sessionId, text) {
     store.delete(key);
     return store;
   }
-  store.set(key, line);
+  store.set(key, {
+    text: line,
+    kind: String(meta.kind || ""),
+    switchId: String(meta.switchId || ""),
+  });
   return store;
 }
 
-export function sendErrorDraft(store, profile, sessionId) {
+function storedSendError(store, profile, sessionId) {
   const key = deniedKey(profile, sessionId);
-  if (!key || !store) return "";
-  return String(store.get(key) || "");
+  const raw = key && store ? store.get(key) : null;
+  if (!raw) return { text: "", kind: "", switchId: "" };
+  if (typeof raw === "string") return { text: raw, kind: "", switchId: "" };
+  return {
+    text: String(raw.text || ""),
+    kind: String(raw.kind || ""),
+    switchId: String(raw.switchId || ""),
+  };
+}
+
+export function sendErrorDraft(store, profile, sessionId) {
+  return storedSendError(store, profile, sessionId).text;
+}
+
+export function sendErrorKind(store, profile, sessionId) {
+  return storedSendError(store, profile, sessionId).kind;
+}
+
+export function sendErrorSwitch(store, profile, sessionId) {
+  return storedSendError(store, profile, sessionId).switchId;
 }
 
 /** Put the send error back under the thread. The same text is not added twice. */

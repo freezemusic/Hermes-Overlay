@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, continueLiveTurn, finishApplies, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, finishApplies, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKind, sendErrorSwitch, sessionEnded, sessionLabel, sessionReadOnly, showSession, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -4731,6 +4731,12 @@ function renderChat(id = state.activeId, options = {}) {
       : "";
   }
   if (cont) cont.hidden = !locked;
+  const switchBtn = role(panel, "switch");
+  const switchId = closedSwitchIdFor(bot.id);
+  if (switchBtn) {
+    switchBtn.hidden = locked || !switchId;
+    switchBtn.textContent = "轉去新對話";
+  }
   if (input) {
     input.disabled = locked;
     input.placeholder = locked ? "只可以睇" : "輸入訊息給呢個 Bot…";
@@ -5374,9 +5380,23 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   thread.loading = false;
   rememberPlan(thread, thread.messages);
   const keptError = sendErrorDraft(state.sendErrors, id, thread.sessionId);
+  const closedError = sendErrorKind(state.sendErrors, id, thread.sessionId) === "closed";
+  const pickedRow = (thread.sessions || []).find((row) => row.id === thread.sessionId);
+  const closedHere = sessionEnded(pickedRow);
+  if (closedHere || closedError) {
+    thread.closedOffer = true;
+    const storedSwitch = sendErrorSwitch(state.sendErrors, id, thread.sessionId);
+    thread.closedSwitchId = storedSwitch || closedSwitchTarget(thread.sessions, thread.sessionId)?.id || "";
+  } else {
+    thread.closedOffer = false;
+    thread.closedSwitchId = "";
+  }
   if (panelShowing(id)) {
-    if (keptError) setBanner(keptError, "error");
-    else clearConnectionBanner();
+    if (keptError && !closedError) setBanner(keptError, "error");
+    else if (closedHere || closedError) {
+      const banner = $("#conn-banner");
+      if (!bannerSticky(banner)) setBanner(keptError || CLOSED_SESSION_LINE, "info");
+    } else clearConnectionBanner();
   }
   const shell = shellFor(id);
   const openPanel = shell?.dataset.state === "panel" && !shell.classList.contains("is-collapsing");
@@ -5387,14 +5407,16 @@ function applyOpened(id, opened, { quiet = false } = {}) {
     return;
   }
   const resting = thread.sessionReadOnly ? "只可以睇" : "閒置";
+  const closedLabel = (closedHere || closedError) && !locked;
   if (openPanel) {
-    if (keptError && !locked) setBotStatus(id, "連線錯誤", "error");
+    if (closedLabel) setBotStatus(id, "對話已關閉", "idle");
+    else if (keptError && !locked) setBotStatus(id, "連線錯誤", "error");
     else setBotStatus(id, resting, "idle");
     renderChat(id, { force: true, tag: "session-switch" });
     return;
   }
-  const label = keptError && !locked ? "連線錯誤" : resting;
-  const tone = keptError && !locked ? "error" : "idle";
+  const label = closedLabel ? "對話已關閉" : keptError && !locked ? "連線錯誤" : resting;
+  const tone = closedLabel ? "idle" : keptError && !locked ? "error" : "idle";
   if (shell && (visualQuiet(shell) || presentationBusy())) {
     thread.status = label;
     thread.statusState = tone;
@@ -5536,7 +5558,7 @@ function paintSessionSelect(id) {
   if (!select || document.activeElement === select) return;
   const thread = threadFor(id);
   const sessions = orderSessions(thread.sessions || []);
-  const key = JSON.stringify([thread.sessionId, sessions.map((session) => [session.id, session.title, session.hidden, session.archived, session.source])]);
+  const key = JSON.stringify([thread.sessionId, sessions.map((session) => [session.id, session.title, session.hidden, session.archived, session.source, session.ended, session.end_reason])]);
   if (select.dataset.key === key) return;
   select.replaceChildren();
   const rows = sessions.length
@@ -5584,6 +5606,7 @@ async function pickSession(id, sessionId) {
     if (select) delete select.dataset.key;
     renderChat(id);
     renderBots();
+    if (sessionEnded(picked)) showClosedWarning(id);
     return;
   }
   try {
@@ -6186,6 +6209,7 @@ function wireBotPanel(panel, id) {
   });
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
   role(panel, "continue")?.addEventListener("click", () => continueApiSession(id));
+  role(panel, "switch")?.addEventListener("click", () => switchClosedSession(id));
   role(panel, "stop")?.addEventListener("click", () => stopActive(id));
   role(panel, "save")?.addEventListener("click", () => saveBotPanel(id));
   const sessionSelect = role(panel, "session");
@@ -6562,6 +6586,64 @@ function repaintUnsent(id) {
     node.replaceChildren();
     paintUserBubble(node, message);
   });
+}
+
+function currentSessionRow(thread) {
+  return (thread?.sessions || []).find((session) => session.id === thread.sessionId) || null;
+}
+
+function closedSwitchIdFor(id) {
+  const thread = threadFor(id);
+  if (!thread?.closedOffer && sendErrorKind(state.sendErrors, id, thread?.sessionId) !== "closed" && !sessionEnded(currentSessionRow(thread))) {
+    return "";
+  }
+  return thread?.closedSwitchId || closedSwitchTarget(thread?.sessions, thread?.sessionId)?.id || "";
+}
+
+function switchClosedSession(id) {
+  const target = closedSwitchIdFor(id);
+  if (!target) return;
+  void pickSession(id, target);
+}
+
+function showClosedWarning(id, line = CLOSED_SESSION_LINE, switchId = "") {
+  const thread = threadFor(id);
+  if (!thread) return;
+  thread.closedOffer = true;
+  thread.closedSwitchId = switchId || closedSwitchTarget(thread.sessions, thread.sessionId)?.id || "";
+  setBotStatus(id, "對話已關閉", "idle");
+  if (panelShowing(id)) {
+    const banner = $("#conn-banner");
+    if (!bannerSticky(banner)) setBanner(line, "info");
+  }
+  if (panelFor(id)) renderChat(id);
+  else renderBots();
+}
+
+function noteClosedSend(id, raw, switchId = "") {
+  const thread = threadFor(id);
+  retainOutgoing(id);
+  const text = String(raw || CLOSED_SESSION_LINE);
+  const target = switchId || closedSwitchTarget(thread.sessions, thread.sessionId)?.id || "";
+  rememberUnsent(state.unsentDrafts, id, thread.sessionId, markUnsentDraft(thread.messages));
+  rememberSendError(state.sendErrors, id, thread.sessionId, text, { kind: "closed", switchId: target });
+  releaseOutgoing(id);
+  repaintUnsent(id);
+  thread.queued = false;
+  thread.watchReply = false;
+  thread.closedOffer = true;
+  thread.closedSwitchId = target;
+  clearRunSession(thread);
+  const messages = runMessages(id);
+  const have = messages.some((item) => item.text === text && (item.role === "commentary" || item.role === "failure"));
+  if (!have) appendOnce(id, { role: "commentary", text });
+  noteActivity(id, { type: "failed", text });
+  setBotStatus(id, "對話已關閉", "idle");
+  if (panelShowing(id)) {
+    const banner = $("#conn-banner");
+    if (!bannerSticky(banner)) setBanner(text, "info");
+  }
+  if (panelFor(id)) renderChat(id);
 }
 
 function noteSendFailed(id, raw) {
@@ -7039,10 +7121,31 @@ function handleHermes(payload) {
     );
     return;
   }
+  if (payload.type === "session.moved") {
+    applyOpened(id, payload);
+    const line = payload.notice || MOVED_SESSION_LINE;
+    appendOnce(id, { role: "commentary", text: line });
+    if (panelShowing(id)) {
+      const banner = $("#conn-banner");
+      if (!bannerSticky(banner)) setBanner(line, "info");
+    }
+    setBotStatus(id, "閒置", "idle");
+    return;
+  }
+  if (payload.type === "session.offer") {
+    const line = payload.notice || CLOSED_SESSION_LINE;
+    showClosedWarning(id, line, payload.switch_session_id || "");
+    appendOnce(id, { role: "commentary", text: line });
+    return;
+  }
   if (payload.type === "error") {
     const raw = payload.message || "未知錯誤";
     if (isPermissionDeniedText(raw)) {
       lockIfPermissionDenied(id, raw);
+      return;
+    }
+    if (payload.kind === "closed" || isClosedSendText(raw)) {
+      noteClosedSend(id, raw, payload.switch_session_id || "");
       return;
     }
     noteSendFailed(id, raw);
@@ -7055,6 +7158,10 @@ async function sendActive(id = state.activeId) {
   const text = input?.value.trim() || "";
   if (!text || !id) return;
   const thread = threadFor(id);
+  if (sessionEnded(currentSessionRow(thread))) {
+    showClosedWarning(id);
+    return;
+  }
   if (thread.sessionReadOnly) {
     showActionError(thread.sessionReadOnlyReason || SESSION_READ_ONLY_REASON);
     return;
@@ -7107,6 +7214,10 @@ async function sendActive(id = state.activeId) {
     const raw = String(err);
     if (isPermissionDeniedText(raw)) {
       lockIfPermissionDenied(sentId, raw);
+      return;
+    }
+    if (isClosedSendText(raw)) {
+      noteClosedSend(sentId, raw);
       return;
     }
     noteSendFailed(sentId, raw);
@@ -7885,6 +7996,10 @@ async function sendWhileBusy(id, text) {
     const raw = String(err);
     if (isPermissionDeniedText(raw)) {
       lockIfPermissionDenied(id, raw);
+      return;
+    }
+    if (isClosedSendText(raw)) {
+      noteClosedSend(id, raw);
       return;
     }
     noteSendFailed(id, raw);

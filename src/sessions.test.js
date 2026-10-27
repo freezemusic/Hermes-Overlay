@@ -15,6 +15,11 @@ import {
   previewLine,
   resolveSession,
   keepManualSession,
+  CLOSED_SESSION_LINE,
+  closedSwitchTarget,
+  isClosedSendText,
+  sendErrorKind,
+  sessionEnded,
   sessionLabel,
   sessionReadOnly,
   readOnlyNote,
@@ -674,7 +679,48 @@ test("the session menu separates desktop, archived, and api Bot Chats", () => {
   assert.equal(sessionLabel({ id: "room", title: "Bot Chat", source: "bot_room" }), "Bot Chat");
   assert.notEqual(sessionLabel(desktop), sessionLabel(archived));
   assert.notEqual(sessionLabel(archived), sessionLabel(api));
+  assert.equal(
+    sessionLabel({ id: "e969", title: "MT5 wrapper", source: "api_server", ended: true, end_reason: "tui_shutdown" }),
+    "MT5 wrapper（已結束）",
+  );
+  assert.equal(sessionEnded({ ended_at: 1761504480, end_reason: "tui_shutdown" }), true);
+  assert.equal(sessionEnded({ end_reason: "tui_shutdown" }), true);
+  assert.equal(sessionEnded({ ended_at: 0, end_reason: "" }), false);
+  assert.equal(sessionEnded({ id: "open", title: "Bot Chat" }), false);
+  const closedTarget = closedSwitchTarget([
+    { id: "e969", title: "MT5 wrapper", source: "api_server", ended: true },
+    { id: "other", title: "notes", source: "api_server", last_active: 1 },
+    { id: "bot", title: "Bot Chat", source: "api_server", last_active: 2 },
+  ], "e969");
+  assert.equal(closedTarget.id, "bot");
+  assert.equal(isClosedSendText("呢個對話已經喺伺服器關閉（admission_conflict），回覆唔會出現喺呢度。"), true);
+  assert.equal(isClosedSendText("個 bot 仲忙，呢句未送出。"), false);
+  assert.equal(CLOSED_SESSION_LINE.includes("已經喺伺服器關閉"), true);
+  const closedErrors = new Map();
+  rememberSendError(closedErrors, "mt-orch", "e969", "呢個對話已經喺伺服器關閉（admission_conflict），回覆唔會出現喺呢度。", {
+    kind: "closed",
+    switchId: "20261027_200326_8166f64d",
+  });
+  assert.equal(sendErrorKind(closedErrors, "mt-orch", "e969"), "closed");
+  assert.equal(sendErrorDraft(closedErrors, "mt-orch", "e969").includes("admission_conflict"), true);
+  assert.equal(sendErrorDraft(closedErrors, "mt-orch", "e969").includes("個 bot 仲忙"), false);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
+  const endedAt = send.indexOf("sessionEnded");
+  const invokeAt = send.indexOf('await invoke("send_chat"');
+  assert.ok(endedAt >= 0 && invokeAt > endedAt);
+  const failed = main.slice(main.indexOf('if (payload.type === "session.moved")'), main.indexOf("async function sendActive"));
+  assert.match(failed, /kind === "closed"/);
+  assert.match(failed, /noteClosedSend/);
+  assert.match(failed, /session\.moved/);
+  assert.match(failed, /session\.offer/);
+  const closedNote = main.slice(main.indexOf("function noteClosedSend"), main.indexOf("function noteSendFailed"));
+  assert.match(closedNote, /對話已關閉/);
+  assert.doesNotMatch(closedNote, /連線錯誤/);
   const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const failure = lib.slice(lib.indexOf("fn chat_failure_line"), lib.indexOf("fn chat_failure_line") + 180);
+  assert.match(failure, /send_failure/);
+  assert.doesNotMatch(failure, /個 bot 仲忙/);
   const choice = lib.slice(lib.indexOf("struct SessionChoice"), lib.indexOf("struct DiscoveredBot"));
   assert.match(choice, /source:\s*String/);
   assert.match(choice, /archived:\s*bool/);

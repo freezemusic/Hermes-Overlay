@@ -57,6 +57,10 @@ pub struct SessionSummary {
     pub parent_session_id: String,
     /// Archived rows stay out of the titled Bot Chat pick.
     pub archived: bool,
+    /// `ended_at` is set, or `end_reason` is non-empty. The server has closed this row.
+    pub ended: bool,
+    /// Hermes `end_reason` (`tui_shutdown`, …). Empty when the row is still open.
+    pub end_reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -269,7 +273,7 @@ pub fn text_is_permission_denied(text: &str) -> bool {
         || lower.contains("permission-denied")
 }
 
-pub fn turn_is_permission_denied(result: &Result<(), HermesError>) -> bool {
+pub fn turn_is_permission_denied<T>(result: &Result<T, HermesError>) -> bool {
     match result {
         Err(HermesError::Http { body, .. }) => text_is_permission_denied(body),
         Err(HermesError::Protocol(msg)) => text_is_permission_denied(msg),
@@ -626,6 +630,28 @@ fn envelope_delivery_id(value: &Value) -> Option<String> {
         .find_map(|key| value.get(*key).and_then(id_value))
 }
 
+/// A row is closed when Hermes set `ended_at` or `end_reason` (for example `tui_shutdown`).
+fn session_closed(item: &Value) -> (bool, String) {
+    let reason = item
+        .get("end_reason")
+        .or_else(|| item.get("endReason"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let stamp = item.get("ended_at").or_else(|| item.get("endedAt"));
+    let stamped = match stamp {
+        Some(Value::Bool(flag)) => *flag,
+        Some(Value::Number(number)) => number.as_f64().unwrap_or(0.0) > 0.0,
+        Some(Value::String(text)) => {
+            let text = text.trim();
+            !text.is_empty() && text != "0" && text != "null"
+        }
+        _ => false,
+    };
+    (!reason.is_empty() || stamped, reason)
+}
+
 fn row_marks_delivery(item: &Value) -> bool {
     const KEYS: &[&str] = &[
         "canonical",
@@ -689,6 +715,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 .unwrap_or("")
                 .trim()
                 .to_string();
+            let (ended, end_reason) = session_closed(item);
             Some(SessionSummary {
                 id,
                 title,
@@ -701,6 +728,8 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 delivery: row_marks_delivery(item),
                 parent_session_id,
                 archived,
+                ended,
+                end_reason,
             })
         })
         .collect();
@@ -747,6 +776,12 @@ pub fn merge_sessions(
             }
             if session.archived {
                 found.archived = true;
+            }
+            if session.ended {
+                found.ended = true;
+            }
+            if found.end_reason.is_empty() {
+                found.end_reason = session.end_reason;
             }
         } else {
             base.push(session);
@@ -830,6 +865,202 @@ pub fn session_id_from_create(value: &Value) -> Option<String> {
         None
     } else {
         Some(id)
+    }
+}
+
+/// Chat send was refused because the bot is mid-turn or a lease is held.
+pub const BUSY_SEND_LINE: &str = "個 bot 仲忙，呢句未送出。";
+/// The picked session is closed on the server, or the gateway forked it (`admission_conflict`).
+pub const CLOSED_SESSION_LINE: &str = "呢個對話已經喺伺服器關閉，回覆唔會出現喺呢度。";
+/// A completed turn was written to a different session than the one Devon picked.
+pub const MOVED_SESSION_LINE: &str = "回覆寫入咗另一個對話，已轉過去。";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendFailure {
+    /// `busy`, `closed`, `denied`, or `other`.
+    pub kind: &'static str,
+    pub code: String,
+    pub line: String,
+    /// Session id named by the refusal, when the body has one.
+    pub switch_session_id: String,
+}
+
+/// Map a send error to the sentence the panel shows.
+/// HTTP 409 is busy only for a lease or an in-flight turn. `admission_conflict`
+/// means the picked chat is closed or the live route is a different session.
+pub fn send_failure(err: &HermesError) -> SendFailure {
+    match err {
+        HermesError::Http { body, .. } if text_is_permission_denied(body) => SendFailure {
+            kind: "denied",
+            code: "permission_denied".into(),
+            line: session_read_only_reason().into(),
+            switch_session_id: String::new(),
+        },
+        HermesError::Protocol(msg) if text_is_permission_denied(msg) => SendFailure {
+            kind: "denied",
+            code: "permission_denied".into(),
+            line: session_read_only_reason().into(),
+            switch_session_id: String::new(),
+        },
+        HermesError::Http { status: 409, body } => classify_conflict(body),
+        other => SendFailure {
+            kind: "other",
+            code: String::new(),
+            line: explain(other),
+            switch_session_id: String::new(),
+        },
+    }
+}
+
+fn classify_conflict(body: &str) -> SendFailure {
+    let code = conflict_code(body);
+    let switch_session_id = conflict_switch_id(body);
+    if conflict_is_busy(&code) {
+        return SendFailure {
+            kind: "busy",
+            code,
+            line: BUSY_SEND_LINE.into(),
+            switch_session_id,
+        };
+    }
+    if code == "admission_conflict" {
+        return SendFailure {
+            kind: "closed",
+            code,
+            line: closed_conflict_line("admission_conflict"),
+            switch_session_id,
+        };
+    }
+    SendFailure {
+        kind: "other",
+        code: code.clone(),
+        line: other_conflict_line(&code),
+        switch_session_id,
+    }
+}
+
+fn closed_conflict_line(code: &str) -> String {
+    format!("呢個對話已經喺伺服器關閉（{code}），回覆唔會出現喺呢度。")
+}
+
+fn other_conflict_line(code: &str) -> String {
+    match plain_code(code) {
+        Some(code) => format!("伺服器拒絕咗呢句（{code}）。"),
+        None => "伺服器拒絕咗呢句。".into(),
+    }
+}
+
+/// A short gateway code. Anything else stays off the banner so the raw body is not shown.
+fn plain_code(code: &str) -> Option<&str> {
+    let code = code.trim();
+    if code.is_empty() || code.len() > 64 {
+        return None;
+    }
+    if code
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        Some(code)
+    } else {
+        None
+    }
+}
+
+fn conflict_is_busy(code: &str) -> bool {
+    let code = code.trim().to_ascii_lowercase();
+    matches!(
+        code.as_str(),
+        "session_active_turn" | "queue_full" | "admission_started" | "busy"
+    ) || code.contains("lease")
+}
+
+fn conflict_code(body: &str) -> String {
+    let value: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let coded = json_text(value.pointer("/error/code"));
+    if plain_code(&coded).is_some() {
+        return coded;
+    }
+    let top = json_text(value.get("code"));
+    if plain_code(&top).is_some() {
+        return top;
+    }
+    let text = body.trim().trim_matches('"');
+    if plain_code(text).is_some() && !text.contains(' ') {
+        return text.to_string();
+    }
+    String::new()
+}
+
+fn conflict_switch_id(body: &str) -> String {
+    let value: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    for pointer in [
+        "/error/session_id",
+        "/session_id",
+        "/error/live_session_id",
+    ] {
+        let id = json_text(value.pointer(pointer));
+        if !id.is_empty() {
+            return id;
+        }
+    }
+    conflict_session_id(body).unwrap_or_default()
+}
+
+/// Where a finished turn actually landed.
+/// A server-reported id that differs from the posted one wins.
+/// Otherwise exactly one session that appeared during the turn is the silent recreate.
+pub fn landed_session_id(
+    posted: &str,
+    reported: &str,
+    known_ids: &[String],
+    sessions: &[SessionSummary],
+) -> Option<String> {
+    let posted = posted.trim();
+    let reported = reported.trim();
+    if !reported.is_empty() && reported != posted {
+        return Some(reported.to_string());
+    }
+    let fresh: Vec<&SessionSummary> = sessions
+        .iter()
+        .filter(|session| {
+            !session.id.is_empty()
+                && session.id != posted
+                && !session.ended
+                && !known_ids.iter().any(|id| id == &session.id)
+        })
+        .collect();
+    match fresh.as_slice() {
+        [only] => Some(only.id.clone()),
+        _ => None,
+    }
+}
+
+/// A live writable row Devon can switch to after a closed chat. Bot Chat wins.
+pub fn closed_switch_id(sessions: &[SessionSummary], current: &str) -> String {
+    let current = current.trim();
+    let live = |session: &&SessionSummary| {
+        session.id != current
+            && !session.ended
+            && !session.archived
+            && !session_read_only(&session.source)
+    };
+    if let Some(chat) = canonical_bot_chat(sessions) {
+        if live(&chat) {
+            return chat.id.clone();
+        }
+    }
+    sessions
+        .iter()
+        .filter(live)
+        .max_by(|left, right| left.last_active.total_cmp(&right.last_active))
+        .map(|session| session.id.clone())
+        .unwrap_or_default()
+}
+
+fn note_landed(slot: &mut String, value: &Value) {
+    let id = json_text(value.get("session_id"));
+    if !id.is_empty() {
+        *slot = id;
     }
 }
 
@@ -2231,6 +2462,7 @@ async fn read_sse_body<F>(
     run_id: &mut String,
     streamed: &mut bool,
     last_id: &mut String,
+    landed: &mut String,
     mut on_event: F,
 ) -> Result<SseRead, HermesError>
 where
@@ -2264,6 +2496,7 @@ where
             &mut saw_terminal,
             &mut pending_failure,
             run_id,
+            landed,
             &mut on_event,
         ) {
             saw_terminal = true;
@@ -2314,6 +2547,7 @@ async fn finish_direct_sse<F>(
     resp: reqwest::Response,
     stop: &AtomicBool,
     stop_requested: &AtomicBool,
+    landed: &mut String,
     on_event: F,
 ) -> Result<(), HermesError>
 where
@@ -2322,7 +2556,16 @@ where
     let mut run_id = String::new();
     let mut streamed = false;
     let mut last_id = String::new();
-    let read = read_sse_body(resp, stop, &mut run_id, &mut streamed, &mut last_id, on_event).await?;
+    let read = read_sse_body(
+        resp,
+        stop,
+        &mut run_id,
+        &mut streamed,
+        &mut last_id,
+        landed,
+        on_event,
+    )
+    .await?;
     direct_sse_end(&read, stop, stop_requested)
 }
 
@@ -2335,6 +2578,7 @@ async fn stream_chat_turn<F>(
     text: &str,
     stop: &AtomicBool,
     stop_requested: &AtomicBool,
+    landed: &mut String,
     on_event: F,
 ) -> Result<(), HermesError>
 where
@@ -2364,7 +2608,7 @@ where
         let _ = resp.bytes().await;
         return Ok(());
     }
-    finish_direct_sse(resp, stop, stop_requested, on_event).await
+    finish_direct_sse(resp, stop, stop_requested, landed, on_event).await
 }
 
 async fn open_run_events(
@@ -2396,8 +2640,13 @@ async fn open_run_events(
     })
 }
 
-fn emit_one_control<F>(item: &Value, run_id: &mut String, streamed: &mut bool, on_event: &mut F)
-where
+fn emit_one_control<F>(
+    item: &Value,
+    run_id: &mut String,
+    streamed: &mut bool,
+    landed: &mut String,
+    on_event: &mut F,
+) where
     F: FnMut(TurnEvent),
 {
     let mut payload = item.clone();
@@ -2425,7 +2674,15 @@ where
     };
     let mut terminal = false;
     let mut pending = None;
-    apply_sse(event, streamed, &mut terminal, &mut pending, run_id, on_event);
+    apply_sse(
+        event,
+        streamed,
+        &mut terminal,
+        &mut pending,
+        run_id,
+        landed,
+        on_event,
+    );
 }
 
 fn snapshot_is_terminal(status: &str) -> bool {
@@ -2486,12 +2743,14 @@ async fn finish_open_run<F>(
     run_id: &str,
     streamed: bool,
     seen: &mut HashSet<String>,
+    landed: &mut String,
     mut on_event: F,
 ) -> Result<RunFollow, HermesError>
 where
     F: FnMut(TurnEvent),
 {
     let value = fetch_run(http, root, key, run_id).await?;
+    note_landed(landed, &value);
     let mut streamed = streamed;
     let mut current = run_id.to_string();
     if let Some(controls) = value.get("pending_controls").and_then(Value::as_array) {
@@ -2500,7 +2759,7 @@ where
             if ids.iter().any(|id| seen.contains(id)) {
                 continue;
             }
-            emit_one_control(item, &mut current, &mut streamed, &mut on_event);
+            emit_one_control(item, &mut current, &mut streamed, landed, &mut on_event);
             for id in ids {
                 seen.insert(id);
             }
@@ -2544,12 +2803,13 @@ async fn settle_user_stop<F>(
     run_id: &str,
     streamed: bool,
     seen: &mut HashSet<String>,
+    landed: &mut String,
     on_event: &mut F,
 ) -> Result<(), HermesError>
 where
     F: FnMut(TurnEvent),
 {
-    match finish_open_run(http, root, key, run_id, streamed, seen, on_event).await {
+    match finish_open_run(http, root, key, run_id, streamed, seen, landed, on_event).await {
         Ok(RunFollow::Done) => Ok(()),
         _ => Err(HermesError::Cancelled),
     }
@@ -2565,6 +2825,7 @@ async fn follow_run_events<F>(
     run_id: &str,
     stop: &AtomicBool,
     stop_requested: &AtomicBool,
+    landed: &mut String,
     mut on_event: F,
 ) -> Result<(), HermesError>
 where
@@ -2589,13 +2850,14 @@ where
                 &current,
                 streamed,
                 &mut seen,
+                landed,
                 &mut on_event,
             )
             .await;
         }
         match open_run_events(http, root, key, &current, &last_id).await {
             Ok(resp) => {
-                match read_sse_body(resp, stop, &mut current, &mut streamed, &mut last_id, |event| {
+                match read_sse_body(resp, stop, &mut current, &mut streamed, &mut last_id, landed, |event| {
                     remember_control(&mut seen, &event);
                     on_event(event);
                 })
@@ -2623,6 +2885,7 @@ where
                             &current,
                             streamed,
                             &mut seen,
+                            landed,
                             &mut on_event,
                         )
                         .await;
@@ -2644,6 +2907,7 @@ where
                 &current,
                 streamed,
                 &mut seen,
+                landed,
                 &mut on_event,
             )
             .await;
@@ -2655,7 +2919,18 @@ where
                 Duration::ZERO
             }
         };
-        match finish_open_run(http, root, key, &current, streamed, &mut seen, &mut on_event).await {
+        match finish_open_run(
+            http,
+            root,
+            key,
+            &current,
+            streamed,
+            &mut seen,
+            landed,
+            &mut on_event,
+        )
+        .await
+        {
             Ok(RunFollow::Done) => return Ok(()),
             Ok(RunFollow::Live) => {
                 outage = None;
@@ -2682,10 +2957,11 @@ pub async fn stream_turn<F>(
     stop: &AtomicBool,
     stop_requested: &AtomicBool,
     mut on_event: F,
-) -> Result<(), HermesError>
+) -> Result<String, HermesError>
 where
     F: FnMut(TurnEvent),
 {
+    let mut landed = String::new();
     // `clarify.request` is not forwarded on `/api/sessions/{id}/chat/stream` (0.22.5).
     // `/v1/runs` admits the same write gate, then the events stream carries clarify and approval.
     // 404 means an older gateway: fall back to chat/stream, including its queued 202.
@@ -2702,7 +2978,7 @@ where
     .map_err(map_reqwest)?;
     if resp.status().as_u16() == 404 {
         let _ = resp.bytes().await;
-        return stream_chat_turn(
+        stream_chat_turn(
             http,
             root,
             key,
@@ -2710,9 +2986,11 @@ where
             text,
             stop,
             stop_requested,
+            &mut landed,
             on_event,
         )
-        .await;
+        .await?;
+        return Ok(landed);
     }
     let status = resp.status();
     if !status.is_success() {
@@ -2724,10 +3002,12 @@ where
         });
     }
     if is_event_stream(&resp) {
-        return finish_direct_sse(resp, stop, stop_requested, on_event).await;
+        finish_direct_sse(resp, stop, stop_requested, &mut landed, on_event).await?;
+        return Ok(landed);
     }
     let bytes = resp.bytes().await.map_err(map_reqwest)?;
     let parsed: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    note_landed(&mut landed, &parsed);
     let run_id = json_text(parsed.get("run_id"));
     if approval_run_id(&run_id).is_none() {
         return Err(HermesError::Protocol(
@@ -2744,9 +3024,11 @@ where
         &run_id,
         stop,
         stop_requested,
+        &mut landed,
         on_event,
     )
-    .await
+    .await?;
+    Ok(landed)
 }
 
 fn apply_sse<F>(
@@ -2755,12 +3037,14 @@ fn apply_sse<F>(
     saw_terminal: &mut bool,
     pending_failure: &mut Option<String>,
     run_id: &mut String,
+    landed: &mut String,
     on_event: &mut F,
 ) -> bool
 where
     F: FnMut(TurnEvent),
 {
     let payload: Value = serde_json::from_str(&event.data).unwrap_or(Value::Null);
+    note_landed(landed, &payload);
     let name = sse_name(&event);
     match name.as_str() {
         "run.started" => {
@@ -3399,6 +3683,8 @@ mod tests {
             delivery: false,
             parent_session_id: String::new(),
             archived: false,
+            ended: false,
+            end_reason: String::new(),
         }
     }
 
@@ -3422,6 +3708,8 @@ mod tests {
             delivery: false,
             parent_session_id: String::new(),
             archived: false,
+            ended: false,
+            end_reason: String::new(),
         }
     }
 
@@ -4513,6 +4801,124 @@ mod tests {
             session_id_from_create(&json!({"object":"hermes.session","session":{"id":"s1"}}))
                 .as_deref(),
             Some("s1")
+        );
+    }
+
+    #[test]
+    fn a_closed_session_keeps_end_reason_and_a_409_is_not_always_busy() {
+        let parsed = parse_session_list(&json!({
+            "data": [
+                {
+                    "id": "api_1793024902_e96976d4",
+                    "title": "MT5 wrapper",
+                    "source": "api_server",
+                    "ended_at": 1761504480.0,
+                    "end_reason": "tui_shutdown"
+                },
+                {
+                    "id": "open",
+                    "title": "Bot Chat",
+                    "source": "api_server",
+                    "ended_at": null,
+                    "end_reason": ""
+                }
+            ]
+        }));
+        assert!(parsed[0].ended);
+        assert_eq!(parsed[0].end_reason, "tui_shutdown");
+        assert!(!parsed[1].ended);
+        let closed = send_failure(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"message":"admission_conflict","type":"invalid_request_error","code":"admission_conflict"}}"#.into(),
+        });
+        assert_eq!(closed.kind, "closed");
+        assert_eq!(closed.code, "admission_conflict");
+        assert!(closed.line.contains("已經喺伺服器關閉"));
+        assert!(!closed.line.contains(BUSY_SEND_LINE));
+        assert!(!closed.line.contains('{'));
+        let busy = send_failure(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"code":"session_active_turn","message":"session_active_turn"}}"#.into(),
+        });
+        assert_eq!(busy.kind, "busy");
+        assert_eq!(busy.line, BUSY_SEND_LINE);
+        let lease = send_failure(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"code":"turn_lease_held"}}"#.into(),
+        });
+        assert_eq!(lease.kind, "busy");
+        assert_eq!(lease.line, BUSY_SEND_LINE);
+        let queued = send_failure(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"code":"queue_full"}}"#.into(),
+        });
+        assert_eq!(queued.line, BUSY_SEND_LINE);
+        let other = send_failure(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"code":"idempotency_key_conflict","message":"Idempotency-Key was already used"}}"#.into(),
+        });
+        assert_eq!(other.kind, "other");
+        assert_eq!(other.line, "伺服器拒絕咗呢句（idempotency_key_conflict）。");
+        assert!(!other.line.contains(BUSY_SEND_LINE));
+        assert!(!other.line.contains("Idempotency-Key"));
+        let dumped = send_failure(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"message":"raw blob","detail":{"path":"C:\\long"}}}"#.into(),
+        });
+        assert_eq!(dumped.kind, "other");
+        assert_eq!(dumped.line, "伺服器拒絕咗呢句。");
+        assert!(!dumped.line.contains("C:\\"));
+        let denied = send_failure(&HermesError::Http {
+            status: 409,
+            body: "RuntimeStoreError('permission_denied')".into(),
+        });
+        assert_eq!(denied.kind, "denied");
+        assert_eq!(denied.line, session_read_only_reason());
+        let named = send_failure(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"code":"admission_conflict","session_id":"20261027_200326_8166f64d"}}"#.into(),
+        });
+        assert_eq!(named.switch_session_id, "20261027_200326_8166f64d");
+    }
+
+    #[test]
+    fn a_turn_that_lands_elsewhere_names_that_session() {
+        let known = vec!["api_1793024902_e96976d4".into(), "bot".into()];
+        let sessions = vec![
+            summary("api_1793024902_e96976d4", "MT5 wrapper", 1.0),
+            summary("bot", "Bot Chat", 2.0),
+            summary("20261027_200326_8166f64d", "Continue previous conversation", 3.0),
+        ];
+        assert_eq!(
+            landed_session_id("api_1793024902_e96976d4", "20261027_200326_8166f64d", &known, &sessions)
+                .as_deref(),
+            Some("20261027_200326_8166f64d")
+        );
+        assert_eq!(
+            landed_session_id("api_1793024902_e96976d4", "api_1793024902_e96976d4", &known, &sessions)
+                .as_deref(),
+            Some("20261027_200326_8166f64d")
+        );
+        assert_eq!(
+            landed_session_id("api_1793024902_e96976d4", "", &known, &sessions[..2]).as_deref(),
+            None
+        );
+        let two = vec![
+            summary("api_1793024902_e96976d4", "MT5 wrapper", 1.0),
+            summary("new-a", "A", 4.0),
+            summary("new-b", "B", 5.0),
+        ];
+        assert_eq!(
+            landed_session_id("api_1793024902_e96976d4", "", &known, &two).as_deref(),
+            None
+        );
+        let mut ended = summary("api_1793024902_e96976d4", "MT5 wrapper", 1.0);
+        ended.ended = true;
+        ended.end_reason = "tui_shutdown".into();
+        let open = summary("api_1792573589_bot", "Bot Chat", 9.0);
+        assert_eq!(
+            closed_switch_id(&[ended, open], "api_1793024902_e96976d4"),
+            "api_1792573589_bot"
         );
     }
 

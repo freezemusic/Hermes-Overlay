@@ -63,7 +63,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：mock gateway 見到 `POST /p/mt-coder/v1/runs/{活躍 run_id}/stop`、冇 body；已完結 id 嘅 409 之後會打去活躍 id；409 本身唔顯示「已停止」；使用者停止唔會設 reader abort。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
-**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常嗰條傳送（`POST /v1/runs`，舊 gateway 冇呢條先至 `POST /api/sessions/{id}/chat/stream`）。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。有句排住喺度，狀態行顯示「排隊中」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 顯示「個 bot 仲忙，呢句未送出。」。
+**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常嗰條傳送（`POST /v1/runs`，舊 gateway 冇呢條先至 `POST /api/sessions/{id}/chat/stream`）。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。有句排住喺度，狀態行顯示「排隊中」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 只有忙碌或者租約衝突（`session_active_turn`、`queue_full`、`admission_started`、`busy`，或者 code 含 `lease`）先顯示「個 bot 仲忙，呢句未送出。」。已關閉或者分叉嘅 409 見 R-SS-09。
 - 來源：Devon（2026-10-26）。真用：訊息排咗 admission seq 8，約一分鐘後先答，畫面冇排隊狀態。
 - 驗收（盒）：steer 路徑同 body 只有 `input`；409 變排隊句；忙碌發送唔再係直接 `return`。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
@@ -362,6 +362,17 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：Devon 手提真用（Hermes gateway 0.22.5，CLI oneshot `source=oneshot`）。盒測 a76c65d、6a0973e 之後。
 - 驗收（盒）：`oneshot`／`desktop`／`tui`／`cli`／空 source 係只讀而且 id 不變；`api_server`／`bot_room` 可寫；explicit desktop `20261015_011713_2242f9` 仍然開嗰條而且只讀；`failure_detail`／`explain` 見到 `RuntimeStoreError('permission_denied')` 只剩嗰句，而且唔出橫額；未撳掣唔建立 session；已有另一條 API Bot Chat 就轉去，冇先至建立標題 `Overlay`；`send_chat` 喺 `status: 404` 之前唔呼叫 `ensure_bot_chat`、`create_session`、`persist_pin`。呢條唔寫 config.json。SS-08-a：停用輸入撳字唔會入去；錯誤橫額嘅左右緣都喺面板入面。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
+
+**R-SS-09** 人手揀咗一條伺服器已經結束嘅對話（`ended_at` 或者 `end_reason`，例如 `tui_shutdown`）之後，傳送唔好當個 bot 仲忙，亦唔好把狀態寫成「連線錯誤」。Hermes 0.22.5 對呢種 id：`POST /v1/runs` 可以先 202，然後喺 `gateway/session.py` 把過期 route 拆走、開一條冇 parent 嘅新 session（標題可以係 `Continue previous conversation`），回覆因此唔喺原本嗰塊面板；下一句 409 body 係 `{"error":{"code":"admission_conflict"}}`（`gateway/session_api.py` 活 route 唔喺呢條譜系）。Overlay 要：
+
+1. 送出 HTTP 409 要讀 `error.code`。只有忙碌或者租約衝突（`session_active_turn`、`queue_full`、`admission_started`、`busy`，或者 code 含 `lease`）先顯示「個 bot 仲忙，呢句未送出。」。`admission_conflict` 顯示「呢個對話已經喺伺服器關閉（admission_conflict），回覆唔會出現喺呢度。」，狀態係「對話已關閉」，並有掣「轉去新對話」。其他 409 顯示「伺服器拒絕咗呢句（code）。」，唔好把原始 JSON 倒入橫額。批准 409（「呢個批准已經過時」）、澄清 409、停止 409（`run_not_active`）、steer 409（`run_not_accepting_steer`／`steer_not_accepted`）保持原句。`permission_denied` 仍然係 R-SS-08 嗰句。
+2. 一輪完成之後，如果伺服器報嘅 `session_id`（202 body、事件或者 `GET /v1/runs/{id}`）唔等於送出嗰條，或者送出期間 session 清單剛好多咗一條未結束嘅新 id，就跟過去：面板改顯示嗰條，並且只用手動 explicit 嗰條寫法（`persist_pin`，只動呢個 profile 嘅 session id／explicit／原有 anchor）記住。跟唔到就出通知同「轉去新對話」，回覆唔可以靜靜消失。
+3. Session 選單把 `ended_at` 或 `end_reason` 有值嘅列標「（已結束）」。揀中之後、以及撳傳送之前，都要講明呢個對話已經喺伺服器關閉，而且唔好把字送入去。掣轉去另一條未結束、可以傳嘅對話（Bot Chat 優先）。啟動仍然跟 R-SS-01：explicit 而且清單仲有呢條就開佢，唔好因為已結束就清走。
+
+config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細節）。唔好因此 `POST /api/sessions`。
+- 來源：Devon 手提（2026-10-27，SA-CONN-ERROR）。mt-orch explicit `api_1793024902_e96976d4`（`end_reason=tui_shutdown`）第一句 202 寫入 `20261027_200326_8166f64d`，第二句 409 `admission_conflict`。
+- 驗收（盒）：開住嗰條已結束嘅 mt-orch 對話，選單見到「（已結束）」；撳傳送未出網路，橫額係關閉嗰句，狀態係「對話已關閉」，有「轉去新對話」，輸入區嘅字仲喺度。若果 gateway 仍然把一句寫入另一條 session，面板要跟過去而且睇到回覆，config 只改咗呢個 profile 嘅 session id。再對住已結束 id 收到 409 `admission_conflict` 時，唔好出現「個 bot 仲忙，呢句未送出。」或者狀態「連線錯誤」。個 bot 真係忙（`session_active_turn` 或者租約）仍然係忙嗰句。批准、停止、steer 嘅 409 字眼不變。
+- 狀態：❓ / ❓（單元測試）；Win 未驗。
 
 ---
 
