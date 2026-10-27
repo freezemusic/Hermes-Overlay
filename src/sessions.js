@@ -710,6 +710,27 @@ function sideQuestionIndex(list) {
   return (list || []).findIndex((message) => message?.role === "user" && isSideMessage(message));
 }
 
+function isAnchorRow(message) {
+  if (!message || isSideMessage(message)) return false;
+  const role = message.role;
+  return role === "user" || role === "bot" || role === "tool" || role === "tool-run" || role === "failure";
+}
+
+/** The main row a /btw followed. Refresh puts that pair back after this row. */
+export function sideAnchor(messages) {
+  const list = messages || [];
+  let index = -1;
+  let at = -1;
+  for (let i = 0; i < list.length; i += 1) {
+    if (!isAnchorRow(list[i])) continue;
+    index += 1;
+    at = i;
+  }
+  if (at < 0) return null;
+  const message = list[at];
+  return { index, role: message.role || "", text: String(message.text || "") };
+}
+
 /** The local /btw question and its answer. The main turn stays with the server list. */
 function sideTurnMessages(list) {
   const messages = list || [];
@@ -743,13 +764,98 @@ function mainQuestionBefore(list, sideAt) {
   ));
 }
 
+function textsRelate(left, right) {
+  const a = String(left || "");
+  const b = String(right || "");
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.startsWith(b) || b.startsWith(a);
+}
+
+function sidePairs(list) {
+  const messages = list || [];
+  const pairs = [];
+  let mainCount = -1;
+  let lastMain = null;
+  let index = 0;
+  while (index < messages.length) {
+    const message = messages[index];
+    if (message?.role === "user" && isSideMessage(message)) {
+      const turn = [message];
+      index += 1;
+      while (index < messages.length) {
+        const next = messages[index];
+        if (next?.role === "user" && !isSideMessage(next)) break;
+        turn.push(next);
+        index += 1;
+        if (next?.role === "bot") break;
+      }
+      const recorded = message.anchor;
+      const anchor = recorded && Number.isInteger(Number(recorded.index))
+        ? { index: Number(recorded.index), role: recorded.role || "", text: String(recorded.text || "") }
+        : (lastMain
+          ? { index: mainCount, role: lastMain.role || "", text: String(lastMain.text || "") }
+          : null);
+      pairs.push({ messages: turn, anchor });
+      continue;
+    }
+    if (isAnchorRow(message)) {
+      mainCount += 1;
+      lastMain = message;
+    }
+    index += 1;
+  }
+  return pairs;
+}
+
+function locateAnchor(main, anchor) {
+  if (!anchor) return -1;
+  const index = Number(anchor.index);
+  if (Number.isInteger(index) && index >= 0 && index < main.length) {
+    const at = main[index];
+    if (at && (!anchor.role || at.role === anchor.role) && textsRelate(at.text, anchor.text)) return index;
+  }
+  return main.findIndex((message) => message?.role === anchor.role && textsRelate(message.text, anchor.text));
+}
+
+/** A user anchor waits for that turn's reply. A bot anchor is the reply. */
+function afterAnchor(main, index) {
+  if (index < 0) return -1;
+  const message = main[index];
+  if (!message) return -1;
+  if (message.role !== "user") return index;
+  let end = index;
+  for (let i = index + 1; i < main.length; i += 1) {
+    if (main[i]?.role === "user") break;
+    end = i;
+  }
+  return end;
+}
+
+function placeSidePairs(main, pairs) {
+  const slots = main.map(() => []);
+  const tail = [];
+  for (const pair of pairs) {
+    const after = afterAnchor(main, locateAnchor(main, pair.anchor));
+    if (after < 0) tail.push(pair);
+    else slots[after].push(pair);
+  }
+  const out = [];
+  for (let i = 0; i < main.length; i += 1) {
+    out.push(main[i]);
+    for (const pair of slots[i]) out.push(...pair.messages);
+  }
+  for (const pair of tail) out.push(...pair.messages);
+  return out;
+}
+
 /**
  * Hermes gateway `/btw` does not write the side exchange into the session.
  * A runs-API `/btw` is stored with the main turn, after the main question.
  * Keep the live order in that case. A server transcript that places the
  * side question before the main question is the stored order.
- * A different session id shows that session alone. The side turn is the only
- * local row kept on top of the server transcript.
+ * A different session id shows that session alone. Each side pair is put
+ * back after the main reply it followed. A missing anchor stays at the end.
  */
 export function reconcileSideQuestion(local, incoming, sessionId, nextSessionId) {
   const have = local || [];
@@ -757,15 +863,15 @@ export function reconcileSideQuestion(local, incoming, sessionId, nextSessionId)
   const current = String(sessionId || "");
   const opened = nextSessionId === undefined ? current : String(nextSessionId || "");
   if (current && opened && current !== opened) return next.slice();
-  const side = sideTurnMessages(have);
-  if (!side.length) return next.slice();
+  const pairs = sidePairs(have);
+  if (!pairs.length) return next.slice();
   const serverAt = sideQuestionIndex(next);
   if (serverAt >= 0 && mainQuestionBefore(next, serverAt) < 0) return next.slice();
   const storedSide = sideTurnMessages(next);
   const serverMain = next.filter((message) => !storedSide.includes(message));
-  const localMain = have.filter((message) => !side.includes(message));
+  const localMain = have.filter((message) => isAnchorRow(message));
   const main = serverMain.length ? growMainReply(serverMain, localMain) : localMain;
-  return main.concat(side);
+  return placeSidePairs(main, pairs);
 }
 
 function growMainReply(serverMain, localMain) {

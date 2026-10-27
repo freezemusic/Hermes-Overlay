@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -4568,7 +4568,8 @@ function chatStamp(thread) {
   const tools = thread.messages.map((message) => (
     message?.role === "tool-run" ? toolRunDomSig(message) : ""
   )).filter(Boolean).join("~");
-  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}|${unsent}|${approvals}|${clarifies}|${tools}`;
+  const streaming = thread.messages.some((message) => message?.role === "bot" && message.live && !message.side) ? 1 : 0;
+  return `${thread.sessionId}|${thread.messages.length}|${last?.role || ""}|${String(last?.text || "").length}|${last?.live ? 1 : 0}|${streaming}|${unsent}|${approvals}|${clarifies}|${tools}`;
 }
 
 function threadHasCache(thread) {
@@ -6477,7 +6478,7 @@ function settleFinishedBubble(id, finished) {
   if (messages !== thread.messages) return;
   const chat = chatOf(id);
   if (!chat) return;
-  const node = chat.querySelector("[data-live]");
+  const node = [...chat.querySelectorAll("[data-live]")].reverse().find((item) => item.dataset.side !== "1");
   if (finished) {
     if (node) {
       delete node.dataset.live;
@@ -7232,6 +7233,7 @@ function handleHermes(payload) {
     if (live) {
       live.live = false;
       if (textIsExecuteCodeBlocked(live.text)) live.text = EXECUTE_CODE_BLOCKED_LINE;
+      settleFinishedBubble(id, live);
     }
     dedupeShownReply(runMessages(id));
     settleBlockedCopies(id);
@@ -8287,6 +8289,7 @@ async function catchUpSession(id) {
 
 async function sendSideQuestion(id, text) {
   const shown = composeUserMessage(text);
+  shown.anchor = sideAnchor(runMessages(id));
   appendMessage(id, shown);
   noteActivity(id, { type: "send" });
   if (state.mode !== "hermes" || !inTauri()) {

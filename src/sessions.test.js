@@ -38,6 +38,7 @@ import {
   promoteQueuedRun,
   dedupeShownReply,
   reconcileSideQuestion,
+  sideAnchor,
   idleAfterConflict,
   continueSideTurn,
   streamingRunId,
@@ -787,6 +788,64 @@ test("history keeps a side question after the main question unless the server st
   assert.equal(same[1].text, "主回覆完整");
   assert.equal(same[2].command, "btw");
   assert.equal(same.at(-1).text, "旁答");
+});
+
+test("a side pair stays after the reply it followed", () => {
+  const local = [
+    { role: "user", text: "U1" },
+    { role: "bot", text: "B1" },
+    { role: "user", text: "S1", command: "btw" },
+    { role: "bot", text: "Sb1", side: true },
+    { role: "user", text: "U2" },
+    { role: "bot", text: "B2" },
+  ];
+  const server = [
+    { role: "user", text: "U1" },
+    { role: "bot", text: "B1" },
+    { role: "user", text: "U2" },
+    { role: "bot", text: "B2" },
+  ];
+  assert.deepEqual(sideAnchor(local.slice(0, 2)), { index: 1, role: "bot", text: "B1" });
+  const kept = reconcileSideQuestion(local, server);
+  assert.deepEqual(kept.map((message) => message.text), ["U1", "B1", "S1", "Sb1", "U2", "B2"]);
+  const many = [
+    { role: "user", text: "U1" },
+    { role: "bot", text: "B1" },
+    { role: "user", text: "S1", command: "btw", anchor: { index: 1, role: "bot", text: "B1" } },
+    { role: "bot", text: "Sb1", side: true },
+    { role: "user", text: "U2" },
+    { role: "bot", text: "B2" },
+    { role: "user", text: "S2", command: "btw", anchor: { index: 3, role: "bot", text: "B2" } },
+    { role: "bot", text: "Sb2", side: true },
+    { role: "user", text: "U3" },
+    { role: "bot", text: "B3" },
+  ];
+  const refreshed = [
+    { role: "user", text: "U1" },
+    { role: "bot", text: "B1" },
+    { role: "user", text: "U2" },
+    { role: "bot", text: "B2" },
+    { role: "user", text: "U3" },
+    { role: "bot", text: "B3" },
+  ];
+  const placed = reconcileSideQuestion(many, refreshed);
+  assert.deepEqual(placed.map((message) => message.text), ["U1", "B1", "S1", "Sb1", "U2", "B2", "S2", "Sb2", "U3", "B3"]);
+  const drifted = [
+    ...refreshed,
+    { role: "user", text: "S1", command: "btw", anchor: { index: 1, role: "bot", text: "B1" } },
+    { role: "bot", text: "Sb1", side: true },
+    { role: "user", text: "S2", command: "btw", anchor: { index: 3, role: "bot", text: "B2" } },
+    { role: "bot", text: "Sb2", side: true },
+  ];
+  const restored = reconcileSideQuestion(drifted, refreshed);
+  assert.deepEqual(restored.map((message) => message.text), ["U1", "B1", "S1", "Sb1", "U2", "B2", "S2", "Sb2", "U3", "B3"]);
+  const missing = reconcileSideQuestion([
+    { role: "user", text: "U1" },
+    { role: "bot", text: "B1" },
+    { role: "user", text: "S0", command: "btw", anchor: { index: 9, role: "bot", text: "gone" } },
+    { role: "bot", text: "Sb0", side: true },
+  ], server);
+  assert.deepEqual(missing.map((message) => message.text), ["U1", "B1", "U2", "B2", "S0", "Sb0"]);
 });
 
 test("two turns with the same reply both stay on screen", () => {

@@ -62,6 +62,7 @@ test("a side question while busy leaves the live stream and run alone", () => {
   assert.match(send, /await sendSideQuestion\(id, text\)/);
   const side = main.slice(main.indexOf("async function sendSideQuestion"), main.indexOf("async function sendWhileBusy"));
   assert.match(side, /side: true/);
+  assert.match(side, /shown\.anchor = sideAnchor\(runMessages\(id\)\)/);
   assert.doesNotMatch(side, /setBotStatus|queue: true|noteRunSession|holdOutgoing/);
   const rust = lib.slice(lib.indexOf("async fn send_chat"), lib.indexOf("fn dispatch_turn"));
   const arm = rust.slice(rust.indexOf("if side_turn {"), rust.indexOf("} else {"));
@@ -95,6 +96,8 @@ test("a side question while busy leaves the live stream and run alone", () => {
   assert.match(done, /promoteQueuedRun\(thread, finishedId\)/);
   assert.match(done, /dedupeShownReply\(runMessages\(id\)\)/);
   assert.match(done, /setBotStatus\(id, "思考中…", "busy"\)/);
+  assert.match(done, /settleFinishedBubble\(id, live\)/);
+  assert.match(main, /message\.live && !message\.side/);
   const promoted = done.slice(done.indexOf("if (promoted)"), done.indexOf("if (queuedOnly)"));
   assert.match(promoted, /payload\.outcome === "cancelled"/);
   assert.match(promoted, /noteStopped\(id, \{ keepBusy: true \}\)/);
