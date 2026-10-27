@@ -635,7 +635,8 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
             kept_title: String::new(),
         })
         .collect();
-    if !active.is_empty() && !rows.iter().any(|row| row.id == active) {
+    let routed_away = sessions.iter().any(|session| session.id == active && !hermes::session_route_matches(session));
+    if !active.is_empty() && !routed_away && !rows.iter().any(|row| row.id == active) {
         rows.insert(
             0,
             SessionChoice {
@@ -1685,21 +1686,35 @@ async fn send_chat(
     profile: String,
     text: String,
     queue: Option<bool>,
+    side: Option<bool>,
 ) -> Result<(), String> {
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err("訊息係空".into());
     }
+    let side_turn = side.unwrap_or(false);
     let queued = queue.unwrap_or(false);
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?.clone();
     let key = profile_key(&profile)?;
     let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-    let control = begin_stream(&state, &profile, !queued);
-    let stop = Arc::clone(&control.abort);
-    let stop_requested = Arc::clone(&control.stop_requested);
-    let generation = control.generation;
+    // A /btw while a turn is live must not abort that stream. begin_stream
+    // with replace posts /stop from the old reader. The side flags stay false.
+    let (stop, stop_requested, generation) = if side_turn {
+        (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            u64::MAX,
+        )
+    } else {
+        let control = begin_stream(&state, &profile, !queued);
+        (
+            Arc::clone(&control.abort),
+            Arc::clone(&control.stop_requested),
+            control.generation,
+        )
+    };
     let streams = Arc::clone(&state.streams);
     let run_ids = Arc::clone(&state.run_ids);
     let http = state.http.clone();
@@ -1732,26 +1747,30 @@ async fn send_chat(
         return Err(hermes::CLOSED_SESSION_LINE.into());
     }
     let before_ids: Vec<String> = sessions.iter().map(|session| session.id.clone()).collect();
-    let busy_label = if queued {
-        "排隊中，等佢講完就會行"
-    } else {
-        "思考中…"
-    };
-    emit_status(&app, &profile, "busy", busy_label);
+    if !side_turn {
+        let busy_label = if queued {
+            "排隊中，等佢講完就會行"
+        } else {
+            "思考中…"
+        };
+        emit_status(&app, &profile, "busy", busy_label);
+    }
 
     tauri::async_runtime::spawn(async move {
         let mut emit_turn = |event: TurnEvent| {
-            if let TurnEvent::Started { run_id } = &event {
-                if let Some(id) = hermes::approval_run_id(run_id) {
-                    run_ids
-                        .lock()
-                        .unwrap_or_else(|err| err.into_inner())
-                        .insert(profile.clone(), id.to_string());
+            if !side_turn {
+                if let TurnEvent::Started { run_id } = &event {
+                    if let Some(id) = hermes::approval_run_id(run_id) {
+                        let mut map = run_ids.lock().unwrap_or_else(|err| err.into_inner());
+                        let slot = map.entry(profile.clone()).or_default();
+                        *slot = hermes::streaming_run_id(slot, id, queued);
+                    }
                 }
             }
-            let keep_busy = matches!(event, TurnEvent::Finished { .. })
-                && !stream_is_current(&streams, &profile, generation);
-            dispatch_turn(&app, &profile, event, keep_busy);
+            let keep_busy = side_turn
+                || (matches!(event, TurnEvent::Finished { .. })
+                    && !stream_is_current(&streams, &profile, generation));
+            dispatch_turn(&app, &profile, event, keep_busy, side_turn, queued);
         };
         let run = async {
             let first = hermes::stream_turn(
@@ -1831,7 +1850,7 @@ async fn send_chat(
                 .await;
             }
             Err(HermesError::Cancelled) => {
-                let keep_busy = !stream_is_current(&streams, &profile, generation);
+                let keep_busy = side_turn || !stream_is_current(&streams, &profile, generation);
                 if !keep_busy {
                     emit_status(&app, &profile, "idle", "已停止");
                 }
@@ -1843,11 +1862,28 @@ async fn send_chat(
                         "outcome": "cancelled",
                         "detail": "已停止呢次回覆。",
                         "keep_busy": keep_busy,
+                        "side": side_turn,
                     }),
                 );
             }
             Err(err) => {
-                if !stream_is_current(&streams, &profile, generation) {
+                if side_turn {
+                    let failure = hermes::send_failure(&err);
+                    let message = chat_failure_line(&err);
+                    emit(
+                        &app,
+                        serde_json::json!({
+                            "type": "error",
+                            "profile": profile,
+                            "message": message,
+                            "kind": failure.kind,
+                            "code": failure.code,
+                            "switch_session_id": failure.switch_session_id,
+                            "side": true,
+                            "keeps_connected": hermes::failure_keeps_connected(&err),
+                        }),
+                    );
+                } else if !stream_is_current(&streams, &profile, generation) {
                     emit(
                         &app,
                         serde_json::json!({
@@ -1863,7 +1899,7 @@ async fn send_chat(
                     let message = chat_failure_line(&err);
                     if failure.kind == "closed" {
                         emit_status(&app, &profile, "idle", "對話已關閉");
-                    } else {
+                    } else if failure.kind != "busy" && failure.kind != "other" && !side_turn {
                         emit_status(&app, &profile, "error", &message);
                     }
                     emit(
@@ -1875,6 +1911,7 @@ async fn send_chat(
                             "kind": failure.kind,
                             "code": failure.code,
                             "switch_session_id": failure.switch_session_id,
+                            "keeps_connected": hermes::failure_keeps_connected(&err),
                         }),
                     );
                 }
@@ -1925,21 +1962,24 @@ async fn respond_approval(
         })
 }
 
-fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bool) {
+fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bool, side: bool, queued: bool) {
+    let stamp = |mut payload: serde_json::Value| {
+        if side {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("side".into(), serde_json::json!(true));
+            }
+        }
+        emit(app, payload);
+    };
     match event {
-        TurnEvent::Started { run_id } => emit(
-            app,
-            serde_json::json!({"type": "run.started", "profile": profile, "run_id": run_id}),
-        ),
+        TurnEvent::Started { run_id } => stamp(serde_json::json!({"type": "run.started", "profile": profile, "run_id": run_id, "queued": queued})),
         TurnEvent::ApprovalRequest {
             run_id,
             request_id,
             description,
             command,
             execution_generation,
-        } => emit(
-            app,
-            serde_json::json!({
+        } => stamp(serde_json::json!({
                 "type": "approval.request",
                 "profile": profile,
                 "run_id": run_id,
@@ -1947,8 +1987,7 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
                 "description": description,
                 "command": command,
                 "execution_generation": execution_generation,
-            }),
-        ),
+            })),
         TurnEvent::ClarifyRequest {
             run_id,
             prompt_id,
@@ -1971,51 +2010,33 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
             if let Some(timeout) = timeout_s {
                 payload["timeout_s"] = serde_json::json!(timeout);
             }
-            emit(app, payload);
+            stamp(payload);
         }
-        TurnEvent::ControlSettled { kind, prompt_id } => emit(
-            app,
-            serde_json::json!({
+        TurnEvent::ControlSettled { kind, prompt_id } => stamp(serde_json::json!({
                 "type": format!("{kind}.settled"),
                 "profile": profile,
                 "prompt_id": prompt_id,
-            }),
-        ),
-        TurnEvent::ApprovalResponded { request_id, choice } => emit(
-            app,
-            serde_json::json!({
+            })),
+        TurnEvent::ApprovalResponded { request_id, choice } => stamp(serde_json::json!({
                 "type": "approval.responded",
                 "profile": profile,
                 "request_id": request_id,
                 "choice": choice,
-            }),
-        ),
-        TurnEvent::Delta(text) => emit(
-            app,
-            serde_json::json!({"type": "delta", "profile": profile, "text": text}),
-        ),
-        TurnEvent::Command(command) => emit(
-            app,
-            serde_json::json!({"type": "command", "profile": profile, "command": command}),
-        ),
-        TurnEvent::Commentary(text) => emit(
-            app,
-            serde_json::json!({"type": "commentary", "profile": profile, "text": text}),
-        ),
+            })),
+        TurnEvent::Delta(text) => stamp(serde_json::json!({"type": "delta", "profile": profile, "text": text})),
+        TurnEvent::Command(command) => stamp(serde_json::json!({"type": "command", "profile": profile, "command": command})),
+        TurnEvent::Commentary(text) => stamp(serde_json::json!({"type": "commentary", "profile": profile, "text": text})),
         TurnEvent::Tool {
             phase,
             name,
             preview,
-        } => emit(
-            app,
-            serde_json::json!({
+        } => stamp(serde_json::json!({
                 "type": "tool",
                 "profile": profile,
                 "phase": phase,
                 "name": name,
                 "preview": preview,
-            }),
-        ),
+            })),
         TurnEvent::Finished { outcome, detail, run_id } => {
             let denied = hermes::text_is_permission_denied(&detail)
                 || detail == hermes::session_read_only_reason();
@@ -2040,28 +2061,22 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
                 .to_string()
             };
             if !keep_busy {
-                emit(
-                    app,
-                    serde_json::json!({
-                        "type": "status",
-                        "profile": profile,
-                        "state": state_name,
-                        "detail": label,
-                        "run_id": &run_id,
-                    }),
-                );
-            }
-            emit(
-                app,
-                serde_json::json!({
-                    "type": "done",
+                stamp(serde_json::json!({
+                    "type": "status",
                     "profile": profile,
-                    "outcome": outcome,
-                    "detail": detail,
+                    "state": state_name,
+                    "detail": label,
                     "run_id": &run_id,
-                    "keep_busy": keep_busy,
-                }),
-            );
+                }));
+            }
+            stamp(serde_json::json!({
+                "type": "done",
+                "profile": profile,
+                "outcome": outcome,
+                "detail": detail,
+                "run_id": &run_id,
+                "keep_busy": keep_busy,
+            }));
         }
     }
 }
@@ -3736,6 +3751,7 @@ mod tests {
             archived: false,
             ended: false,
             end_reason: String::new(),
+            session_key: String::new(),
         };
         let archived = crate::hermes::SessionSummary {
             id: "old".into(),
@@ -3751,6 +3767,7 @@ mod tests {
             archived: true,
             ended: false,
             end_reason: String::new(),
+            session_key: String::new(),
         };
         let rows = super::session_choices(&[desktop, archived], "missing");
         assert_eq!(rows[0].id, "missing");

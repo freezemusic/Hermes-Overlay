@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, finishApplies, finishLiveBubble, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, finishApplies, finishLiveBubble, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -5036,6 +5036,7 @@ function bubbleEl(m, id) {
   else if (m.role === "user") paintUserBubble(bubble, m);
   else bubble.textContent = m.text;
   if (m.live) bubble.dataset.live = "1";
+  if (m.side) bubble.dataset.side = "1";
   if (id && m.role === "bot" && !m.live) {
     const messages = threadFor(id).messages;
     const plan = plansIn(messages).find((item) => messages[item.index] === m);
@@ -5423,8 +5424,12 @@ function applyOpened(id, opened, { quiet = false } = {}) {
     thread.closedSwitchId = "";
   }
   if (panelShowing(id)) {
-    if (keptError && !closedError) setBanner(keptError, "error");
-    else if (closedHere || closedError) {
+    const refusal = sendErrorKeepsConnected(sendErrorKind(state.sendErrors, id, thread.sessionId));
+    if (keptError && !closedError && !refusal) setBanner(keptError, "error");
+    else if (keptError && refusal) {
+      const banner = $("#conn-banner");
+      if (!bannerSticky(banner)) setBanner(keptError, "info");
+    } else if (closedHere || closedError) {
       const banner = $("#conn-banner");
       if (!bannerSticky(banner)) setBanner(keptError || CLOSED_SESSION_LINE, "info");
     } else clearConnectionBanner();
@@ -5441,13 +5446,14 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   const closedLabel = (closedHere || closedError) && !locked;
   if (openPanel) {
     if (closedLabel) setBotStatus(id, "對話已關閉", "idle");
-    else if (keptError && !locked) setBotStatus(id, "連線錯誤", "error");
+    else if (keptError && !locked && !sendErrorKeepsConnected(sendErrorKind(state.sendErrors, id, thread.sessionId))) setBotStatus(id, "連線錯誤", "error");
     else setBotStatus(id, resting, "idle");
     renderChat(id, { force: true, tag: "session-switch" });
     return;
   }
-  const label = closedLabel ? "對話已關閉" : keptError && !locked ? "連線錯誤" : resting;
-  const tone = closedLabel ? "idle" : keptError && !locked ? "error" : "idle";
+  const connected = sendErrorKeepsConnected(sendErrorKind(state.sendErrors, id, thread.sessionId));
+  const label = closedLabel ? "對話已關閉" : keptError && !locked && !connected ? "連線錯誤" : resting;
+  const tone = closedLabel ? "idle" : keptError && !locked && !connected ? "error" : "idle";
   if (shell && (visualQuiet(shell) || presentationBusy())) {
     thread.status = label;
     thread.statusState = tone;
@@ -5595,7 +5601,7 @@ function paintSessionSelect(id, options = {}) {
   const key = sessionMenuKey(thread?.sessionId, sessions);
   const rebuild = options.rebuild === true || !state.dropdownOpen;
   if (!options.rebuild && select.dataset.key === key) return;
-  writeSessionMenu(select, sessions, thread?.sessionId || "", { rebuild });
+  writeSessionMenu(select, sessions, thread?.sessionId || "", { rebuild, menuOpen: !!state.dropdownOpen });
   select.dataset.key = key;
 }
 
@@ -6215,8 +6221,11 @@ function wireBotPanel(panel, id) {
     noteChatScroll(id, chat, true);
   }, { passive: true });
   const chatBox = role(panel, "chat");
-  chatBox?.addEventListener("pointerdown", () => {
+  chatBox?.addEventListener("pointerdown", (event) => {
     chatBox.dataset.userScroll = "1";
+    const composer = role(panel, "input");
+    if (composer && (event.target === composer || composer.contains(event.target))) return;
+    if (document.activeElement !== chatBox) chatBox.focus({ preventScroll: true });
   });
   const endUserScroll = () => armUserScroll(chatBox);
   chatBox?.addEventListener("pointerup", endUserScroll);
@@ -6310,7 +6319,7 @@ function wireBotPanel(panel, id) {
   input?.addEventListener("keydown", (event) => {
     state.activeId = id;
     state.slashPanelId = id;
-    if (event.key === "Tab" && event.shiftKey) {
+    if (event.shiftKey && (event.key === "Tab" || event.code === "Tab")) {
       event.preventDefault();
       event.stopPropagation();
       cycleComposeMode(id);
@@ -6515,9 +6524,40 @@ function paintLiveNow(id) {
   const chat = chatOf(id);
   if (!chat) return;
   const thread = threadFor(id);
-  const live = [...thread.messages].reverse().find((m) => m.live);
-  const nodes = chat.querySelectorAll("[data-live]");
-  const node = nodes[nodes.length - 1];
+  const live = [...thread.messages].reverse().find((m) => m.live && !m.side);
+  const node = [...chat.querySelectorAll("[data-live]")].reverse().find((item) => item.dataset.side !== "1");
+  if (live && node) paintBotBubble(node, live.text);
+  if (thread.followTail !== false) pinChat(id);
+}
+
+function ensureSideBubble(id) {
+  const messages = runMessages(id);
+  const turn = continueSideTurn(messages);
+  const live = turn.message;
+  if (!turn.created) return live;
+  if (!runIsOnScreen(id)) return live;
+  const shell = shellFor(id);
+  if (shell && (deferShellWork(shell) || presentationBusy())) {
+    shell.dataset.chatDirty = "1";
+    if (presentationBusy()) armPresentationFlush();
+    return live;
+  }
+  const chat = chatOf(id);
+  if (!chat) return live;
+  chat.querySelectorAll("[data-live][data-side]").forEach((node) => node.remove());
+  const el = bubbleEl(live);
+  el.dataset.live = "1";
+  el.dataset.side = "1";
+  chat.appendChild(el);
+  return live;
+}
+
+function paintSideNow(id) {
+  const chat = chatOf(id);
+  if (!chat) return;
+  const thread = threadFor(id);
+  const live = [...runMessages(id)].reverse().find((message) => message.live && message.side);
+  const node = chat.querySelector("[data-live][data-side]");
   if (live && node) paintBotBubble(node, live.text);
   if (thread.followTail !== false) pinChat(id);
 }
@@ -6729,22 +6769,28 @@ function noteClosedSend(id, raw, switchId = "") {
   if (panelFor(id)) renderChat(id);
 }
 
-function noteSendFailed(id, raw) {
+function noteSendFailed(id, raw, meta = {}) {
   const thread = threadFor(id);
   retainOutgoing(id);
   const text = String(raw || "連線錯誤");
+  const kind = String(meta.kind || "");
   rememberUnsent(state.unsentDrafts, id, thread.sessionId, markUnsentDraft(thread.messages));
-  rememberSendError(state.sendErrors, id, thread.sessionId, text);
+  rememberSendError(state.sendErrors, id, thread.sessionId, text, { kind });
   releaseOutgoing(id);
   // appendMessage stamps the chat, including 未送出, without repainting this line.
   repaintUnsent(id);
   thread.queued = false;
   thread.watchReply = false;
-  clearRunSession(thread);
+  if (!sendErrorKeepsConnected(kind)) clearRunSession(thread);
   const messages = runMessages(id);
   const have = messages.some((item) => item.text === text && (item.role === "commentary" || item.role === "failure"));
   if (!have) appendOnce(id, { role: "commentary", text });
   noteActivity(id, { type: "failed", text });
+  if (sendErrorKeepsConnected(kind)) {
+    if (!(state.busy.has(id) || thread.statusState === "busy")) setBotStatus(id, "閒置", "idle");
+    setBanner(text, "info");
+    return;
+  }
   setBotStatus(id, "連線錯誤", "error");
   setBanner(text, "error");
 }
@@ -7010,9 +7056,13 @@ function handleHermes(payload) {
     deliverCron(id, payload);
     return;
   }
+  if (payload.side) {
+    handleSideHermes(id, payload);
+    return;
+  }
   if (payload.type === "run.started") {
     const thread = threadFor(id);
-    noteRunStarted(thread, payload.run_id || "");
+    noteRunStarted(thread, payload.run_id || "", { queued: !!payload.queued });
     if (!thread.liveSessionId) noteRunSession(thread);
     thread.stopNoted = false;
     setBotStatus(id, "思考中…", "busy");
@@ -7260,7 +7310,44 @@ function handleHermes(payload) {
       noteClosedSend(id, raw, payload.switch_session_id || "");
       return;
     }
-    noteSendFailed(id, raw);
+    noteSendFailed(id, raw, { kind: payload.keeps_connected ? (payload.kind || "other") : "" });
+  }
+}
+
+function handleSideHermes(id, payload) {
+  if (payload.type === "run.started" || payload.type === "status") return;
+  if (payload.type === "delta") {
+    const live = ensureSideBubble(id);
+    live.text += plainToolText(payload.text || "");
+    if (textIsExecuteCodeBlocked(live.text)) live.text = EXECUTE_CODE_BLOCKED_LINE;
+    if (runIsOnScreen(id)) paintSideNow(id);
+    return;
+  }
+  if (payload.type === "done") {
+    const messages = runMessages(id);
+    const live = [...messages].reverse().find((message) => message.live && message.side);
+    if (live) {
+      live.live = false;
+      if (!String(live.text || "").trim()) {
+        const index = messages.lastIndexOf(live);
+        if (index >= 0) messages.splice(index, 1);
+      }
+    }
+    if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
+    return;
+  }
+  if (payload.type === "error") {
+    const raw = payload.message || "未知錯誤";
+    appendOnce(id, { role: "commentary", text: raw });
+    if (panelShowing(id)) {
+      const banner = $("#conn-banner");
+      if (!bannerSticky(banner)) setBanner(raw, "info");
+    }
+    return;
+  }
+  if (payload.type === "commentary") {
+    appendOnce(id, { role: "commentary", text: `過程：${plainToolText(payload.text || "")}` });
+    if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
   }
 }
 
@@ -7375,6 +7462,15 @@ async function sendActive(id = state.activeId) {
   const text = composeModeWire(typed, composeModeOf(id));
   const busy = state.mode === "hermes" && state.busy.has(id);
   const action = resolveClient(text, state.catalog || []);
+  if (busy && composeSkipsBusyQueue(text)) {
+    closeSlash();
+    input.value = "";
+    input.placeholder = "輸入訊息給呢個 Bot…";
+    state.slashArgsHint = "";
+    syncSlashGhost();
+    await sendSideQuestion(id, text);
+    return;
+  }
   if (busy && action?.command !== "stop" && !composeSkipsBusyQueue(text)) {
     closeSlash();
     input.value = "";
@@ -8156,6 +8252,25 @@ async function catchUpSession(id) {
   }
 }
 
+async function sendSideQuestion(id, text) {
+  const shown = composeUserMessage(text);
+  appendMessage(id, shown);
+  noteActivity(id, { type: "send" });
+  if (state.mode !== "hermes" || !inTauri()) {
+    window.setTimeout(() => {
+      appendMessage(id, { role: "bot", text: demoReply(shown), side: true });
+    }, 350);
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("send_chat", { profile: id, text, side: true });
+  } catch (err) {
+    appendOnce(id, { role: "commentary", text: String(err) });
+    if (panelShowing(id)) setBanner(String(err), "info");
+  }
+}
+
 async function sendWhileBusy(id, text) {
   const thread = threadFor(id);
   const shown = composeUserMessage(text);
@@ -8213,7 +8328,7 @@ async function stopActive(id) {
   if (!profile || state.mode !== "hermes" || !inTauri()) return;
   const thread = threadFor(profile);
   thread.watchReply = true;
-  const posted = thread.runId || "";
+  const posted = streamingRunId(thread);
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     let result = await invoke("stop_chat", { profile, runId: posted });
@@ -9380,6 +9495,7 @@ function releaseReopenedPlan(shell) {
 }
 
 function logPlanHitBox(shell) {
+  if (!debugFile.enabled) return;
   const plan = planNode(shell);
   if (!shell || !plan || shell.dataset.planOpen !== "1") return;
   const box = plan.getBoundingClientRect();

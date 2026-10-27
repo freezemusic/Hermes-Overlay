@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, latestPlan, looksLikePlan, nextComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, planSource, plansIn, planTask, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, latestPlan, looksLikePlan, nextComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, planSource, plansIn, planTask, planTextHash, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
 import { continueLiveTurn, finishLiveBubble } from "./sessions.js";
 
 test("plan markdown is recognized and a short ack is not", () => {
@@ -239,7 +239,7 @@ test("the composer mode chip cycles, and a side question skips the busy queue", 
   assert.match(css, /\.compose-mode-chip\[aria-pressed="true"\][^}]*#0000f2/);
   assert.match(css, /\.composer\.is-compose-mode input[^}]*#0000f2/);
   const keys = main.slice(main.indexOf('input?.addEventListener("keydown"'), main.indexOf("async function loadSoul"));
-  const shift = keys.indexOf('event.key === "Tab" && event.shiftKey');
+  const shift = keys.indexOf('event.shiftKey && (event.key === "Tab" || event.code === "Tab")');
   const slashTab = keys.indexOf('event.key === "Tab" || event.key === "Enter"');
   assert.ok(shift >= 0 && shift < slashTab);
   assert.match(keys, /cycleComposeMode\(id\)/);
@@ -266,4 +266,17 @@ test("the composer mode chip cycles, and a side question skips the busy queue", 
   assert.match(lib, /set_compose_mode/);
   assert.match(lib, /bot\.compose_mode\.clone\(\)/);
   assert.doesNotMatch(lib, /set_plan_mode/);
+});
+
+test("a later edit with the same opening changes the plan key", () => {
+  const prefix = `# Same Title Implementation Plan\n\n${"x".repeat(50)}`;
+  const first = `${prefix}ALPHA-TAIL`;
+  const second = `${prefix}BRAVO-TAIL`;
+  assert.equal(first.length, second.length);
+  assert.equal(first.slice(0, 80), second.slice(0, 80));
+  const left = plansIn([{ role: "bot", text: first }])[0];
+  const right = plansIn([{ role: "bot", text: second }])[0];
+  assert.notEqual(left.key, right.key);
+  assert.equal(left.key.endsWith(planTextHash(first)), true);
+  assert.equal(right.key.endsWith(planTextHash(second)), true);
 });

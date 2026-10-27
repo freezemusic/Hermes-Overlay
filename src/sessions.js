@@ -49,7 +49,7 @@ export function writableContinuation(sessions, avoidId = "", refused = []) {
       .filter(Boolean),
   );
   const writable = (sessions || []).filter(
-    (session) => session && session.id && !skip.has(session.id) && sessionAcceptsSend(session.source),
+    (session) => session && session.id && sessionRouteMatches(session) && !skip.has(session.id) && sessionAcceptsSend(session.source),
   );
   const live = writable.filter((session) => session.archived !== true);
   const pool = live.length ? live : writable;
@@ -81,7 +81,7 @@ function retiredBotChat(session) {
  * Source and message count do not matter. An empty row is valid.
  */
 export function canonicalBotChat(sessions) {
-  const list = sessions || [];
+  const list = (sessions || []).filter(sessionRouteMatches);
   const titled = list.filter((session) => session && session.id && isBotChat(session));
   if (!titled.length) return null;
   const hidden = titled.filter((session) => session.hidden === true);
@@ -137,9 +137,10 @@ function byRecent(a, b) {
   return 0;
 }
 
-/** Bot Chat rows first, then every other session. Each group is most-recent first. */
+/** Bot Chat rows first, then every other session. Each group is most-recent first.
+ *  A row whose routing key names another session is not offered. */
 export function orderSessions(sessions) {
-  const list = (sessions || []).filter((session) => session && session.id);
+  const list = (sessions || []).filter((session) => session && session.id && sessionRouteMatches(session));
   const chats = list.filter(isBotChat).sort(byRecent);
   const rest = list.filter((session) => !isBotChat(session)).sort(byRecent);
   return chats.concat(rest);
@@ -162,7 +163,7 @@ export function resolveSession(sessions, pin = {}) {
   const rawAnchor = Number(pin.anchor);
   const anchor = Number.isFinite(rawAnchor) ? rawAnchor : 0;
   const saved = remembered
-    ? (sessions || []).find((session) => session && session.id === remembered)
+    ? (sessions || []).find((session) => session && session.id === remembered && sessionRouteMatches(session))
     : null;
   if (saved && explicit) {
     return {
@@ -193,6 +194,27 @@ export function resolveSession(sessions, pin = {}) {
     };
   }
   return null;
+}
+
+/** Routing key from a session list row. Empty when the gateway did not send one. */
+export function sessionRoutingKey(session) {
+  const key = session?.session_key ?? session?.routing_key ?? session?.sessionKey ?? "";
+  return String(key || "").trim();
+}
+
+/**
+ * Offer the row when it has no routing key, the key is its own id, or the
+ * key is a route whose last segment is its own id (`agent:…:dm:<id>`).
+ * Any other key is the Continue-previous-conversation fork: messages for
+ * that key land on a different session, so the row is never offered.
+ */
+export function sessionRouteMatches(session) {
+  const id = String(session?.id || "").trim();
+  const key = sessionRoutingKey(session);
+  if (!id || !key) return true;
+  if (key === id) return true;
+  const last = key.split(":").pop();
+  return last === id;
 }
 
 /** The server closed this row (`ended_at` or `end_reason`, including `tui_shutdown`). */
@@ -249,6 +271,7 @@ export function closedSwitchTarget(sessions, currentId) {
   const rows = (sessions || []).filter((session) => (
     session
     && session.id
+    && sessionRouteMatches(session)
     && session.id !== current
     && !sessionEnded(session)
     && session.archived !== true
@@ -262,12 +285,29 @@ export function sessionLabel(session) {
   return `${sessionTitleText(session)}${sessionSuffix(session)}`;
 }
 
-/** Rows the session menu paints. An open chat with an empty list still shows its id. */
+/** Same visible label twice becomes `title · id`, so two rows named notes stay distinct. */
+export function disambiguateSessionLabels(rows) {
+  const list = rows || [];
+  const counts = new Map();
+  for (const row of list) {
+    const label = row.label;
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return list.map((row) => {
+    if ((counts.get(row.label) || 0) < 2) return row;
+    return { ...row, label: `${row.label} · ${row.id}` };
+  });
+}
+
+/** Rows the session menu paints. An open chat with an empty list still shows its id.
+ *  A routing-key mismatch is never the fallback row. */
 export function sessionMenuRows(sessions, activeId) {
   const ordered = orderSessions(sessions);
   if (ordered.length) return ordered;
   const id = String(activeId || "").trim();
-  return id ? [{ id, title: id, hidden: false }] : [];
+  const active = (sessions || []).find((session) => session && session.id === id);
+  if (!id || (active && !sessionRouteMatches(active))) return [];
+  return [{ id, title: id, hidden: false }];
 }
 
 export function sessionMenuKey(activeId, sessions) {
@@ -291,16 +331,18 @@ export function sessionMenuKey(activeId, sessions) {
  * Opening the menu passes `rebuild` and replaces the options.
  * A change while the menu is open updates labels in place and keeps the selected session id.
  */
-export function writeSessionMenu(select, sessions, activeId, { rebuild = false } = {}) {
-  const labels = sessionMenuRows(sessions, activeId).map((session) => ({
+export function writeSessionMenu(select, sessions, activeId, { rebuild = false, menuOpen = false } = {}) {
+  const labels = disambiguateSessionLabels(sessionMenuRows(sessions, activeId).map((session) => ({
     id: String(session.id || ""),
     label: sessionLabel(session),
-  }));
+  })));
   const previous = String(select.value || "");
   const active = String(activeId || "");
-  const preferred = labels.some((row) => row.id === previous)
+  const preferred = menuOpen && labels.some((row) => row.id === previous)
     ? previous
-    : (labels.some((row) => row.id === active) ? active : (labels[0]?.id || ""));
+    : (labels.some((row) => row.id === active)
+      ? active
+      : (labels.some((row) => row.id === previous) ? previous : (labels[0]?.id || "")));
   if (!labels.length) {
     select.replaceChildren();
     const option = select.ownerDocument.createElement("option");
@@ -500,6 +542,11 @@ export function sendErrorKind(store, profile, sessionId) {
   return storedSendError(store, profile, sessionId).kind;
 }
 
+/** HTTP 409 busy / other is a refusal. The gateway is still connected. */
+export function sendErrorKeepsConnected(kind) {
+  return kind === "busy" || kind === "other";
+}
+
 export function sendErrorSwitch(store, profile, sessionId) {
   return storedSendError(store, profile, sessionId).switchId;
 }
@@ -565,14 +612,27 @@ export function readOnlyLocked(set, profile, sessionId, sourceReadOnly) {
   return !!sourceReadOnly || (!!key && !!set?.has(key));
 }
 
-/** The latest `run.started` is the run 「停止」 must post. */
-export function noteRunStarted(thread, runId) {
+/**
+ * The run that is streaming tokens. A later admission that is still queued
+ * keeps its own id and does not become the stop target.
+ */
+export function noteRunStarted(thread, runId, { queued = false } = {}) {
   const incoming = String(runId || "");
   if (!thread || !incoming) return thread;
+  if (queued && thread.runId && thread.runId !== incoming) {
+    thread.queuedRunId = incoming;
+    return thread;
+  }
   if (thread.runId && thread.runId !== incoming) thread.staleRunId = thread.runId;
   thread.runId = incoming;
+  thread.queuedRunId = thread.queuedRunId === incoming ? "" : (thread.queuedRunId || "");
   thread.nextRunId = "";
   return thread;
+}
+
+/** 「停止」 posts the streaming run. The queued admission is left alone. */
+export function streamingRunId(thread) {
+  return String(thread?.runId || "");
 }
 
 /** A finish for some other run must not idle the bot or drop the active id. */
@@ -670,7 +730,7 @@ export function finishLiveBubble(messages) {
   const list = messages || [];
   for (let index = list.length - 1; index >= 0; index -= 1) {
     const message = list[index];
-    if (!message || message.role !== "bot" || !message.live) continue;
+    if (!message || message.role !== "bot" || !message.live || message.side) continue;
     if (!String(message.text || "").trim()) {
       list.splice(index, 1);
       return null;
@@ -691,7 +751,7 @@ export function continueLiveTurn(messages) {
   const list = messages || [];
   let liveIndex = -1;
   for (let index = list.length - 1; index >= 0; index -= 1) {
-    if (list[index]?.role === "bot" && list[index].live) {
+    if (list[index]?.role === "bot" && list[index].live && !list[index].side) {
       liveIndex = index;
       break;
     }
@@ -703,6 +763,16 @@ export function continueLiveTurn(messages) {
   const message = { role: "bot", text: "", live: true };
   list.push(message);
   return { message, created: true, finished };
+}
+
+/** A /btw answer while the main turn is live. It does not finish that turn. */
+export function continueSideTurn(messages) {
+  const list = messages || [];
+  const live = [...list].reverse().find((message) => message?.role === "bot" && message.live && message.side);
+  if (live) return { message: live, created: false };
+  const message = { role: "bot", text: "", live: true, side: true };
+  list.push(message);
+  return { message, created: true };
 }
 
 export function clearRunSession(thread) {

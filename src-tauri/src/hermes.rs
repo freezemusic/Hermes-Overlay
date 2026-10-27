@@ -61,6 +61,8 @@ pub struct SessionSummary {
     pub ended: bool,
     /// Hermes `end_reason` (`tui_shutdown`, …). Empty when the row is still open.
     pub end_reason: String,
+    /// Gateway routing key. Empty when the list did not include one.
+    pub session_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -147,7 +149,21 @@ pub enum TurnEvent {
     },
 }
 
-/// Stop posts the latest started run first. A stale hint is only a fallback
+/// The run 「停止」 should post. A queued admission must not replace the id
+/// that is already streaming tokens.
+pub fn streaming_run_id(current: &str, incoming: &str, queued: bool) -> String {
+    let current = approval_run_id(current).unwrap_or("").trim();
+    let incoming = approval_run_id(incoming).unwrap_or("").trim();
+    if queued && !current.is_empty() {
+        return current.to_string();
+    }
+    if !incoming.is_empty() {
+        return incoming.to_string();
+    }
+    current.to_string()
+}
+
+/// Stop posts the streaming run first. A stale hint is only a fallback
 /// after that id answers 409 `run_not_active`.
 pub fn stop_target_ids(hinted: &str, remembered: &str) -> Vec<String> {
     let mut ids = Vec::new();
@@ -366,7 +382,7 @@ fn retired_bot_chat(session: &SessionSummary) -> bool {
 fn desktop_bot_chat_root(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
     let titled: Vec<&SessionSummary> = sessions
         .iter()
-        .filter(|session| is_bot_chat_title(&session.title))
+        .filter(|session| is_bot_chat_title(&session.title) && session_route_matches(session))
         .collect();
     if titled.is_empty() {
         return None;
@@ -407,7 +423,7 @@ pub fn fallback_session(sessions: &[SessionSummary]) -> Option<&SessionSummary> 
 
 /// Bot Chat rows first, then other sessions. Each group is most-recent first.
 pub fn session_menu_order(sessions: &[SessionSummary]) -> Vec<&SessionSummary> {
-    let mut rows: Vec<&SessionSummary> = sessions.iter().collect();
+    let mut rows: Vec<&SessionSummary> = sessions.iter().filter(|session| session_route_matches(session)).collect();
     rows.sort_by(|a, b| {
         is_bot_chat_title(&b.title)
             .cmp(&is_bot_chat_title(&a.title))
@@ -489,7 +505,7 @@ pub fn session_for_startup(
 ) -> Option<ResolvedSession> {
     let remembered = remembered.trim();
     let anchor = if anchor.is_finite() { anchor } else { 0.0 };
-    let saved = sessions.iter().find(|session| session.id == remembered);
+    let saved = sessions.iter().find(|session| session.id == remembered && session_route_matches(session));
     if explicit {
         if let Some(saved) = saved {
             return Some(finish_resolved(saved, true, anchor));
@@ -664,6 +680,30 @@ fn row_marks_delivery(item: &Value) -> bool {
         .any(|key| item.get(*key).and_then(Value::as_bool) == Some(true))
 }
 
+fn routing_key_of(item: &Value) -> String {
+    for key in ["session_key", "routing_key", "route"] {
+        let text = item.get(key).and_then(Value::as_str).unwrap_or("").trim();
+        if !text.is_empty() {
+            return text.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Empty, equal to this row's id, or a route whose last segment is that id.
+/// Any other key is a Continue-previous-conversation fork and is not offered.
+pub fn session_route_matches(session: &SessionSummary) -> bool {
+    let id = session.id.trim();
+    let key = session.session_key.trim();
+    if id.is_empty() || key.is_empty() {
+        return true;
+    }
+    if key == id {
+        return true;
+    }
+    key.rsplit(':').next() == Some(id)
+}
+
 pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
     let items = value
         .get("data")
@@ -716,6 +756,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 .trim()
                 .to_string();
             let (ended, end_reason) = session_closed(item);
+            let session_key = routing_key_of(item);
             Some(SessionSummary {
                 id,
                 title,
@@ -730,6 +771,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 archived,
                 ended,
                 end_reason,
+                session_key,
             })
         })
         .collect();
@@ -782,6 +824,9 @@ pub fn merge_sessions(
             }
             if found.end_reason.is_empty() {
                 found.end_reason = session.end_reason;
+            }
+            if found.session_key.is_empty() {
+                found.session_key = session.session_key;
             }
         } else {
             base.push(session);
@@ -890,6 +935,15 @@ pub struct SendFailure {
 /// Map a send error to the sentence the panel shows.
 /// HTTP 409 is busy only for a lease or an in-flight turn. `admission_conflict`
 /// means the picked chat is closed or the live route is a different session.
+/// HTTP 409 busy and other conflicts are refusals. The gateway is still up.
+pub fn failure_keeps_connected(err: &HermesError) -> bool {
+    let HermesError::Http { status: 409, .. } = err else {
+        return false;
+    };
+    let kind = send_failure(err).kind;
+    kind == "busy" || kind == "other"
+}
+
 pub fn send_failure(err: &HermesError) -> SendFailure {
     match err {
         HermesError::Http { body, .. } if text_is_permission_denied(body) => SendFailure {
@@ -1134,6 +1188,7 @@ pub fn closed_switch_id(sessions: &[SessionSummary], current: &str) -> String {
     let current = current.trim();
     let live = |session: &&SessionSummary| {
         session.id != current
+            && session_route_matches(session)
             && !session.ended
             && !session.archived
             && !session_read_only(&session.source)
@@ -3796,6 +3851,7 @@ mod tests {
             archived: false,
             ended: false,
             end_reason: String::new(),
+            session_key: String::new(),
         }
     }
 
@@ -3821,6 +3877,7 @@ mod tests {
             archived: false,
             ended: false,
             end_reason: String::new(),
+            session_key: String::new(),
         }
     }
 
@@ -4978,6 +5035,22 @@ mod tests {
             body: r#"{"error":{"message":"raw blob","detail":{"path":"C:\\long"}}}"#.into(),
         });
         assert_eq!(dumped.kind, "other");
+        assert!(failure_keeps_connected(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"code":"idempotency_key_conflict"}}"#.into(),
+        }));
+        assert!(failure_keeps_connected(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"code":"session_active_turn"}}"#.into(),
+        }));
+        assert!(!failure_keeps_connected(&HermesError::Http {
+            status: 409,
+            body: r#"{"error":{"code":"admission_conflict"}}"#.into(),
+        }));
+        assert!(!failure_keeps_connected(&HermesError::Http {
+            status: 500,
+            body: "down".into(),
+        }));
         assert_eq!(dumped.line, "伺服器拒絕咗呢句。");
         assert!(!dumped.line.contains("C:\\"));
         let denied = send_failure(&HermesError::Http {
@@ -5371,6 +5444,37 @@ data: {\"run_id\":\"run_queued\",\"completed\":true}\n\
             stop_target_ids("run_queued", "run_live"),
             vec!["run_live".to_string(), "run_queued".to_string()]
         );
+        assert_eq!(streaming_run_id("run_live", "run_queued", true), "run_live");
+        assert_eq!(streaming_run_id("run_live", "run_next", false), "run_next");
+        assert_eq!(
+            stop_target_ids(
+                "run_queued",
+                streaming_run_id("run_live", "run_queued", true).as_str(),
+            ),
+            vec!["run_live".to_string(), "run_queued".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_fork_routed_at_another_session_is_not_offered() {
+        let mut row = summary("fork_2", "notes", 3.0);
+        row.session_key = "agent:main:dm:fork_1".into();
+        assert!(!session_route_matches(&row));
+        row.session_key = "agent:main:dm:fork_2".into();
+        assert!(session_route_matches(&row));
+        row.session_key = "fork_2".into();
+        assert!(session_route_matches(&row));
+        row.session_key.clear();
+        assert!(session_route_matches(&row));
+        let hidden = summary("fork_2", "notes", 3.0);
+        let mut parent = summary("fork_1", "notes", 1.0);
+        parent.session_key = "agent:main:dm:fork_1".into();
+        let mut orphan = hidden;
+        orphan.session_key = "agent:main:dm:fork_1".into();
+        let rows = [orphan, parent];
+        let ordered = session_menu_order(&rows);
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(ordered[0].id, "fork_1");
     }
 
     #[tokio::test]

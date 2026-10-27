@@ -200,11 +200,22 @@ export function planDemoMarkdown(task) {
   ].join("\n");
 }
 
+/** FNV-1a of the whole plan, so a later edit with the same opening still refreshes. */
+export function planTextHash(text) {
+  let hash = 2166136261;
+  const value = String(text || "");
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
 function planRecord(text) {
   return {
     title: planTitle(text),
     markdown: text,
-    key: `${planTitle(text)}\n${text.length}\n${text.slice(0, 80)}`,
+    key: `${planTitle(text)}\n${text.length}\n${text.slice(0, 80)}\n${planTextHash(text)}`,
   };
 }
 

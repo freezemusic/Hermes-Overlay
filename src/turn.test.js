@@ -54,6 +54,42 @@ test("stop waits for the gateway and a reopened panel still catches up", () => {
   assert.match(status, /finishApplies/);
 });
 
+test("a side question while busy leaves the live stream and run alone", () => {
+  const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
+  const sideAt = send.indexOf("composeSkipsBusyQueue(text)");
+  const queueAt = send.indexOf("sendWhileBusy");
+  assert.ok(sideAt >= 0 && sideAt < queueAt);
+  assert.match(send, /await sendSideQuestion\(id, text\)/);
+  const side = main.slice(main.indexOf("async function sendSideQuestion"), main.indexOf("async function sendWhileBusy"));
+  assert.match(side, /side: true/);
+  assert.doesNotMatch(side, /setBotStatus|queue: true|noteRunSession|holdOutgoing/);
+  const rust = lib.slice(lib.indexOf("async fn send_chat"), lib.indexOf("fn dispatch_turn"));
+  const arm = rust.slice(rust.indexOf("if side_turn {"), rust.indexOf("} else {"));
+  assert.doesNotMatch(arm, /begin_stream/);
+  assert.match(rust, /streaming_run_id\(slot, id, queued\)/);
+  assert.match(rust, /let keep_busy = side_turn/);
+  assert.match(rust, /"side": side_turn/);
+  const started = main.slice(main.indexOf('payload.type === "run.started"'), main.indexOf('payload.type === "approval.request"'));
+  assert.match(started, /queued: !!payload\.queued/);
+  const handler = main.slice(main.indexOf("function handleHermes"), main.indexOf("function handleSideHermes"));
+  assert.match(handler, /payload\.side/);
+  assert.match(handler, /handleSideHermes/);
+  const aside = main.slice(main.indexOf("function handleSideHermes"), main.indexOf("function noteComposeCatalog"));
+  assert.match(aside, /ensureSideBubble/);
+  assert.doesNotMatch(aside, /setBotStatus|clearRunSession|noteRunStarted/);
+  const stop = main.slice(main.indexOf("async function stopActive"), main.indexOf("function measureInputText"));
+  assert.match(stop, /streamingRunId\(thread\)/);
+  const failed = main.slice(main.indexOf("function noteSendFailed"), main.indexOf("function noteReadOnly"));
+  assert.match(failed, /sendErrorKeepsConnected\(kind\)/);
+  assert.match(failed, /閒置/);
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(html, /class="chat-messages"[^>]*tabindex="-1"/);
+  const wire = main.slice(main.indexOf("function wireBotPanel"), main.indexOf("function showClosedWarning"));
+  assert.match(wire, /chatBox\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(wire, /composer\.contains\(event\.target\)/);
+  assert.match(wire, /event\.key === "ArrowUp" \|\| event\.key === "PageUp" \|\| event\.key === "Home"/);
+});
+
 test("switching session while a bot is replying is not a dead end", () => {
   assert.doesNotMatch(main, /停咗先至轉對話/);
   const pick = main.slice(main.indexOf("async function pickSession"), main.indexOf("function noteHistoryError"));

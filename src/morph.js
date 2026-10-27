@@ -891,7 +891,13 @@ export function seamAdvanceMs(elapsedMs, {
   if (shown <= 20.5) next = Math.min(span, seamVisibleMs(Math.max(shown, elapsed), 1));
   else {
     const stalled = gap > frame * 1.5;
-    next = stalled ? Math.min(span, shown + frame) : Math.min(span, Math.max(shown, elapsed));
+    // The curve is already ≥90% by ~200ms and nearly flat. Crawling one
+    // frame per long gap holds ~97% width for several frames (~500ms).
+    // Follow the clock there. Earlier samples still advance one frame.
+    const flatTail = shown >= 200;
+    next = stalled && !flatTail
+      ? Math.min(span, shown + frame)
+      : Math.min(span, Math.max(shown, elapsed));
   }
   if (next < span && next < shown + frame * 0.5) {
     next = Math.min(span, shown + frame);

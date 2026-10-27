@@ -35,6 +35,10 @@ import {
   noteRunStarted,
   finishApplies,
   stopAfterMiss,
+  continueSideTurn,
+  streamingRunId,
+  sessionRouteMatches,
+  sendErrorKeepsConnected,
   storedPinAfterResolve,
   catchUpMessages,
   writableContinuation,
@@ -669,6 +673,42 @@ test("a tool row ends the live bubble and later text starts below it", () => {
   assert.equal(settled, null);
 });
 
+test("a closed menu follows the active session, and a foreign route is hidden", () => {
+  const { document } = new JSDOM("<select></select>").window;
+  const select = document.querySelector("select");
+  const fork1 = { id: "api_syn_fork_1", title: "notes", source: "api_server", last_active: 2, session_key: "agent:main:dm:api_syn_fork_1" };
+  const fork2 = { id: "api_syn_fork_2", title: "notes", source: "api_server", last_active: 1, session_key: "agent:main:dm:api_syn_fork_2" };
+  const orphan = { id: "fork_new", title: "Continue previous conversation", source: "api_server", last_active: 9, session_key: "agent:main:dm:api_syn_fork_1" };
+  assert.equal(sessionRouteMatches(orphan), false);
+  assert.equal(sessionRouteMatches(fork2), true);
+  assert.equal(sessionRouteMatches({ id: "plain", title: "notes" }), true);
+  writeSessionMenu(select, [fork1, fork2, orphan], "api_syn_fork_1", { rebuild: true });
+  assert.equal([...select.options].map((option) => option.value).join("|"), "api_syn_fork_1|api_syn_fork_2");
+  assert.ok([...select.options].every((option) => option.textContent.includes("·")));
+  select.value = "api_syn_fork_1";
+  const picked = writeSessionMenu(select, [fork1, fork2, orphan], "api_syn_fork_2");
+  assert.equal(picked, "api_syn_fork_2");
+  assert.equal(select.value, "api_syn_fork_2");
+  writeSessionMenu(select, [orphan], "fork_new", { rebuild: true });
+  assert.equal(select.options[0].textContent, "未有對話");
+  const messages = [{ role: "bot", text: "main", live: true }];
+  const side = continueSideTurn(messages);
+  assert.equal(side.created, true);
+  assert.equal(side.message.side, true);
+  assert.equal(messages[0].live, true);
+  assert.equal(continueSideTurn(messages).message, side.message);
+  const thread = { runId: "" };
+  noteRunStarted(thread, "run_live");
+  noteRunStarted(thread, "run_queued", { queued: true });
+  assert.equal(thread.runId, "run_live");
+  assert.equal(thread.queuedRunId, "run_queued");
+  assert.equal(streamingRunId(thread), "run_live");
+  assert.equal(sendErrorKeepsConnected("busy"), true);
+  assert.equal(sendErrorKeepsConnected("other"), true);
+  assert.equal(sendErrorKeepsConnected("closed"), false);
+  assert.equal(sendErrorKeepsConnected(""), false);
+});
+
 test("stop follows the latest run and a 409 is not a stop", () => {
   const thread = { runId: "", nextRunId: "" };
   noteRunStarted(thread, "run_slow");
@@ -847,7 +887,7 @@ test("an open session menu updates titles in place and keeps the selected id", (
   writeSessionMenu(select, [
     { id: "e969", title: "MT5 wrapper_202610271237", source: "api_server", archived: true, ended: true, end_reason: "tui_shutdown", last_active: 9 },
     { id: "new", title: "MT5 wrapper", source: "api_server", last_active: 1 },
-  ], "new");
+  ], "new", { menuOpen: true });
   assert.equal(select.value, "e969");
   assert.equal(select.selectedOptions[0].textContent, "MT5 wrapper_202610271237（已封存）（已結束）");
   assert.equal([...select.options].find((option) => option.value === "new").textContent, "MT5 wrapper");

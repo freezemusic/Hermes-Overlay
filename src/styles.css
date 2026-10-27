@@ -1329,6 +1329,7 @@ html, body {
   min-height: 96px;
   overflow-y: auto;
   overflow-anchor: none;
+  outline: none;
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
