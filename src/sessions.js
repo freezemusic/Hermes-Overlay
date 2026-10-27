@@ -262,6 +262,88 @@ export function sessionLabel(session) {
   return `${sessionTitleText(session)}${sessionSuffix(session)}`;
 }
 
+/** Rows the session menu paints. An open chat with an empty list still shows its id. */
+export function sessionMenuRows(sessions, activeId) {
+  const ordered = orderSessions(sessions);
+  if (ordered.length) return ordered;
+  const id = String(activeId || "").trim();
+  return id ? [{ id, title: id, hidden: false }] : [];
+}
+
+export function sessionMenuKey(activeId, sessions) {
+  return JSON.stringify([
+    String(activeId || ""),
+    sessionMenuRows(sessions, activeId).map((session) => [
+      session.id,
+      session.title,
+      session.kept_title,
+      session.hidden,
+      session.archived,
+      session.source,
+      session.ended,
+      session.end_reason,
+    ]),
+  ]);
+}
+
+/**
+ * Write the latest session labels into a `<select>`.
+ * Opening the menu passes `rebuild` and replaces the options.
+ * A change while the menu is open updates labels in place and keeps the selected session id.
+ */
+export function writeSessionMenu(select, sessions, activeId, { rebuild = false } = {}) {
+  const labels = sessionMenuRows(sessions, activeId).map((session) => ({
+    id: String(session.id || ""),
+    label: sessionLabel(session),
+  }));
+  const previous = String(select.value || "");
+  const active = String(activeId || "");
+  const preferred = labels.some((row) => row.id === previous)
+    ? previous
+    : (labels.some((row) => row.id === active) ? active : (labels[0]?.id || ""));
+  if (!labels.length) {
+    select.replaceChildren();
+    const option = select.ownerDocument.createElement("option");
+    option.value = "";
+    option.textContent = "未有對話";
+    select.append(option);
+    select.disabled = true;
+    select.value = "";
+    return "";
+  }
+  if (rebuild || select.options.length === 0) {
+    select.replaceChildren();
+    for (const row of labels) {
+      const option = select.ownerDocument.createElement("option");
+      option.value = row.id;
+      option.textContent = row.label;
+      select.append(option);
+    }
+  } else {
+    const pool = [...select.options];
+    const used = new Set();
+    labels.forEach((row, index) => {
+      let option = pool.find((item) => item.value === row.id && !used.has(item));
+      if (!option) {
+        option = select.ownerDocument.createElement("option");
+        option.value = row.id;
+        select.insertBefore(option, select.options[index] || null);
+      } else if (select.options[index] !== option) {
+        select.insertBefore(option, select.options[index] || null);
+      }
+      used.add(option);
+      option.value = row.id;
+      if (option.textContent !== row.label) option.textContent = row.label;
+    });
+    for (const option of [...select.options]) {
+      if (!used.has(option)) option.remove();
+    }
+  }
+  select.disabled = false;
+  if (select.value !== preferred) select.value = preferred;
+  return preferred;
+}
+
 function sourceWord(source) {
   if (source === "desktop") return "Desktop";
   if (source === "cli") return "CLI";

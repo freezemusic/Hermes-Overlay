@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { JSDOM } from "jsdom";
 import test from "node:test";
 import {
   CONTINUE_API_HINT,
@@ -26,6 +27,7 @@ import {
   sessionLabel,
   sessionTitleText,
   stampKeptTitles,
+  writeSessionMenu,
   sessionReadOnly,
   readOnlyNote,
   readOnlyLocked,
@@ -769,12 +771,48 @@ test("the session menu separates desktop, archived, and api Bot Chats", () => {
     ended: true,
     end_reason: "tui_shutdown",
   }), /已閉/);
+  const openMenu = main.slice(main.indexOf("const sessionSelect = role(panel, \"session\")"), main.indexOf("sessionSelect?.addEventListener(\"change\""));
+  assert.match(openMenu, /addEventListener\("mousedown"/);
+  assert.match(openMenu, /addEventListener\("focus"/);
+  assert.match(openMenu, /paintSessionSelect\(id, \{ rebuild: true \}\)/);
+  const paint = main.slice(main.indexOf("function paintSessionSelect"), main.indexOf("async function pickSession"));
+  assert.doesNotMatch(paint, /activeElement === select/);
+  assert.match(paint, /writeSessionMenu/);
+  const chromeAt = main.indexOf("const quietChrome");
+  const chrome = main.slice(chromeAt, main.indexOf("const stamp = chatStamp", chromeAt));
+  assert.match(chrome, /if \(!quietChrome\)/);
+  assert.match(chrome, /paintSessionSelect\(id\)/);
+  const quietGate = chrome.slice(0, chrome.indexOf("paintSessionSelect"));
+  assert.doesNotMatch(quietGate, /paintSessionSelect/);
+  const refresh = main.slice(main.indexOf("function refreshBotChats"), main.indexOf("function armChatRefresh"));
+  assert.match(refresh, /if \(visualQuiet\(shell\)\) \{\s*paintSessionSelect\(bot\.id\);/s);
   const choice = lib.slice(lib.indexOf("struct SessionChoice"), lib.indexOf("struct DiscoveredBot"));
   assert.match(choice, /source:\s*String/);
   assert.match(choice, /archived:\s*bool/);
   const menu = lib.slice(lib.indexOf("fn session_choices"), lib.indexOf("fn begin_stream"));
   assert.match(menu, /source:\s*session\.source\.clone\(\)/);
   assert.match(menu, /archived:\s*session\.archived/);
+});
+
+test("an open session menu updates titles in place and keeps the selected id", () => {
+  const { document } = new JSDOM("<select></select>").window;
+  const select = document.querySelector("select");
+  const closed = { id: "e969", title: "MT5 wrapper", source: "api_server", ended: true, end_reason: "tui_shutdown", last_active: 1 };
+  const fresh = { id: "new", title: "Continue previous conversation", kept_title: "MT5 wrapper", source: "api_server", last_active: 2 };
+  writeSessionMenu(select, [closed, fresh], "e969", { rebuild: true });
+  assert.equal(select.value, "e969");
+  assert.equal([...select.options].map((option) => option.textContent).join("|"), "MT5 wrapper|MT5 wrapper（已結束）");
+  select.value = "e969";
+  const selected = select.selectedIndex;
+  writeSessionMenu(select, [
+    { id: "e969", title: "MT5 wrapper_202610271237", source: "api_server", archived: true, ended: true, end_reason: "tui_shutdown", last_active: 9 },
+    { id: "new", title: "MT5 wrapper", source: "api_server", last_active: 1 },
+  ], "new");
+  assert.equal(select.value, "e969");
+  assert.equal(select.selectedOptions[0].textContent, "MT5 wrapper_202610271237（已封存）（已結束）");
+  assert.equal([...select.options].find((option) => option.value === "new").textContent, "MT5 wrapper");
+  assert.notEqual(select.selectedIndex, selected);
+  assert.equal(select.options[select.selectedIndex].value, "e969");
 });
 
 test("a refused typed line stays visible and marked unsent after history reloads", () => {

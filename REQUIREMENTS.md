@@ -369,10 +369,11 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 2. 一輪完成之後，如果伺服器報嘅 `session_id`（202 body、事件或者 `GET /v1/runs/{id}`）唔等於送出嗰條，或者送出期間 session 清單剛好多咗一條未結束嘅新 id，就跟過去：面板改顯示嗰條，並且只用手動 explicit 嗰條寫法（`persist_pin`，只動呢個 profile 嘅 session id／explicit／原有 anchor）記住。跟唔到就出通知同「轉去新對話」，回覆唔可以靜靜消失。選單要即時列出跟去嗰條，唔使閂面板再開。
 3. Session 選單把 `ended_at` 或 `end_reason` 有值嘅列標「（已結束）」。揀中之後、以及撳傳送之前，都要講明呢個對話已經喺伺服器關閉，而且唔好把字送入去。掣轉去另一條未結束、可以傳嘅對話（Bot Chat 優先）。啟動仍然跟 R-SS-01：explicit 而且清單仲有呢條就開佢，唔好因為已結束就清走。
 4. 跟去嘅新 session 如果標題係空或者係 gateway 預設 `Continue previous conversation`，跟 renew skill（`freezemusic/hermes-renew-skill`，`skills/renew/scripts/rollover.py`）改名：舊列先 `PATCH /api/sessions/{old}` 把標題改成 `<舊標題>_YYYYMMDDHHMM`（切換當下、本機時鐘，同 renew 預設 `_%Y%m%d%H%M`；個名已經有人用，或者 400 `invalid_title`，就再加秒，只多試一次），然後新列 `PATCH` 成舊標題原字（例如 `MT5 wrapper`），再 `PATCH {"archived": true}` 封存舊列。唔好在標題或選單加「（已閉）」。改名失敗就唔好封存、亦唔好改新列，並把舊標題還原；選單仍然用舊名標新列。`Bot Chat` 只改顯示，唔好 PATCH。新列已經有自己嘅名就留低。config.json 仍然只動 session id／explicit／原有 anchor。
+5. Session 選單每次打開（`mousedown`、`focus`，以及已有的 `pointerdown`／方向鍵）都用當時的清單重建選項。選單開住時清單變咗（包括 `visualQuiet` 期間），就地改每一項的標籤，選中的 session 跟 id。focused 的 `<select>` 同 `visualQuiet` 都要寫到選項。
 
 config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細節）。唔好因此 `POST /api/sessions`。
 - 來源：Devon 手提（2026-10-27，SA-CONN-ERROR）。mt-orch explicit `api_1793024902_e96976d4`（`end_reason=tui_shutdown`）第一句 202 寫入 `20261027_200326_8166f64d`，第二句 409 `admission_conflict`。
-- 驗收（盒）：開住嗰條已結束嘅 mt-orch 對話，選單見到「（已結束）」；撳傳送未出網路，橫額係關閉嗰句，狀態係「對話已關閉」，有「轉去新對話」，輸入區嘅字仲喺度。若果 gateway 仍然把一句寫入另一條 session，面板要跟過去而且睇到回覆，選單唔使重開就見到新條，標題係 `MT5 wrapper`。舊條標題係 `MT5 wrapper_YYYYMMDDHHMM`（撞名就再加秒）而且 archived。Gateway 拒絕改名時，選單仍然顯示 `MT5 wrapper`，標題同選單都冇「（已閉）」。config 只改咗呢個 profile 嘅 session id。再對住已結束 id 收到 409 `admission_conflict` 時，唔好出現「個 bot 仲忙，呢句未送出。」或者狀態「連線錯誤」。個 bot 真係忙（`session_active_turn` 或者租約）仍然係忙嗰句。批准、停止、steer 嘅 409 字眼不變。
+- 驗收（盒）：開住嗰條已結束嘅 mt-orch 對話，選單見到「（已結束）」；撳傳送未出網路，橫額係關閉嗰句，狀態係「對話已關閉」，有「轉去新對話」，輸入區嘅字仲喺度。若果 gateway 仍然把一句寫入另一條 session，面板要跟過去而且睇到回覆，選單唔使重開就見到新條，標題係 `MT5 wrapper`。舊條標題係 `MT5 wrapper_YYYYMMDDHHMM`（撞名就再加秒）而且 archived。Gateway 拒絕改名時，選單仍然顯示 `MT5 wrapper`，標題同選單都冇「（已閉）」。選單開住時改名，舊項標籤變成 `MT5 wrapper_YYYYMMDDHHMM`，新項變成 `MT5 wrapper`，選中的 id 留在原項。config 只改咗呢個 profile 嘅 session id。再對住已結束 id 收到 409 `admission_conflict` 時，唔好出現「個 bot 仲忙，呢句未送出。」或者狀態「連線錯誤」。個 bot 真係忙（`session_active_turn` 或者租約）仍然係忙嗰句。批准、停止、steer 嘅 409 字眼不變。
 - 狀態：❓ / ❓（單元測試）；Win 未驗。
 
 ---

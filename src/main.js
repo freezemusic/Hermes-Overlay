@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, finishApplies, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKind, sendErrorSwitch, sessionEnded, sessionLabel, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, finishApplies, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -4696,8 +4696,8 @@ function renderChat(id = state.activeId, options = {}) {
   if (!quietChrome) {
     paintOrb(role(panel, "avatar"), bot.color, bot.short || "");
     applyBotColor(panel, bot.color);
-    paintSessionSelect(id);
   }
+  paintSessionSelect(id);
   const stamp = chatStamp(thread);
   const current = chat.dataset.stamp === stamp && chat.childElementCount === thread.messages.length;
   const resting = options.resting === true;
@@ -5500,7 +5500,10 @@ function refreshBotChats() {
     if (bot.hasKey === false) continue;
     const shell = shellFor(bot.id);
     const thread = threadFor(bot.id);
-    if (visualQuiet(shell)) continue;
+    if (visualQuiet(shell)) {
+      paintSessionSelect(bot.id);
+      continue;
+    }
     if (thread.watchReply) {
       void catchUpSession(bot.id);
       continue;
@@ -5555,34 +5558,13 @@ async function loadBotHistory(id, token, { quiet = false } = {}) {
 
 function paintSessionSelect(id, options = {}) {
   const select = role(panelFor(id), "session");
-  if (!select || (!options.force && document.activeElement === select)) return;
+  if (!select) return;
   const thread = threadFor(id);
-  const sessions = orderSessions(thread.sessions || []);
-  const key = JSON.stringify([thread.sessionId, sessions.map((session) => [session.id, session.title, session.kept_title, session.hidden, session.archived, session.source, session.ended, session.end_reason])]);
-  if (select.dataset.key === key) return;
-  select.replaceChildren();
-  const rows = sessions.length
-    ? sessions
-    : thread.sessionId
-      ? [{ id: thread.sessionId, title: thread.sessionId, hidden: false }]
-      : [];
-  if (!rows.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "未有對話";
-    select.appendChild(option);
-    select.disabled = true;
-    select.dataset.key = key;
-    return;
-  }
-  for (const session of rows) {
-    const option = document.createElement("option");
-    option.value = session.id;
-    option.textContent = sessionLabel(session);
-    select.appendChild(option);
-  }
-  select.disabled = false;
-  select.value = thread.sessionId || rows[0].id;
+  const sessions = thread?.sessions || [];
+  const key = sessionMenuKey(thread?.sessionId, sessions);
+  const rebuild = options.rebuild === true || !state.dropdownOpen;
+  if (!options.rebuild && select.dataset.key === key) return;
+  writeSessionMenu(select, sessions, thread?.sessionId || "", { rebuild });
   select.dataset.key = key;
 }
 
@@ -6214,10 +6196,18 @@ function wireBotPanel(panel, id) {
   role(panel, "save")?.addEventListener("click", () => saveBotPanel(id));
   const sessionSelect = role(panel, "session");
   sessionSelect?.addEventListener("pointerdown", () => {
+    paintSessionSelect(id, { rebuild: true });
     state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "pointerdown");
+  });
+  sessionSelect?.addEventListener("mousedown", () => {
+    paintSessionSelect(id, { rebuild: true });
+  });
+  sessionSelect?.addEventListener("focus", () => {
+    paintSessionSelect(id, { rebuild: true });
   });
   sessionSelect?.addEventListener("keydown", (event) => {
     if (selectKeyOpensDropdown(event.key)) {
+      paintSessionSelect(id, { rebuild: true });
       state.dropdownOpen = nextDropdownOpen(state.dropdownOpen, "open-key");
     }
     if (event.key === "Escape" && state.dropdownOpen) {
