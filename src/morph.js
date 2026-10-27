@@ -329,7 +329,8 @@ export function cronShellHeight(contentHeight, viewportHeight, min = CRON_MIN_H)
  * `pin` sticks to the newest message, `remember` keeps a user offset,
  * `restore` puts back the offset already remembered.
  */
-export function chatTailAction({ followTail = true, userGesture = false, nearTail = true } = {}) {
+export function chatTailAction({ followTail = true, userGesture = false, nearTail = true, scrollingUp = false } = {}) {
+  if (userGesture && scrollingUp) return "remember";
   if (userGesture) return nearTail ? "pin" : "remember";
   if (followTail === false) return "restore";
   return "pin";

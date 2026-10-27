@@ -5145,6 +5145,7 @@ function pinChat(id) {
     if (top == null || !chat) return false;
     markProgrammaticScroll(chat);
     chat.scrollTop = top;
+    chat.dataset.lastTop = String(chat.scrollTop);
     return true;
   };
   if (!apply()) return;
@@ -5176,10 +5177,18 @@ function stickChat(id) {
 
 function noteChatScroll(id, chat, userGesture = false) {
   const thread = threadFor(id);
+  const now = Number(chat?.scrollTop) || 0;
+  const previous = Number(chat?.dataset.lastTop);
+  const flagged = chat?.dataset.scrollUp === "1";
+  const movedUp = Number.isFinite(previous) && now < previous - 0.5;
+  const scrollingUp = !!userGesture && !!(flagged || movedUp);
+  if (chat && (!flagged || movedUp)) delete chat.dataset.scrollUp;
+  if (chat) chat.dataset.lastTop = String(now);
   const action = chatTailAction({
     followTail: thread.followTail !== false,
     userGesture,
     nearTail: chatNearTail(chat),
+    scrollingUp,
   });
   if (action === "remember") {
     thread.followTail = false;
@@ -6185,6 +6194,7 @@ function wireBotPanel(panel, id) {
     const chat = role(panel, "chat");
     if (!chat || event.target.closest?.(".chat-messages, .plan-preview, textarea, select")) return;
     armUserScroll(chat);
+    if (event.deltaY < 0) chat.dataset.scrollUp = "1";
     assignChatScroll(chat, chat.scrollTop + event.deltaY);
     noteChatScroll(id, chat, true);
   }, { passive: true });
@@ -6195,9 +6205,17 @@ function wireBotPanel(panel, id) {
   const endUserScroll = () => armUserScroll(chatBox);
   chatBox?.addEventListener("pointerup", endUserScroll);
   chatBox?.addEventListener("pointercancel", endUserScroll);
-  chatBox?.addEventListener("wheel", () => armUserScroll(chatBox), { passive: true });
+  chatBox?.addEventListener("wheel", (event) => {
+    armUserScroll(chatBox);
+    if (event.deltaY < 0) chatBox.dataset.scrollUp = "1";
+  }, { passive: true });
   chatBox?.addEventListener("touchstart", () => armUserScroll(chatBox), { passive: true });
-  chatBox?.addEventListener("keydown", () => armUserScroll(chatBox));
+  chatBox?.addEventListener("keydown", (event) => {
+    armUserScroll(chatBox);
+    if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") {
+      chatBox.dataset.scrollUp = "1";
+    }
+  });
   chatBox?.addEventListener("scroll", (event) => {
     const chat = event.currentTarget;
     if (chat.dataset.programmaticScroll === "1") return;

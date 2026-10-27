@@ -519,6 +519,16 @@ test("plan seam and cron height and chat tail use explicit pixels", () => {
   assert.equal(chatTailAction({ followTail: false, userGesture: false, nearTail: false }), "restore");
   assert.equal(chatTailAction({ followTail: true, userGesture: true, nearTail: false }), "remember");
   assert.equal(chatTailAction({ followTail: false, userGesture: true, nearTail: true }), "pin");
+  assert.equal(chatTailAction({ followTail: true, userGesture: true, nearTail: true, scrollingUp: true }), "remember");
+  assert.equal(chatTailAction({ followTail: true, userGesture: false, nearTail: true, scrollingUp: true }), "pin");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const note = main.slice(main.indexOf("function noteChatScroll"), main.indexOf("function armUserScroll"));
+  assert.match(note, /scrollingUp/);
+  assert.match(note, /dataset\.scrollUp/);
+  const wire = main.slice(main.indexOf("function wireBotPanel"), main.indexOf("async function saveBotPanel"));
+  assert.match(wire, /deltaY < 0\) chat(?:Box)?\.dataset\.scrollUp = "1"/);
+  assert.match(wire, /ArrowUp/);
+  assert.match(wire, /PageUp/);
   const grown = { scrollHeight: 800, clientHeight: 400, scrollTop: 400 };
   assert.equal(pinnedScrollTop(grown, true), null);
   grown.scrollHeight = 860;
