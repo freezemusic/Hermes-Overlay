@@ -143,6 +143,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClip, /fill: "both"/);
   assert.match(seamClip, /id: "seam-clip"/);
   assert.match(seamClip, /planRevealClip\(shell, 0\)/);
+  assert.match(seamClip, /exactOpenClip\(shell\)/);
   assert.match(seamClip, /easing: PLAN_EASE/);
   assert.match(seamClip, /const duration = PLAN_GROW_MS/);
   assert.match(seamClip, /alignSeamClock\(anim/);
@@ -471,6 +472,10 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.seam-tick \{[^}]*pointer-events:\s*none/s);
   assert.match(css, /\.seam-tick \{[^}]*left:\s*-1px/s);
   assert.match(css, /\.seam-tick \{[^}]*position:\s*fixed/s);
+  assert.match(css, /\.morph\.is-plan-seam \{[^}]*translateZ\(0\)/s);
+  assert.match(css, /\.morph\.is-plan-seam \{[^}]*will-change:\s*clip-path, transform/s);
+  assert.match(css, /\.plan-hit-host \{[^}]*translateZ\(0\)/s);
+  assert.match(css, /\.plan-hit-host \{[^}]*will-change:\s*transform/s);
   assert.doesNotMatch(css, /\.seam-tick \{[^}]*--ax/s);
   assert.match(mainSrc, /cmd=set_hit_rects/);
   assert.match(mainSrc, /function announcePanelHits/);

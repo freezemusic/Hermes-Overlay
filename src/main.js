@@ -2654,7 +2654,9 @@ function drivePresentedSeam(shell, to, duration) {
  *  The curve stays PLAN_EASE / 280ms. */
 function beginSeamClip(shell) {
   const from = planRevealClip(shell, 0).value;
-  const to = planRevealClip(shell, 1).value;
+  // The curve is still PLAN_EASE / 280ms. The last sample is the ceiled
+  // open clip, so the outward 1px is on this layer instead of a later write.
+  const to = exactOpenClip(shell);
   const duration = PLAN_GROW_MS;
   holdMotion(shell);
   const previous = shell._clipHold;

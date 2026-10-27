@@ -3201,7 +3201,14 @@ html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is
 }
 
 /* The panel clip is finished while is-morphing stays up for the seam.
-   The composer has to take a click then. The plan window stays inert. */
+   The composer has to take a click then. The plan window stays inert.
+   The shell and the plan host share one layer so the ceiled outer edge
+   is in the last 280ms sample. */
+.morph.is-plan-seam {
+  transform: translateZ(0);
+  will-change: clip-path, transform;
+}
+
 html.overlay-passthrough:not([data-pass="1"]) .morph.is-plan-seam[data-state="panel"]:not(.is-collapsing) .center-panel,
 html.overlay-passthrough:not([data-pass="1"]) .morph.is-plan-seam[data-state="panel"]:not(.is-collapsing) .center-panel * {
   pointer-events: auto !important;
@@ -3233,6 +3240,8 @@ html.overlay-passthrough:not([data-pass="1"]) .plan-hit-host > .plan-window:not(
 .plan-hit-host {
   position: absolute;
   overflow: visible;
+  transform: translateZ(0);
+  will-change: transform;
   /* WebKitGTK skips a pointer-events:none ancestor even when the buttons
      opt back in, so a click on 預覽/原文/× lands on BODY. The host is only
      the plan box. Ctrl sets data-pass and this rule yields. */
