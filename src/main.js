@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, finishApplies, finishLiveBubble, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -5384,7 +5384,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
       if (panelShowing(id)) restoreSendErrorBanner(id);
       return;
     }
-    thread.messages = shown;
+    thread.messages = reconcileSideQuestion(thread.messages, shown);
     for (const card of keptApprovals) {
       const same = thread.messages.some((message) => {
         if (card.role === "approval") return message.role === "approval" && message.requestId === card.requestId;
@@ -6787,7 +6787,11 @@ function noteSendFailed(id, raw, meta = {}) {
   if (!have) appendOnce(id, { role: "commentary", text });
   noteActivity(id, { type: "failed", text });
   if (sendErrorKeepsConnected(kind)) {
-    if (!(state.busy.has(id) || thread.statusState === "busy")) setBotStatus(id, "閒置", "idle");
+    if (idleAfterConflict(thread.runId)) {
+      thread.statusState = "idle";
+      state.busy.delete(id);
+    }
+    if (!state.busy.has(id)) setBotStatus(id, "閒置", "idle");
     setBanner(text, "info");
     return;
   }
@@ -7206,13 +7210,28 @@ function handleHermes(payload) {
   if (payload.type === "done") {
     const thread = threadFor(id);
     if (payload.run_id && !finishApplies(thread, payload.run_id)) return;
-    const live = [...runMessages(id)].reverse().find((m) => m.live);
+    const finishedId = String(payload.run_id || "");
+    const beforeId = String(thread.runId || "");
+    const queuedBefore = String(thread.queuedRunId || "");
+    const queuedOnly = !!finishedId && queuedBefore === finishedId && beforeId !== finishedId;
+    const promoted = promoteQueuedRun(thread, finishedId);
+    const live = [...runMessages(id)].reverse().find((m) => m.live && !m.side);
     painterFor(id).flush();
     if (live) {
       live.live = false;
       if (textIsExecuteCodeBlocked(live.text)) live.text = EXECUTE_CODE_BLOCKED_LINE;
     }
+    dedupeShownReply(runMessages(id));
     settleBlockedCopies(id);
+    if (promoted) {
+      if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
+      setBotStatus(id, "思考中…", "busy");
+      return;
+    }
+    if (queuedOnly) {
+      if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
+      return;
+    }
     if (payload.keep_busy) {
       if (payload.outcome === "cancelled") noteStopped(id, { keepBusy: true });
       else if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
@@ -8222,6 +8241,7 @@ function mergeCaughtUp(id, opened) {
     return !String(message.text || "").startsWith(String(live.text));
   });
   for (const message of additions) appendMessage(id, message);
+  dedupeShownReply(thread.messages);
   if (sessionId && !thread.sessionId) thread.sessionId = sessionId;
   thread.loaded = true;
   const gotReply = additions.some((message) => message.role === "bot" || message.role === "failure")

@@ -134,6 +134,7 @@ struct AppState {
     http: reqwest::Client,
     streams: Arc<Mutex<HashMap<String, ProfileStreams>>>,
     run_ids: Arc<Mutex<HashMap<String, String>>>,
+    queued_run_ids: Arc<Mutex<HashMap<String, String>>>,
     sessions: Arc<Mutex<HashMap<String, SessionPin>>>,
     /// Last Bot Chat transcript seen by the cron poll. Locked only after HTTP awaits.
     bot_chats: Arc<Mutex<HashMap<String, WatchedChat>>>,
@@ -680,8 +681,14 @@ fn begin_stream(state: &AppState, profile: &str, replace: bool) -> StreamControl
 fn request_stream_stop(state: &AppState, profile: &str) {
     let map = state.streams.lock().unwrap_or_else(|err| err.into_inner());
     if let Some(slot) = map.get(profile) {
+        let generations: Vec<u64> = slot.live.iter().map(|control| control.generation).collect();
+        let Some(generation) = hermes::stop_stream_generations(&generations) else {
+            return;
+        };
         for control in &slot.live {
-            control.stop_requested.store(true, Ordering::Relaxed);
+            if control.generation == generation {
+                control.stop_requested.store(true, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -1717,6 +1724,7 @@ async fn send_chat(
     };
     let streams = Arc::clone(&state.streams);
     let run_ids = Arc::clone(&state.run_ids);
+    let queued_run_ids = Arc::clone(&state.queued_run_ids);
     let http = state.http.clone();
     let session_cache = Arc::clone(&state.sessions);
     let config_write = Arc::clone(&state.config_write);
@@ -1724,22 +1732,21 @@ async fn send_chat(
     let sessions = hermes::list_sessions_for_bot_chat(&http, &root, &key)
         .await
         .map_err(|err| explain(&err))?;
-    let session_id = if pin.explicit && !pin.id.trim().is_empty() {
-        if sessions
-            .iter()
-            .any(|session| session.id == pin.id && hermes::session_read_only(&session.source))
-        {
-            return Err(hermes::session_read_only_reason().into());
-        }
-        pin.id
-    } else {
-        let resolved = hermes::session_for_startup(&sessions, &pin.id, false, pin.anchor)
-            .ok_or_else(|| "未有 Bot Chat".to_string())?;
-        if resolved.read_only {
-            return Err(resolved.read_only_reason);
-        }
-        resolved.id
-    };
+    let target = hermes::send_session_target(&sessions, &pin.id, pin.explicit, pin.anchor)?;
+    if target.rewrite {
+        persist_pin(
+            &app,
+            &session_cache,
+            &config_write,
+            &profile,
+            SessionPin {
+                id: target.id.clone(),
+                explicit: target.explicit,
+                anchor: target.anchor,
+            },
+        );
+    }
+    let session_id = target.id;
     if sessions
         .iter()
         .any(|session| session.id == session_id && session.ended)
@@ -1759,12 +1766,42 @@ async fn send_chat(
     tauri::async_runtime::spawn(async move {
         let mut emit_turn = |event: TurnEvent| {
             if !side_turn {
-                if let TurnEvent::Started { run_id } = &event {
-                    if let Some(id) = hermes::approval_run_id(run_id) {
-                        let mut map = run_ids.lock().unwrap_or_else(|err| err.into_inner());
-                        let slot = map.entry(profile.clone()).or_default();
-                        *slot = hermes::streaming_run_id(slot, id, queued);
+                let mut streaming = run_ids.lock().unwrap_or_else(|err| err.into_inner());
+                let mut waiting = queued_run_ids.lock().unwrap_or_else(|err| err.into_inner());
+                let current = streaming.get(&profile).cloned().unwrap_or_default();
+                let queued_id = waiting.get(&profile).cloned().unwrap_or_default();
+                match &event {
+                    TurnEvent::Started { run_id } => {
+                        if let Some(id) = hermes::approval_run_id(run_id) {
+                            let (next, next_queued) =
+                                hermes::note_streaming_run(&current, &queued_id, id, queued);
+                            if next.is_empty() {
+                                streaming.remove(&profile);
+                            } else {
+                                streaming.insert(profile.clone(), next);
+                            }
+                            if next_queued.is_empty() {
+                                waiting.remove(&profile);
+                            } else {
+                                waiting.insert(profile.clone(), next_queued);
+                            }
+                        }
                     }
+                    TurnEvent::Finished { run_id, .. } => {
+                        let (next, next_queued) =
+                            hermes::promote_finished_run(&current, &queued_id, run_id);
+                        if next.is_empty() {
+                            streaming.remove(&profile);
+                        } else {
+                            streaming.insert(profile.clone(), next);
+                        }
+                        if next_queued.is_empty() {
+                            waiting.remove(&profile);
+                        } else {
+                            waiting.insert(profile.clone(), next_queued);
+                        }
+                    }
+                    _ => {}
                 }
             }
             let keep_busy = side_turn
@@ -3345,6 +3382,7 @@ pub fn run() {
             http: http_client(),
             streams: Arc::new(Mutex::new(HashMap::new())),
             run_ids: Arc::new(Mutex::new(HashMap::new())),
+            queued_run_ids: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             bot_chats: Arc::new(Mutex::new(HashMap::new())),
             config_write: Arc::new(Mutex::new(())),

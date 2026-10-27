@@ -635,12 +635,113 @@ export function streamingRunId(thread) {
   return String(thread?.runId || "");
 }
 
+/**
+ * The streaming run ended. Its queued admission becomes the active run.
+ * A finish that is only the queued id leaves the streaming run in place
+ * and returns "".
+ */
+export function promoteQueuedRun(thread, finishedId) {
+  if (!thread) return "";
+  const finished = String(finishedId || "");
+  const active = String(thread.runId || "");
+  const queued = String(thread.queuedRunId || "");
+  if (finished && queued && finished === queued && finished !== active) {
+    thread.queuedRunId = "";
+    return "";
+  }
+  if (queued && (!finished || !active || finished === active)) {
+    thread.staleRunId = active;
+    thread.runId = queued;
+    thread.queuedRunId = "";
+    thread.queued = false;
+    return queued;
+  }
+  return "";
+}
+
 /** A finish for some other run must not idle the bot or drop the active id. */
 export function finishApplies(thread, runId) {
   const finished = String(runId || "");
   const active = String(thread?.runId || "");
-  if (finished && active && finished !== active) return false;
+  const queued = String(thread?.queuedRunId || "");
+  if (finished && active && finished !== active && finished !== queued) return false;
   return true;
+}
+
+/** Drop a later bot copy of a reply that is already on screen. */
+export function dedupeShownReply(messages) {
+  const list = messages || [];
+  const seen = new Set();
+  for (let index = 0; index < list.length; index += 1) {
+    const message = list[index];
+    if (!message || message.role !== "bot") continue;
+    const text = String(message.text || "").trim();
+    if (!text) continue;
+    if (seen.has(text)) {
+      list.splice(index, 1);
+      index -= 1;
+      continue;
+    }
+    seen.add(text);
+  }
+  return list;
+}
+
+function sideQuestionIndex(list) {
+  return (list || []).findIndex((message) => (
+    message?.command === "btw" || /^\/btw\b/i.test(String(message?.text || ""))
+  ));
+}
+
+function mainQuestionBefore(list, sideAt) {
+  return (list || []).findIndex((message, index) => (
+    index < sideAt
+    && message?.role === "user"
+    && message.command !== "btw"
+    && !/^\/btw\b/i.test(String(message?.text || ""))
+  ));
+}
+
+/**
+ * Hermes gateway `/btw` does not write the side exchange into the session.
+ * A runs-API `/btw` is stored with the main turn, after the main question.
+ * Keep the live order in that case. A server transcript that places the
+ * side question before the main question is the stored order.
+ */
+export function reconcileSideQuestion(local, incoming) {
+  const have = local || [];
+  const next = incoming || [];
+  const localSide = sideQuestionIndex(have);
+  if (localSide < 0) return next.slice();
+  const serverSide = sideQuestionIndex(next);
+  if (serverSide >= 0 && mainQuestionBefore(next, serverSide) < 0) return next.slice();
+  const seen = new Set(have.map((message) => `${message?.role || ""}\n${String(message?.text || "").replace(/^\/btw\b\s*/i, "")}`));
+  const extra = [];
+  for (const message of next) {
+    const role = message?.role || "";
+    const text = String(message?.text || "");
+    const stripped = text.replace(/^\/btw\b\s*/i, "");
+    const key = `${role}\n${stripped}`;
+    if (seen.has(key) || seen.has(`${role}\n${text}`)) continue;
+    if (role === "bot") {
+      const grown = [...have].reverse().find((item) => (
+        item?.role === "bot" && item.text && text.startsWith(String(item.text))
+      ));
+      if (grown) {
+        if (text !== grown.text) grown.text = text;
+        seen.add(key);
+        continue;
+      }
+    }
+    seen.add(key);
+    extra.push(message);
+  }
+  return have.concat(extra);
+}
+
+/** A refused send is idle. An in-flight run id is still busy. */
+export function idleAfterConflict(runId) {
+  return !String(runId || "");
 }
 
 /**

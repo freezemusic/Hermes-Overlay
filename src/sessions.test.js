@@ -35,6 +35,10 @@ import {
   noteRunStarted,
   finishApplies,
   stopAfterMiss,
+  promoteQueuedRun,
+  dedupeShownReply,
+  reconcileSideQuestion,
+  idleAfterConflict,
   continueSideTurn,
   streamingRunId,
   sessionRouteMatches,
@@ -507,7 +511,14 @@ test("foreign session sources stay readable and permission_denied stays plain", 
   const rustSend = lib.slice(lib.indexOf("async fn send_chat"), lib.indexOf("fn dispatch_turn"));
   const head = rustSend.slice(0, rustSend.indexOf("status: 404"));
   assert.match(head, /turn_is_permission_denied/);
-  assert.doesNotMatch(head, /ensure_bot_chat|create_session|create_bot_chat|persist_pin/);
+  assert.doesNotMatch(head, /ensure_bot_chat|create_session|create_bot_chat/);
+  const rewriteAt = head.indexOf("if target.rewrite");
+  assert.ok(rewriteAt > 0);
+  assert.doesNotMatch(head.slice(0, rewriteAt), /persist_pin/);
+  const gated = head.slice(rewriteAt);
+  const pinAt = gated.indexOf("persist_pin");
+  assert.ok(pinAt > 0);
+  assert.doesNotMatch(gated.slice(pinAt + "persist_pin".length), /persist_pin/);
   assert.doesNotMatch(rustSend, /create_session|create_bot_chat/);
   const deniedAt = send.indexOf("isPermissionDeniedText(raw)");
   const deniedReturn = send.indexOf("return;", deniedAt);
@@ -707,6 +718,63 @@ test("a closed menu follows the active session, and a foreign route is hidden", 
   assert.equal(sendErrorKeepsConnected("other"), true);
   assert.equal(sendErrorKeepsConnected("closed"), false);
   assert.equal(sendErrorKeepsConnected(""), false);
+});
+
+test("a queued run becomes active when the streaming run ends", () => {
+  const thread = { runId: "", queued: true };
+  noteRunStarted(thread, "run_live");
+  noteRunStarted(thread, "run_queued", { queued: true });
+  assert.equal(streamingRunId(thread), "run_live");
+  assert.equal(finishApplies(thread, "run_queued"), true);
+  assert.equal(promoteQueuedRun(thread, "run_live"), "run_queued");
+  assert.equal(thread.runId, "run_queued");
+  assert.equal(thread.queuedRunId, "");
+  assert.equal(thread.queued, false);
+  assert.equal(streamingRunId(thread), "run_queued");
+  assert.equal(finishApplies(thread, "run_queued"), true);
+  const messages = [
+    { role: "bot", text: "排隊回覆" },
+    { role: "bot", text: "排隊回覆" },
+  ];
+  dedupeShownReply(messages);
+  assert.equal(messages.length, 1);
+  assert.equal(promoteQueuedRun(thread, "run_queued"), "");
+  thread.runId = "";
+  assert.equal(idleAfterConflict(thread.runId), true);
+  assert.equal(idleAfterConflict("run_live"), false);
+});
+
+test("history keeps a side question after the main question unless the server stored it first", () => {
+  const local = [
+    { role: "user", text: "主問題" },
+    { role: "bot", text: "主回覆" },
+    { role: "user", text: "旁問", command: "btw" },
+    { role: "bot", text: "旁答" },
+  ];
+  const storedAfter = [
+    { role: "user", text: "主問題" },
+    { role: "bot", text: "主回覆" },
+    { role: "user", text: "/btw 旁問" },
+    { role: "bot", text: "旁答" },
+  ];
+  const kept = reconcileSideQuestion(local, storedAfter);
+  assert.deepEqual(kept.map((message) => message.text), ["主問題", "主回覆", "旁問", "旁答"]);
+  const notPersisted = [
+    { role: "user", text: "主問題" },
+    { role: "bot", text: "主回覆完整" },
+  ];
+  const stayed = reconcileSideQuestion(local, notPersisted);
+  assert.equal(stayed[2].command, "btw");
+  assert.equal(stayed[1].text, "主回覆完整");
+  const storedFirst = [
+    { role: "user", text: "/btw 旁問" },
+    { role: "bot", text: "旁答" },
+    { role: "user", text: "主問題" },
+    { role: "bot", text: "主回覆" },
+  ];
+  const adopted = reconcileSideQuestion(local, storedFirst);
+  assert.equal(adopted[0].text, "/btw 旁問");
+  assert.equal(adopted[2].text, "主問題");
 });
 
 test("stop follows the latest run and a 409 is not a stop", () => {

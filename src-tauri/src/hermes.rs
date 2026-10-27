@@ -152,15 +152,58 @@ pub enum TurnEvent {
 /// The run 「停止」 should post. A queued admission must not replace the id
 /// that is already streaming tokens.
 pub fn streaming_run_id(current: &str, incoming: &str, queued: bool) -> String {
-    let current = approval_run_id(current).unwrap_or("").trim();
+    note_streaming_run(current, "", incoming, queued).0
+}
+
+/// Remember a started run. A queued admission keeps its own id beside the
+/// run that is already streaming.
+pub fn note_streaming_run(
+    streaming: &str,
+    queued: &str,
+    incoming: &str,
+    is_queued: bool,
+) -> (String, String) {
     let incoming = approval_run_id(incoming).unwrap_or("").trim();
-    if queued && !current.is_empty() {
-        return current.to_string();
+    let mut streaming = approval_run_id(streaming).unwrap_or("").trim().to_string();
+    let mut queued = approval_run_id(queued).unwrap_or("").trim().to_string();
+    if incoming.is_empty() {
+        return (streaming, queued);
     }
-    if !incoming.is_empty() {
-        return incoming.to_string();
+    if is_queued && !streaming.is_empty() && streaming != incoming {
+        queued = incoming.to_string();
+        return (streaming, queued);
     }
-    current.to_string()
+    streaming = incoming.to_string();
+    if queued == incoming {
+        queued.clear();
+    }
+    (streaming, queued)
+}
+
+/// The streaming run ended. Its queued admission becomes the active run.
+/// A finish for the queued id alone leaves the streaming run in place.
+pub fn promote_finished_run(streaming: &str, queued: &str, finished: &str) -> (String, String) {
+    let finished = approval_run_id(finished).unwrap_or("").trim();
+    let mut streaming = approval_run_id(streaming).unwrap_or("").trim().to_string();
+    let mut queued = approval_run_id(queued).unwrap_or("").trim().to_string();
+    if !finished.is_empty() && finished == queued && finished != streaming {
+        queued.clear();
+        return (streaming, queued);
+    }
+    if finished.is_empty() || finished == streaming {
+        if !queued.is_empty() {
+            streaming = std::mem::take(&mut queued);
+            return (streaming, queued);
+        }
+        streaming.clear();
+    }
+    (streaming, queued)
+}
+
+/// Several readers can be live. Stop the one that started first so a later
+/// queued admission stays up and can become the active run.
+pub fn stop_stream_generations(generations: &[u64]) -> Option<u64> {
+    generations.iter().copied().min()
 }
 
 /// Stop posts the streaming run first. A stale hint is only a fallback
@@ -487,6 +530,51 @@ pub fn session_file_update(
         return None;
     }
     Some((id.to_string(), explicit, anchor))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendTarget {
+    pub id: String,
+    pub rewrite: bool,
+    pub explicit: bool,
+    pub anchor: f64,
+}
+
+/// The session a send should use. An explicit pin whose routing key names
+/// another session is not the target: startup picks a real row and the caller
+/// rewrites the pin.
+pub fn send_session_target(
+    sessions: &[SessionSummary],
+    pin_id: &str,
+    explicit: bool,
+    anchor: f64,
+) -> Result<SendTarget, String> {
+    let pin_id = pin_id.trim();
+    let pinned = sessions.iter().find(|session| session.id == pin_id);
+    let mismatch = pinned.is_some_and(|session| !session_route_matches(session));
+    if explicit && !pin_id.is_empty() && !mismatch {
+        if pinned.is_some_and(|session| session_read_only(&session.source)) {
+            return Err(session_read_only_reason().to_string());
+        }
+        return Ok(SendTarget {
+            id: pin_id.to_string(),
+            rewrite: false,
+            explicit: true,
+            anchor,
+        });
+    }
+    let remembered = if mismatch { "" } else { pin_id };
+    let resolved = session_for_startup(sessions, remembered, false, anchor)
+        .ok_or_else(|| "未有 Bot Chat".to_string())?;
+    if resolved.read_only {
+        return Err(resolved.read_only_reason);
+    }
+    Ok(SendTarget {
+        id: resolved.id,
+        rewrite: mismatch,
+        explicit: resolved.explicit,
+        anchor: resolved.anchor,
+    })
 }
 
 /// Startup, panel open, and gateway reconnect. No I/O.
@@ -4545,7 +4633,17 @@ mod tests {
         assert!(!send.contains("create_bot_chat"));
         assert!(!send.contains("create_session"));
         let send_head = &send[..send.find("status: 404").expect("404")];
-        assert!(!send_head.contains("persist_pin"));
+        let rewrite = send_head.find("if target.rewrite").expect("rewrite");
+        assert!(
+            !send_head[..rewrite].contains("persist_pin"),
+            "a send writes the pin only after the route check fails"
+        );
+        let after_rewrite = &send_head[rewrite..];
+        let pin_call = after_rewrite.find("persist_pin").expect("gated pin");
+        assert!(
+            !after_rewrite[pin_call + "persist_pin".len()..].contains("persist_pin"),
+            "the route rewrite is the only pin write before a missing session"
+        );
         let client_start = lib
             .find("async fn session_for_client")
             .expect("session_for_client");
@@ -5446,6 +5544,17 @@ data: {\"run_id\":\"run_queued\",\"completed\":true}\n\
         );
         assert_eq!(streaming_run_id("run_live", "run_queued", true), "run_live");
         assert_eq!(streaming_run_id("run_live", "run_next", false), "run_next");
+        let (streaming, queued) = note_streaming_run("run_live", "", "run_queued", true);
+        assert_eq!(streaming, "run_live");
+        assert_eq!(queued, "run_queued");
+        let (promoted, left) = promote_finished_run(&streaming, &queued, "run_live");
+        assert_eq!(promoted, "run_queued");
+        assert!(left.is_empty());
+        let (done, none) = promote_finished_run(&promoted, &left, "run_queued");
+        assert!(done.is_empty());
+        assert!(none.is_empty());
+        assert_eq!(stop_stream_generations(&[4, 2, 9]), Some(2));
+        assert_eq!(stop_stream_generations(&[7]), Some(7));
         assert_eq!(
             stop_target_ids(
                 "run_queued",
@@ -5475,6 +5584,22 @@ data: {\"run_id\":\"run_queued\",\"completed\":true}\n\
         let ordered = session_menu_order(&rows);
         assert_eq!(ordered.len(), 1);
         assert_eq!(ordered[0].id, "fork_1");
+        let mut pinned = summary("fork_2", "notes", 1.0);
+        pinned.session_key = "agent:main:dm:fork_1".into();
+        let mut chat = summary("botchat", "Bot Chat", 5.0);
+        chat.session_key = "botchat".into();
+        let target = send_session_target(&[pinned.clone(), chat.clone()], "fork_2", true, 1.0).unwrap();
+        assert_eq!(target.id, "botchat");
+        assert!(target.rewrite);
+        assert!(!target.explicit);
+        let kept = send_session_target(&[pinned, chat], "botchat", true, 5.0).unwrap();
+        assert_eq!(kept.id, "botchat");
+        assert!(!kept.rewrite);
+        let send_src = include_str!("lib.rs");
+        let send = &send_src[send_src.find("async fn send_chat").expect("send")..send_src.find("fn dispatch_turn").expect("dispatch")];
+        assert!(send.contains("send_session_target"));
+        assert!(send.contains("target.rewrite"));
+        assert!(send.contains("persist_pin"));
     }
 
     #[tokio::test]
@@ -5702,7 +5827,17 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
         assert!(!head.contains("ensure_bot_chat"));
         assert!(!head.contains("create_session"));
         assert!(!head.contains("create_bot_chat"));
-        assert!(!head.contains("persist_pin"));
+        let rewrite = head.find("if target.rewrite").expect("rewrite");
+        assert!(
+            !head[..rewrite].contains("persist_pin"),
+            "a send writes the pin only after the route check fails"
+        );
+        let after_rewrite = &head[rewrite..];
+        let pin_call = after_rewrite.find("persist_pin").expect("gated pin");
+        assert!(
+            !after_rewrite[pin_call + "persist_pin".len()..].contains("persist_pin"),
+            "the route rewrite is the only pin write before a missing session"
+        );
         assert!(!send.contains("create_session"));
         assert!(!send.contains("create_bot_chat"));
     }
