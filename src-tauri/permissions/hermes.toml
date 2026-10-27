@@ -19,6 +19,11 @@ description = "Persist the show-tool-detail toggle."
 commands.allow = ["set_show_tool_detail"]
 
 [[permission]]
+identifier = "allow-set-plan-mode"
+description = "Persist one bot's Plan Mode toggle."
+commands.allow = ["set_plan_mode"]
+
+[[permission]]
 identifier = "allow-probe-gateway"
 description = "Probe the Hermes gateway and saved bot keys."
 commands.allow = ["probe_gateway"]

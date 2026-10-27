@@ -419,6 +419,11 @@ config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細�
 - 驗收（盒）：連續 5 次 `browser_exec` 加 `search_files` 係一行；進行中第二次開始唔加卡；`search_files` JSON 唔出現喺收起嘅行同第一層展開；第二層先見到結果而且可捲；設定預設關，展開旗唔寫入 config。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
+**R-MD-07** 每個 Bot 面板嘅 composer 旁邊有「Plan Mode」掣。打開時掣同輸入框用強調色（`#0000f2`、`var(--bot-10)`）。打開之後，呢個面板送出嘅字會變成 `/plan <原文>`；已經以 `/plan` 開頭唔會再加一次；其他斜線指令（`/renew`、`/stop` 等）照原樣送。氣泡顯示用戶原文加細標「Plan」，伺服器收到 `/plan …`。Composer 入面 Shift+Tab 切換。每個 bot 各自記住，只喺用戶切換時寫入嗰個 bot 嘅 `plan_mode`，其他鍵同次序唔郁。忙緊時 steer／排隊都帶住 `/plan`。
+- 來源：Devon（2026-10-27）。
+- 驗收（盒）：開一個 bot，掣預設關。Shift+Tab 或撳掣打開，掣同輸入框有強調色。打一句普通話送出，氣泡係原文加「Plan」，請求 body 係 `/plan <原文>`。再送 `/plan 已有` 唔會變成 `/plan /plan`。送 `/stop` 或 `/renew` 唔加前綴，忙緊時 `/stop` 仍然停止。忙緊時送普通句，steer／排隊 body 仍然係 `/plan …`。重開 overlay，呢個 bot 仍然開，另一個 bot 關。config.json 只係嗰個 bot 多咗 `plan_mode`，其他鍵同次序不變。關掉之後嗰個鍵消失，其他鍵唔重寫。
+- 狀態：❓ / ❓（單元測試）；Win 未驗。
+
 ---
 
 ## 10. 視覺同對比（R-VS）

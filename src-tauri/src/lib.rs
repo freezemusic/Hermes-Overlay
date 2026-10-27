@@ -173,6 +173,7 @@ struct PublicBot {
     detail: String,
     has_key: bool,
     enabled: bool,
+    plan_mode: bool,
 }
 
 #[derive(Serialize)]
@@ -807,6 +808,7 @@ fn save_bot_meta_sync(app: AppHandle, input: SaveBotMeta) -> Result<PublicBot, S
         detail: bot.detail.clone(),
         has_key,
         enabled: bot.enabled,
+        plan_mode: bot.plan_mode,
     };
     config::save(&path, &cfg)?;
     Ok(saved)
@@ -842,6 +844,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
             detail: bot.detail.clone(),
             has_key,
             enabled: bot.enabled,
+            plan_mode: bot.plan_mode,
         });
     }
     let has_kanban_login = [
@@ -930,6 +933,32 @@ fn set_show_tool_detail_sync(app: AppHandle, enabled: bool) -> Result<PublicSett
     load_public_settings(app)
 }
 
+#[tauri::command]
+async fn set_plan_mode(
+    app: AppHandle,
+    profile: String,
+    enabled: bool,
+) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || set_plan_mode_sync(app, profile, enabled))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn set_plan_mode_sync(app: AppHandle, profile: String, enabled: bool) -> Result<PublicSettings, String> {
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    config::store_plan_mode(&path, profile.trim(), enabled)?;
+    drop(_guard);
+    drop(state);
+    load_public_settings(app)
+}
+
 fn set_show_bot_names_sync(app: AppHandle, enabled: bool) -> Result<PublicSettings, String> {
     let state = app.try_state::<AppState>();
     let _guard = state.as_ref().map(|state| {
@@ -1005,6 +1034,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
                 .unwrap_or(false)
         });
         let session_anchor = previous_bot.map(|bot| bot.session_anchor).unwrap_or(0.0);
+        let plan_mode = previous_bot.map(|bot| bot.plan_mode).unwrap_or(false);
         bots.push(BotConfig {
             color: config::normalize_color(&bot.color, &profile),
             detail: bot.detail.trim().to_string(),
@@ -1015,6 +1045,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
             session_explicit,
             session_anchor,
             enabled: bot.enabled,
+            plan_mode,
         });
     }
 
@@ -3345,6 +3376,7 @@ pub fn run() {
             save_settings,
             set_show_bot_names,
             set_show_tool_detail,
+            set_plan_mode,
             probe_gateway,
             discover_profiles,
             sync_profiles,
@@ -3437,6 +3469,7 @@ mod tests {
         assert!(!open_body.contains("store_show_bot_names"));
         assert!(!open_body.contains("store_kanban_board"));
         assert!(!open_body.contains("store_show_tool_detail"));
+        assert!(!open_body.contains("store_plan_mode"));
         assert!(!open_body.contains("config::save"));
     }
 
@@ -3475,6 +3508,8 @@ mod tests {
         assert_eq!(hand_body.matches("patch_session_title").count(), 4);
         assert!(!hand_body.contains("（已閉）"));
         assert!(!hand_body.contains("config::save"));
+        assert!(!hand_body.contains("store_plan_mode"));
+        assert!(!note_body.contains("store_plan_mode"));
         assert!(!hand_body.contains("POST /api/sessions"));
         assert!(!note_body.contains("store_show_bot_names"));
     }
@@ -3567,6 +3602,7 @@ mod tests {
         let save_end = src[save..].find("async fn probe_gateway").expect("probe");
         let save_body = &src[save..save + save_end];
         assert!(save_body.contains("kanban_board: previous.kanban_board"));
+        assert!(save_body.contains("previous_bot.map(|bot| bot.plan_mode)"));
         let boards = src.find("async fn get_kanban_boards").expect("boards");
         let set = src.find("async fn set_kanban_board").expect("set");
         let boards_body = &src[boards..set];

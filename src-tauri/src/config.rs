@@ -29,6 +29,10 @@ pub struct BotConfig {
     /// Hidden profiles stay in the roster (and keep their key) but are not orbs.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// R-MD-07. Composer Plan Mode for this profile.
+    /// Omitted while off so an untouched bot object stays byte-identical.
+    #[serde(default, skip_serializing_if = "skip_false")]
+    pub plan_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -376,6 +380,7 @@ pub fn merge_discovered_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint
             session_explicit: false,
             session_anchor: 0.0,
             enabled: true,
+            plan_mode: false,
         });
     }
 }
@@ -408,6 +413,7 @@ pub fn append_new_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint]) -> 
             session_explicit: false,
             session_anchor: 0.0,
             enabled: true,
+            plan_mode: false,
         });
         added = true;
     }
@@ -806,6 +812,156 @@ pub fn store_show_tool_detail(path: &Path, enabled: bool) -> Result<bool, String
     Ok(true)
 }
 
+fn object_field(text: &str, object_start: usize, name: &str) -> Option<JsonField> {
+    let bytes = text.as_bytes();
+    if object_start >= bytes.len() || bytes[object_start] != b'{' {
+        return None;
+    }
+    let end = skip_json_value(bytes, object_start)?;
+    let mut i = object_start + 1;
+    loop {
+        i = skip_ws(bytes, i);
+        if i >= end || bytes[i] == b'}' {
+            return None;
+        }
+        if bytes[i] != b'"' {
+            return None;
+        }
+        let key_start = i;
+        let key_end = scan_json_string(bytes, i)?;
+        let key = &text[key_start + 1..key_end - 1];
+        i = skip_ws(bytes, key_end);
+        if i >= bytes.len() || bytes[i] != b':' {
+            return None;
+        }
+        i = skip_ws(bytes, i + 1);
+        let value_start = i;
+        let value_end = skip_json_value(bytes, i)?;
+        if key == name {
+            return Some(JsonField {
+                key_start,
+                value_start,
+                value_end,
+            });
+        }
+        i = skip_ws(bytes, value_end);
+        if i < end && bytes[i] == b',' {
+            i += 1;
+            continue;
+        }
+        return None;
+    }
+}
+
+fn object_string(text: &str, object_start: usize, name: &str) -> Option<String> {
+    let span = object_field(text, object_start, name)?;
+    let raw = &text[span.value_start..span.value_end];
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    value.as_str().map(str::to_string)
+}
+
+fn bot_object_bounds(text: &str, profile: &str) -> Result<(usize, usize), String> {
+    let bots = top_level_field(text, "bots").ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    let bytes = text.as_bytes();
+    if bots.value_start >= bytes.len() || bytes[bots.value_start] != b'[' {
+        return Err("設定檔格式唔啱".to_string());
+    }
+    let mut i = bots.value_start + 1;
+    while i < bots.value_end {
+        i = skip_ws(bytes, i);
+        if i >= bots.value_end || bytes[i] == b']' {
+            break;
+        }
+        if bytes[i] != b'{' {
+            return Err("設定檔格式唔啱".to_string());
+        }
+        let obj_end = skip_json_value(bytes, i).ok_or_else(|| "設定檔格式唔啱".to_string())?;
+        if object_string(text, i, "profile").as_deref() == Some(profile) {
+            return Ok((i, obj_end));
+        }
+        i = skip_ws(bytes, obj_end);
+        if i < bots.value_end && bytes[i] == b',' {
+            i += 1;
+        }
+    }
+    Err(format!("名單冇 profile「{profile}」"))
+}
+
+fn insert_into_object(text: &str, obj_end: usize, field: &str) -> Result<String, String> {
+    let bytes = text.as_bytes();
+    if obj_end == 0 || bytes.get(obj_end - 1) != Some(&b'}') {
+        return Err("設定檔格式唔啱".to_string());
+    }
+    let close = obj_end - 1;
+    let mut j = close;
+    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    let mut out = String::with_capacity(text.len() + field.len() + 16);
+    if j > 0 && bytes[j - 1] == b'{' {
+        out.push_str(&text[..j]);
+        out.push('\n');
+        out.push_str(field);
+        out.push('\n');
+        out.push_str(&text[close..]);
+        return Ok(out);
+    }
+    out.push_str(&text[..j]);
+    out.push_str(",\n      ");
+    out.push_str(field);
+    out.push_str(&text[j..]);
+    Ok(out)
+}
+
+/// Writes `plan_mode` on one bot only when that bot's stored value changes.
+/// Splices the key inside that object. Sibling keys, other bots, and key
+/// order stay as they are. Off removes the key so a false flag is not stored.
+pub fn store_plan_mode(path: &Path, profile: &str, enabled: bool) -> Result<bool, String> {
+    let profile = profile.trim();
+    validate_profile(profile)?;
+    if !path.exists() {
+        return Err(format!("名單冇 profile「{profile}」"));
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    let bots = value
+        .get("bots")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    let Some(bot) = bots
+        .iter()
+        .find(|bot| bot.get("profile").and_then(serde_json::Value::as_str) == Some(profile))
+    else {
+        return Err(format!("名單冇 profile「{profile}」"));
+    };
+    let current = bot
+        .get("plan_mode")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if current == enabled {
+        return Ok(false);
+    }
+    let (start, end) = bot_object_bounds(&text, profile)?;
+    let patched = if enabled {
+        if let Some(span) = object_field(&text, start, "plan_mode") {
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..span.value_start]);
+            out.push_str("true");
+            out.push_str(&text[span.value_end..]);
+            out
+        } else {
+            insert_into_object(&text, end, "\"plan_mode\": true")?
+        }
+    } else {
+        let span = object_field(&text, start, "plan_mode")
+            .ok_or_else(|| "設定檔格式唔啱".to_string())?;
+        remove_top_level_field(&text, &span)
+    };
+    write_config_text(path, &patched)?;
+    Ok(true)
+}
+
 /// Copies a discovered description into a roster row whose detail is still blank.
 /// A written detail, `enabled`, name, colour, order, and session stay as they are.
 pub fn fill_empty_details(bots: &mut [BotConfig], found: &[ProfileHint]) -> bool {
@@ -1081,6 +1237,7 @@ mod tests {
                 session_explicit: false,
                 session_anchor: 0.0,
                 enabled: true,
+                plan_mode: false,
             }],
             ..AppConfig::default()
         };
@@ -1180,6 +1337,7 @@ mod tests {
                 session_explicit: true,
                 session_anchor: 40.0,
                 enabled: false,
+                plan_mode: false,
             },
             BotConfig {
                 profile: "remote".into(),
@@ -1191,6 +1349,7 @@ mod tests {
                 session_explicit: false,
                 session_anchor: 0.0,
                 enabled: true,
+                plan_mode: false,
             },
         ];
         merge_discovered_profiles(
@@ -1280,6 +1439,7 @@ other:
             session_explicit: false,
             session_anchor: 0.0,
             enabled: true,
+            plan_mode: false,
         }];
         merge_discovered_profiles(
             &mut bots,
@@ -1337,6 +1497,7 @@ other:
                 session_explicit: true,
                 session_anchor: 12.5,
                 enabled: false,
+                plan_mode: false,
             }],
             gateway_base_url: "http://10.10.24.33:8642".into(),
             ..AppConfig::default()
@@ -1417,6 +1578,7 @@ other:
                 session_explicit: true,
                 session_anchor: 3.0,
                 enabled: false,
+                plan_mode: false,
             }],
             ..AppConfig::default()
         };
@@ -1473,6 +1635,7 @@ other:
                 session_explicit: false,
                 session_anchor: 4.0,
                 enabled: true,
+                plan_mode: false,
             }],
             ..AppConfig::default()
         };
@@ -1584,6 +1747,7 @@ other:
                 session_explicit: false,
                 session_anchor: 4.0,
                 enabled: true,
+                plan_mode: false,
             }],
             ..AppConfig::default()
         };
@@ -1631,6 +1795,7 @@ other:
                 session_explicit: false,
                 session_anchor: 4.0,
                 enabled: true,
+                plan_mode: false,
             }],
             gateway_base_url: "http://10.10.24.33:8642".into(),
             ..AppConfig::default()
@@ -1722,6 +1887,125 @@ other:
         assert!(kept.contains("\"kanban_base_url\": \"\""));
         serde_json::from_str::<serde_json::Value>(&kept).unwrap();
         assert!(load(&path).unwrap().kanban_base_url.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_mode_is_written_only_on_the_toggled_bot() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-plan-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let original = r##"{
+  "version": 1,
+  "gateway_base_url": "http://10.10.24.33:8642",
+  "bots": [
+    {
+      "profile": "alpha",
+      "display_name": "Alpha",
+      "color": "#112233",
+      "session_id": "api_alpha",
+      "enabled": true
+    },
+    {
+      "profile": "beta",
+      "display_name": "Beta",
+      "color": "#445566",
+      "session_id": "api_beta",
+      "enabled": true
+    }
+  ],
+  "show_bot_names": true
+}
+"##;
+        fs::write(&path, original).unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(!load(&path).unwrap().bots[0].plan_mode);
+        assert_eq!(store_plan_mode(&path, "alpha", false).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(store_plan_mode(&path, "nope", true).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(store_plan_mode(&path, "../x", true).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let missing = dir.join("missing.json");
+        assert!(store_plan_mode(&missing, "alpha", true).is_err());
+        assert!(!missing.exists());
+
+        let beta_before = {
+            let (start, end) = bot_object_bounds(original, "beta").unwrap();
+            original[start..end].to_string()
+        };
+        assert_eq!(store_plan_mode(&path, "alpha", true).unwrap(), true);
+        let on = fs::read_to_string(&path).unwrap();
+        assert_eq!(on.matches("\"plan_mode\"").count(), 1);
+        let (a0, a1) = bot_object_bounds(&on, "alpha").unwrap();
+        let alpha = &on[a0..a1];
+        assert!(alpha.contains("\"plan_mode\": true"), "{alpha}");
+        assert!(alpha.find("\"session_id\"").unwrap() < alpha.find("\"plan_mode\"").unwrap());
+        assert!(alpha.find("\"color\"").unwrap() < alpha.find("\"plan_mode\"").unwrap());
+        assert!(alpha.contains("\"session_id\": \"api_alpha\""));
+        assert!(alpha.contains("\"color\": \"#112233\""));
+        let (b0, b1) = bot_object_bounds(&on, "beta").unwrap();
+        assert_eq!(&on[b0..b1], beta_before);
+        assert!(on.contains("\"show_bot_names\": true"));
+        let loaded = load(&path).unwrap();
+        assert!(loaded.bots[0].plan_mode);
+        assert!(!loaded.bots[1].plan_mode);
+        assert_eq!(loaded.bots[0].session_id, "api_alpha");
+        assert_eq!(loaded.bots[1].session_id, "api_beta");
+        assert_eq!(loaded.bots[1].color, "#445566");
+        let on_bytes = fs::read(&path).unwrap();
+        assert_eq!(store_plan_mode(&path, "alpha", true).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), on_bytes);
+        assert_eq!(store_plan_mode(&path, "alpha", false).unwrap(), true);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(!load(&path).unwrap().bots.iter().any(|bot| bot.plan_mode));
+
+        let held = r##"{
+  "version": 1,
+  "bots": [
+    {
+      "profile": "alpha",
+      "display_name": "Alpha",
+      "color": "#112233",
+      "session_id": "api_alpha",
+      "plan_mode": false,
+      "enabled": true
+    },
+    {
+      "profile": "beta",
+      "display_name": "Beta",
+      "color": "#445566",
+      "session_id": "api_beta",
+      "plan_mode": true
+    }
+  ]
+}
+"##;
+        fs::write(&path, held).unwrap();
+        let beta_on = {
+            let (start, end) = bot_object_bounds(held, "beta").unwrap();
+            held[start..end].to_string()
+        };
+        assert_eq!(store_plan_mode(&path, "alpha", false).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), held.as_bytes());
+        assert_eq!(store_plan_mode(&path, "alpha", true).unwrap(), true);
+        let flipped = fs::read_to_string(&path).unwrap();
+        let (start, end) = bot_object_bounds(&flipped, "alpha").unwrap();
+        let alpha = &flipped[start..end];
+        assert!(alpha.contains("\"plan_mode\": true"), "{alpha}");
+        assert!(alpha.find("\"color\"").unwrap() < alpha.find("\"plan_mode\"").unwrap());
+        assert!(alpha.find("\"plan_mode\"").unwrap() < alpha.find("\"enabled\"").unwrap());
+        let (start, end) = bot_object_bounds(&flipped, "beta").unwrap();
+        assert_eq!(&flipped[start..end], beta_on);
+        assert!(load(&path).unwrap().bots[1].plan_mode);
         let _ = fs::remove_dir_all(&dir);
     }
 }

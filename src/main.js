@@ -5,7 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { latestPlan, noteNewestPlan, planBodyLead, planDemoMarkdown, planForPanel, planTask, plansIn, rememberPlan } from "./plan.js";
+import { latestPlan, noteNewestPlan, planBodyLead, planBubble, planChipText, planDemoMarkdown, planForPanel, planModeWire, plansIn, rememberPlan } from "./plan.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
   CONTENT_IN_MS,
@@ -4617,7 +4617,9 @@ function syncChatInPlace(chat, thread, id, resting = false) {
     } else if (message.role === "user") {
       const line = node.querySelector(".user-line");
       const marked = !!node.querySelector(".unsent-mark");
-      if (!line || line.textContent !== (message.text || "") || marked !== !!message.unsent) {
+      const chip = node.querySelector(".cmd-chip");
+      const wantChip = planChipText(message.command);
+      if (!line || line.textContent !== (message.text || "") || marked !== !!message.unsent || (chip?.textContent || "") !== wantChip) {
         node.replaceChildren();
         paintUserBubble(node, message);
       }
@@ -4743,6 +4745,7 @@ function renderChat(id = state.activeId, options = {}) {
   }
   if (stop) stop.hidden = !(state.mode === "hermes" && state.busy.has(bot.id));
   if (send) send.disabled = locked || (state.mode === "hermes" && state.busy.has(bot.id));
+  paintPlanMode(id);
   if (!quietChrome) syncActivityChrome(id);
   if (!shell || !visualQuiet(shell)) scheduleHitSync();
   paintApprovalBadge(id);
@@ -5039,10 +5042,11 @@ function paintUserBubble(bubble, message) {
   line.className = "user-line";
   line.textContent = message.text || "";
   bubble.appendChild(line);
-  if (message.command) {
+  const chipText = planChipText(message.command);
+  if (chipText) {
     const chip = document.createElement("span");
     chip.className = "cmd-chip";
-    chip.textContent = message.command;
+    chip.textContent = chipText;
     bubble.appendChild(chip);
   }
   if (message.unsent) {
@@ -5953,7 +5957,7 @@ function applyRoster(synced) {
   if (prev === ids) {
     state.bots = next.map((bot) => {
       const old = state.bots.find((item) => item.id === bot.id);
-      return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, hasKey: bot.hasKey } : bot;
+      return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, hasKey: bot.hasKey, planMode: bot.planMode } : bot;
     });
   } else {
     state.bots = next;
@@ -6190,6 +6194,10 @@ function wireBotPanel(panel, id) {
     noteChatScroll(id, chat, chat.dataset.userScroll === "1");
   });
   role(panel, "send")?.addEventListener("click", () => sendActive(id));
+  role(panel, "plan-mode")?.addEventListener("click", () => {
+    state.activeId = id;
+    togglePlanMode(id);
+  });
   role(panel, "continue")?.addEventListener("click", () => continueApiSession(id));
   role(panel, "switch")?.addEventListener("click", () => switchClosedSession(id));
   role(panel, "stop")?.addEventListener("click", () => stopActive(id));
@@ -6258,6 +6266,12 @@ function wireBotPanel(panel, id) {
   input?.addEventListener("keydown", (event) => {
     state.activeId = id;
     state.slashPanelId = id;
+    if (event.key === "Tab" && event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      togglePlanMode(id);
+      return;
+    }
     if (slashPopupOpen()) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -6382,6 +6396,8 @@ function presentMessage(m) {
         expanded: false,
       };
     }
+    const plan = planBubble(m.text);
+    if (plan.command) return { role: "user", text: plan.text, command: plan.command };
   }
   return { role: m.role, text: m.text };
 }
@@ -7167,11 +7183,58 @@ function handleHermes(payload) {
   }
 }
 
+function planModeOn(id) {
+  return !!state.bots.find((bot) => bot.id === id)?.planMode;
+}
+
+function paintPlanMode(id) {
+  const panel = panelFor(id);
+  if (!panel) return;
+  const on = planModeOn(id);
+  const chip = role(panel, "plan-mode");
+  const composer = panel.querySelector(".composer");
+  if (chip) chip.setAttribute("aria-pressed", on ? "true" : "false");
+  if (composer) composer.classList.toggle("is-plan-mode", on);
+}
+
+const planModeWrite = new Map();
+
+async function togglePlanMode(id) {
+  const bot = state.bots.find((item) => item.id === id);
+  if (!bot) return;
+  const next = !bot.planMode;
+  bot.planMode = next;
+  paintPlanMode(id);
+  if (state.mode !== "hermes" || !inTauri()) return;
+  const generation = (planModeWrite.get(id) || 0) + 1;
+  planModeWrite.set(id, generation);
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const settings = await invoke("set_plan_mode", { profile: id, enabled: next });
+    if (planModeWrite.get(id) !== generation) return;
+    const row = (settings?.bots || []).find((item) => item.profile === id);
+    if (row) bot.planMode = !!row.plan_mode;
+    paintPlanMode(id);
+  } catch (err) {
+    if (planModeWrite.get(id) !== generation) return;
+    bot.planMode = !next;
+    paintPlanMode(id);
+    showActionError(String(err));
+  }
+}
+
+function userPlanMessage(wire) {
+  const shown = planBubble(wire);
+  return shown.command
+    ? { role: "user", text: shown.text, command: shown.command }
+    : { role: "user", text: shown.text };
+}
+
 async function sendActive(id = state.activeId) {
   const panel = panelFor(id);
   const input = role(panel, "input");
-  const text = input?.value.trim() || "";
-  if (!text || !id) return;
+  const typed = input?.value.trim() || "";
+  if (!typed || !id) return;
   const thread = threadFor(id);
   if (sessionEnded(currentSessionRow(thread))) {
     showClosedWarning(id);
@@ -7185,6 +7248,7 @@ async function sendActive(id = state.activeId) {
   state.slashPanelId = id;
   thread.followTail = true;
   thread.stopNoted = false;
+  const text = planModeWire(typed, planModeOn(id));
   const busy = state.mode === "hermes" && state.busy.has(id);
   const action = resolveClient(text, state.catalog || []);
   if (busy && action?.command !== "stop") {
@@ -7205,21 +7269,21 @@ async function sendActive(id = state.activeId) {
     await sendClientCommand(id, text, action);
     return;
   }
-  const task = planTask(text);
-  appendMessage(id, task === null ? { role: "user", text } : { role: "user", text, command: "plan" });
+  const shown = userPlanMessage(text);
+  appendMessage(id, shown);
   const sentId = id;
   noteActivity(sentId, { type: "send" });
   if (state.mode !== "hermes" || !inTauri()) {
     setTimeout(() => {
-      const reply = task === null
-        ? `（示範回覆）收到：「${text}」。未設定 Hermes gateway。`
-        : planDemoMarkdown(task);
+      const reply = shown.command
+        ? planDemoMarkdown(shown.text)
+        : `（示範回覆）收到：「${shown.text}」。未設定 Hermes gateway。`;
       appendMessage(sentId, { role: "bot", text: reply });
       noteActivity(sentId, { type: "completed", text: reply });
     }, 350);
     return;
   }
-  holdOutgoing(sentId, text);
+  holdOutgoing(sentId, shown.text || text);
   noteRunSession(threadFor(sentId));
   setBotStatus(sentId, "思考中…", "busy");
   try {
@@ -7286,6 +7350,7 @@ function botsFromSettings(settings) {
     detail: bot.detail || `profile ${bot.profile}`,
     float: null,
     hasKey: bot.has_key,
+    planMode: !!bot.plan_mode,
   }));
 }
 
@@ -7969,22 +8034,22 @@ async function catchUpSession(id) {
 
 async function sendWhileBusy(id, text) {
   const thread = threadFor(id);
-  const task = planTask(text);
-  appendMessage(id, task === null ? { role: "user", text } : { role: "user", text, command: "plan" });
+  const shown = userPlanMessage(text);
+  appendMessage(id, shown);
   noteActivity(id, { type: "send" });
   if (state.mode !== "hermes" || !inTauri()) {
     appendMessage(id, { role: "commentary", text: "排隊中，等佢講完就會行" });
     window.setTimeout(() => {
-      const reply = task === null
-        ? `（示範回覆）收到：「${text}」。未設定 Hermes gateway。`
-        : planDemoMarkdown(task);
+      const reply = shown.command
+        ? planDemoMarkdown(shown.text)
+        : `（示範回覆）收到：「${shown.text}」。未設定 Hermes gateway。`;
       appendMessage(id, { role: "bot", text: reply });
       noteActivity(id, { type: "completed", text: reply });
       setBotStatus(id, "閒置", "idle");
     }, 350);
     return;
   }
-  holdOutgoing(id, text);
+  holdOutgoing(id, shown.text || text);
   let joined = false;
   if (thread.runId) {
     try {

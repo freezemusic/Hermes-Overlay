@@ -4251,6 +4251,7 @@ mod tests {
             session_explicit: explicit,
             session_anchor: anchor,
             enabled: true,
+            plan_mode: false,
         };
         let cfg = AppConfig {
             version: 1,

@@ -85,6 +85,30 @@ export function planTask(text) {
   return match[1].trim();
 }
 
+/**
+ * Text the gateway should receive. Plan Mode prefixes plain text with `/plan`.
+ * A line that already starts with `/` (including `/plan`, `/renew`, `/stop`) stays as typed.
+ */
+export function planModeWire(text, enabled) {
+  const line = String(text ?? "").trim();
+  if (!enabled || !line || line.startsWith("/")) return line;
+  return `/plan ${line}`;
+}
+
+/** Bubble copy for a `/plan` send. `command` stays `plan` so plan linking still matches. */
+export function planBubble(text) {
+  const line = String(text ?? "").trim();
+  const task = planTask(line);
+  if (task === null) return { text: line, command: "" };
+  return { text: task, command: "plan" };
+}
+
+/** Chip on a user bubble. Plan Mode shows 「Plan」, not the raw `/plan` prefix. */
+export function planChipText(command) {
+  if (command === "plan") return "Plan";
+  return String(command || "");
+}
+
 export function planDemoMarkdown(task) {
   const name = String(task || "").trim() || "未命名任務";
   return [

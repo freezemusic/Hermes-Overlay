@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { latestPlan, looksLikePlan, noteNewestPlan, planBodyLead, planDemoMarkdown, planForPanel, planSource, plansIn, planTask, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
+import { latestPlan, looksLikePlan, noteNewestPlan, planBodyLead, planBubble, planChipText, planDemoMarkdown, planForPanel, planModeWire, planSource, plansIn, planTask, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
 
 test("plan markdown is recognized and a short ack is not", () => {
   const body = planDemoMarkdown("整理設定");
@@ -139,4 +140,64 @@ test("睇計劃 clears a dismiss so the same plan shows again", () => {
   thread.planDismissed = "";
   thread.planFocus = plan.key;
   assert.equal(planForPanel(thread).key, plan.key);
+});
+
+test("plan mode prefixes plain text and leaves slash commands alone", () => {
+  assert.equal(planModeWire("整理設定", true), "/plan 整理設定");
+  assert.equal(planModeWire("  整理設定  ", true), "/plan 整理設定");
+  assert.equal(planModeWire("/plan 已有", true), "/plan 已有");
+  assert.equal(planModeWire("/Plan 已有", true), "/Plan 已有");
+  assert.equal(planModeWire("/plan", true), "/plan");
+  assert.equal(planModeWire("/renew 舊題", true), "/renew 舊題");
+  assert.equal(planModeWire("/stop", true), "/stop");
+  assert.equal(planModeWire("/title 新名", true), "/title 新名");
+  assert.equal(planModeWire("/", true), "/");
+  assert.equal(planModeWire("整理設定", false), "整理設定");
+  assert.equal(planModeWire("/plan 已有", false), "/plan 已有");
+  assert.equal(planModeWire("", true), "");
+  assert.deepEqual(planBubble("/plan 整理設定"), { text: "整理設定", command: "plan" });
+  assert.deepEqual(planBubble("/Plan 整理設定"), { text: "整理設定", command: "plan" });
+  assert.deepEqual(planBubble("整理設定"), { text: "整理設定", command: "" });
+  assert.deepEqual(planBubble("/renew 舊題"), { text: "/renew 舊題", command: "" });
+  assert.equal(planChipText("plan"), "Plan");
+  assert.equal(planChipText("stop"), "stop");
+  assert.equal(planChipText(""), "");
+});
+
+test("plan mode is a per-bot composer toggle and busy sends keep the prefix", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const rust = readFileSync(new URL("../src-tauri/src/config.rs", import.meta.url), "utf8");
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.match(html, /data-role="plan-mode"[^>]*>Plan Mode</);
+  assert.match(css, /\.plan-mode-chip\[aria-pressed="true"\][^}]*background:\s*var\(--bot-10\)/);
+  assert.match(css, /\.plan-mode-chip\[aria-pressed="true"\][^}]*#0000f2/);
+  assert.match(css, /\.composer\.is-plan-mode input[^}]*#0000f2/);
+  const keys = main.slice(main.indexOf('input?.addEventListener("keydown"'), main.indexOf("async function loadSoul"));
+  const shift = keys.indexOf('event.key === "Tab" && event.shiftKey');
+  const slashTab = keys.indexOf('event.key === "Tab" || event.key === "Enter"');
+  assert.ok(shift >= 0 && shift < slashTab);
+  assert.match(keys, /togglePlanMode\(id\)/);
+  const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
+  const wireAt = send.indexOf("planModeWire");
+  const resolveAt = send.indexOf("resolveClient");
+  assert.ok(wireAt >= 0 && wireAt < resolveAt);
+  assert.match(send, /sendWhileBusy\(id, text\)/);
+  assert.match(send, /invoke\("send_chat", \{ profile: sentId, text \}\)/);
+  const busy = main.slice(main.indexOf("async function sendWhileBusy"), main.indexOf("async function stopActive"));
+  assert.doesNotMatch(busy, /planModeWire/);
+  assert.match(busy, /userPlanMessage\(text\)/);
+  assert.match(busy, /steer_run", \{ profile: id, runId: thread\.runId, text \}/);
+  assert.match(busy, /send_chat", \{ profile: id, text, queue: true \}/);
+  const bubble = main.slice(main.indexOf("function paintUserBubble"), main.indexOf("function paintBotBubble"));
+  assert.match(bubble, /planChipText\(message\.command\)/);
+  const present = main.slice(main.indexOf("function presentMessage"), main.indexOf("function presentTranscript"));
+  assert.match(present, /planBubble\(m\.text\)/);
+  assert.equal(main.split("set_plan_mode").length - 1, 1);
+  const store = rust.slice(rust.indexOf("pub fn store_plan_mode"), rust.indexOf("pub fn fill_empty_details"));
+  assert.match(store, /plan_mode/);
+  assert.doesNotMatch(store, /config::save\(/);
+  assert.match(lib, /set_plan_mode/);
+  assert.match(lib, /previous_bot\.map\(\|bot\| bot\.plan_mode\)/);
 });
