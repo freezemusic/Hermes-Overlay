@@ -49,8 +49,12 @@ import {
   catchUpMessages,
   historyNoticeCopy,
   historyNoticePending,
+  historyNoticeId,
   dropSettledHistoryNotices,
   stopCatchUpMode,
+  markStoppedTurn,
+  keepStoppedRows,
+  releaseStoppedTurn,
   writableContinuation,
   refusedSessionIds,
   UNSENT_MARK,
@@ -1007,16 +1011,16 @@ test("an unanswered history clarify or approval is a notice, not a folded tool",
   assert.match(approval.detail, /呢度答唔到/);
   const folded = dropSettledHistoryNotices([
     { role: "user", text: "hi" },
-    { role: "notice", tool_name: "clarify", text: "{\"text\":\"下一組？\"}" },
-    { role: "tool-run", text: "用咗 clarify", tools: [{ name: "clarify" }] },
+    { role: "notice", tool_name: "clarify", tool_call_id: "c1", text: "{\"text\":\"下一組？\",\"tool_call_id\":\"c1\"}" },
+    { role: "tool-run", text: "用咗 clarify", tools: [{ name: "clarify", tool_call_id: "c1" }] },
   ]);
   assert.deepEqual(folded.map((message) => message.role), ["user", "tool-run"]);
   const rebuilt = finishWatchedRows(
     [
       { role: "user", text: "hi" },
-      { role: "notice", tool_name: "clarify", text: "{\"text\":\"下一組？\"}" },
+      { role: "notice", tool_name: "clarify", tool_call_id: "c1", text: "{\"text\":\"下一組？\",\"tool_call_id\":\"c1\"}" },
     ],
-    [{ role: "tool", tool_name: "clarify", text: "{\"outcome\":\"timed_out\"}" }],
+    [{ role: "tool", tool_name: "clarify", tool_call_id: "c1", text: "{\"outcome\":\"timed_out\"}" }],
     false,
   );
   assert.equal(rebuilt.some((message) => message.role === "notice"), false);
@@ -1049,11 +1053,23 @@ test("a refresh during stop stays append-only until the stop note is applied", (
   assert.ok(refresh.indexOf("thread.stopping") < refresh.indexOf("if (thread.watchReply)"));
   assert.match(refresh, /append: true, stopped: true, stopping: true/);
   const stop = main.slice(main.indexOf("async function stopActive"), main.indexOf("function measureInputText"));
-  assert.ok(stop.indexOf("thread.stopping = true") < stop.indexOf("stop_chat"));
-  assert.match(stop, /thread\.stopSerial/);
+  assert.ok(stop.indexOf("armStopGate(profile)") < stop.indexOf("stop_chat"));
   assert.doesNotMatch(stop, /noteStopped/);
-  const noted = main.slice(main.indexOf("function noteStopped"), main.indexOf("function mergeCaughtUp"));
-  assert.match(noted, /thread\.stopping = false/);
+  assert.doesNotMatch(stop, /thread\.stopping = false/);
+  const armed = main.slice(main.indexOf("function armStopGate"), main.indexOf("function noteStopGate"));
+  assert.match(armed, /thread\.stopping = true/);
+  assert.match(armed, /thread\.stopSerial/);
+  assert.match(armed, /markStoppedTurn/);
+  const gate = main.slice(main.indexOf("function noteStopGate"), main.indexOf("function mergeCaughtUp"));
+  assert.match(gate, /thread\.watchReply = false/);
+  assert.match(gate, /gate\.chat && gate\.done/);
+  const noted = main.slice(main.indexOf("function noteStopped"), main.indexOf("function armStopGate"));
+  assert.match(noted, /keptLocal: true/);
+  assert.doesNotMatch(noted, /thread\.stopping = false/);
+  assert.match(refresh, /thread\.cancelHold/);
+  assert.match(stop, /noteStopGate\(thread, "chat"\)/);
+  const done = main.slice(main.indexOf('payload.type === "done"'), main.indexOf('payload.type === "error"'));
+  assert.match(done, /heldReady && !thread\.stopping && !thread\.cancelHold/);
 });
 
 test("a history clarify countdown follows the Hermes default and keeps moving", () => {
@@ -1091,6 +1107,58 @@ test("a notice stays a card in place, and a result-only tail repaints the closed
   assert.ok(previewAt > 0);
   assert.ok(cron.lastIndexOf("paintApprovalBadge") < previewAt);
   assert.match(main, /setInterval\(tickVisibleNotices, 30000\)/);
+});
+
+test("settling one clarify leaves the other notice, and a matching result tail clears it", () => {
+  const one = { role: "notice", tool_name: "clarify", tool_call_id: "c1", text: JSON.stringify({ text: "one", tool_call_id: "c1" }) };
+  const two = { role: "notice", tool_name: "clarify", tool_call_id: "c2", text: JSON.stringify({ text: "two", tool_call_id: "c2" }) };
+  const settledOne = dropSettledHistoryNotices([
+    one,
+    two,
+    { role: "tool-run", text: "用咗 1 個工具 · clarify", tools: [{ name: "clarify", tool_call_id: "c1" }] },
+  ]);
+  assert.deepEqual(settledOne.filter((message) => message.role === "notice").map(historyNoticeId), ["c2"]);
+  const have = [
+    { role: "tool-run", text: "用咗 1 個工具 · clarify", tools: [{ name: "clarify", tool_call_id: "c1" }] },
+    two,
+  ];
+  const incoming = [{ role: "tool-run", text: "用咗 1 個工具 · clarify", tools: [{ name: "clarify", tool_call_id: "c2" }] }];
+  assert.equal(unseenMessages(have, incoming).fresh.length, 1);
+  const cleared = finishWatchedRows(have, incoming, false, { tail: true });
+  assert.equal(cleared.some((message) => message.role === "notice"), false);
+  assert.equal(cleared.filter((message) => message.role === "tool-run").length, 2);
+});
+
+test("a cancelled turn stays through a server replace until that user line is stored", () => {
+  const local = [
+    { role: "user", text: "old" },
+    { role: "bot", text: "olda" },
+    { role: "user", text: "SLOW" },
+    { role: "bot", text: "slow part 1/25.", live: true },
+    { role: "user", text: "queued line" },
+  ];
+  markStoppedTurn(local);
+  local.push({ role: "commentary", text: "已停止呢次回覆。", keptLocal: true });
+  assert.equal(local.find((message) => message.text === "SLOW").keptLocal, true);
+  assert.equal(local.find((message) => message.text === "slow part 1/25.").keptLocal, true);
+  const server = [
+    { role: "user", text: "old" },
+    { role: "bot", text: "olda" },
+  ];
+  const kept = finishWatchedRows(local, server, true);
+  assert.equal(kept.some((message) => message.text === "SLOW"), true);
+  assert.equal(kept.some((message) => message.text === "slow part 1/25."), true);
+  assert.equal(kept.some((message) => message.text === "已停止呢次回覆。"), true);
+  const stored = keepStoppedRows(kept, [
+    { role: "user", text: "old" },
+    { role: "bot", text: "olda" },
+    { role: "user", text: "SLOW" },
+    { role: "bot", text: "done" },
+  ]);
+  assert.equal(stored.some((message) => message.keptLocal), false);
+  assert.equal(stored.some((message) => message.text === "已停止呢次回覆。"), false);
+  releaseStoppedTurn(local);
+  assert.equal(local.some((message) => message.keptLocal), false);
 });
 
 test("a stop catch-up keeps the cancelled user line and the stop note", () => {

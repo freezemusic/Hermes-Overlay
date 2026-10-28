@@ -623,7 +623,15 @@ try {
     throw "overlay did not reveal within 90s"
   }
   $revealedAt = Get-Date
-  Start-Sleep -Seconds 2
+  # First paint can land several seconds after after-reveal. Wait for an orb
+  # hit rect before the click-through asserts, instead of a fixed 2s sleep.
+  $paintDeadline = (Get-Date).AddSeconds(15)
+  while ((Get-Date) -lt $paintDeadline) {
+    $painted = @(Read-HitRects | Where-Object { $_.id -eq "bot:settings" -and $_.w -gt 0 -and $_.h -gt 0 })
+    if ($painted.Count -gt 0) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  Start-Sleep -Milliseconds 300
   # Settings is still closed. Empty space passes through, then Ctrl+click opens it.
   Assert-Empty "reveal+2s"
   # R-OB-05: 48px left of the settings disc is inside the 72px fade and

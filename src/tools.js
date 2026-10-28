@@ -85,6 +85,7 @@ function copyTool(tool) {
     result: String(tool?.result || ""),
     status: tool?.status || "done",
     openResult: !!tool?.openResult,
+    tool_call_id: tool?.tool_call_id || "",
   };
 }
 
@@ -108,6 +109,7 @@ function pushHistoryTool(run, message) {
     result,
     status: "done",
     openResult: false,
+    tool_call_id: message?.tool_call_id || "",
   });
   run.running = false;
 }

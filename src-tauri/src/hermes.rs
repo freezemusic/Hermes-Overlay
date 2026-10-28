@@ -70,6 +70,9 @@ pub struct UiMessage {
     pub role: String,
     pub text: String,
     pub tool_name: String,
+    /// Hermes tool-call id, so a clarify result retires only its own notice.
+    #[serde(default)]
+    pub tool_call_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1188,10 +1191,14 @@ fn push_wait_notice(out: &mut Vec<UiMessage>, item: &Value, id: &str, kind: &str
     if let Some(seconds) = notice_timeout(args) {
         payload["timeout_s"] = serde_json::json!(seconds);
     }
+    if !id.is_empty() {
+        payload["tool_call_id"] = serde_json::json!(id);
+    }
     out.push(UiMessage {
         role: "notice".into(),
         text: payload.to_string(),
         tool_name: kind.into(),
+        tool_call_id: id.to_string(),
     });
 }
 
@@ -1211,6 +1218,12 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        let tool_call_id = item
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let text = content_to_text(item.get("content").unwrap_or(&Value::Null));
         let text = clip(&text, 8000);
         let display_kind = item
@@ -1221,7 +1234,7 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
             out.push(UiMessage {
                 role: "failure".into(),
                 text,
-                tool_name: String::new(),
+                tool_name: String::new(), tool_call_id: String::new(),
             });
             continue;
         }
@@ -1229,14 +1242,14 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
             "user" if !text.trim().is_empty() => out.push(UiMessage {
                 role: "user".into(),
                 text,
-                tool_name: String::new(),
+                tool_name: String::new(), tool_call_id: String::new(),
             }),
             "assistant" => {
                 if !text.trim().is_empty() {
                     out.push(UiMessage {
                         role: "bot".into(),
                         text,
-                        tool_name: String::new(),
+                        tool_name: String::new(), tool_call_id: String::new(),
                     });
                 }
                 if let Some(calls) = item.get("tool_calls").and_then(Value::as_array) {
@@ -1256,6 +1269,7 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
                 } else {
                     tool_name
                 },
+                tool_call_id,
             }),
             _ => {}
         }
@@ -4305,10 +4319,10 @@ mod tests {
             message_fetch(Some(&uncounted), &stamp("bot", None, 11.0)),
             MessageFetch::Full
         );
-        let old = vec![UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new() }];
+        let old = vec![UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new() }];
         let (kept, emitted, reset) = apply_watch_fetch(
             &old,
-            &[UiMessage { role: "bot".into(), text: "b".into(), tool_name: String::new() }],
+            &[UiMessage { role: "bot".into(), text: "b".into(), tool_name: String::new(), tool_call_id: String::new() }],
             false,
         );
         assert!(!reset);
@@ -4319,19 +4333,19 @@ mod tests {
         assert!(!reset);
         assert_eq!(baseline.len(), 1);
         let seen = vec![
-            UiMessage { role: "user".into(), text: "q".into(), tool_name: String::new() },
-            UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new() },
+            UiMessage { role: "user".into(), text: "q".into(), tool_name: String::new(), tool_call_id: String::new() },
+            UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new() },
         ];
         let longer = vec![
             seen[0].clone(),
-            UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new() },
-            UiMessage { role: "bot".into(), text: "c".into(), tool_name: String::new() },
+            UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new() },
+            UiMessage { role: "bot".into(), text: "c".into(), tool_name: String::new(), tool_call_id: String::new() },
         ];
         let (_, suffix, reset) = apply_watch_fetch(&seen, &longer, true);
         assert!(!reset);
         assert_eq!(suffix.len(), 1);
         assert_eq!(suffix[0].text, "c");
-        let diverged = vec![UiMessage { role: "bot".into(), text: "other".into(), tool_name: String::new() }];
+        let diverged = vec![UiMessage { role: "bot".into(), text: "other".into(), tool_name: String::new(), tool_call_id: String::new() }];
         let (_, replaced, reset) = apply_watch_fetch(&seen, &diverged, true);
         assert!(reset);
         assert_eq!(replaced[0].text, "other");
@@ -4369,6 +4383,8 @@ mod tests {
         assert_eq!(shown[1].tool_name, "clarify");
         assert!(shown[1].text.contains("下一組殘餘拆邊組？"));
         assert!(shown[1].text.contains("\"timeout_s\":3600"));
+        assert!(shown[1].text.contains("\"tool_call_id\":\"c1\""));
+        assert_eq!(shown[1].tool_call_id, "c1");
         assert!(shown.iter().all(|message| message.tool_name != "approval"));
         assert_eq!(shown.len(), 2);
         let custom = json!({
@@ -4397,7 +4413,25 @@ mod tests {
         });
         let done = normalize_messages(&answered);
         assert!(done.iter().all(|message| message.role != "notice"));
-        assert!(done.iter().any(|message| message.role == "tool"));
+        assert!(done.iter().any(|message| message.role == "tool" && message.tool_call_id == "c1"));
+        let both = json!({
+            "data": [
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "c1",
+                    "function": {"name": "clarify", "arguments": "{\"question\":\"one\"}"}
+                }]},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "c2",
+                    "function": {"name": "clarify", "arguments": "{\"question\":\"two\"}"}
+                }]},
+                {"role": "tool", "tool_call_id": "c1", "tool_name": "clarify", "content": "{\"outcome\":\"answered\"}"}
+            ]
+        });
+        let left = normalize_messages(&both);
+        let notices: Vec<_> = left.iter().filter(|message| message.role == "notice").collect();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].tool_call_id, "c2");
+        assert!(notices[0].text.contains("two"));
     }
 
     #[test]
@@ -4469,7 +4503,7 @@ mod tests {
         UiMessage {
             role: role.into(),
             text: text.into(),
-            tool_name: String::new(),
+            tool_name: String::new(), tool_call_id: String::new(),
         }
     }
 

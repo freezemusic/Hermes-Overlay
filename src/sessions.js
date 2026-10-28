@@ -1029,9 +1029,21 @@ export function stopAfterMiss(thread, postedId) {
  * A non-empty live bot bubble absorbs a longer copy of itself so a streamed
  * reply is not appended twice when the poll catches up.
  */
+function toolCallIds(message) {
+  if (!message) return [];
+  if (message.role === "tool") return [message.tool_call_id || ""].filter(Boolean);
+  if (message.role === "tool-run") {
+    return (message.tools || []).map((tool) => tool?.tool_call_id || "").filter(Boolean);
+  }
+  return [];
+}
+
 function sameOrGrowth(have, next) {
   const role = have?.role || "";
   if (role !== (next?.role || "")) return null;
+  const haveIds = toolCallIds(have);
+  const nextIds = toolCallIds(next);
+  if (haveIds.length && nextIds.length && haveIds.join("\n") !== nextIds.join("\n")) return null;
   const sofar = String(have?.text || "");
   const text = String(next?.text || "");
   if (sofar === text) return { grew: false };
@@ -1091,25 +1103,30 @@ export function historyNoticePending(message) {
   return message?.role === "notice" && (message.tool_name === "clarify" || message.tool_name === "approval");
 }
 
-function settlingWaitName(message) {
-  if (message?.role === "tool") return message.tool_name || message.name || "";
-  if (message?.role === "tool-run") {
-    return (message.tools || []).map((tool) => tool?.name).find((name) => name === "clarify" || name === "approval") || "";
+export function historyNoticeId(message) {
+  if (message?.tool_call_id) return String(message.tool_call_id);
+  try {
+    return String(JSON.parse(String(message?.text || "")).tool_call_id || "");
+  } catch {
+    return "";
   }
-  return "";
 }
 
-/** A later clarify/approval result retires the notice that was waiting for it. */
+function resultCallIds(message) {
+  return toolCallIds(message);
+}
+
+/** A clarify result retires only the notice with the same tool_call_id. */
 export function dropSettledHistoryNotices(messages) {
   const list = messages || [];
   const drop = new Set();
   for (let index = 0; index < list.length; index += 1) {
-    const name = settlingWaitName(list[index]);
-    if (name !== "clarify" && name !== "approval") continue;
-    for (let earlier = index - 1; earlier >= 0; earlier -= 1) {
-      if (list[earlier]?.role === "notice" && list[earlier].tool_name === name) {
-        drop.add(earlier);
-        break;
+    for (const id of resultCallIds(list[index])) {
+      for (let earlier = index - 1; earlier >= 0; earlier -= 1) {
+        if (list[earlier]?.role === "notice" && historyNoticeId(list[earlier]) === id) {
+          drop.add(earlier);
+          break;
+        }
       }
     }
   }
@@ -1121,10 +1138,71 @@ export function dropSettledHistoryNotices(messages) {
 export function dropSettledLocalRows(messages) {
   return (messages || []).filter((message) => {
     if (!message) return false;
+    if (message.keptLocal) return true;
     if (message.role === "commentary") return false;
     if (message.role === "approval" || message.role === "clarify") return cardStillOpen(message);
     return true;
   });
+}
+
+/** The cancelled turn stays on screen until the server stores that user line. */
+export function markStoppedTurn(messages) {
+  const list = messages || [];
+  let botIndex = -1;
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const message = list[index];
+    if (message?.role === "bot" && !isSideMessage(message)) {
+      botIndex = index;
+      break;
+    }
+  }
+  let start = -1;
+  if (botIndex >= 0) {
+    start = botIndex;
+    for (let index = botIndex - 1; index >= 0; index -= 1) {
+      const message = list[index];
+      if (message?.role === "user" && !isSideMessage(message)) {
+        start = index;
+        break;
+      }
+    }
+  } else {
+    const split = splitBeforeLiveTurn(list);
+    start = list.length - split.turn.length;
+  }
+  if (start < 0) return messages;
+  for (let index = start; index < list.length; index += 1) {
+    const message = list[index];
+    if (!message || isSideMessage(message)) continue;
+    message.keptLocal = true;
+  }
+  return messages;
+}
+
+export function releaseStoppedTurn(messages) {
+  for (const message of messages || []) {
+    if (message?.keptLocal) delete message.keptLocal;
+  }
+  return messages;
+}
+
+export function keepStoppedRows(previous, next) {
+  const kept = (previous || []).filter((message) => message?.keptLocal);
+  const server = next || [];
+  if (!kept.length) return server;
+  const user = kept.find((message) => message.role === "user" && String(message.text || "").trim());
+  const stored = !!user && server.some((message) => message?.role === "user" && message.text === user.text);
+  if (stored) {
+    releaseStoppedTurn(kept);
+    return server;
+  }
+  const out = server.slice();
+  for (const row of kept) {
+    const present = out.some((message) => message === row
+      || (message?.role === row.role && message?.text === row.text && !!message?.keptLocal === true));
+    if (!present) out.push(row);
+  }
+  return out;
 }
 
 function attachOpenCards(previous, next) {
@@ -1207,13 +1285,15 @@ export function releaseHeldWatch(view, held) {
 }
 
 /** Tail append, or a full replace, with the same local rows a history reload kept. */
-export function finishWatchedRows(previous, incoming, reset = false) {
+export function finishWatchedRows(previous, incoming, reset = false, { tail = false } = {}) {
   const prior = previous || [];
+  const rows = incoming || [];
   const next = reset
-    ? reconcileSideQuestion(prior, incoming || [])
-    : prior.concat(unseenMessages(prior, incoming || []).fresh);
+    ? reconcileSideQuestion(prior, rows)
+    : prior.concat(tail ? rows : unseenMessages(prior, rows).fresh);
   const cleaned = dropSettledHistoryNotices(dropSettledLocalRows(next));
-  return reset ? attachOpenCards(prior, cleaned) : cleaned;
+  const withKept = keepStoppedRows(prior, cleaned);
+  return reset ? attachOpenCards(prior, withKept) : withKept;
 }
 
 export function unseenMessages(existing, incoming) {
@@ -1250,6 +1330,7 @@ export function unseenMessages(existing, incoming) {
         role: message.role,
         text: String(message.text || ""),
         tool_name: message.tool_name || "",
+        tool_call_id: message.tool_call_id || "",
       };
     }),
     settled,

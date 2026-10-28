@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, historyNoticeCopy, historyNoticePending, dropSettledHistoryNotices, stopCatchUpMode, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, keepStoppedRows, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -5441,7 +5441,9 @@ function applyOpened(id, opened, { quiet = false } = {}) {
       if (panelShowing(id)) restoreSendErrorBanner(id);
       return;
     }
-    thread.messages = reconcileSideQuestion(thread.messages, shown, thread.sessionId, nextId || thread.sessionId);
+    const reconciled = reconcileSideQuestion(thread.messages, shown, thread.sessionId, nextId || thread.sessionId);
+    thread.messages = keepStoppedRows(thread.messages, reconciled);
+    if (!thread.messages.some((message) => message?.keptLocal)) thread.cancelHold = false;
     for (const card of keptApprovals) {
       const same = thread.messages.some((message) => {
         if (card.role === "approval") return message.role === "approval" && message.requestId === card.requestId;
@@ -5600,6 +5602,10 @@ function refreshBotChats() {
     }
     if (thread.stopping) {
       void catchUpSession(bot.id, { append: true, stopped: true, stopping: true });
+      continue;
+    }
+    if (thread.cancelHold) {
+      void catchUpSession(bot.id, { append: true });
       continue;
     }
     if (thread.watchReply) {
@@ -6487,11 +6493,22 @@ async function saveBotPanel(id) {
 
 function presentMessage(m) {
   if (m.role === "notice") {
-    return { role: "notice", tool_name: m.tool_name || "", text: m.text || "" };
+    return {
+      role: "notice",
+      tool_name: m.tool_name || "",
+      text: m.text || "",
+      tool_call_id: m.tool_call_id || historyNoticeId(m),
+    };
   }
   if (m.role === "tool") {
     const name = m.tool_name || m.toolName || m.name || "tool";
-    return { role: "tool", name, tool_name: name, text: plainToolText(m.text || "") };
+    return {
+      role: "tool",
+      name,
+      tool_name: name,
+      text: plainToolText(m.text || ""),
+      tool_call_id: m.tool_call_id || "",
+    };
   }
   if (m.role === "user") {
     const marker = parseSlashMarker(m.text);
@@ -6715,7 +6732,7 @@ function deliverCron(id, payload) {
       if (panelFor(id)) renderChat(id);
     }
   }
-  const next = finishWatchedRows(existing, incoming, false);
+  const next = finishWatchedRows(existing, incoming, false, { tail: true });
   const cleaned = fresh.length > 0 || next.length !== existing.length;
   if (viewing) {
     if (cleaned) {
@@ -7356,7 +7373,10 @@ function handleHermes(payload) {
     dedupeShownReply(runMessages(id));
     settleBlockedCopies(id);
     if (promoted) {
-      if (payload.outcome === "cancelled") noteStopped(id, { keepBusy: true });
+      if (payload.outcome === "cancelled") {
+        noteStopGate(thread, "done");
+        noteStopped(id, { keepBusy: true });
+      }
       if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
       setBotStatus(id, "思考中…", "busy");
       return;
@@ -7366,11 +7386,15 @@ function handleHermes(payload) {
       return;
     }
     if (payload.keep_busy) {
-      if (payload.outcome === "cancelled") noteStopped(id, { keepBusy: true });
+      if (payload.outcome === "cancelled") {
+        noteStopGate(thread, "done");
+        noteStopped(id, { keepBusy: true });
+      }
       else if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
       return;
     }
     if (payload.outcome === "cancelled") {
+      noteStopGate(thread, "done");
       thread.heldWatch = null;
       if (!payload.run_id || payload.run_id === thread.runId) thread.runId = "";
       thread.queued = false;
@@ -7381,13 +7405,15 @@ function handleHermes(payload) {
     if (!payload.run_id || payload.run_id === thread.runId) thread.runId = "";
     const held = thread.heldWatch;
     const heldReady = !!(held?.server || (held?.tails || []).some((message) => message.role === "bot" || message.role === "failure"));
-    if (heldReady) {
+    if (heldReady && !thread.stopping && !thread.cancelHold) {
       const sessionId = String(thread.liveSessionId || thread.sessionId || "");
       const viewingHeld = !sessionId || thread.sessionId === sessionId;
       const existingHeld = viewingHeld ? thread.messages : (thread.bySession.get(sessionId) || []);
       const nextHeld = releaseHeldWatch(existingHeld, held);
       thread.heldWatch = null;
       applyReleasedWatch(id, thread, sessionId || thread.sessionId, existingHeld, nextHeld);
+    } else if (heldReady) {
+      thread.heldWatch = null;
     }
     if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
@@ -7413,11 +7439,14 @@ function handleHermes(payload) {
         releaseOutgoing(id);
       }
     }
+    const stopOwnsStatus = thread.stopping && payload.outcome === "completed";
     setBotStatus(
       id,
-      payload.outcome === "failed"
-        ? (blocked || failedText === EXECUTE_CODE_BLOCKED_LINE ? EXECUTE_CODE_BLOCKED_LINE : "回覆失敗")
-        : payload.outcome === "cancelled" ? "已停止" : "閒置",
+      stopOwnsStatus
+        ? "已停止"
+        : payload.outcome === "failed"
+          ? (blocked || failedText === EXECUTE_CODE_BLOCKED_LINE ? EXECUTE_CODE_BLOCKED_LINE : "回覆失敗")
+          : payload.outcome === "cancelled" ? "已停止" : "閒置",
       payload.outcome === "failed" ? "error" : "idle",
     );
     return;
@@ -7623,6 +7652,10 @@ async function sendActive(id = state.activeId) {
   state.slashPanelId = id;
   thread.followTail = true;
   thread.stopNoted = false;
+  if (thread.cancelHold || (thread.messages || []).some((message) => message?.keptLocal)) {
+    releaseStoppedTurn(thread.messages);
+    thread.cancelHold = false;
+  }
   const text = composeModeWire(typed, composeModeOf(id));
   const busy = state.mode === "hermes" && state.busy.has(id);
   const action = resolveClient(text, state.catalog || []);
@@ -8353,9 +8386,9 @@ function activeSlashItems() {
 
 function noteStopped(id, { keepBusy = false } = {}) {
   const thread = threadFor(id);
-  if (!thread.stopNoted) {
+    if (!thread.stopNoted) {
     thread.stopNoted = true;
-    const note = { role: "commentary", text: "已停止呢次回覆。" };
+    const note = { role: "commentary", text: "已停止呢次回覆。", keptLocal: true };
     if (runIsOnScreen(id)) appendMessage(id, note);
     else runMessages(id).push(note);
   }
@@ -8363,8 +8396,32 @@ function noteStopped(id, { keepBusy = false } = {}) {
     clearRunSession(thread);
     setBotStatus(id, "已停止", "idle");
   }
-  thread.stopping = false;
   if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
+}
+
+function armStopGate(id) {
+  const thread = threadFor(id);
+  thread.stopping = true;
+  thread.watchReply = true;
+  thread.cancelHold = true;
+  thread.stopSerial = (thread.stopSerial || 0) + 1;
+  thread.stopGate = { serial: thread.stopSerial, chat: false, done: false };
+  markStoppedTurn(runMessages(id));
+  return thread;
+}
+
+function noteStopGate(thread, part) {
+  const gate = thread?.stopGate;
+  if (!gate) {
+    if (part === "chat") thread.watchReply = false;
+    return;
+  }
+  gate[part] = true;
+  if (part === "chat") thread.watchReply = false;
+  if (gate.chat && gate.done) {
+    thread.stopping = false;
+    thread.watchReply = false;
+  }
 }
 
 function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
@@ -8383,6 +8440,11 @@ function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
     if (stopped) {
       thread.heldWatch = null;
       noteStopped(id);
+    }
+    const keptUser = (thread.messages || []).find((message) => message?.keptLocal && message.role === "user");
+    if (keptUser && incoming.some((message) => message?.role === "user" && message.text === keptUser.text)) {
+      releaseStoppedTurn(next);
+      thread.cancelHold = false;
     }
     if (changed && panelFor(id)) renderChat(id);
     return next.some((message) => message.role === "bot" || message.role === "failure");
@@ -8461,6 +8523,10 @@ async function sendSideQuestion(id, text) {
 async function sendWhileBusy(id, text) {
   const thread = threadFor(id);
   const shown = composeUserMessage(text);
+  if (thread.cancelHold || (thread.messages || []).some((message) => message?.keptLocal)) {
+    releaseStoppedTurn(thread.messages);
+    thread.cancelHold = false;
+  }
   appendMessage(id, shown);
   noteActivity(id, { type: "send" });
   if (state.mode !== "hermes" || !inTauri()) {
@@ -8513,10 +8579,7 @@ async function sendWhileBusy(id, text) {
 async function stopActive(id) {
   const profile = id || state.activeId;
   if (!profile || state.mode !== "hermes" || !inTauri()) return;
-  const thread = threadFor(profile);
-  thread.stopping = true;
-  thread.stopSerial = (thread.stopSerial || 0) + 1;
-  thread.watchReply = true;
+  const thread = armStopGate(profile);
   const posted = streamingRunId(thread);
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -8528,29 +8591,28 @@ async function stopActive(id) {
     if (typeof result === "string" && result.startsWith("terminal:")) {
       const ended = result.slice("terminal:".length);
       thread.queued = false;
-      thread.watchReply = false;
       thread.runId = "";
       clearRunSession(thread);
       const stopped = ended === "cancelled";
+      noteStopGate(thread, "chat");
+      if (!stopped) noteStopGate(thread, "done");
       if (!stopped) {
         setBotStatus(profile, ended === "failed" ? "回覆失敗" : "閒置", ended === "failed" ? "error" : "idle");
       }
-      void catchUpSession(profile, { append: true, stopped }).finally(() => {
-        thread.stopping = false;
-      });
+      void catchUpSession(profile, { append: true, stopped });
       return;
     }
     if (result === "not_active") {
-      void catchUpSession(profile, { append: true, stopped: true }).finally(() => {
-        thread.stopping = false;
-      });
+      noteStopGate(thread, "chat");
+      noteStopGate(thread, "done");
+      void catchUpSession(profile, { append: true, stopped: true });
       return;
     }
-    void catchUpSession(profile, { append: true, stopped: true }).finally(() => {
-      thread.stopping = false;
-    });
+    noteStopGate(thread, "chat");
+    void catchUpSession(profile, { append: true, stopped: true });
   } catch {
-    thread.stopping = false;
+    noteStopGate(thread, "chat");
+    noteStopGate(thread, "done");
     showActionError("停止未送到。");
   }
 }
