@@ -650,6 +650,112 @@ pub fn fresh_messages<'a>(seen: &[UiMessage], next: &'a [UiMessage]) -> Option<&
     Some(&next[seen.len()..])
 }
 
+/// Cheap change marker from Hermes 0.22.5 `GET /api/sessions`.
+/// `_session_response` includes `message_count` and `last_active`.
+/// The session list has no `updated_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatStamp {
+    pub session_id: String,
+    pub message_count: Option<u64>,
+    pub last_active_bits: u64,
+}
+
+impl ChatStamp {
+    pub fn from_session(session: &SessionSummary) -> Self {
+        Self {
+            session_id: session.id.clone(),
+            message_count: session.message_count,
+            last_active_bits: session.last_active.to_bits(),
+        }
+    }
+}
+
+/// What the bot-chat watcher should download for one session row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageFetch {
+    /// First sight, a different session, or the marker did not move.
+    /// The caller records the stamp and does not download messages.
+    Skip,
+    /// `message_count` grew. Pages are `tail_windows(from, to)`.
+    Tail { from: u64, to: u64 },
+    /// The count shrank, went missing, or `last_active` moved without a new row.
+    Full,
+}
+
+/// Hermes 0.22.5 pages messages with `offset` and `limit` (`order=oldest`, max 500).
+pub fn message_fetch(previous: Option<&ChatStamp>, next: &ChatStamp) -> MessageFetch {
+    let Some(prev) = previous else {
+        return MessageFetch::Skip;
+    };
+    if prev.session_id != next.session_id {
+        return MessageFetch::Skip;
+    }
+    match (prev.message_count, next.message_count) {
+        (Some(old), Some(new)) if new > old => MessageFetch::Tail { from: old, to: new },
+        (Some(old), Some(new)) if new == old && prev.last_active_bits == next.last_active_bits => {
+            MessageFetch::Skip
+        }
+        (None, None)
+            if prev.last_active_bits == next.last_active_bits && prev.last_active_bits != 0 =>
+        {
+            MessageFetch::Skip
+        }
+        _ => MessageFetch::Full,
+    }
+}
+
+/// `(offset, limit)` pages covering `from..to`, each at most 500 rows.
+pub fn tail_windows(from: u64, to: u64) -> Vec<(u64, u64)> {
+    let mut pages = Vec::new();
+    let mut offset = from;
+    while offset < to {
+        let limit = (to - offset).min(500);
+        pages.push((offset, limit));
+        offset += limit;
+    }
+    pages
+}
+
+/// Merge a fetched page into the watched transcript.
+/// An empty stored transcript is a baseline: a full download is kept and not emitted.
+pub fn apply_watch_fetch(stored: &[UiMessage], fetched: &[UiMessage], replace: bool) -> (Vec<UiMessage>, Vec<UiMessage>, bool) {
+    if !replace {
+        let mut messages = stored.to_vec();
+        messages.extend(fetched.iter().cloned());
+        return (messages, fetched.to_vec(), false);
+    }
+    if stored.is_empty() {
+        return (fetched.to_vec(), Vec::new(), false);
+    }
+    match fresh_messages(stored, fetched) {
+        Some(suffix) => (fetched.to_vec(), suffix.to_vec(), false),
+        None => (fetched.to_vec(), fetched.to_vec(), true),
+    }
+}
+
+/// Stable across row order. Includes the fields the session menu shows.
+pub fn session_list_fingerprint(sessions: &[SessionSummary]) -> String {
+    let mut parts: Vec<String> = sessions
+        .iter()
+        .map(|session| {
+            format!(
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                session.id,
+                session.title,
+                session.last_active.to_bits(),
+                session.message_count.unwrap_or(0),
+                session.message_count.is_some(),
+                session.archived,
+                session.ended,
+                session.source,
+                session.preview,
+            )
+        })
+        .collect();
+    parts.sort();
+    parts.join("\n")
+}
+
 fn json_flag(item: &Value, key: &str) -> Option<bool> {
     let value = item.get(key)?;
     if let Some(flag) = value.as_bool() {
@@ -1500,21 +1606,55 @@ pub async fn ensure_bot_chat(
         .ok_or_else(|| HermesError::Protocol("未有 Bot Chat".into()))
 }
 
-pub async fn fetch_messages(
+pub struct MessagePage {
+    pub messages: Vec<UiMessage>,
+    /// Raw rows in this page (`pagination.returned`), including ones the UI drops.
+    pub returned: u64,
+}
+
+pub async fn fetch_message_page(
     http: &Client,
     root: &str,
     key: &str,
     session_id: &str,
-) -> Result<Vec<UiMessage>, HermesError> {
+    offset: u64,
+    limit: u64,
+) -> Result<MessagePage, HermesError> {
+    let limit = limit.clamp(1, 500);
     let url = format!(
-        "{root}/api/sessions/{session_id}/messages?order=oldest&limit=500&inline_images=false"
+        "{root}/api/sessions/{session_id}/messages?order=oldest&limit={limit}&offset={offset}&inline_images=false"
     );
     let resp = send(http.get(url).timeout(Duration::from_secs(30)), key).await?;
     let value: Value = resp
         .json()
         .await
         .map_err(|e| HermesError::Protocol(format!("訊息紀錄唔係 JSON：{e}")))?;
-    Ok(normalize_messages(&value))
+    let returned = value
+        .pointer("/pagination/returned")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            value
+                .get("data")
+                .or_else(|| value.get("messages"))
+                .and_then(Value::as_array)
+                .map(|rows| rows.len() as u64)
+        })
+        .unwrap_or(0);
+    Ok(MessagePage {
+        messages: normalize_messages(&value),
+        returned,
+    })
+}
+
+pub async fn fetch_messages(
+    http: &Client,
+    root: &str,
+    key: &str,
+    session_id: &str,
+) -> Result<Vec<UiMessage>, HermesError> {
+    Ok(fetch_message_page(http, root, key, session_id, 0, 500)
+        .await?
+        .messages)
 }
 
 pub async fn probe_health(http: &Client, gateway: &str) -> Result<String, HermesError> {
@@ -3903,6 +4043,97 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::Arc;
     use std::thread;
+
+    fn stamp(id: &str, count: Option<u64>, last_active: f64) -> ChatStamp {
+        ChatStamp {
+            session_id: id.into(),
+            message_count: count,
+            last_active_bits: last_active.to_bits(),
+        }
+    }
+
+    #[test]
+    fn a_bot_chat_watch_uses_message_count_before_downloading() {
+        let listed = parse_session_list(&json!({
+            "data": [{
+                "id": "bot",
+                "title": "Bot Chat",
+                "message_count": 40,
+                "last_active": 10.0,
+                "preview": "tail"
+            }]
+        }));
+        assert_eq!(listed[0].message_count, Some(40));
+        assert!(listed[0].last_active > 0.0);
+        let marker = ChatStamp::from_session(&listed[0]);
+        assert_eq!(message_fetch(None, &marker), MessageFetch::Skip);
+        assert_eq!(
+            message_fetch(Some(&marker), &marker),
+            MessageFetch::Skip
+        );
+        let grew = stamp("bot", Some(42), 11.0);
+        assert_eq!(
+            message_fetch(Some(&marker), &grew),
+            MessageFetch::Tail { from: 40, to: 42 }
+        );
+        assert_eq!(tail_windows(40, 42), vec![(40, 2)]);
+        assert_eq!(tail_windows(0, 600), vec![(0, 500), (500, 100)]);
+        assert!(tail_windows(3, 3).is_empty());
+        let edited = stamp("bot", Some(40), 12.0);
+        assert_eq!(message_fetch(Some(&marker), &edited), MessageFetch::Full);
+        let shrunk = stamp("bot", Some(10), 12.0);
+        assert_eq!(message_fetch(Some(&marker), &shrunk), MessageFetch::Full);
+        assert_eq!(
+            message_fetch(Some(&marker), &stamp("other", Some(40), 10.0)),
+            MessageFetch::Skip
+        );
+        let uncounted = stamp("bot", None, 10.0);
+        assert_eq!(
+            message_fetch(Some(&uncounted), &stamp("bot", None, 10.0)),
+            MessageFetch::Skip
+        );
+        assert_eq!(
+            message_fetch(Some(&uncounted), &stamp("bot", None, 11.0)),
+            MessageFetch::Full
+        );
+        let old = vec![UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new() }];
+        let (kept, emitted, reset) = apply_watch_fetch(
+            &old,
+            &[UiMessage { role: "bot".into(), text: "b".into(), tool_name: String::new() }],
+            false,
+        );
+        assert!(!reset);
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(kept.len(), 2);
+        let (baseline, quiet, reset) = apply_watch_fetch(&[], &old, true);
+        assert!(quiet.is_empty());
+        assert!(!reset);
+        assert_eq!(baseline.len(), 1);
+        let seen = vec![
+            UiMessage { role: "user".into(), text: "q".into(), tool_name: String::new() },
+            UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new() },
+        ];
+        let longer = vec![
+            seen[0].clone(),
+            UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new() },
+            UiMessage { role: "bot".into(), text: "c".into(), tool_name: String::new() },
+        ];
+        let (_, suffix, reset) = apply_watch_fetch(&seen, &longer, true);
+        assert!(!reset);
+        assert_eq!(suffix.len(), 1);
+        assert_eq!(suffix[0].text, "c");
+        let diverged = vec![UiMessage { role: "bot".into(), text: "other".into(), tool_name: String::new() }];
+        let (_, replaced, reset) = apply_watch_fetch(&seen, &diverged, true);
+        assert!(reset);
+        assert_eq!(replaced[0].text, "other");
+        let mut rows = listed.clone();
+        let mut extra = parse_session_list(&json!({"data":[{"id":"z","title":"notes","message_count":1,"last_active":1.0}]}));
+        rows.push(extra.remove(0));
+        let flipped = vec![rows[1].clone(), rows[0].clone()];
+        assert_eq!(session_list_fingerprint(&rows), session_list_fingerprint(&flipped));
+        rows[0].message_count = Some(41);
+        assert_ne!(session_list_fingerprint(&listed), session_list_fingerprint(&rows));
+    }
 
     #[test]
     fn route_uses_profile_prefix_unless_default_or_dedicated() {

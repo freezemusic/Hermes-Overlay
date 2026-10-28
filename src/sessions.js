@@ -920,20 +920,18 @@ function afterAnchor(main, index) {
 
 function placeSidePairs(main, pairs) {
   const slots = main.map(() => []);
-  const tail = [];
   for (const pair of pairs) {
     const located = locateAnchor(main, pair.anchor);
     retargetAnchor(pair, main, located);
     const after = afterAnchor(main, located);
-    if (after < 0) tail.push(pair);
-    else slots[after].push(pair);
+    if (after < 0) continue;
+    slots[after].push(pair);
   }
   const out = [];
   for (let i = 0; i < main.length; i += 1) {
     out.push(main[i]);
     for (const pair of slots[i]) out.push(...pair.messages);
   }
-  for (const pair of tail) out.push(...pair.messages);
   return out;
 }
 
@@ -944,7 +942,7 @@ function placeSidePairs(main, pairs) {
  * side question before the main question is the stored order.
  * A different session id shows that session alone. Each side pair is put
  * back after the main reply it followed. A streaming reply anchors to that
- * turn's user message. A missing anchor stays at the end. A better match
+ * turn's user message. A pair whose anchor is gone is dropped. A better match
  * replaces a stale anchor.
  */
 export function reconcileSideQuestion(local, incoming, sessionId, nextSessionId) {

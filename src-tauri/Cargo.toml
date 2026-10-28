@@ -43,4 +43,6 @@ codegen-units = 1
 lto = true
 opt-level = 3
 panic = "abort"
-strip = true
+# Line tables stay in the Windows PDB. Optimisation is unchanged.
+strip = false
+debug = "line-tables-only"

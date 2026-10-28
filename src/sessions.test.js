@@ -450,6 +450,12 @@ test("cron messages already on screen are not appended again", () => {
 test("the panel pins Bot Chat and applies cron on the open transcript", () => {
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   assert.match(main, /payload\.type === "cron"/);
+  assert.match(main, /payload\.type === "sessions"/);
+  assert.match(main, /payload\.reset/);
+  const refresh = main.slice(main.indexOf("function refreshBotChats"), main.indexOf("function armChatRefresh"));
+  assert.match(refresh, /beginBotHistory/);
+  assert.match(refresh, /catchUpSession/);
+  assert.doesNotMatch(refresh, /loadBotHistory|reloadOpenSession/);
   assert.match(main, /orderSessions\(/);
   assert.match(main, /title: "Bot Chat"/);
   assert.match(main, /shellBlocksPreview\(shell\)/);
@@ -845,7 +851,15 @@ test("a side pair stays after the reply it followed", () => {
     { role: "user", text: "S0", command: "btw", anchor: { index: 9, role: "bot", text: "gone" } },
     { role: "bot", text: "Sb0", side: true },
   ], server);
-  assert.deepEqual(missing.map((message) => message.text), ["U1", "B1", "U2", "B2", "S0", "Sb0"]);
+  assert.deepEqual(missing.map((message) => message.text), ["U1", "B1", "U2", "B2"]);
+  const mixed = reconcileSideQuestion([
+    ...server,
+    { role: "user", text: "S0", command: "btw", anchor: { index: 9, role: "bot", text: "gone" } },
+    { role: "bot", text: "Sb0", side: true },
+    { role: "user", text: "S1", command: "btw", anchor: { index: 1, role: "bot", text: "B1" } },
+    { role: "bot", text: "Sb1", side: true },
+  ], server);
+  assert.deepEqual(mixed.map((message) => message.text), ["U1", "B1", "S1", "Sb1", "U2", "B2"]);
 });
 
 test("a side question after a stopped turn stays on the reply that was streaming", () => {

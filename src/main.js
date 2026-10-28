@@ -5562,20 +5562,7 @@ function refreshBotChats() {
       beginBotHistory(bot.id)?.catch((err) => {
         if (gatewayDown(String(err))) noteGatewayDown();
       });
-      continue;
     }
-    const token = state.reconnectToken;
-    const panelOpen = shell?.dataset.state === "panel" && !shell.classList.contains("is-collapsing");
-    const reload = panelOpen && thread.sessionExplicit && thread.sessionId
-      ? reloadOpenSession(bot.id, token, { quiet: true })
-      : loadBotHistory(bot.id, token, { quiet: true });
-    const job = reload.catch((err) => {
-      if (gatewayDown(String(err))) noteGatewayDown();
-      return false;
-    }).finally(() => {
-      if (thread.historyPromise === job) thread.historyPromise = null;
-    });
-    thread.historyPromise = job;
   }
 }
 
@@ -6592,11 +6579,42 @@ function shellBlocksPreview(shell) {
   });
 }
 
+function deliverSessions(id, payload) {
+  const thread = threadFor(id);
+  const sessions = stampKeptTitles(payload?.sessions || [], thread.keptTitles);
+  thread.sessions = sessions;
+  paintSessionSelect(id);
+  const nextId = String(payload?.session_id || "");
+  if (
+    !thread.loaded
+    || thread.sessionExplicit
+    || state.busy.has(id)
+    || !thread.sessionId
+    || !nextId
+    || nextId === thread.sessionId
+  ) return;
+  const token = state.reconnectToken;
+  void loadBotHistory(id, token, { quiet: true }).catch((err) => {
+    if (gatewayDown(String(err))) noteGatewayDown();
+  });
+}
+
 function deliverCron(id, payload) {
   const sessionId = String(payload?.session_id || "").trim();
   const incoming = presentTranscript(payload?.messages);
   if (!id || !sessionId || !incoming.length) return;
   const thread = threadFor(id);
+  if (payload.reset) {
+    const viewing = thread.sessionId === sessionId;
+    if (viewing) {
+      thread.messages = reconcileSideQuestion(thread.messages, incoming, thread.sessionId, sessionId);
+      if (panelFor(id)) renderChat(id);
+    } else {
+      const parked = thread.bySession.get(sessionId) || [];
+      thread.bySession.set(sessionId, reconcileSideQuestion(parked, incoming, sessionId, sessionId));
+    }
+    return;
+  }
   const viewing = thread.sessionId === sessionId;
   const existing = viewing ? thread.messages : thread.bySession.get(sessionId) || [];
   const { fresh, settled } = unseenMessages(existing, incoming);
@@ -7072,6 +7090,10 @@ function handleHermes(payload) {
   const id = payload.profile;
   if (payload.type === "cron") {
     deliverCron(id, payload);
+    return;
+  }
+  if (payload.type === "sessions") {
+    deliverSessions(id, payload);
     return;
   }
   if (payload.side) {

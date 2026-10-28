@@ -113,9 +113,14 @@ struct SessionPin {
     anchor: f64,
 }
 
-struct WatchedChat {
-    session_id: String,
+struct WatchedRow {
+    stamp: hermes::ChatStamp,
     messages: Vec<hermes::UiMessage>,
+}
+
+struct WatchedChat {
+    fingerprint: String,
+    rows: HashMap<String, WatchedRow>,
 }
 
 #[derive(Clone)]
@@ -338,9 +343,16 @@ fn profile_key(profile: &str) -> Result<String, String> {
     }
 }
 
-struct WatchHit {
+struct WatchNote {
     session_id: String,
     messages: Vec<hermes::UiMessage>,
+    reset: bool,
+}
+
+struct WatchReport {
+    notes: Vec<WatchNote>,
+    sessions: Option<Vec<SessionChoice>>,
+    resolved_id: String,
 }
 
 struct WatchBusy(Arc<AtomicBool>);
@@ -383,34 +395,75 @@ async fn poll_bot_chats(app: &AppHandle) {
     };
     let http = state.http.clone();
     let watched = Arc::clone(&state.bot_chats);
-    drop(state);
-    let targets: Vec<(String, String, String)> = cfg
+    let targets: Vec<(String, String, String, SessionPin)> = cfg
         .bots
         .iter()
         .filter(|bot| bot.enabled)
         .filter_map(|bot| {
             let key = profile_key(&bot.profile).ok()?;
             let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-            Some((bot.profile.clone(), root, key))
+            let pin = load_pin(app, &state, &bot.profile);
+            Some((bot.profile.clone(), root, key, pin))
         })
         .collect();
-    for (profile, root, key) in targets {
-        let Ok(hit) = watch_profile(&http, &watched, &profile, &root, &key).await else {
+    drop(state);
+    for (profile, root, key, pin) in targets {
+        let Ok(report) = watch_profile(&http, &watched, &profile, &root, &key, &pin).await else {
             continue;
         };
-        if hit.messages.is_empty() {
-            continue;
+        if let Some(sessions) = report.sessions {
+            emit(
+                app,
+                serde_json::json!({
+                    "type": "sessions",
+                    "profile": profile,
+                    "session_id": report.resolved_id,
+                    "sessions": sessions,
+                }),
+            );
         }
-        emit(
-            app,
-            serde_json::json!({
-                "type": "cron",
-                "profile": profile,
-                "session_id": hit.session_id,
-                "messages": hit.messages,
-            }),
-        );
+        for note in report.notes {
+            if note.messages.is_empty() {
+                continue;
+            }
+            emit(
+                app,
+                serde_json::json!({
+                    "type": "cron",
+                    "profile": profile,
+                    "session_id": note.session_id,
+                    "messages": note.messages,
+                    "reset": note.reset,
+                }),
+            );
+        }
     }
+}
+
+fn remember_watched(
+    watched: &Arc<Mutex<HashMap<String, WatchedChat>>>,
+    profile: &str,
+    session_id: &str,
+    messages: &[hermes::UiMessage],
+    sessions: &[hermes::SessionSummary],
+) {
+    let Some(session) = sessions.iter().find(|session| session.id == session_id) else {
+        return;
+    };
+    let stamp = hermes::ChatStamp::from_session(session);
+    let mut guard = watched.lock().unwrap_or_else(|err| err.into_inner());
+    let chat = guard.entry(profile.to_string()).or_insert_with(|| WatchedChat {
+        fingerprint: String::new(),
+        rows: HashMap::new(),
+    });
+    chat.fingerprint = hermes::session_list_fingerprint(sessions);
+    chat.rows.insert(
+        session_id.to_string(),
+        WatchedRow {
+            stamp,
+            messages: messages.to_vec(),
+        },
+    );
 }
 
 async fn watch_profile(
@@ -419,39 +472,122 @@ async fn watch_profile(
     profile: &str,
     root: &str,
     key: &str,
-) -> Result<WatchHit, HermesError> {
+    pin: &SessionPin,
+) -> Result<WatchReport, HermesError> {
     let sessions = hermes::list_sessions_for_bot_chat(http, root, key).await?;
-    let Some(session_id) = hermes::canonical_bot_chat(&sessions).map(|session| session.id.clone())
-    else {
-        return Ok(WatchHit {
-            session_id: String::new(),
-            messages: Vec::new(),
-        });
+    let fingerprint = hermes::session_list_fingerprint(&sessions);
+    let canonical = hermes::canonical_bot_chat(&sessions).map(|session| session.id.clone());
+    let resolved = hermes::session_for_startup(&sessions, &pin.id, pin.explicit, pin.anchor)
+        .map(|session| session.id);
+    let mut ids: Vec<String> = Vec::new();
+    if let Some(id) = canonical.clone() {
+        ids.push(id);
+    }
+    if let Some(id) = resolved.clone() {
+        if !ids.iter().any(|have| have == &id) {
+            ids.push(id);
+        }
+    }
+    let (list_same, jobs) = {
+        let guard = watched.lock().unwrap_or_else(|err| err.into_inner());
+        let chat = guard.get(profile);
+        let list_same = chat.is_some_and(|chat| chat.fingerprint == fingerprint);
+        let mut jobs = Vec::new();
+        for id in &ids {
+            let Some(session) = sessions.iter().find(|session| &session.id == id) else {
+                continue;
+            };
+            let next = hermes::ChatStamp::from_session(session);
+            let prev = chat.and_then(|chat| chat.rows.get(id));
+            let plan = hermes::message_fetch(prev.map(|row| &row.stamp), &next);
+            let stored = match &plan {
+                hermes::MessageFetch::Skip => Vec::new(),
+                _ => prev.map(|row| row.messages.clone()).unwrap_or_default(),
+            };
+            jobs.push((id.clone(), next, plan, stored));
+        }
+        (list_same, jobs)
     };
-    let messages = hermes::fetch_messages(http, root, key, &session_id).await?;
-    let fresh = {
+    let mut prepared = Vec::new();
+    for (id, next, plan, stored) in jobs {
+        match plan {
+            hermes::MessageFetch::Skip => prepared.push((id, next, None)),
+            hermes::MessageFetch::Tail { from, to } => {
+                let mut fetched = Vec::new();
+                let mut at = from;
+                let mut replaced = false;
+                for (offset, limit) in hermes::tail_windows(from, to) {
+                    let page = hermes::fetch_message_page(http, root, key, &id, offset, limit).await?;
+                    if page.returned == 0 {
+                        fetched = hermes::fetch_messages(http, root, key, &id).await?;
+                        replaced = true;
+                        at = to;
+                        break;
+                    }
+                    fetched.extend(page.messages);
+                    at += page.returned;
+                }
+                let stamp = hermes::ChatStamp {
+                    message_count: Some(at),
+                    ..next
+                };
+                let (messages, emit, reset) = hermes::apply_watch_fetch(&stored, &fetched, replaced);
+                prepared.push((id, stamp, Some((messages, emit, reset))));
+            }
+            hermes::MessageFetch::Full => {
+                let fetched = hermes::fetch_messages(http, root, key, &id).await?;
+                let (messages, emit, reset) = hermes::apply_watch_fetch(&stored, &fetched, true);
+                prepared.push((id, next, Some((messages, emit, reset))));
+            }
+        }
+    }
+    let mut notes = Vec::new();
+    {
         let mut guard = watched.lock().unwrap_or_else(|err| err.into_inner());
-        let fresh = match guard.get(profile) {
-            Some(prev) if prev.session_id == session_id => {
-                match hermes::fresh_messages(&prev.messages, &messages) {
-                    Some(suffix) => suffix.to_vec(),
-                    None => Vec::new(),
+        let chat = guard.entry(profile.to_string()).or_insert_with(|| WatchedChat {
+            fingerprint: String::new(),
+            rows: HashMap::new(),
+        });
+        chat.fingerprint = fingerprint;
+        for (id, stamp, fetched) in prepared {
+            match fetched {
+                None => {
+                    let row = chat.rows.entry(id).or_insert_with(|| WatchedRow {
+                        stamp: stamp.clone(),
+                        messages: Vec::new(),
+                    });
+                    row.stamp = stamp;
+                }
+                Some((messages, emit, reset)) => {
+                    if let Some(existing) = chat.rows.get(&id) {
+                        let existing_count = existing.stamp.message_count.unwrap_or(0);
+                        let our_count = stamp.message_count.unwrap_or(0);
+                        if existing_count >= our_count && existing.messages.len() >= messages.len() {
+                            continue;
+                        }
+                    }
+                    if !emit.is_empty() {
+                        notes.push(WatchNote {
+                            session_id: id.clone(),
+                            messages: emit,
+                            reset,
+                        });
+                    }
+                    chat.rows.insert(id, WatchedRow { stamp, messages });
                 }
             }
-            _ => Vec::new(),
-        };
-        guard.insert(
-            profile.to_string(),
-            WatchedChat {
-                session_id: session_id.clone(),
-                messages,
-            },
-        );
-        fresh
+        }
+        chat.rows.retain(|id, _| ids.iter().any(|keep| keep == id));
+    }
+    let sessions_out = if list_same {
+        None
+    } else {
+        Some(session_choices(&sessions, resolved.as_deref().unwrap_or("")))
     };
-    Ok(WatchHit {
-        session_id,
-        messages: fresh,
+    Ok(WatchReport {
+        notes,
+        sessions: sessions_out,
+        resolved_id: resolved.unwrap_or_default(),
     })
 }
 
@@ -1439,6 +1575,9 @@ async fn open_bot(
                     stored_on_server,
                 );
             }
+            if !session_id.is_empty() {
+                remember_watched(&state.bot_chats, &profile, &session_id, &messages, &sessions);
+            }
             if !quiet {
                 emit_status(&app, &profile, "idle", "閒置");
             }
@@ -1471,6 +1610,7 @@ async fn open_explicit_session(
     http: &reqwest::Client,
     sessions: &std::sync::Mutex<HashMap<String, SessionPin>>,
     config_write: &std::sync::Mutex<()>,
+    watched: &Arc<Mutex<HashMap<String, WatchedChat>>>,
     profile: &str,
     root: &str,
     key: &str,
@@ -1499,6 +1639,7 @@ async fn open_explicit_session(
     let messages = hermes::fetch_messages(http, root, key, &session_id)
         .await
         .map_err(|err| explain(&err))?;
+    remember_watched(watched, profile, &session_id, &messages, &listed);
     persist_pin(
         app,
         sessions,
@@ -1540,6 +1681,7 @@ async fn select_session(
         &state.http,
         &state.sessions,
         &state.config_write,
+        &state.bot_chats,
         &profile,
         &root,
         &key,
@@ -1663,8 +1805,13 @@ async fn note_landed_session(
         http, root, key, posted, &next, &old_title, &new_title, &after,
     )
     .await;
+    let watched = app.try_state::<AppState>().map(|state| Arc::clone(&state.bot_chats));
+    let Some(watched) = watched else {
+        emit_session_offer(app, profile, &next, kept.as_deref().unwrap_or(""));
+        return;
+    };
     match open_explicit_session(
-        app, http, sessions, config_write, profile, root, key, &next,
+        app, http, sessions, config_write, &watched, profile, root, key, &next,
     )
     .await
     {
@@ -3523,6 +3670,14 @@ mod tests {
         let open = src.find("async fn open_explicit_session").expect("open");
         let open_body = &src[open..start];
         assert!(open_body.contains("fetch_messages"));
+        assert!(open_body.contains("remember_watched"));
+        let watch = src[src.find("async fn watch_profile").expect("watch")..src.find("fn session_map").expect("map")].to_string();
+        assert!(watch.contains("message_fetch"));
+        assert!(watch.contains("fetch_message_page"));
+        assert!(watch.contains("tail_windows"));
+        let plan = watch.find("message_fetch").expect("plan");
+        let page = watch.find("fetch_message_page").expect("page");
+        assert!(plan < page);
         assert!(open_body.contains("persist_pin"));
         assert!(open_body.contains("explicit: true"));
         assert!(!open_body.contains("store_show_bot_names"));
