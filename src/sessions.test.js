@@ -1197,7 +1197,8 @@ test("a cancelled turn stays through a server replace until that user line is st
   const mainSource = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const sessionsSource = readFileSync(new URL("./sessions.js", import.meta.url), "utf8");
   const watched = sessionsSource.slice(sessionsSource.indexOf("export function finishWatchedRows"), sessionsSource.indexOf("export function unseenMessages"));
-  assert.match(watched, /unseenMessages\(settled\.next, rows\)\.fresh/);
+  assert.match(watched, /unseenMessages\(settled\.next, rows\)/);
+  assert.match(watched, /replaceOwnTurn/);
   assert.doesNotMatch(watched, /prior\.concat\(rows\)/);
   const doneHandler = mainSource.slice(mainSource.indexOf('payload.type === "done"'), mainSource.indexOf('payload.type === "error"'));
   assert.match(doneHandler, /thread\.queueSettled = true/);
@@ -1207,6 +1208,49 @@ test("a cancelled turn stays through a server replace until that user line is st
   assert.match(noted, /!thread\.queueSettled/);
   const send = mainSource.slice(mainSource.indexOf("async function sendActive"), mainSource.indexOf("function botsFromSettings"));
   assert.match(send, /retireStoppedTurn/);
+});
+
+test("a split clarify reply is replaced by the server turn", () => {
+  const local = [
+    { role: "user", text: "older" },
+    { role: "bot", text: "old reply" },
+    { role: "user", text: "CLSINGLE please ask" },
+    { role: "bot", text: "Thinking about CLSINGLE." },
+    { role: "clarify", promptId: "p1", status: "answered", question: "Pick" },
+    { role: "bot", text: "mock: clarify answer=\"Rust\"" },
+  ];
+  const tail = [
+    { role: "user", text: "CLSINGLE please ask" },
+    { role: "bot", text: "Thinking about CLSINGLE. mock: clarify answer=\"Rust\"" },
+  ];
+  const once = finishWatchedRows(local, tail, false);
+  assert.equal(once.filter((message) => message.text === "CLSINGLE please ask").length, 1);
+  assert.equal(once.filter((message) => message.role === "bot" && message.text.includes("Thinking about CLSINGLE")).length, 1);
+  assert.equal(once.some((message) => message.text === "Thinking about CLSINGLE."), false);
+  assert.equal(once.some((message) => message.text === "old reply"), true);
+  assert.equal(once.some((message) => message.role === "clarify"), false);
+  const hermes = finishWatchedRows([
+    { role: "user", text: "Q" },
+    { role: "bot", text: "Thinking about Q." },
+    { role: "clarify", promptId: "p", status: "timeout", text: "Which?" },
+    { role: "bot", text: "The answer is Rust." },
+  ], [
+    { role: "bot", text: "Thinking about Q." },
+    { role: "tool-run", text: "用咗 1 個工具 · clarify", tools: [{ name: "clarify", tool_call_id: "c9" }] },
+    { role: "bot", text: "The answer is Rust." },
+  ], false);
+  assert.deepEqual(hermes.map((message) => message.role), ["user", "bot", "tool-run", "bot", "clarify"]);
+  assert.equal(hermes.filter((message) => message.role === "user").length, 1);
+  assert.equal(hermes.find((message) => message.role === "clarify").status, "timeout");
+  const other = finishWatchedRows([
+    { role: "user", text: "Q" },
+    { role: "bot", text: "Thinking about Q." },
+  ], [
+    { role: "user", text: "someone else" },
+    { role: "bot", text: "a different reply" },
+  ], false);
+  assert.equal(other.filter((message) => message.role === "user").length, 2);
+  assert.equal(other.some((message) => message.text === "Thinking about Q."), true);
 });
 
 test("a stop catch-up keeps the cancelled user line and the stop note", () => {

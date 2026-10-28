@@ -1319,7 +1319,67 @@ export function releaseHeldWatch(view, held) {
   return finishWatchedRows(prior, prefix.concat(body), true);
 }
 
-/** Tail append, or a full replace, with the same local rows a history reload kept. */
+function sharesTurnText(localBots, serverBots) {
+  for (const local of localBots) {
+    const text = String(local || "").trim();
+    if (text.length < 8) continue;
+    for (const server of serverBots) {
+      const stored = String(server || "").trim();
+      if (!stored) continue;
+      if (stored === text || stored.startsWith(text) || text.startsWith(stored) || stored.includes(text)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A just-finished clarify turn can be two local bot bubbles and one server row,
+ * or assistant + tool + assistant. When the tail does not overlap the screen end
+ * but it is that turn, the server rows replace the local ones.
+ */
+function replaceOwnTurn(prior, incoming) {
+  const list = prior || [];
+  let userIndex = -1;
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (list[index]?.role === "user" && !isSideMessage(list[index])) {
+      userIndex = index;
+      break;
+    }
+  }
+  if (userIndex < 0) return null;
+  const user = list[userIndex];
+  const userText = String(user.text || "").trim();
+  if (!userText) return null;
+  const span = list.slice(userIndex);
+  const localBots = span.filter((message) => message?.role === "bot" && !isSideMessage(message)).map((message) => String(message.text || ""));
+  if (!localBots.length) return null;
+  const rows = (incoming || []).filter((message) => message && message.role);
+  const tailUser = rows.findIndex((message) => message.role === "user" && String(message.text || "").trim() === userText);
+  const serverTurn = tailUser >= 0 ? rows.slice(tailUser) : rows;
+  const serverBots = serverTurn.filter((message) => message.role === "bot" || message.role === "failure").map((message) => String(message.text || ""));
+  const hasTool = serverTurn.some(isToolRow);
+  if (tailUser < 0 && !hasTool) return null;
+  if (!sharesTurnText(localBots, serverBots)) return null;
+  if (!serverBots.length && !hasTool) return null;
+  const prefix = list.slice(0, userIndex);
+  const lead = tailUser > 0 ? rows.slice(0, tailUser) : [];
+  const leadFresh = lead.filter((row) => !prefix.some((have) => have?.role === row.role && have?.text === row.text));
+  const head = tailUser >= 0 ? [] : [user];
+  const kept = span.filter((message) => {
+    if (!message || message === user) return false;
+    if (message.role === "notice") return true;
+    if (message.role === "commentary" && message.keptLocal) return true;
+    return cardStillOpen(message);
+  });
+  const body = prefix.concat(leadFresh, head, serverTurn.map((message) => (
+    message?.role === "tool-run"
+      ? { ...message, tools: (message.tools || []).map((tool) => ({ ...tool })) }
+      : { ...message }
+  )));
+  const placed = reconcileSideQuestion(list, body);
+  const extras = kept.filter((message) => !placed.includes(message));
+  return placed.concat(extras);
+}
 export function finishWatchedRows(previous, incoming, reset = false) {
   const prior = previous || [];
   const rows = incoming || [];
@@ -1328,8 +1388,12 @@ export function finishWatchedRows(previous, incoming, reset = false) {
     next = reconcileSideQuestion(prior, rows);
   } else {
     const settled = settleKeptUser(prior, rows);
-    const fresh = unseenMessages(settled.next, rows).fresh.filter((row) => !(row?.role === "user" && settled.replaced.has(row.text)));
-    next = settled.next.concat(fresh);
+    const seen = unseenMessages(settled.next, rows);
+    const incomingRows = rows.filter((message) => message && message.role);
+    const noOverlap = incomingRows.length > 0 && seen.fresh.length === incomingRows.length;
+    const replaced = noOverlap ? replaceOwnTurn(settled.next, rows) : null;
+    const fresh = seen.fresh.filter((row) => !(row?.role === "user" && settled.replaced.has(row.text)));
+    next = replaced || settled.next.concat(fresh);
   }
   const cleaned = dropSettledHistoryNotices(dropSettledLocalRows(next));
   const withKept = keepStoppedRows(prior, cleaned);
