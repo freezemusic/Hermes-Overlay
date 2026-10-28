@@ -1047,7 +1047,8 @@ pub fn merge_sessions(
 fn wait_kind(name: &str) -> Option<&'static str> {
     match name {
         "clarify" => Some("clarify"),
-        "approval" => Some("approval"),
+        // Hermes has no approval tool. A pending dangerous-command approval is a
+        // `terminal` call with no result yet, the same shape as a running command.
         _ => None,
     }
 }
@@ -1101,23 +1102,22 @@ fn clarify_subject(args: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn approval_subject(args: &Value) -> String {
-    for key in ["command", "question", "description"] {
-        if let Some(text) = args.get(key).and_then(Value::as_str) {
-            let text = text.trim();
-            if !text.is_empty() {
-                return text.to_string();
-            }
-        }
+/// Hermes 0.22.5 `resolve_clarify_timeout`: explicit `clarify.timeout`, else
+/// `agent.clarify_timeout`, else 3600. `<= 0` means unlimited. The transcript
+/// does not carry the profile config, so a missing arg uses that 3600 default.
+fn notice_timeout(args: &Value) -> Option<u64> {
+    let Some(raw) = args.get("timeout_s").or_else(|| args.get("timeout")) else {
+        return Some(3600);
+    };
+    let seconds = raw
+        .as_i64()
+        .or_else(|| raw.as_u64().and_then(|value| i64::try_from(value).ok()))
+        .or_else(|| raw.as_f64().filter(|value| value.is_finite()).map(|value| value as i64));
+    match seconds {
+        Some(value) if value <= 0 => None,
+        Some(value) => u64::try_from(value).ok(),
+        None => Some(3600),
     }
-    String::new()
-}
-
-fn notice_timeout(args: &Value) -> u64 {
-    json_count(args, "timeout_s")
-        .or_else(|| json_count(args, "timeout"))
-        .filter(|seconds| *seconds > 0)
-        .unwrap_or(600)
 }
 
 fn notice_asked_at(item: &Value) -> i64 {
@@ -1177,19 +1177,17 @@ fn push_wait_notice(out: &mut Vec<UiMessage>, item: &Value, id: &str, kind: &str
     if settled.contains(&key) {
         return;
     }
-    let subject = if kind == "approval" {
-        approval_subject(args)
-    } else {
-        clarify_subject(args)
-    };
+    let subject = clarify_subject(args);
     if subject.is_empty() {
         return;
     }
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "text": subject,
-        "timeout_s": notice_timeout(args),
         "asked_at": notice_asked_at(item),
     });
+    if let Some(seconds) = notice_timeout(args) {
+        payload["timeout_s"] = serde_json::json!(seconds);
+    }
     out.push(UiMessage {
         role: "notice".into(),
         text: payload.to_string(),
@@ -4356,6 +4354,10 @@ mod tests {
                     "function": {"name": "clarify", "arguments": "{\"questions\":[{\"question\":\"下一組殘餘拆邊組？\"}]}"}
                 }]},
                 {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "t1",
+                    "function": {"name": "terminal", "arguments": "{\"command\":\"rm -rf tmp\"}"}
+                }]},
+                {"role": "assistant", "content": "", "tool_calls": [{
                     "id": "a1",
                     "function": {"name": "approval", "arguments": "{\"command\":\"rm -rf tmp\"}"}
                 }]}
@@ -4366,10 +4368,24 @@ mod tests {
         assert_eq!(shown[1].role, "notice");
         assert_eq!(shown[1].tool_name, "clarify");
         assert!(shown[1].text.contains("下一組殘餘拆邊組？"));
-        assert!(shown[1].text.contains("\"timeout_s\":600"));
-        assert_eq!(shown[2].role, "notice");
-        assert_eq!(shown[2].tool_name, "approval");
-        assert!(shown[2].text.contains("rm -rf tmp"));
+        assert!(shown[1].text.contains("\"timeout_s\":3600"));
+        assert!(shown.iter().all(|message| message.tool_name != "approval"));
+        assert_eq!(shown.len(), 2);
+        let custom = json!({
+            "data": [{"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c2",
+                "function": {"name": "clarify", "arguments": "{\"question\":\"邊隻？\",\"timeout_s\":120}"}
+            }]}]
+        });
+        let timed = normalize_messages(&custom);
+        assert!(timed[0].text.contains("\"timeout_s\":120"));
+        let unlimited = json!({
+            "data": [{"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c3",
+                "function": {"name": "clarify", "arguments": "{\"question\":\"邊隻？\",\"timeout\":0}"}
+            }]}]
+        });
+        assert!(!normalize_messages(&unlimited)[0].text.contains("timeout_s"));
         let answered = json!({
             "data": [
                 {"role": "assistant", "content": "", "tool_calls": [{

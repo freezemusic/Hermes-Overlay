@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, historyNoticeCopy, historyNoticePending, dropSettledHistoryNotices, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, historyNoticeCopy, historyNoticePending, dropSettledHistoryNotices, stopCatchUpMode, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -4651,6 +4651,8 @@ function syncChatInPlace(chat, thread, id, resting = false) {
       paintApprovalBubble(node, message, id);
     } else if (message.role === "clarify") {
       paintClarifyBubble(node, message, id);
+    } else if (message.role === "notice") {
+      paintHistoryNotice(node, message, id);
     } else if (node.textContent !== (message.text || "")) {
       node.textContent = message.text || "";
     }
@@ -5023,6 +5025,41 @@ function toolRunHooks(id) {
   };
 }
 
+function paintHistoryNotice(node, message, id) {
+  const bot = state.bots.find((item) => item.id === id);
+  const copy = historyNoticeCopy(message, bot?.name);
+  const want = message.tool_name === "approval" ? "bubble approval" : "bubble clarify";
+  if (node.className !== want) node.className = want;
+  let title = node.querySelector(".history-notice-title");
+  let detail = node.querySelector(".history-notice-detail");
+  if (!title || !detail) {
+    title = document.createElement("p");
+    title.className = "history-notice-title";
+    detail = document.createElement("p");
+    detail.className = "history-notice-detail";
+    node.replaceChildren(title, detail);
+  }
+  if (title.textContent !== copy.title) title.textContent = copy.title;
+  if (detail.textContent !== copy.detail) detail.textContent = copy.detail;
+}
+
+function tickVisibleNotices() {
+  for (const bot of state.bots) {
+    const shell = shellFor(bot.id);
+    const open = shell && (shell.dataset.state === "panel" || shell.dataset.visual === "panel");
+    if (!open) continue;
+    const thread = threadFor(bot.id);
+    if (!thread.messages.some(historyNoticePending)) continue;
+    const chat = chatOf(bot.id);
+    if (!chat) continue;
+    thread.messages.forEach((message, index) => {
+      if (!historyNoticePending(message)) return;
+      const node = chat.children[index];
+      if (node) paintHistoryNotice(node, message, bot.id);
+    });
+  }
+}
+
 function bubbleEl(m, id) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${m.role === "user" ? "user" : m.role === "bot" ? "bot" : m.role}`;
@@ -5039,16 +5076,7 @@ function bubbleEl(m, id) {
     return bubble;
   }
   if (m.role === "notice") {
-    const bot = state.bots.find((item) => item.id === id);
-    const copy = historyNoticeCopy(m, bot?.name);
-    bubble.className = m.tool_name === "approval" ? "bubble approval" : "bubble clarify";
-    const title = document.createElement("p");
-    title.className = "history-notice-title";
-    title.textContent = copy.title;
-    const detail = document.createElement("p");
-    detail.className = "history-notice-detail";
-    detail.textContent = copy.detail;
-    bubble.replaceChildren(title, detail);
+    paintHistoryNotice(bubble, m, id);
     return bubble;
   }
   if (m.role === "bot") paintBotBubble(bubble, m.text);
@@ -5570,6 +5598,10 @@ function refreshBotChats() {
       paintSessionSelect(bot.id);
       continue;
     }
+    if (thread.stopping) {
+      void catchUpSession(bot.id, { append: true, stopped: true, stopping: true });
+      continue;
+    }
     if (thread.watchReply) {
       void catchUpSession(bot.id);
       continue;
@@ -5587,6 +5619,8 @@ function refreshBotChats() {
 function armChatRefresh() {
   window.clearInterval(state.chatRefresh);
   state.chatRefresh = window.setInterval(refreshBotChats, 4000);
+  window.clearInterval(armChatRefresh.noticeClock);
+  armChatRefresh.noticeClock = window.setInterval(tickVisibleNotices, 30000);
 }
 
 const pendingHistory = new Map();
@@ -6654,6 +6688,7 @@ function deliverCron(id, payload) {
     thread.heldWatch = null;
     const next = releaseHeldWatch(existing, held);
     applyReleasedWatch(id, thread, sessionId, existing, next);
+    if (viewing) paintApprovalBadge(id);
     const fresh = next.filter((message) => !existing.some((row) => row.role === message.role && row.text === message.text && !row.live));
     if (!fresh.length) return;
     if (shellBlocksPreview(shellFor(id))) return;
@@ -6668,6 +6703,7 @@ function deliverCron(id, payload) {
   if (payload.reset) {
     const next = finishWatchedRows(existing, incoming, true);
     applyReleasedWatch(id, thread, sessionId, existing, next);
+    if (viewing) paintApprovalBadge(id);
     return;
   }
   const { fresh, settled } = unseenMessages(existing, incoming);
@@ -6689,6 +6725,7 @@ function deliverCron(id, payload) {
   } else if (cleaned) {
     thread.bySession.set(sessionId, next);
   }
+  if (viewing && cleaned) paintApprovalBadge(id);
   if (!fresh.length) return;
   if (shellBlocksPreview(shellFor(id))) return;
   const text = previewLine(fresh);
@@ -8326,6 +8363,7 @@ function noteStopped(id, { keepBusy = false } = {}) {
     clearRunSession(thread);
     setBotStatus(id, "已停止", "idle");
   }
+  thread.stopping = false;
   if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
 }
 
@@ -8378,16 +8416,23 @@ function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
   return next.some((message) => message.role === "bot" || message.role === "failure");
 }
 
-async function catchUpSession(id, { append = false, stopped = false } = {}) {
+async function catchUpSession(id, requested = {}) {
   if (state.mode !== "hermes" || !inTauri() || !id) return false;
+  const thread = threadFor(id);
+  const serialAtStart = thread.stopSerial || 0;
   const token = state.reconnectToken;
+  const modeFor = () => stopCatchUpMode(requested, {
+    serialAtStart,
+    serialNow: thread.stopSerial || 0,
+  });
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const opened = await invoke("open_bot", { profile: id, quiet: true });
     if (token !== state.reconnectToken || state.mode !== "hermes") return false;
-    return mergeCaughtUp(id, opened, { append, stopped });
+    const mode = modeFor();
+    return mergeCaughtUp(id, opened, mode);
   } catch (err) {
-    if (stopped) noteStopped(id);
+    if (modeFor().stopped) noteStopped(id);
     if (gatewayDown(String(err))) noteGatewayDown();
     return false;
   }
@@ -8469,6 +8514,8 @@ async function stopActive(id) {
   const profile = id || state.activeId;
   if (!profile || state.mode !== "hermes" || !inTauri()) return;
   const thread = threadFor(profile);
+  thread.stopping = true;
+  thread.stopSerial = (thread.stopSerial || 0) + 1;
   thread.watchReply = true;
   const posted = streamingRunId(thread);
   try {
@@ -8488,15 +8535,22 @@ async function stopActive(id) {
       if (!stopped) {
         setBotStatus(profile, ended === "failed" ? "回覆失敗" : "閒置", ended === "failed" ? "error" : "idle");
       }
-      void catchUpSession(profile, { append: true, stopped });
+      void catchUpSession(profile, { append: true, stopped }).finally(() => {
+        thread.stopping = false;
+      });
       return;
     }
     if (result === "not_active") {
-      void catchUpSession(profile, { append: true, stopped: true });
+      void catchUpSession(profile, { append: true, stopped: true }).finally(() => {
+        thread.stopping = false;
+      });
       return;
     }
-    void catchUpSession(profile, { append: true, stopped: true });
+    void catchUpSession(profile, { append: true, stopped: true }).finally(() => {
+      thread.stopping = false;
+    });
   } catch {
+    thread.stopping = false;
     showActionError("停止未送到。");
   }
 }

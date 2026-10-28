@@ -1050,7 +1050,16 @@ function cardStillOpen(message) {
   return false;
 }
 
-/** A history clarify/approval the overlay cannot answer. The next result row removes it. */
+/** A refresh that started before stop, or lands while stop is in flight, stays append-only. */
+export function stopCatchUpMode(requested = {}, generation = {}) {
+  const stopWon = !!requested.stopping
+    || !!generation.stopping
+    || (generation.serialNow || 0) !== (generation.serialAtStart || 0);
+  if (stopWon) return { append: true, stopped: true };
+  return { append: !!requested.append, stopped: !!requested.stopped };
+}
+
+/** A history clarify the overlay cannot answer. The next result row removes it. */
 export function historyNoticeCopy(message, botName, nowMs = Date.now()) {
   let payload = {};
   try {

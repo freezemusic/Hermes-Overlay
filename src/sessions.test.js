@@ -50,6 +50,7 @@ import {
   historyNoticeCopy,
   historyNoticePending,
   dropSettledHistoryNotices,
+  stopCatchUpMode,
   writableContinuation,
   refusedSessionIds,
   UNSENT_MARK,
@@ -1024,6 +1025,72 @@ test("an unanswered history clarify or approval is a notice, not a folded tool",
   assert.match(main, /m\.role === "notice"/);
   assert.match(main, /historyNoticePending/);
   assert.doesNotMatch(main.slice(main.indexOf("if (m.role === \"notice\")"), main.indexOf("if (m.role === \"bot\")")), /answerClarify|answerApproval|respond_clarify|respond_approval/);
+});
+
+test("a refresh during stop stays append-only until the stop note is applied", () => {
+  assert.deepEqual(
+    stopCatchUpMode({ stopping: true }, { serialAtStart: 3, serialNow: 3 }),
+    { append: true, stopped: true },
+  );
+  assert.deepEqual(
+    stopCatchUpMode({}, { serialAtStart: 2, serialNow: 3 }),
+    { append: true, stopped: true },
+  );
+  assert.deepEqual(
+    stopCatchUpMode({}, { serialAtStart: 3, serialNow: 3 }),
+    { append: false, stopped: false },
+  );
+  assert.deepEqual(
+    stopCatchUpMode({ append: true, stopped: false }, { serialAtStart: 3, serialNow: 3 }),
+    { append: true, stopped: false },
+  );
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const refresh = main.slice(main.indexOf("function refreshBotChats"), main.indexOf("function armChatRefresh"));
+  assert.ok(refresh.indexOf("thread.stopping") < refresh.indexOf("if (thread.watchReply)"));
+  assert.match(refresh, /append: true, stopped: true, stopping: true/);
+  const stop = main.slice(main.indexOf("async function stopActive"), main.indexOf("function measureInputText"));
+  assert.ok(stop.indexOf("thread.stopping = true") < stop.indexOf("stop_chat"));
+  assert.match(stop, /thread\.stopSerial/);
+  assert.doesNotMatch(stop, /noteStopped/);
+  const noted = main.slice(main.indexOf("function noteStopped"), main.indexOf("function mergeCaughtUp"));
+  assert.match(noted, /thread\.stopping = false/);
+});
+
+test("a history clarify countdown follows the Hermes default and keeps moving", () => {
+  const asked = 1_000;
+  const hour = historyNoticeCopy({
+    role: "notice",
+    tool_name: "clarify",
+    text: JSON.stringify({ text: "邊隻色？", timeout_s: 3600, asked_at: asked }),
+  }, "文案助手", asked * 1000);
+  assert.match(hour.detail, /60 分鐘後逾時/);
+  const later = historyNoticeCopy({
+    role: "notice",
+    tool_name: "clarify",
+    text: JSON.stringify({ text: "邊隻色？", timeout_s: 3600, asked_at: asked }),
+  }, "文案助手", (asked + 31 * 60) * 1000);
+  assert.match(later.detail, /29 分鐘後逾時/);
+  const unlimited = historyNoticeCopy({
+    role: "notice",
+    tool_name: "clarify",
+    text: JSON.stringify({ text: "邊隻色？", asked_at: asked }),
+  }, "文案助手", asked * 1000);
+  assert.equal(unlimited.detail, "呢度答唔到。");
+});
+
+test("a notice stays a card in place, and a result-only tail repaints the closed orb", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const sync = main.slice(main.indexOf("function syncChatInPlace"), main.indexOf("function mountChat"));
+  const noticeAt = sync.indexOf('message.role === "notice"');
+  assert.ok(noticeAt > sync.indexOf('message.role === "clarify"'));
+  const noticeBranch = sync.slice(noticeAt, sync.indexOf("node.textContent"));
+  assert.match(noticeBranch, /paintHistoryNotice/);
+  assert.doesNotMatch(noticeBranch, /textContent = message\.text/);
+  const cron = main.slice(main.indexOf("function deliverCron"), main.indexOf("function bannerSticky"));
+  const previewAt = cron.lastIndexOf("if (!text) return");
+  assert.ok(previewAt > 0);
+  assert.ok(cron.lastIndexOf("paintApprovalBadge") < previewAt);
+  assert.match(main, /setInterval\(tickVisibleNotices, 30000\)/);
 });
 
 test("a stop catch-up keeps the cancelled user line and the stop note", () => {
