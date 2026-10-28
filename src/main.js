@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -6604,19 +6604,18 @@ function deliverCron(id, payload) {
   const incoming = presentTranscript(payload?.messages);
   if (!id || !sessionId || !incoming.length) return;
   const thread = threadFor(id);
+  const viewing = thread.sessionId === sessionId;
+  const existing = viewing ? thread.messages : thread.bySession.get(sessionId) || [];
   if (payload.reset) {
-    const viewing = thread.sessionId === sessionId;
+    const next = finishWatchedRows(existing, incoming, true);
     if (viewing) {
-      thread.messages = reconcileSideQuestion(thread.messages, incoming, thread.sessionId, sessionId);
+      thread.messages = next;
       if (panelFor(id)) renderChat(id);
     } else {
-      const parked = thread.bySession.get(sessionId) || [];
-      thread.bySession.set(sessionId, reconcileSideQuestion(parked, incoming, sessionId, sessionId));
+      thread.bySession.set(sessionId, next);
     }
     return;
   }
-  const viewing = thread.sessionId === sessionId;
-  const existing = viewing ? thread.messages : thread.bySession.get(sessionId) || [];
   const { fresh, settled } = unseenMessages(existing, incoming);
   if (settled && viewing) {
     const last = [...thread.messages].reverse().find((message) => message.live && message.role === "bot");
@@ -6626,13 +6625,17 @@ function deliverCron(id, payload) {
       if (panelFor(id)) renderChat(id);
     }
   }
-  if (!fresh.length) return;
+  const next = finishWatchedRows(existing, incoming, false);
+  const cleaned = fresh.length > 0 || next.length !== existing.length;
   if (viewing) {
-    for (const message of fresh) appendMessage(id, message);
-  } else {
-    const stored = thread.bySession.get(sessionId) || [];
-    thread.bySession.set(sessionId, stored.concat(fresh.map((message) => ({ ...message }))));
+    if (cleaned) {
+      thread.messages = next;
+      if (panelFor(id)) renderChat(id);
+    }
+  } else if (cleaned) {
+    thread.bySession.set(sessionId, next);
   }
+  if (!fresh.length) return;
   if (shellBlocksPreview(shellFor(id))) return;
   const text = previewLine(fresh);
   if (!text) return;

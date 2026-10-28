@@ -738,7 +738,21 @@ function settledAnchor(mains) {
     }
   }
   const message = mains[at];
-  return { index: at, role: message.role || "", text: String(message.text || "") };
+  return {
+    index: at,
+    role: message.role || "",
+    text: String(message.text || ""),
+    user: anchorUser(mains, at),
+  };
+}
+
+function anchorUser(mains, at) {
+  const message = mains[at];
+  if (message?.role === "user") return String(message.text || "");
+  for (let i = at - 1; i >= 0; i -= 1) {
+    if (mains[i]?.role === "user") return String(mains[i].text || "");
+  }
+  return "";
 }
 
 /** A stored anchor that still points at a streaming reply moves to that turn's user message. */
@@ -764,7 +778,7 @@ function releaseStreamingAnchor(mains, anchor) {
   if (liveAt < 0 || settledDist <= liveDist) return anchor;
   for (let i = liveAt - 1; i >= 0; i -= 1) {
     if (mains[i]?.role === "user") {
-      return { index: i, role: "user", text: String(mains[i].text || "") };
+      return { index: i, role: "user", text: String(mains[i].text || ""), user: String(mains[i].text || "") };
     }
   }
   return anchor;
@@ -830,7 +844,12 @@ function sidePairs(list) {
       }
       const recorded = message.anchor;
       const stored = recorded && Number.isInteger(Number(recorded.index))
-        ? { index: Number(recorded.index), role: recorded.role || "", text: String(recorded.text || "") }
+        ? {
+          index: Number(recorded.index),
+          role: recorded.role || "",
+          text: String(recorded.text || ""),
+          user: String(recorded.user || ""),
+        }
         : null;
       const anchor = stored ? releaseStreamingAnchor(mains, stored) : settledAnchor(mains);
       pairs.push({ messages: turn, anchor });
@@ -857,11 +876,19 @@ function relationRank(message, anchor) {
  * recorded index wins, so a cancelled turn the server dropped does not leave
  * the pair on the first earlier prefix. A tie keeps the later row.
  */
+function turnUserText(main, index) {
+  for (let i = index; i >= 0; i -= 1) {
+    if (main[i]?.role === "user" && !isSideMessage(main[i])) return String(main[i].text || "");
+  }
+  return "";
+}
+
 function locateAnchor(main, anchor) {
   if (!anchor || !main?.length) return -1;
   const role = anchor.role || "";
   const want = String(anchor.text || "");
-  const hits = [];
+  const user = String(anchor.user || "");
+  let hits = [];
   for (let i = 0; i < main.length; i += 1) {
     const message = main[i];
     if (!message) continue;
@@ -870,6 +897,7 @@ function locateAnchor(main, anchor) {
     if (text === want) hits.push({ index: i, exact: true });
     else if (textsRelate(text, want)) hits.push({ index: i, exact: false });
   }
+  if (user) hits = hits.filter((hit) => turnUserText(main, hit.index) === user);
   if (!hits.length) return -1;
   const exact = hits.filter((hit) => hit.exact);
   const pool = exact.length ? exact : hits;
@@ -899,6 +927,7 @@ function retargetAnchor(pair, main, located) {
     index: located,
     role: row.role || "",
     text: locatedRank >= 2 ? String(row.text || "") : String(anchor.text || ""),
+    user: String(anchor.user || turnUserText(main, located)),
   };
   head.anchor = next;
   pair.anchor = next;
@@ -920,7 +949,12 @@ function afterAnchor(main, index) {
 
 function placeSidePairs(main, pairs) {
   const slots = main.map(() => []);
+  const head = [];
   for (const pair of pairs) {
+    if (!pair.anchor) {
+      head.push(pair);
+      continue;
+    }
     const located = locateAnchor(main, pair.anchor);
     retargetAnchor(pair, main, located);
     const after = afterAnchor(main, located);
@@ -928,6 +962,7 @@ function placeSidePairs(main, pairs) {
     slots[after].push(pair);
   }
   const out = [];
+  for (const pair of head) out.push(...pair.messages);
   for (let i = 0; i < main.length; i += 1) {
     out.push(main[i]);
     for (const pair of slots[i]) out.push(...pair.messages);
@@ -942,8 +977,8 @@ function placeSidePairs(main, pairs) {
  * side question before the main question is the stored order.
  * A different session id shows that session alone. Each side pair is put
  * back after the main reply it followed. A streaming reply anchors to that
- * turn's user message. A pair whose anchor is gone is dropped. A better match
- * replaces a stale anchor.
+ * turn's user message. A pair with no anchor stays at the top. A recorded
+ * anchor that is gone is dropped. A better match replaces a stale anchor.
  */
 export function reconcileSideQuestion(local, incoming, sessionId, nextSessionId) {
   const have = local || [];
@@ -1004,8 +1039,53 @@ function sameOrGrowth(have, next) {
   return null;
 }
 
+function isLocalChrome(message) {
+  const role = message?.role;
+  return role === "approval" || role === "clarify" || role === "commentary";
+}
+
+function cardStillOpen(message) {
+  if (message?.role === "approval") return message.status === "pending" || message.status === "sending";
+  if (message?.role === "clarify") return ["pending", "sending", "timeout"].includes(message.status);
+  return false;
+}
+
+/** Commentary and answered cards leave with a server refresh. An open card stays. */
+export function dropSettledLocalRows(messages) {
+  return (messages || []).filter((message) => {
+    if (!message) return false;
+    if (message.role === "commentary") return false;
+    if (message.role === "approval" || message.role === "clarify") return cardStillOpen(message);
+    return true;
+  });
+}
+
+function attachOpenCards(previous, next) {
+  const out = (next || []).slice();
+  for (const card of previous || []) {
+    if (!cardStillOpen(card)) continue;
+    const same = out.some((message) => {
+      if (card.role === "approval") return message.role === "approval" && message.requestId === card.requestId;
+      if (card.role === "clarify") return message.role === "clarify" && message.promptId === card.promptId;
+      return false;
+    });
+    if (!same) out.push(card);
+  }
+  return out;
+}
+
+/** Tail append, or a full replace, with the same local rows a history reload kept. */
+export function finishWatchedRows(previous, incoming, reset = false) {
+  const prior = previous || [];
+  const next = reset
+    ? reconcileSideQuestion(prior, incoming || [])
+    : prior.concat(unseenMessages(prior, incoming || []).fresh);
+  const cleaned = dropSettledLocalRows(next);
+  return reset ? attachOpenCards(prior, cleaned) : cleaned;
+}
+
 export function unseenMessages(existing, incoming) {
-  const have = (existing || []).filter((message) => message && !isSideMessage(message));
+  const have = (existing || []).filter((message) => message && !isSideMessage(message) && !isLocalChrome(message));
   const next = (incoming || []).filter((message) => message && message.role);
   let matched = 0;
   let settled = null;

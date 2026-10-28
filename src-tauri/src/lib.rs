@@ -499,19 +499,20 @@ async fn watch_profile(
             };
             let next = hermes::ChatStamp::from_session(session);
             let prev = chat.and_then(|chat| chat.rows.get(id));
-            let plan = hermes::message_fetch(prev.map(|row| &row.stamp), &next);
+            let planned = prev.map(|row| row.stamp.clone());
+            let plan = hermes::message_fetch(planned.as_ref(), &next);
             let stored = match &plan {
                 hermes::MessageFetch::Skip => Vec::new(),
                 _ => prev.map(|row| row.messages.clone()).unwrap_or_default(),
             };
-            jobs.push((id.clone(), next, plan, stored));
+            jobs.push((id.clone(), next, planned, plan, stored));
         }
         (list_same, jobs)
     };
     let mut prepared = Vec::new();
-    for (id, next, plan, stored) in jobs {
+    for (id, next, planned, plan, stored) in jobs {
         match plan {
-            hermes::MessageFetch::Skip => prepared.push((id, next, None)),
+            hermes::MessageFetch::Skip => prepared.push((id, next, planned, None)),
             hermes::MessageFetch::Tail { from, to } => {
                 let mut fetched = Vec::new();
                 let mut at = from;
@@ -519,7 +520,7 @@ async fn watch_profile(
                 for (offset, limit) in hermes::tail_windows(from, to) {
                     let page = hermes::fetch_message_page(http, root, key, &id, offset, limit).await?;
                     if page.returned == 0 {
-                        fetched = hermes::fetch_messages(http, root, key, &id).await?;
+                        fetched = hermes::fetch_counted_messages(http, root, key, &id, Some(to)).await?;
                         replaced = true;
                         at = to;
                         break;
@@ -532,12 +533,12 @@ async fn watch_profile(
                     ..next
                 };
                 let (messages, emit, reset) = hermes::apply_watch_fetch(&stored, &fetched, replaced);
-                prepared.push((id, stamp, Some((messages, emit, reset))));
+                prepared.push((id, stamp, planned, Some((messages, emit, reset))));
             }
             hermes::MessageFetch::Full => {
-                let fetched = hermes::fetch_messages(http, root, key, &id).await?;
+                let fetched = hermes::fetch_counted_messages(http, root, key, &id, next.message_count).await?;
                 let (messages, emit, reset) = hermes::apply_watch_fetch(&stored, &fetched, true);
-                prepared.push((id, next, Some((messages, emit, reset))));
+                prepared.push((id, next, planned, Some((messages, emit, reset))));
             }
         }
     }
@@ -549,7 +550,11 @@ async fn watch_profile(
             rows: HashMap::new(),
         });
         chat.fingerprint = fingerprint;
-        for (id, stamp, fetched) in prepared {
+        for (id, stamp, planned, fetched) in prepared {
+            let current = chat.rows.get(&id).map(|row| &row.stamp);
+            if !hermes::watch_row_unchanged(planned.as_ref(), current) {
+                continue;
+            }
             match fetched {
                 None => {
                     let row = chat.rows.entry(id).or_insert_with(|| WatchedRow {
@@ -559,13 +564,6 @@ async fn watch_profile(
                     row.stamp = stamp;
                 }
                 Some((messages, emit, reset)) => {
-                    if let Some(existing) = chat.rows.get(&id) {
-                        let existing_count = existing.stamp.message_count.unwrap_or(0);
-                        let our_count = stamp.message_count.unwrap_or(0);
-                        if existing_count >= our_count && existing.messages.len() >= messages.len() {
-                            continue;
-                        }
-                    }
                     if !emit.is_empty() {
                         notes.push(WatchNote {
                             session_id: id.clone(),
@@ -3674,6 +3672,9 @@ mod tests {
         let watch = src[src.find("async fn watch_profile").expect("watch")..src.find("fn session_map").expect("map")].to_string();
         assert!(watch.contains("message_fetch"));
         assert!(watch.contains("fetch_message_page"));
+        assert!(watch.contains("fetch_counted_messages"));
+        assert!(watch.contains("watch_row_unchanged"));
+        assert!(!watch.contains("existing_count"));
         assert!(watch.contains("tail_windows"));
         let plan = watch.find("message_fetch").expect("plan");
         let page = watch.find("fetch_message_page").expect("page");

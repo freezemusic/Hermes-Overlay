@@ -716,6 +716,21 @@ pub fn tail_windows(from: u64, to: u64) -> Vec<(u64, u64)> {
     pages
 }
 
+/// Pages that cover a known transcript. Unknown length stays the oldest 500.
+pub fn transcript_windows(count: Option<u64>) -> Vec<(u64, u64)> {
+    match count {
+        Some(0) => Vec::new(),
+        Some(count) => tail_windows(0, count),
+        None => vec![(0, 500)],
+    }
+}
+
+/// The row is still the one this fetch was planned from.
+/// A stamp written while the request was in flight must not be overwritten.
+pub fn watch_row_unchanged(planned: Option<&ChatStamp>, current: Option<&ChatStamp>) -> bool {
+    current == planned
+}
+
 /// Merge a fetched page into the watched transcript.
 /// An empty stored transcript is a baseline: a full download is kept and not emitted.
 pub fn apply_watch_fetch(stored: &[UiMessage], fetched: &[UiMessage], replace: bool) -> (Vec<UiMessage>, Vec<UiMessage>, bool) {
@@ -1655,6 +1670,26 @@ pub async fn fetch_messages(
     Ok(fetch_message_page(http, root, key, session_id, 0, 500)
         .await?
         .messages)
+}
+
+/// Every stored row, including a transcript longer than one page.
+/// `count` is the session list's `message_count`.
+pub async fn fetch_counted_messages(
+    http: &Client,
+    root: &str,
+    key: &str,
+    session_id: &str,
+    count: Option<u64>,
+) -> Result<Vec<UiMessage>, HermesError> {
+    let mut out = Vec::new();
+    for (offset, limit) in transcript_windows(count) {
+        let page = fetch_message_page(http, root, key, session_id, offset, limit).await?;
+        if page.returned == 0 {
+            break;
+        }
+        out.extend(page.messages);
+    }
+    Ok(out)
 }
 
 pub async fn probe_health(http: &Client, gateway: &str) -> Result<String, HermesError> {
@@ -4076,6 +4111,16 @@ mod tests {
             message_fetch(Some(&marker), &grew),
             MessageFetch::Tail { from: 40, to: 42 }
         );
+        let touched = stamp("bot", Some(5), 1.0);
+        let moved = stamp("bot", Some(5), 2.0);
+        assert_eq!(message_fetch(Some(&touched), &moved), MessageFetch::Full);
+        assert!(watch_row_unchanged(Some(&touched), Some(&touched)));
+        assert!(!watch_row_unchanged(Some(&touched), Some(&moved)));
+        assert_eq!(message_fetch(Some(&moved), &moved), MessageFetch::Skip);
+        assert_eq!(transcript_windows(Some(606)), vec![(0, 500), (500, 106)]);
+        assert_eq!(transcript_windows(Some(5)), vec![(0, 5)]);
+        assert_eq!(transcript_windows(None), vec![(0, 500)]);
+        assert!(transcript_windows(Some(0)).is_empty());
         assert_eq!(tail_windows(40, 42), vec![(40, 2)]);
         assert_eq!(tail_windows(0, 600), vec![(0, 500), (500, 100)]);
         assert!(tail_windows(3, 3).is_empty());

@@ -68,6 +68,8 @@ import {
   runTranscript,
   showSession,
   unseenMessages,
+  dropSettledLocalRows,
+  finishWatchedRows,
   viewingRun,
 } from "./sessions.js";
 
@@ -452,6 +454,7 @@ test("the panel pins Bot Chat and applies cron on the open transcript", () => {
   assert.match(main, /payload\.type === "cron"/);
   assert.match(main, /payload\.type === "sessions"/);
   assert.match(main, /payload\.reset/);
+  assert.match(main, /finishWatchedRows/);
   const refresh = main.slice(main.indexOf("function refreshBotChats"), main.indexOf("function armChatRefresh"));
   assert.match(refresh, /beginBotHistory/);
   assert.match(refresh, /catchUpSession/);
@@ -811,7 +814,7 @@ test("a side pair stays after the reply it followed", () => {
     { role: "user", text: "U2" },
     { role: "bot", text: "B2" },
   ];
-  assert.deepEqual(sideAnchor(local.slice(0, 2)), { index: 1, role: "bot", text: "B1" });
+  assert.deepEqual(sideAnchor(local.slice(0, 2)), { index: 1, role: "bot", text: "B1", user: "U1" });
   const kept = reconcileSideQuestion(local, server);
   assert.deepEqual(kept.map((message) => message.text), ["U1", "B1", "S1", "Sb1", "U2", "B2"]);
   const many = [
@@ -860,6 +863,65 @@ test("a side pair stays after the reply it followed", () => {
     { role: "bot", text: "Sb1", side: true },
   ], server);
   assert.deepEqual(mixed.map((message) => message.text), ["U1", "B1", "S1", "Sb1", "U2", "B2"]);
+  const first = reconcileSideQuestion([
+    { role: "user", text: "S", command: "btw" },
+    { role: "bot", text: "Sb", side: true },
+    { role: "user", text: "U1" },
+    { role: "bot", text: "B1" },
+  ], [
+    { role: "user", text: "U1" },
+    { role: "bot", text: "B1" },
+  ]);
+  assert.deepEqual(first.map((message) => message.text), ["S", "Sb", "U1", "B1"]);
+  const sameReply = reconcileSideQuestion([
+    { role: "user", text: "q1" },
+    { role: "bot", text: "slow a" },
+    { role: "user", text: "s1", command: "btw", anchor: { index: 1, role: "bot", text: "slow a", user: "q1" } },
+    { role: "bot", text: "sb1", side: true },
+    { role: "user", text: "q2" },
+    { role: "bot", text: "slow a" },
+    { role: "user", text: "s2", command: "btw", anchor: { index: 3, role: "bot", text: "slow a", user: "q2" } },
+    { role: "bot", text: "sb2", side: true },
+  ], [
+    { role: "user", text: "q2" },
+    { role: "bot", text: "slow a" },
+  ]);
+  assert.deepEqual(sameReply.map((message) => message.text), ["q2", "slow a", "s2", "sb2"]);
+});
+
+test("a tail fetch ignores cards and commentary, and a finished run drops settled local rows", () => {
+  const older = { role: "bot", text: "older" };
+  const user = { role: "user", text: "make a plan" };
+  const plan = { role: "bot", text: "plan body" };
+  const post = { role: "bot", text: "Post-answer" };
+  const incoming = [user, plan, post];
+  for (const card of [
+    { role: "clarify", text: "Which step first?", status: "answered" },
+    { role: "approval", text: "rm -rf", status: "approved" },
+    { role: "commentary", text: "已停止呢次回覆。" },
+  ]) {
+    const have = [older, user, plan, card, post];
+    assert.equal(unseenMessages(have, incoming).fresh.length, 0, card.role);
+  }
+  assert.equal(unseenMessages([older, user, plan, post], incoming).fresh.length, 0);
+  const piled = [
+    user,
+    plan,
+    { role: "commentary", text: "已停止呢次回覆。" },
+    { role: "commentary", text: "已停止呢次回覆。" },
+    { role: "clarify", text: "Which?", status: "answered", promptId: "c1" },
+    { role: "approval", text: "rm", status: "approved", requestId: "old" },
+    post,
+    { role: "approval", text: "rm", status: "pending", requestId: "open" },
+    { role: "clarify", text: "Still?", status: "timeout", promptId: "wait" },
+  ];
+  const settled = finishWatchedRows(piled, incoming, false);
+  assert.deepEqual(settled.map((message) => message.text), ["make a plan", "plan body", "Post-answer", "rm", "Still?"]);
+  assert.equal(settled.filter((message) => message.role === "commentary").length, 0);
+  assert.equal(settled.find((message) => message.role === "approval").status, "pending");
+  assert.equal(dropSettledLocalRows(piled).filter((message) => message.role === "commentary").length, 0);
+  const replaced = finishWatchedRows(piled, [user, post], true);
+  assert.deepEqual(replaced.map((message) => message.text), ["make a plan", "Post-answer", "rm", "Still?"]);
 });
 
 test("a side question after a stopped turn stays on the reply that was streaming", () => {
@@ -880,7 +942,7 @@ test("a side question after a stopped turn stays on the reply that was streaming
     { role: "user", text: "U2" },
     { role: "bot", text: `${prefix} newer` },
   ];
-  assert.deepEqual(sideAnchor(local.slice(0, 6)), { index: 4, role: "user", text: "U2" });
+  assert.deepEqual(sideAnchor(local.slice(0, 6)), { index: 4, role: "user", text: "U2", user: "U2" });
   const kept = reconcileSideQuestion(local, server);
   assert.deepEqual(kept.map((message) => message.text), ["U1", `${prefix} older`, "U2", `${prefix} newer`, "S", "Sb"]);
   const stamped = local.map((message) => ({ ...message }));
