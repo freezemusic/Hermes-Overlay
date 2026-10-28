@@ -28,6 +28,8 @@ test("stop waits for the gateway and a reopened panel still catches up", () => {
   assert.match(stop, /stopAfterMiss/);
   assert.doesNotMatch(stop, /noteStopped/);
   assert.match(stop, /catchUpSession/);
+  assert.match(stop, /append:\s*true/);
+  assert.match(stop, /stopped:\s*true/);
   assert.match(stop, /停止未送到。/);
   assert.match(stop, /startsWith\("terminal:"\)/);
   assert.doesNotMatch(stop, /已停止呢次回覆/);
@@ -38,6 +40,17 @@ test("stop waits for the gateway and a reopened panel still catches up", () => {
   assert.doesNotMatch(command, /已停止呢次回覆/);
   const noted = main.slice(main.indexOf("function noteStopped"), main.indexOf("function mergeCaughtUp"));
   assert.match(noted, /已停止呢次回覆。/);
+  assert.match(noted, /setBotStatus\(id, "已停止", "idle"\)/);
+  const merge = main.slice(main.indexOf("function mergeCaughtUp"), main.indexOf("async function catchUpSession"));
+  const appendAt = merge.indexOf("if (append && (!busy || stopped))");
+  const replaceAt = merge.indexOf("if (busy) {");
+  assert.ok(appendAt >= 0 && appendAt < replaceAt);
+  const appendBranch = merge.slice(appendAt, replaceAt);
+  assert.match(appendBranch, /catchUpAfterStop/);
+  assert.ok(appendBranch.indexOf("catchUpAfterStop") < appendBranch.indexOf("noteStopped(id)"));
+  assert.match(appendBranch, /noteStopped\(id\)/);
+  assert.doesNotMatch(appendBranch, /setBotStatus/);
+  assert.doesNotMatch(appendBranch, /finishWatchedRows/);
   assert.match(main, /if \(thread\.loaded\) void catchUpSession\(id\)/);
   assert.match(main, /thread\.watchReply/);
   const rustStop = lib.slice(lib.indexOf("async fn request_stop"), lib.indexOf("async fn steer_run"));
@@ -50,6 +63,9 @@ test("stop waits for the gateway and a reopened panel still catches up", () => {
   const done = main.slice(main.indexOf('payload.type === "done"'), main.indexOf('payload.type === "error"'));
   assert.match(done, /finishApplies/);
   assert.doesNotMatch(done, /nextRunId/);
+  const cancelled = done.slice(done.indexOf('if (payload.outcome === "cancelled") {'));
+  assert.match(cancelled, /catchUpSession\(id, \{ append: true, stopped: true \}\)/);
+  assert.doesNotMatch(cancelled, /noteStopped\(id\)/);
   const status = main.slice(main.indexOf('payload.type === "status"'), main.indexOf('payload.type === "done"'));
   assert.match(status, /finishApplies/);
 });

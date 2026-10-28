@@ -1321,6 +1321,24 @@ export function showSession(thread, sessionId, incoming) {
  * A live bot bubble that is a prefix of the stored reply is returned as `settled`
  * so the caller can finish it without appending a second copy.
  */
+/**
+ * Stop catch-up only adds server rows that are not already on screen.
+ * The local user line and the 「已停止」 note stay until a later refresh.
+ */
+export function catchUpAfterStop(existing, incoming) {
+  const prior = (existing || []).map((message) => ({ ...message }));
+  const { fresh, settled } = catchUpMessages(prior, incoming);
+  if (settled) {
+    const last = [...prior].reverse().find((message) => message?.role === "bot" && message.live && message.text);
+    if (last) {
+      last.text = settled.text;
+      last.live = false;
+    }
+  }
+  for (const message of fresh) prior.push({ ...message });
+  return prior;
+}
+
 export function catchUpMessages(existing, incoming) {
   const have = existing || [];
   const seen = new Set(have.map((message) => `${message?.role || ""}\n${message?.text || ""}`));

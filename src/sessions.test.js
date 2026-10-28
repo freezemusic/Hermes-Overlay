@@ -45,6 +45,7 @@ import {
   sessionRouteMatches,
   sendErrorKeepsConnected,
   storedPinAfterResolve,
+  catchUpAfterStop,
   catchUpMessages,
   writableContinuation,
   refusedSessionIds,
@@ -980,6 +981,30 @@ test("a live run holds watcher rows and rebuilds them when the run ends", () => 
   ]);
   const once = releaseHeldWatch(during, ended);
   assert.deepEqual(once.map((message) => message.text), ["old q", "old a", "arrived", "AP2", "Post-approval"]);
+});
+
+test("a stop catch-up keeps the cancelled user line and the stop note", () => {
+  const local = [
+    { role: "user", text: "old" },
+    { role: "bot", text: "olda" },
+    { role: "user", text: "SLOW" },
+    { role: "bot", text: "slow part 1/25.", live: true },
+    { role: "commentary", text: "已停止呢次回覆。" },
+  ];
+  const server = [
+    { role: "user", text: "old" },
+    { role: "bot", text: "olda" },
+  ];
+  const kept = catchUpAfterStop(local, server);
+  assert.equal(kept.filter((message) => message.text === "SLOW").length, 1);
+  assert.equal(kept.some((message) => message.text === "slow part 1/25."), true);
+  assert.equal(kept.some((message) => message.text === "已停止呢次回覆。"), true);
+  const wiped = finishWatchedRows(local, server, true);
+  assert.equal(wiped.some((message) => message.text === "SLOW"), false);
+  assert.equal(wiped.some((message) => message.text === "已停止呢次回覆。"), false);
+  const later = finishWatchedRows(kept, server, false);
+  assert.equal(later.some((message) => message.text === "已停止呢次回覆。"), false);
+  assert.equal(later.filter((message) => message.text === "SLOW").length, 1);
 });
 
 test("a side question after a stopped turn stays on the reply that was streaming", () => {

@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -7311,6 +7311,14 @@ function handleHermes(payload) {
       else if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
       return;
     }
+    if (payload.outcome === "cancelled") {
+      thread.heldWatch = null;
+      if (!payload.run_id || payload.run_id === thread.runId) thread.runId = "";
+      thread.queued = false;
+      thread.watchReply = false;
+      void catchUpSession(id, { append: true, stopped: true });
+      return;
+    }
     if (!payload.run_id || payload.run_id === thread.runId) thread.runId = "";
     const held = thread.heldWatch;
     const heldReady = !!(held?.server || (held?.tails || []).some((message) => message.role === "bot" || message.role === "failure"));
@@ -7335,12 +7343,6 @@ function handleHermes(payload) {
     const failedText = payload.outcome === "failed" ? plainToolText(detail) : "";
     if (payload.outcome === "failed" && failedText) {
       appendOnce(id, { role: "failure", text: failedText });
-    }
-    if (payload.outcome === "cancelled") {
-      noteStopped(id);
-      if (!thread.queued) thread.watchReply = false;
-      void catchUpSession(id);
-      return;
     }
     clearRunSession(thread);
     if (payload.outcome === "completed") {
@@ -8305,12 +8307,26 @@ function noteStopped(id, { keepBusy = false } = {}) {
   if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
 }
 
-function mergeCaughtUp(id, opened) {
+function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
   const thread = threadFor(id);
   const sessionId = opened.session_id || "";
   if (sessionId && thread.sessionId && sessionId !== thread.sessionId) return false;
   const incoming = presentTranscript(opened.messages);
   const busy = state.busy.has(id);
+  if (append && (!busy || stopped)) {
+    const next = catchUpAfterStop(thread.messages, incoming);
+    const changed = next.length !== thread.messages.length
+      || next.some((message, index) => message.text !== thread.messages[index]?.text || message.live !== thread.messages[index]?.live);
+    thread.messages = next;
+    if (sessionId && !thread.sessionId) thread.sessionId = sessionId;
+    thread.loaded = true;
+    if (stopped) {
+      thread.heldWatch = null;
+      noteStopped(id);
+    }
+    if (changed && panelFor(id)) renderChat(id);
+    return next.some((message) => message.role === "bot" || message.role === "failure");
+  }
   if (busy) {
     thread.heldWatch = holdWatchedTail(thread.heldWatch, incoming, { reset: true });
     const { settled } = catchUpMessages(thread.messages, incoming);
@@ -8340,15 +8356,16 @@ function mergeCaughtUp(id, opened) {
   return next.some((message) => message.role === "bot" || message.role === "failure");
 }
 
-async function catchUpSession(id) {
+async function catchUpSession(id, { append = false, stopped = false } = {}) {
   if (state.mode !== "hermes" || !inTauri() || !id) return false;
   const token = state.reconnectToken;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const opened = await invoke("open_bot", { profile: id, quiet: true });
     if (token !== state.reconnectToken || state.mode !== "hermes") return false;
-    return mergeCaughtUp(id, opened);
+    return mergeCaughtUp(id, opened, { append, stopped });
   } catch (err) {
+    if (stopped) noteStopped(id);
     if (gatewayDown(String(err))) noteGatewayDown();
     return false;
   }
@@ -8445,15 +8462,18 @@ async function stopActive(id) {
       thread.watchReply = false;
       thread.runId = "";
       clearRunSession(thread);
-      setBotStatus(profile, ended === "failed" ? "回覆失敗" : "閒置", ended === "failed" ? "error" : "idle");
-      void catchUpSession(profile);
+      const stopped = ended === "cancelled";
+      if (!stopped) {
+        setBotStatus(profile, ended === "failed" ? "回覆失敗" : "閒置", ended === "failed" ? "error" : "idle");
+      }
+      void catchUpSession(profile, { append: true, stopped });
       return;
     }
     if (result === "not_active") {
-      void catchUpSession(profile);
+      void catchUpSession(profile, { append: true, stopped: true });
       return;
     }
-    void catchUpSession(profile);
+    void catchUpSession(profile, { append: true, stopped: true });
   } catch {
     showActionError("停止未送到。");
   }
