@@ -1186,6 +1186,41 @@ export function releaseStoppedTurn(messages) {
   return messages;
 }
 
+/** The next send retires a kept cancelled turn. It leaves once that turn settles. */
+export function retireStoppedTurn(messages) {
+  let retired = false;
+  for (const message of messages || []) {
+    if (!message?.keptLocal) continue;
+    message.dropAfterTurn = true;
+    delete message.keptLocal;
+    retired = true;
+  }
+  return retired;
+}
+
+export function dropRetiredTurn(messages) {
+  return (messages || []).filter((message) => !message?.dropAfterTurn);
+}
+
+/** A stored copy of a kept user replaces that row. The rest of the flag comes off with it. */
+function settleKeptUser(prior, incoming) {
+  const next = prior.slice();
+  const replaced = new Set();
+  for (const row of incoming || []) {
+    if (row?.role !== "user" || !String(row.text || "").trim()) continue;
+    const index = next.findIndex((message) => message?.keptLocal && message.role === "user" && message.text === row.text);
+    if (index < 0) continue;
+    replaced.add(row.text);
+    next[index] = { ...row };
+  }
+  if (replaced.size) {
+    for (const message of next) {
+      if (message?.keptLocal) delete message.keptLocal;
+    }
+  }
+  return { next, replaced };
+}
+
 export function keepStoppedRows(previous, next) {
   const kept = (previous || []).filter((message) => message?.keptLocal);
   const server = next || [];
@@ -1285,12 +1320,17 @@ export function releaseHeldWatch(view, held) {
 }
 
 /** Tail append, or a full replace, with the same local rows a history reload kept. */
-export function finishWatchedRows(previous, incoming, reset = false, { tail = false } = {}) {
+export function finishWatchedRows(previous, incoming, reset = false) {
   const prior = previous || [];
   const rows = incoming || [];
-  const next = reset
-    ? reconcileSideQuestion(prior, rows)
-    : prior.concat(tail ? rows : unseenMessages(prior, rows).fresh);
+  let next;
+  if (reset) {
+    next = reconcileSideQuestion(prior, rows);
+  } else {
+    const settled = settleKeptUser(prior, rows);
+    const fresh = unseenMessages(settled.next, rows).fresh.filter((row) => !(row?.role === "user" && settled.replaced.has(row.text)));
+    next = settled.next.concat(fresh);
+  }
   const cleaned = dropSettledHistoryNotices(dropSettledLocalRows(next));
   const withKept = keepStoppedRows(prior, cleaned);
   return reset ? attachOpenCards(prior, withKept) : withKept;

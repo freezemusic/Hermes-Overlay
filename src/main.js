@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, keepStoppedRows, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -6732,7 +6732,7 @@ function deliverCron(id, payload) {
       if (panelFor(id)) renderChat(id);
     }
   }
-  const next = finishWatchedRows(existing, incoming, false, { tail: true });
+  const next = finishWatchedRows(existing, incoming, false);
   const cleaned = fresh.length > 0 || next.length !== existing.length;
   if (viewing) {
     if (cleaned) {
@@ -7430,6 +7430,13 @@ function handleHermes(payload) {
       appendOnce(id, { role: "failure", text: failedText });
     }
     clearRunSession(thread);
+    if ((payload.outcome === "completed" || payload.outcome === "failed") && (thread.stopping || thread.stopGate)) {
+      thread.queueSettled = true;
+    }
+    if (thread.dropKeptOnSettle && !thread.stopping && (payload.outcome === "completed" || payload.outcome === "failed")) {
+      thread.messages = dropRetiredTurn(thread.messages);
+      thread.dropKeptOnSettle = false;
+    }
     if (payload.outcome === "completed") {
       thread.queued = false;
       thread.watchReply = false;
@@ -7439,14 +7446,11 @@ function handleHermes(payload) {
         releaseOutgoing(id);
       }
     }
-    const stopOwnsStatus = thread.stopping && payload.outcome === "completed";
     setBotStatus(
       id,
-      stopOwnsStatus
-        ? "已停止"
-        : payload.outcome === "failed"
-          ? (blocked || failedText === EXECUTE_CODE_BLOCKED_LINE ? EXECUTE_CODE_BLOCKED_LINE : "回覆失敗")
-          : payload.outcome === "cancelled" ? "已停止" : "閒置",
+      payload.outcome === "failed"
+        ? (blocked || failedText === EXECUTE_CODE_BLOCKED_LINE ? EXECUTE_CODE_BLOCKED_LINE : "回覆失敗")
+        : payload.outcome === "cancelled" ? "已停止" : "閒置",
       payload.outcome === "failed" ? "error" : "idle",
     );
     return;
@@ -7652,8 +7656,8 @@ async function sendActive(id = state.activeId) {
   state.slashPanelId = id;
   thread.followTail = true;
   thread.stopNoted = false;
-  if (thread.cancelHold || (thread.messages || []).some((message) => message?.keptLocal)) {
-    releaseStoppedTurn(thread.messages);
+  if (retireStoppedTurn(thread.messages)) {
+    thread.dropKeptOnSettle = true;
     thread.cancelHold = false;
   }
   const text = composeModeWire(typed, composeModeOf(id));
@@ -8394,7 +8398,7 @@ function noteStopped(id, { keepBusy = false } = {}) {
   }
   if (!keepBusy) {
     clearRunSession(thread);
-    setBotStatus(id, "已停止", "idle");
+    if (!thread.queueSettled) setBotStatus(id, "已停止", "idle");
   }
   if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
 }
@@ -8404,6 +8408,7 @@ function armStopGate(id) {
   thread.stopping = true;
   thread.watchReply = true;
   thread.cancelHold = true;
+  thread.queueSettled = false;
   thread.stopSerial = (thread.stopSerial || 0) + 1;
   thread.stopGate = { serial: thread.stopSerial, chat: false, done: false };
   markStoppedTurn(runMessages(id));
@@ -8523,8 +8528,8 @@ async function sendSideQuestion(id, text) {
 async function sendWhileBusy(id, text) {
   const thread = threadFor(id);
   const shown = composeUserMessage(text);
-  if (thread.cancelHold || (thread.messages || []).some((message) => message?.keptLocal)) {
-    releaseStoppedTurn(thread.messages);
+  if (retireStoppedTurn(thread.messages)) {
+    thread.dropKeptOnSettle = true;
     thread.cancelHold = false;
   }
   appendMessage(id, shown);

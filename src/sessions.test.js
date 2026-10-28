@@ -55,6 +55,8 @@ import {
   markStoppedTurn,
   keepStoppedRows,
   releaseStoppedTurn,
+  retireStoppedTurn,
+  dropRetiredTurn,
   writableContinuation,
   refusedSessionIds,
   UNSENT_MARK,
@@ -1159,6 +1161,52 @@ test("a cancelled turn stays through a server replace until that user line is st
   assert.equal(stored.some((message) => message.text === "已停止呢次回覆。"), false);
   releaseStoppedTurn(local);
   assert.equal(local.some((message) => message.keptLocal), false);
+  const shown = [
+    { role: "user", text: "hello" },
+    { role: "bot", text: "reply" },
+  ];
+  const echoed = finishWatchedRows(shown, [
+    { role: "user", text: "hello" },
+    { role: "bot", text: "reply" },
+  ], false);
+  assert.equal(echoed.length, 2);
+  const keptTurn = [
+    { role: "user", text: "old" },
+    { role: "bot", text: "olda" },
+    { role: "user", text: "SLOW", keptLocal: true },
+    { role: "bot", text: "partial", keptLocal: true },
+    { role: "commentary", text: "已停止呢次回覆。", keptLocal: true },
+  ];
+  const storedTail = finishWatchedRows(keptTurn, [{ role: "user", text: "SLOW" }], false);
+  assert.equal(storedTail.filter((message) => message.text === "SLOW").length, 1);
+  assert.equal(storedTail.find((message) => message.text === "SLOW").keptLocal, undefined);
+  const retiring = [
+    { role: "user", text: "old" },
+    { role: "user", text: "SLOW", keptLocal: true },
+    { role: "commentary", text: "已停止呢次回覆。", keptLocal: true },
+    { role: "user", text: "next" },
+    { role: "bot", text: "next reply" },
+  ];
+  assert.equal(retireStoppedTurn(retiring), true);
+  assert.equal(retiring.find((message) => message.text === "SLOW").dropAfterTurn, true);
+  assert.equal(retiring.find((message) => message.text === "SLOW").keptLocal, undefined);
+  const afterSettle = dropRetiredTurn(retiring);
+  assert.equal(afterSettle.some((message) => message.text === "SLOW"), false);
+  assert.equal(afterSettle.some((message) => message.text === "已停止呢次回覆。"), false);
+  assert.equal(afterSettle.some((message) => message.text === "next reply"), true);
+  const mainSource = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const sessionsSource = readFileSync(new URL("./sessions.js", import.meta.url), "utf8");
+  const watched = sessionsSource.slice(sessionsSource.indexOf("export function finishWatchedRows"), sessionsSource.indexOf("export function unseenMessages"));
+  assert.match(watched, /unseenMessages\(settled\.next, rows\)\.fresh/);
+  assert.doesNotMatch(watched, /prior\.concat\(rows\)/);
+  const doneHandler = mainSource.slice(mainSource.indexOf('payload.type === "done"'), mainSource.indexOf('payload.type === "error"'));
+  assert.match(doneHandler, /thread\.queueSettled = true/);
+  assert.match(doneHandler, /dropRetiredTurn/);
+  assert.doesNotMatch(doneHandler, /stopOwnsStatus/);
+  const noted = mainSource.slice(mainSource.indexOf("function noteStopped"), mainSource.indexOf("function armStopGate"));
+  assert.match(noted, /!thread\.queueSettled/);
+  const send = mainSource.slice(mainSource.indexOf("async function sendActive"), mainSource.indexOf("function botsFromSettings"));
+  assert.match(send, /retireStoppedTurn/);
 });
 
 test("a stop catch-up keeps the cancelled user line and the stop note", () => {
