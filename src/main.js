@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, historyNoticeCopy, historyNoticePending, dropSettledHistoryNotices, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -4204,6 +4204,7 @@ function botPaintSig() {
       thread.statusState || "",
       thread.unread ? 1 : 0,
       thread.messages.some(approvalPending) && !open ? 1 : 0,
+      thread.messages.some(historyNoticePending) ? 1 : 0,
     ].join(":");
   }).join("|") + `|${state.activeId || ""}|${state.showBotNames ? 1 : 0}`;
 }
@@ -4265,8 +4266,12 @@ function renderBots(tag = "renderBots") {
     if (motion === "wait") classes.push("is-waiting");
     if (thread.unread) classes.push("has-unread");
     const panelOpen = state.openIds.includes(bot.id) || shell.dataset.state === "panel";
-    const approvalWait = thread.messages.some(approvalPending) || parkedApproval(thread);
-    const clarifyWait = thread.messages.some(clarifyPending) || parkedClarify(thread);
+    const approvalWait = thread.messages.some(approvalPending)
+      || parkedApproval(thread)
+      || thread.messages.some((message) => historyNoticePending(message) && message.tool_name === "approval");
+    const clarifyWait = thread.messages.some(clarifyPending)
+      || parkedClarify(thread)
+      || thread.messages.some((message) => historyNoticePending(message) && message.tool_name === "clarify");
     if (showApprovalBadge(panelOpen, approvalWait || clarifyWait)) classes.push("has-approval");
     if (thread.statusState === "error") classes.push("error");
     if (bot.id === pulseId || keepEnter) classes.push("orb-enter");
@@ -5031,6 +5036,19 @@ function bubbleEl(m, id) {
   }
   if (m.role === "clarify") {
     paintClarifyBubble(bubble, m, id);
+    return bubble;
+  }
+  if (m.role === "notice") {
+    const bot = state.bots.find((item) => item.id === id);
+    const copy = historyNoticeCopy(m, bot?.name);
+    bubble.className = m.tool_name === "approval" ? "bubble approval" : "bubble clarify";
+    const title = document.createElement("p");
+    title.className = "history-notice-title";
+    title.textContent = copy.title;
+    const detail = document.createElement("p");
+    detail.className = "history-notice-detail";
+    detail.textContent = copy.detail;
+    bubble.replaceChildren(title, detail);
     return bubble;
   }
   if (m.role === "bot") paintBotBubble(bubble, m.text);
@@ -6434,6 +6452,9 @@ async function saveBotPanel(id) {
 }
 
 function presentMessage(m) {
+  if (m.role === "notice") {
+    return { role: "notice", tool_name: m.tool_name || "", text: m.text || "" };
+  }
   if (m.role === "tool") {
     const name = m.tool_name || m.toolName || m.name || "tool";
     return { role: "tool", name, tool_name: name, text: plainToolText(m.text || "") };
@@ -6456,7 +6477,7 @@ function presentMessage(m) {
 }
 
 function presentTranscript(list) {
-  return foldToolRuns((list || []).map(presentMessage), { detail: !!state.showToolDetail });
+  return dropSettledHistoryNotices(foldToolRuns((list || []).map(presentMessage), { detail: !!state.showToolDetail }));
 }
 
 function settleFinishedBubble(id, finished) {
@@ -6950,7 +6971,8 @@ function paintApprovalBadge(id) {
   const waiting = thread.messages.some(approvalPending)
     || parkedApproval(thread)
     || thread.messages.some(clarifyPending)
-    || parkedClarify(thread);
+    || parkedClarify(thread)
+    || thread.messages.some(historyNoticePending);
   const show = showApprovalBadge(panelIsOpen(id), waiting);
   const btn = document.querySelector(`.bot-btn[data-bot-id="${cssEscape(id)}"]`);
   btn?.classList.toggle("has-approval", show);

@@ -1044,6 +1044,159 @@ pub fn merge_sessions(
     base
 }
 
+fn wait_kind(name: &str) -> Option<&'static str> {
+    match name {
+        "clarify" => Some("clarify"),
+        "approval" => Some("approval"),
+        _ => None,
+    }
+}
+
+fn call_id_name_args(call: &Value) -> (String, String, Value) {
+    let id = call
+        .get("id")
+        .or_else(|| call.get("tool_call_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let func = call.get("function").unwrap_or(call);
+    let name = func
+        .get("name")
+        .or_else(|| call.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let raw = func
+        .get("arguments")
+        .or_else(|| func.get("args"))
+        .or_else(|| call.get("arguments"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let args = raw
+        .as_str()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .unwrap_or(raw);
+    (id, name, args)
+}
+
+fn clarify_subject(args: &Value) -> String {
+    if let Some(text) = args.get("question").and_then(Value::as_str) {
+        let text = text.trim();
+        if !text.is_empty() {
+            return text.to_string();
+        }
+    }
+    args.get("questions")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("question").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join(" / ")
+        })
+        .unwrap_or_default()
+}
+
+fn approval_subject(args: &Value) -> String {
+    for key in ["command", "question", "description"] {
+        if let Some(text) = args.get(key).and_then(Value::as_str) {
+            let text = text.trim();
+            if !text.is_empty() {
+                return text.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn notice_timeout(args: &Value) -> u64 {
+    json_count(args, "timeout_s")
+        .or_else(|| json_count(args, "timeout"))
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(600)
+}
+
+fn notice_asked_at(item: &Value) -> i64 {
+    item.get("timestamp")
+        .and_then(Value::as_f64)
+        .filter(|stamp| stamp.is_finite() && *stamp > 0.0)
+        .map(|stamp| stamp as i64)
+        .unwrap_or(0)
+}
+
+/// Tool-call ids that already have a result row. A pending clarify or approval has none.
+fn settled_wait_ids(items: &[Value]) -> HashSet<String> {
+    let mut open: Vec<(String, String)> = Vec::new();
+    let mut settled = HashSet::new();
+    for item in items {
+        let role = item.get("role").and_then(Value::as_str).unwrap_or("");
+        if role == "assistant" {
+            let calls = item.get("tool_calls").and_then(Value::as_array);
+            if let Some(calls) = calls {
+                for call in calls {
+                    let (id, name, _) = call_id_name_args(call);
+                    if wait_kind(&name).is_some() {
+                        open.push((id, name));
+                    }
+                }
+            }
+            continue;
+        }
+        if role != "tool" {
+            continue;
+        }
+        let result_id = item
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let result_name = item
+            .get("tool_name")
+            .or_else(|| item.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if let Some(index) = open.iter().rposition(|(id, name)| {
+            (!result_id.is_empty() && id == &result_id) || (result_id.is_empty() && name == &result_name)
+        }) {
+            let (id, name) = open.remove(index);
+            settled.insert(if id.is_empty() { format!("name:{name}") } else { id });
+        }
+    }
+    settled
+}
+
+fn push_wait_notice(out: &mut Vec<UiMessage>, item: &Value, id: &str, kind: &str, args: &Value, settled: &HashSet<String>) {
+    let key = if id.is_empty() { format!("name:{kind}") } else { id.to_string() };
+    if settled.contains(&key) {
+        return;
+    }
+    let subject = if kind == "approval" {
+        approval_subject(args)
+    } else {
+        clarify_subject(args)
+    };
+    if subject.is_empty() {
+        return;
+    }
+    let payload = serde_json::json!({
+        "text": subject,
+        "timeout_s": notice_timeout(args),
+        "asked_at": notice_asked_at(item),
+    });
+    out.push(UiMessage {
+        role: "notice".into(),
+        text: payload.to_string(),
+        tool_name: kind.into(),
+    });
+}
+
 pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
     let items = value
         .get("data")
@@ -1051,6 +1204,7 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let settled = settled_wait_ids(&items);
     let mut out = Vec::new();
     for item in items {
         let role = item.get("role").and_then(Value::as_str).unwrap_or("");
@@ -1079,11 +1233,23 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
                 text,
                 tool_name: String::new(),
             }),
-            "assistant" if !text.trim().is_empty() => out.push(UiMessage {
-                role: "bot".into(),
-                text,
-                tool_name: String::new(),
-            }),
+            "assistant" => {
+                if !text.trim().is_empty() {
+                    out.push(UiMessage {
+                        role: "bot".into(),
+                        text,
+                        tool_name: String::new(),
+                    });
+                }
+                if let Some(calls) = item.get("tool_calls").and_then(Value::as_array) {
+                    for call in calls {
+                        let (id, name, args) = call_id_name_args(call);
+                        if let Some(kind) = wait_kind(&name) {
+                            push_wait_notice(&mut out, &item, &id, kind, &args, &settled);
+                        }
+                    }
+                }
+            }
             "tool" if !text.trim().is_empty() => out.push(UiMessage {
                 role: "tool".into(),
                 text,
@@ -4178,6 +4344,44 @@ mod tests {
         assert_eq!(session_list_fingerprint(&rows), session_list_fingerprint(&flipped));
         rows[0].message_count = Some(41);
         assert_ne!(session_list_fingerprint(&listed), session_list_fingerprint(&rows));
+    }
+
+    #[test]
+    fn an_unanswered_history_clarify_is_a_notice_until_the_tool_result() {
+        let pending = json!({
+            "data": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "", "timestamp": 1000, "tool_calls": [{
+                    "id": "c1",
+                    "function": {"name": "clarify", "arguments": "{\"questions\":[{\"question\":\"下一組殘餘拆邊組？\"}]}"}
+                }]},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "a1",
+                    "function": {"name": "approval", "arguments": "{\"command\":\"rm -rf tmp\"}"}
+                }]}
+            ]
+        });
+        let shown = normalize_messages(&pending);
+        assert_eq!(shown[0].role, "user");
+        assert_eq!(shown[1].role, "notice");
+        assert_eq!(shown[1].tool_name, "clarify");
+        assert!(shown[1].text.contains("下一組殘餘拆邊組？"));
+        assert!(shown[1].text.contains("\"timeout_s\":600"));
+        assert_eq!(shown[2].role, "notice");
+        assert_eq!(shown[2].tool_name, "approval");
+        assert!(shown[2].text.contains("rm -rf tmp"));
+        let answered = json!({
+            "data": [
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "c1",
+                    "function": {"name": "clarify", "arguments": "{\"question\":\"下一組？\"}"}
+                }]},
+                {"role": "tool", "tool_call_id": "c1", "tool_name": "clarify", "content": "{\"outcome\":\"timed_out\"}"}
+            ]
+        });
+        let done = normalize_messages(&answered);
+        assert!(done.iter().all(|message| message.role != "notice"));
+        assert!(done.iter().any(|message| message.role == "tool"));
     }
 
     #[test]

@@ -1041,13 +1041,71 @@ function sameOrGrowth(have, next) {
 
 function isLocalChrome(message) {
   const role = message?.role;
-  return role === "approval" || role === "clarify" || role === "commentary";
+  return role === "approval" || role === "clarify" || role === "commentary" || role === "notice";
 }
 
 function cardStillOpen(message) {
   if (message?.role === "approval") return message.status === "pending" || message.status === "sending";
   if (message?.role === "clarify") return ["pending", "sending", "timeout"].includes(message.status);
   return false;
+}
+
+/** A history clarify/approval the overlay cannot answer. The next result row removes it. */
+export function historyNoticeCopy(message, botName, nowMs = Date.now()) {
+  let payload = {};
+  try {
+    payload = JSON.parse(String(message?.text || ""));
+  } catch {
+    payload = { text: message?.text || "" };
+  }
+  const kind = message?.tool_name === "approval" ? "approval" : "clarify";
+  const subject = String(payload.text || "").trim() || (kind === "approval" ? "一個指令" : "一條問題");
+  const who = String(botName || "").trim() || "呢個 bot";
+  const verb = kind === "approval" ? "等緊你批准" : "等緊你答";
+  const timeout = Number(payload.timeout_s);
+  const asked = Number(payload.asked_at);
+  let remain = "";
+  if (Number.isFinite(timeout) && timeout > 0 && Number.isFinite(asked) && asked > 0) {
+    const left = Math.ceil(timeout - (nowMs / 1000 - asked));
+    remain = left > 0 ? `大約 ${Math.max(1, Math.ceil(left / 60))} 分鐘後逾時。` : "逾時時間已過，等歷史更新。";
+  } else if (Number.isFinite(timeout) && timeout > 0) {
+    remain = `大約 ${Math.max(1, Math.ceil(timeout / 60))} 分鐘後逾時。`;
+  }
+  return {
+    kind,
+    title: `${who} ${verb}：${subject}`,
+    detail: `呢度答唔到。${remain}`.trim(),
+  };
+}
+
+export function historyNoticePending(message) {
+  return message?.role === "notice" && (message.tool_name === "clarify" || message.tool_name === "approval");
+}
+
+function settlingWaitName(message) {
+  if (message?.role === "tool") return message.tool_name || message.name || "";
+  if (message?.role === "tool-run") {
+    return (message.tools || []).map((tool) => tool?.name).find((name) => name === "clarify" || name === "approval") || "";
+  }
+  return "";
+}
+
+/** A later clarify/approval result retires the notice that was waiting for it. */
+export function dropSettledHistoryNotices(messages) {
+  const list = messages || [];
+  const drop = new Set();
+  for (let index = 0; index < list.length; index += 1) {
+    const name = settlingWaitName(list[index]);
+    if (name !== "clarify" && name !== "approval") continue;
+    for (let earlier = index - 1; earlier >= 0; earlier -= 1) {
+      if (list[earlier]?.role === "notice" && list[earlier].tool_name === name) {
+        drop.add(earlier);
+        break;
+      }
+    }
+  }
+  if (!drop.size) return list;
+  return list.filter((_, index) => !drop.has(index));
 }
 
 /** Commentary and answered cards leave with a server refresh. An open card stays. */
@@ -1145,7 +1203,7 @@ export function finishWatchedRows(previous, incoming, reset = false) {
   const next = reset
     ? reconcileSideQuestion(prior, incoming || [])
     : prior.concat(unseenMessages(prior, incoming || []).fresh);
-  const cleaned = dropSettledLocalRows(next);
+  const cleaned = dropSettledHistoryNotices(dropSettledLocalRows(next));
   return reset ? attachOpenCards(prior, cleaned) : cleaned;
 }
 

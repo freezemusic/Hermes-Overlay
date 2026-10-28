@@ -47,6 +47,9 @@ import {
   storedPinAfterResolve,
   catchUpAfterStop,
   catchUpMessages,
+  historyNoticeCopy,
+  historyNoticePending,
+  dropSettledHistoryNotices,
   writableContinuation,
   refusedSessionIds,
   UNSENT_MARK,
@@ -981,6 +984,46 @@ test("a live run holds watcher rows and rebuilds them when the run ends", () => 
   ]);
   const once = releaseHeldWatch(during, ended);
   assert.deepEqual(once.map((message) => message.text), ["old q", "old a", "arrived", "AP2", "Post-approval"]);
+});
+
+test("an unanswered history clarify or approval is a notice, not a folded tool", () => {
+  const asked = 1_000;
+  const copy = historyNoticeCopy({
+    role: "notice",
+    tool_name: "clarify",
+    text: JSON.stringify({ text: "下一組殘餘拆邊組？", timeout_s: 600, asked_at: asked }),
+  }, "Edmond", (asked + 120) * 1000);
+  assert.equal(copy.title, "Edmond 等緊你答：下一組殘餘拆邊組？");
+  assert.match(copy.detail, /呢度答唔到/);
+  assert.match(copy.detail, /分鐘後逾時/);
+  assert.equal(historyNoticePending({ role: "notice", tool_name: "clarify" }), true);
+  const approval = historyNoticeCopy({
+    role: "notice",
+    tool_name: "approval",
+    text: JSON.stringify({ text: "rm -rf tmp", timeout_s: 600, asked_at: 0 }),
+  }, "Edmond");
+  assert.equal(approval.title, "Edmond 等緊你批准：rm -rf tmp");
+  assert.match(approval.detail, /呢度答唔到/);
+  const folded = dropSettledHistoryNotices([
+    { role: "user", text: "hi" },
+    { role: "notice", tool_name: "clarify", text: "{\"text\":\"下一組？\"}" },
+    { role: "tool-run", text: "用咗 clarify", tools: [{ name: "clarify" }] },
+  ]);
+  assert.deepEqual(folded.map((message) => message.role), ["user", "tool-run"]);
+  const rebuilt = finishWatchedRows(
+    [
+      { role: "user", text: "hi" },
+      { role: "notice", tool_name: "clarify", text: "{\"text\":\"下一組？\"}" },
+    ],
+    [{ role: "tool", tool_name: "clarify", text: "{\"outcome\":\"timed_out\"}" }],
+    false,
+  );
+  assert.equal(rebuilt.some((message) => message.role === "notice"), false);
+  assert.equal(rebuilt.some((message) => message.role === "tool"), true);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  assert.match(main, /m\.role === "notice"/);
+  assert.match(main, /historyNoticePending/);
+  assert.doesNotMatch(main.slice(main.indexOf("if (m.role === \"notice\")"), main.indexOf("if (m.role === \"bot\")")), /answerClarify|answerApproval|respond_clarify|respond_approval/);
 });
 
 test("a stop catch-up keeps the cancelled user line and the stop note", () => {

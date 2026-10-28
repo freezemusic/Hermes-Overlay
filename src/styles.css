@@ -1674,6 +1674,18 @@ html, body {
   box-shadow: none;
 }
 
+.history-notice-title,
+.history-notice-detail {
+  margin: 0;
+  color: #14142b;
+  font: 400 var(--fs-body) var(--font-body);
+}
+
+.history-notice-title {
+  color: #0000f2;
+  font: 500 13px/1.4 var(--font-body);
+}
+
 .bubble.clarify {
   align-self: flex-start;
   display: flex;
