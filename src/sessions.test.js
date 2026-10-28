@@ -70,6 +70,8 @@ import {
   unseenMessages,
   dropSettledLocalRows,
   finishWatchedRows,
+  holdWatchedTail,
+  releaseHeldWatch,
   viewingRun,
 } from "./sessions.js";
 
@@ -455,6 +457,15 @@ test("the panel pins Bot Chat and applies cron on the open transcript", () => {
   assert.match(main, /payload\.type === "sessions"/);
   assert.match(main, /payload\.reset/);
   assert.match(main, /finishWatchedRows/);
+  assert.match(main, /holdWatchedTail/);
+  assert.match(main, /releaseHeldWatch/);
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const openBot = lib.slice(lib.indexOf("async fn open_bot"), lib.indexOf("async fn open_explicit_session"));
+  assert.match(openBot, /fetch_counted_messages/);
+  assert.match(openBot, /message_count/);
+  const openSession = lib.slice(lib.indexOf("async fn open_explicit_session"), lib.indexOf("async fn select_session"));
+  assert.match(openSession, /fetch_counted_messages/);
+  assert.match(openSession, /chosen\.message_count/);
   const refresh = main.slice(main.indexOf("function refreshBotChats"), main.indexOf("function armChatRefresh"));
   assert.match(refresh, /beginBotHistory/);
   assert.match(refresh, /catchUpSession/);
@@ -922,6 +933,53 @@ test("a tail fetch ignores cards and commentary, and a finished run drops settle
   assert.equal(dropSettledLocalRows(piled).filter((message) => message.role === "commentary").length, 0);
   const replaced = finishWatchedRows(piled, [user, post], true);
   assert.deepEqual(replaced.map((message) => message.text), ["make a plan", "Post-answer", "rm", "Still?"]);
+});
+
+test("a live run holds watcher rows and rebuilds them when the run ends", () => {
+  const older = [
+    { role: "user", text: "old q" },
+    { role: "bot", text: "old a" },
+  ];
+  const streaming = older.concat([
+    { role: "user", text: "P" },
+    { role: "bot", text: "slow part 1/25.", live: true },
+  ]);
+  const heldUser = holdWatchedTail(null, [{ role: "user", text: "P" }]);
+  assert.equal(streaming.filter((message) => message.text === "P").length, 1);
+  const finished = streaming.map((message) => (
+    message.live ? { ...message, live: false, text: "slow part 1/25. slow part 2/25. DONE" } : message
+  ));
+  const heldReply = holdWatchedTail(heldUser, [{ role: "bot", text: "slow part 1/25. slow part 2/25. DONE" }]);
+  const released = releaseHeldWatch(finished, heldReply);
+  assert.deepEqual(released.map((message) => message.text), [
+    "old q",
+    "old a",
+    "P",
+    "slow part 1/25. slow part 2/25. DONE",
+  ]);
+  const toolTurn = older.concat([
+    { role: "user", text: "T" },
+    { role: "tool-run", text: "read_file" },
+    { role: "bot", text: "partial", live: true },
+  ]);
+  const toolHeld = holdWatchedTail(holdWatchedTail(null, [{ role: "user", text: "T" }]), [
+    { role: "bot", text: "tool done" },
+  ]);
+  const toolOut = releaseHeldWatch(toolTurn.map((message) => (
+    message.live ? { ...message, live: false, text: "tool done" } : message
+  )), toolHeld);
+  assert.deepEqual(toolOut.map((message) => message.text), ["old q", "old a", "T", "read_file", "tool done"]);
+  const during = older.concat([
+    { role: "user", text: "AP2" },
+    { role: "bot", text: "Post-approval" },
+  ]);
+  const arrived = holdWatchedTail(null, [{ role: "user", text: "arrived" }]);
+  const ended = holdWatchedTail(arrived, [
+    { role: "user", text: "AP2" },
+    { role: "bot", text: "Post-approval" },
+  ]);
+  const once = releaseHeldWatch(during, ended);
+  assert.deepEqual(once.map((message) => message.text), ["old q", "old a", "arrived", "AP2", "Post-approval"]);
 });
 
 test("a side question after a stopped turn stays on the reply that was streaming", () => {

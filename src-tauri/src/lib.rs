@@ -1514,8 +1514,18 @@ async fn open_bot(
         let resolved = hermes::session_for_startup(&sessions, &pin.id, pin.explicit, pin.anchor);
         let (session_id, explicit, anchor, source, read_only, read_only_reason, messages) =
             if let Some(resolved) = resolved {
-                let messages =
-                    hermes::fetch_messages(&state.http, &root, &key, &resolved.id).await?;
+                let count = sessions
+                    .iter()
+                    .find(|session| session.id == resolved.id)
+                    .and_then(|session| session.message_count);
+                let messages = hermes::fetch_counted_messages(
+                    &state.http,
+                    &root,
+                    &key,
+                    &resolved.id,
+                    count,
+                )
+                .await?;
                 (
                     resolved.id,
                     resolved.explicit,
@@ -1634,7 +1644,7 @@ async fn open_explicit_session(
     let anchor = hermes::most_recent_session(&listed)
         .map(|session| session.last_active)
         .unwrap_or(0.0);
-    let messages = hermes::fetch_messages(http, root, key, &session_id)
+    let messages = hermes::fetch_counted_messages(http, root, key, &session_id, chosen.message_count)
         .await
         .map_err(|err| explain(&err))?;
     remember_watched(watched, profile, &session_id, &messages, &listed);
@@ -3667,7 +3677,8 @@ mod tests {
         assert!(!body.contains("eprintln"));
         let open = src.find("async fn open_explicit_session").expect("open");
         let open_body = &src[open..start];
-        assert!(open_body.contains("fetch_messages"));
+        assert!(open_body.contains("fetch_counted_messages"));
+        assert!(open_body.contains("chosen.message_count"));
         assert!(open_body.contains("remember_watched"));
         let watch = src[src.find("async fn watch_profile").expect("watch")..src.find("fn session_map").expect("map")].to_string();
         assert!(watch.contains("message_fetch"));

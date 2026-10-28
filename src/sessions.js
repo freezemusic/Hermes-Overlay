@@ -1074,6 +1074,71 @@ function attachOpenCards(previous, next) {
   return out;
 }
 
+/**
+ * Rows from the bot-chat watcher while this run is still streaming.
+ * `server` is a full transcript (a reset). `tails` are suffixes in arrival order.
+ */
+export function holdWatchedTail(held, incoming, { reset = false } = {}) {
+  const rows = (incoming || []).filter((message) => message && message.role);
+  if (reset) return { server: rows.slice(), tails: [] };
+  if (held?.server) {
+    const { fresh } = unseenMessages(held.server, rows);
+    return { server: held.server.concat(fresh), tails: [] };
+  }
+  return { server: null, tails: (held?.tails || []).concat(rows) };
+}
+
+function splitBeforeLiveTurn(messages) {
+  const list = messages || [];
+  let start = -1;
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const message = list[index];
+    if (message?.role === "user" && !isSideMessage(message)) {
+      start = index;
+      break;
+    }
+  }
+  if (start < 0) return { prefix: list.slice(), turn: [] };
+  return { prefix: list.slice(0, start), turn: list.slice(start) };
+}
+
+function rowKey(message) {
+  return `${message?.role || ""}\n${String(message?.text || "")}`;
+}
+
+function isToolRow(message) {
+  return message?.role === "tool" || message?.role === "tool-run";
+}
+
+/** The watched rows replace the live turn. A reply the server has not stored yet stays. */
+export function releaseHeldWatch(view, held) {
+  const prior = view || [];
+  if (held?.server) return finishWatchedRows(prior, held.server, true);
+  const tails = held?.tails || [];
+  if (!tails.length) return prior;
+  const { prefix, turn } = splitBeforeLiveTurn(prior);
+  const serverHasReply = tails.some((message) => message.role === "bot" || message.role === "failure");
+  let body;
+  if (serverHasReply) {
+    const tools = turn.filter(isToolRow);
+    const tailHasTool = tails.some(isToolRow);
+    if (tools.length && !tailHasTool) {
+      const lastBot = tails.findLastIndex((message) => message.role === "bot" || message.role === "failure");
+      body = lastBot < 0 ? tails.concat(tools) : tails.slice(0, lastBot).concat(tools, tails.slice(lastBot));
+    } else {
+      body = tails;
+    }
+  } else {
+    const seen = new Set(turn.map(rowKey));
+    const extra = tails.filter((message) => !seen.has(rowKey(message)));
+    const local = turn.filter((message) => message && !isLocalChrome(message) && !isSideMessage(message)).map((message) => (
+      message.live ? { ...message, live: false } : message
+    )).filter((message) => message.role !== "bot" || String(message.text || "").trim());
+    body = extra.concat(local);
+  }
+  return finishWatchedRows(prior, prefix.concat(body), true);
+}
+
 /** Tail append, or a full replace, with the same local rows a history reload kept. */
 export function finishWatchedRows(previous, incoming, reset = false) {
   const prior = previous || [];

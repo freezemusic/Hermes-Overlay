@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -6599,6 +6599,24 @@ function deliverSessions(id, payload) {
   });
 }
 
+function sessionRunIsLive(thread, sessionId) {
+  if (!thread) return false;
+  const liveId = String(thread.liveSessionId || thread.sessionId || "");
+  if (liveId && sessionId && liveId !== sessionId) return false;
+  if (thread.runId || thread.queuedRunId) return true;
+  return (thread.messages || []).some((message) => message?.role === "bot" && message.live && !message.side);
+}
+
+function applyReleasedWatch(id, thread, sessionId, existing, next) {
+  const viewing = thread.sessionId === sessionId;
+  if (viewing) {
+    thread.messages = next;
+    if (panelFor(id)) renderChat(id);
+    return;
+  }
+  thread.bySession.set(sessionId, next);
+}
+
 function deliverCron(id, payload) {
   const sessionId = String(payload?.session_id || "").trim();
   const incoming = presentTranscript(payload?.messages);
@@ -6606,14 +6624,29 @@ function deliverCron(id, payload) {
   const thread = threadFor(id);
   const viewing = thread.sessionId === sessionId;
   const existing = viewing ? thread.messages : thread.bySession.get(sessionId) || [];
+  if (sessionRunIsLive(thread, sessionId)) {
+    thread.heldWatch = holdWatchedTail(thread.heldWatch, incoming, { reset: !!payload.reset });
+    return;
+  }
+  if (thread.heldWatch && (thread.heldWatch.server || thread.heldWatch.tails?.length)) {
+    const held = holdWatchedTail(thread.heldWatch, incoming, { reset: !!payload.reset });
+    thread.heldWatch = null;
+    const next = releaseHeldWatch(existing, held);
+    applyReleasedWatch(id, thread, sessionId, existing, next);
+    const fresh = next.filter((message) => !existing.some((row) => row.role === message.role && row.text === message.text && !row.live));
+    if (!fresh.length) return;
+    if (shellBlocksPreview(shellFor(id))) return;
+    const text = previewLine(fresh);
+    if (!text) return;
+    thread.unread = true;
+    paintActivity(id);
+    pingOrb(id);
+    showToast(id, { kind: "message", text });
+    return;
+  }
   if (payload.reset) {
     const next = finishWatchedRows(existing, incoming, true);
-    if (viewing) {
-      thread.messages = next;
-      if (panelFor(id)) renderChat(id);
-    } else {
-      thread.bySession.set(sessionId, next);
-    }
+    applyReleasedWatch(id, thread, sessionId, existing, next);
     return;
   }
   const { fresh, settled } = unseenMessages(existing, incoming);
@@ -7279,6 +7312,16 @@ function handleHermes(payload) {
       return;
     }
     if (!payload.run_id || payload.run_id === thread.runId) thread.runId = "";
+    const held = thread.heldWatch;
+    const heldReady = !!(held?.server || (held?.tails || []).some((message) => message.role === "bot" || message.role === "failure"));
+    if (heldReady) {
+      const sessionId = String(thread.liveSessionId || thread.sessionId || "");
+      const viewingHeld = !sessionId || thread.sessionId === sessionId;
+      const existingHeld = viewingHeld ? thread.messages : (thread.bySession.get(sessionId) || []);
+      const nextHeld = releaseHeldWatch(existingHeld, held);
+      thread.heldWatch = null;
+      applyReleasedWatch(id, thread, sessionId || thread.sessionId, existingHeld, nextHeld);
+    }
     if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
     const detail = payload.detail || "";
@@ -8267,27 +8310,25 @@ function mergeCaughtUp(id, opened) {
   const sessionId = opened.session_id || "";
   if (sessionId && thread.sessionId && sessionId !== thread.sessionId) return false;
   const incoming = presentTranscript(opened.messages);
-  const { fresh, settled } = catchUpMessages(thread.messages, incoming);
   const busy = state.busy.has(id);
-  if (settled && !busy) {
-    const last = [...thread.messages].reverse().find((message) => message.live && message.role === "bot");
-    if (last) {
-      last.text = settled.text;
-      last.live = false;
+  if (busy) {
+    thread.heldWatch = holdWatchedTail(thread.heldWatch, incoming, { reset: true });
+    const { settled } = catchUpMessages(thread.messages, incoming);
+    if (settled) {
+      const last = [...thread.messages].reverse().find((message) => message.live && message.role === "bot");
+      if (last) last.text = settled.text;
     }
+    if (panelFor(id)) renderChat(id);
+    return false;
   }
-  const live = [...thread.messages].reverse().find((message) => message.live && message.role === "bot" && message.text);
-  const additions = fresh.filter((message) => {
-    if (!busy || message.role !== "bot" || !live) return true;
-    return !String(message.text || "").startsWith(String(live.text));
-  });
-  for (const message of additions) appendMessage(id, message);
-  dedupeShownReply(thread.messages);
+  thread.heldWatch = null;
+  const next = finishWatchedRows(thread.messages, incoming, true);
+  const changed = next.length !== thread.messages.length
+    || next.some((message, index) => message.text !== thread.messages[index]?.text || message.role !== thread.messages[index]?.role);
+  thread.messages = next;
   if (sessionId && !thread.sessionId) thread.sessionId = sessionId;
   thread.loaded = true;
-  const gotReply = additions.some((message) => message.role === "bot" || message.role === "failure")
-    || (!!settled && !busy);
-  if (gotReply && viewingRun(thread)) {
+  if (viewingRun(thread)) {
     thread.queued = false;
     thread.watchReply = false;
     if (!thread.messages.some((message) => message.live)) {
@@ -8295,8 +8336,8 @@ function mergeCaughtUp(id, opened) {
       setBotStatus(id, "閒置", "idle");
     }
   }
-  if ((settled || additions.length) && panelFor(id)) renderChat(id);
-  return gotReply;
+  if (changed && panelFor(id)) renderChat(id);
+  return next.some((message) => message.role === "bot" || message.role === "failure");
 }
 
 async function catchUpSession(id) {
