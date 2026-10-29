@@ -980,7 +980,7 @@ function placeSidePairs(main, pairs) {
  * turn's user message. A pair with no anchor stays at the top. A recorded
  * anchor that is gone is dropped. A better match replaces a stale anchor.
  */
-export function reconcileSideQuestion(local, incoming, sessionId, nextSessionId) {
+export function reconcileSideQuestion(local, incoming, sessionId, nextSessionId, options = {}) {
   const have = local || [];
   const next = incoming || [];
   const current = String(sessionId || "");
@@ -993,7 +993,9 @@ export function reconcileSideQuestion(local, incoming, sessionId, nextSessionId)
   const storedSide = sideTurnMessages(next);
   const serverMain = next.filter((message) => !storedSide.includes(message));
   const localMain = have.filter((message) => isAnchorRow(message));
-  const main = serverMain.length ? growMainReply(serverMain, localMain) : localMain;
+  const main = serverMain.length
+    ? (options.trustServer ? serverMain.map((message) => ({ ...message })) : growMainReply(serverMain, localMain))
+    : localMain;
   return placeSidePairs(main, pairs);
 }
 
@@ -1071,7 +1073,38 @@ export function stopCatchUpMode(requested = {}, generation = {}) {
   return { append: !!requested.append, stopped: !!requested.stopped };
 }
 
-/** A history clarify the overlay cannot answer. The next result row removes it. */
+/** Shown rows and the server transcript disagree, so a reopen must take the server list. */
+export function historyCountMismatch(shown, serverMessages, messageCount) {
+  const content = (rows) => (rows || []).filter((message) => message && !isLocalChrome(message) && !isSideMessage(message));
+  const local = content(shown);
+  const remote = content(serverMessages);
+  if (local.length !== remote.length) return true;
+  for (let index = 0; index < local.length; index += 1) {
+    if ((local[index]?.role || "") !== (remote[index]?.role || "")) return true;
+    if ((local[index]?.text || "") !== (remote[index]?.text || "")) return true;
+  }
+  const raw = Number(messageCount);
+  if (Number.isFinite(raw) && raw >= 0 && raw < local.length) return true;
+  return false;
+}
+
+/** Milliseconds until the countdown label changes, aligned to the next minute of time left. */
+export function noticeTickDelay(message, nowMs = Date.now()) {
+  let payload = {};
+  try {
+    payload = JSON.parse(String(message?.text || ""));
+  } catch {
+    payload = {};
+  }
+  const timeout = Number(payload.timeout_s);
+  const asked = Number(payload.asked_at);
+  if (!(timeout > 0) || !(asked > 0)) return 15000;
+  const left = timeout - (nowMs / 1000 - asked);
+  if (!(left > 0)) return 60000;
+  const into = left % 60;
+  const delayS = into < 0.5 ? 60 : into;
+  return Math.max(1000, Math.round(delayS * 1000));
+}
 export function historyNoticeCopy(message, botName, nowMs = Date.now()) {
   let payload = {};
   try {
@@ -1334,33 +1367,37 @@ function sharesTurnText(localBots, serverBots) {
 
 /**
  * A just-finished clarify turn can be two local bot bubbles and one server row,
- * or assistant + tool + assistant. When the tail does not overlap the screen end
- * but it is that turn, the server rows replace the local ones.
+ * or assistant + tool + assistant. Only the run that just ended may replace,
+ * and only when this tail contains that user line, or has no foreign user in front.
  */
-function replaceOwnTurn(prior, incoming) {
+function replaceOwnTurn(prior, incoming, ownTurn) {
+  const userText = String(ownTurn?.userText || "").trim();
+  if (!userText) return null;
   const list = prior || [];
   let userIndex = -1;
   for (let index = list.length - 1; index >= 0; index -= 1) {
-    if (list[index]?.role === "user" && !isSideMessage(list[index])) {
+    const message = list[index];
+    if (message?.role === "user" && !isSideMessage(message) && String(message.text || "").trim() === userText) {
       userIndex = index;
       break;
     }
   }
   if (userIndex < 0) return null;
   const user = list[userIndex];
-  const userText = String(user.text || "").trim();
-  if (!userText) return null;
   const span = list.slice(userIndex);
   const localBots = span.filter((message) => message?.role === "bot" && !isSideMessage(message)).map((message) => String(message.text || ""));
   if (!localBots.length) return null;
   const rows = (incoming || []).filter((message) => message && message.role);
   const tailUser = rows.findIndex((message) => message.role === "user" && String(message.text || "").trim() === userText);
+  const foreignBefore = tailUser >= 0
+    ? rows.slice(0, tailUser).some((message) => message.role === "user")
+    : rows.some((message) => message.role === "user");
+  if (foreignBefore) return null;
+  if (tailUser < 0 && !rows.some(isToolRow)) return null;
   const serverTurn = tailUser >= 0 ? rows.slice(tailUser) : rows;
   const serverBots = serverTurn.filter((message) => message.role === "bot" || message.role === "failure").map((message) => String(message.text || ""));
-  const hasTool = serverTurn.some(isToolRow);
-  if (tailUser < 0 && !hasTool) return null;
   if (!sharesTurnText(localBots, serverBots)) return null;
-  if (!serverBots.length && !hasTool) return null;
+  if (!serverBots.length && !serverTurn.some(isToolRow)) return null;
   const prefix = list.slice(0, userIndex);
   const lead = tailUser > 0 ? rows.slice(0, tailUser) : [];
   const leadFresh = lead.filter((row) => !prefix.some((have) => have?.role === row.role && have?.text === row.text));
@@ -1380,18 +1417,18 @@ function replaceOwnTurn(prior, incoming) {
   const extras = kept.filter((message) => !placed.includes(message));
   return placed.concat(extras);
 }
-export function finishWatchedRows(previous, incoming, reset = false) {
+export function finishWatchedRows(previous, incoming, reset = false, options = {}) {
   const prior = previous || [];
   const rows = incoming || [];
   let next;
   if (reset) {
-    next = reconcileSideQuestion(prior, rows);
+    next = reconcileSideQuestion(prior, rows, "", undefined, { trustServer: !!options.trustServer });
   } else {
     const settled = settleKeptUser(prior, rows);
     const seen = unseenMessages(settled.next, rows);
     const incomingRows = rows.filter((message) => message && message.role);
     const noOverlap = incomingRows.length > 0 && seen.fresh.length === incomingRows.length;
-    const replaced = noOverlap ? replaceOwnTurn(settled.next, rows) : null;
+    const replaced = noOverlap && options.ownTurn ? replaceOwnTurn(settled.next, rows, options.ownTurn) : null;
     const fresh = seen.fresh.filter((row) => !(row?.role === "user" && settled.replaced.has(row.text)));
     next = replaced || settled.next.concat(fresh);
   }

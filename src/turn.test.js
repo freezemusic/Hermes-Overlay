@@ -117,7 +117,7 @@ test("a side question while busy leaves the live stream and run alone", () => {
   const promoted = done.slice(done.indexOf("if (promoted)"), done.indexOf("if (queuedOnly)"));
   assert.match(promoted, /payload\.outcome === "cancelled"/);
   assert.match(promoted, /noteStopped\(id, \{ keepBusy: true \}\)/);
-  assert.match(main, /reconcileSideQuestion\(thread\.messages, shown, thread\.sessionId, nextId \|\| thread\.sessionId\)/);
+  assert.match(main, /reconcileSideQuestion\(thread\.messages, shown, thread\.sessionId, nextId \|\| thread\.sessionId, \{ trustServer \}\)/);
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   assert.match(html, /class="chat-messages"[^>]*tabindex="-1"/);
   const wire = main.slice(main.indexOf("function wireBotPanel"), main.indexOf("function showClosedWarning"));

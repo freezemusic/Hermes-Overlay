@@ -94,7 +94,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -5058,6 +5058,21 @@ function tickVisibleNotices() {
       if (node) paintHistoryNotice(node, message, bot.id);
     });
   }
+  armNoticeClock();
+}
+
+function armNoticeClock() {
+  window.clearTimeout(armNoticeClock.timer);
+  let delay = 60000;
+  const now = Date.now();
+  for (const bot of state.bots) {
+    const thread = threadFor(bot.id);
+    for (const message of thread?.messages || []) {
+      if (!historyNoticePending(message)) continue;
+      delay = Math.min(delay, noticeTickDelay(message, now));
+    }
+  }
+  armNoticeClock.timer = window.setTimeout(tickVisibleNotices, delay);
 }
 
 function bubbleEl(m, id) {
@@ -5425,7 +5440,8 @@ function applyOpened(id, opened, { quiet = false } = {}) {
     : [];
   const liveTools = thread.messages.some((message) => message.role === "tool-run" && message.running);
   if (!switching && !(running && (thread.messages.some((message) => message.live) || liveTools))) {
-    if (quiet && sameChatSnapshot({
+    const trustServer = historyCountMismatch(thread.messages, shown, opened.message_count);
+    if (quiet && !trustServer && sameChatSnapshot({
       sessionId: thread.sessionId,
       sessionExplicit: thread.sessionExplicit,
       sessionReadOnly: thread.sessionReadOnly,
@@ -5441,7 +5457,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
       if (panelShowing(id)) restoreSendErrorBanner(id);
       return;
     }
-    const reconciled = reconcileSideQuestion(thread.messages, shown, thread.sessionId, nextId || thread.sessionId);
+    const reconciled = reconcileSideQuestion(thread.messages, shown, thread.sessionId, nextId || thread.sessionId, { trustServer });
     thread.messages = keepStoppedRows(thread.messages, reconciled);
     if (!thread.messages.some((message) => message?.keptLocal)) thread.cancelHold = false;
     for (const card of keptApprovals) {
@@ -5626,7 +5642,7 @@ function armChatRefresh() {
   window.clearInterval(state.chatRefresh);
   state.chatRefresh = window.setInterval(refreshBotChats, 4000);
   window.clearInterval(armChatRefresh.noticeClock);
-  armChatRefresh.noticeClock = window.setInterval(tickVisibleNotices, 30000);
+  armNoticeClock();
 }
 
 const pendingHistory = new Map();
@@ -6732,7 +6748,14 @@ function deliverCron(id, payload) {
       if (panelFor(id)) renderChat(id);
     }
   }
-  const next = finishWatchedRows(existing, incoming, false);
+  const ownTurn = thread.ownTurnTail?.awaitTail ? thread.ownTurnTail : null;
+  const next = finishWatchedRows(existing, incoming, false, ownTurn ? { ownTurn } : {});
+  if (ownTurn) {
+    thread.ownTurnTail = thread.queuedTurnTail
+      ? { runId: thread.runId || "", userText: thread.queuedTurnTail.userText, sentAt: thread.queuedTurnTail.sentAt, awaitTail: false }
+      : null;
+    thread.queuedTurnTail = null;
+  }
   const cleaned = fresh.length > 0 || next.length !== existing.length;
   if (viewing) {
     if (cleaned) {
@@ -7217,6 +7240,7 @@ function handleHermes(payload) {
     noteRunStarted(thread, payload.run_id || "", { queued: !!payload.queued });
     if (!thread.liveSessionId) noteRunSession(thread);
     thread.stopNoted = false;
+    if (thread.ownTurnTail && !payload.queued) thread.ownTurnTail.runId = String(payload.run_id || thread.runId || "");
     setBotStatus(id, "思考中…", "busy");
     noteActivity(id, { type: "run.started" });
     return;
@@ -7372,6 +7396,9 @@ function handleHermes(payload) {
     }
     dedupeShownReply(runMessages(id));
     settleBlockedCopies(id);
+    if (payload.outcome === "completed" && thread.ownTurnTail && (!finishedId || !thread.ownTurnTail.runId || thread.ownTurnTail.runId === finishedId)) {
+      thread.ownTurnTail.awaitTail = true;
+    }
     if (promoted) {
       if (payload.outcome === "cancelled") {
         noteStopGate(thread, "done");
@@ -7691,6 +7718,7 @@ async function sendActive(id = state.activeId) {
     return;
   }
   const shown = composeUserMessage(text);
+  thread.ownTurnTail = { runId: thread.runId || "", userText: shown.text || text, sentAt: Date.now(), awaitTail: false };
   appendMessage(id, shown);
   const sentId = id;
   noteActivity(sentId, { type: "send" });
@@ -8465,7 +8493,8 @@ function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
     return false;
   }
   thread.heldWatch = null;
-  const next = finishWatchedRows(thread.messages, incoming, true);
+  const trustServer = historyCountMismatch(thread.messages, incoming, opened.message_count);
+  const next = finishWatchedRows(thread.messages, incoming, true, { trustServer });
   const changed = next.length !== thread.messages.length
     || next.some((message, index) => message.text !== thread.messages[index]?.text || message.role !== thread.messages[index]?.role);
   thread.messages = next;
@@ -8528,6 +8557,7 @@ async function sendSideQuestion(id, text) {
 async function sendWhileBusy(id, text) {
   const thread = threadFor(id);
   const shown = composeUserMessage(text);
+  thread.queuedTurnTail = { userText: shown.text || text, sentAt: Date.now() };
   if (retireStoppedTurn(thread.messages)) {
     thread.dropKeptOnSettle = true;
     thread.cancelHold = false;

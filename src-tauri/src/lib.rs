@@ -294,6 +294,8 @@ struct OpenedChat {
     session_source: String,
     read_only: bool,
     read_only_reason: String,
+    /// Raw Hermes `message_count` for this session. A reopen replaces the view when it disagrees.
+    message_count: Option<u64>,
     messages: Vec<hermes::UiMessage>,
     sessions: Vec<SessionChoice>,
 }
@@ -1589,6 +1591,10 @@ async fn open_bot(
             if !quiet {
                 emit_status(&app, &profile, "idle", "閒置");
             }
+            let message_count = sessions
+                .iter()
+                .find(|session| session.id == session_id)
+                .and_then(|session| session.message_count);
             Ok(OpenedChat {
                 sessions: session_choices(&sessions, &session_id),
                 profile,
@@ -1598,6 +1604,7 @@ async fn open_bot(
                 session_source: source,
                 read_only,
                 read_only_reason,
+                message_count,
                 messages,
             })
         }
@@ -1668,6 +1675,7 @@ async fn open_explicit_session(
         session_source: source,
         read_only,
         read_only_reason,
+        message_count: chosen.message_count,
         messages,
     })
 }

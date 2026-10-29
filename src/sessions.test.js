@@ -47,6 +47,8 @@ import {
   storedPinAfterResolve,
   catchUpAfterStop,
   catchUpMessages,
+  historyCountMismatch,
+  noticeTickDelay,
   historyNoticeCopy,
   historyNoticePending,
   historyNoticeId,
@@ -1108,7 +1110,15 @@ test("a notice stays a card in place, and a result-only tail repaints the closed
   const previewAt = cron.lastIndexOf("if (!text) return");
   assert.ok(previewAt > 0);
   assert.ok(cron.lastIndexOf("paintApprovalBadge") < previewAt);
-  assert.match(main, /setInterval\(tickVisibleNotices, 30000\)/);
+  assert.match(main, /noticeTickDelay/);
+  assert.match(main, /armNoticeClock/);
+  const asked = 1_000;
+  const delay = noticeTickDelay({
+    role: "notice",
+    tool_name: "clarify",
+    text: JSON.stringify({ text: "邊隻色？", timeout_s: 150, asked_at: asked }),
+  }, (asked + 25) * 1000);
+  assert.equal(delay, 5000);
 });
 
 test("settling one clarify leaves the other notice, and a matching result tail clears it", () => {
@@ -1223,7 +1233,7 @@ test("a split clarify reply is replaced by the server turn", () => {
     { role: "user", text: "CLSINGLE please ask" },
     { role: "bot", text: "Thinking about CLSINGLE. mock: clarify answer=\"Rust\"" },
   ];
-  const once = finishWatchedRows(local, tail, false);
+  const once = finishWatchedRows(local, tail, false, { ownTurn: { userText: "CLSINGLE please ask" } });
   assert.equal(once.filter((message) => message.text === "CLSINGLE please ask").length, 1);
   assert.equal(once.filter((message) => message.role === "bot" && message.text.includes("Thinking about CLSINGLE")).length, 1);
   assert.equal(once.some((message) => message.text === "Thinking about CLSINGLE."), false);
@@ -1238,7 +1248,7 @@ test("a split clarify reply is replaced by the server turn", () => {
     { role: "bot", text: "Thinking about Q." },
     { role: "tool-run", text: "用咗 1 個工具 · clarify", tools: [{ name: "clarify", tool_call_id: "c9" }] },
     { role: "bot", text: "The answer is Rust." },
-  ], false);
+  ], false, { ownTurn: { userText: "Q" } });
   assert.deepEqual(hermes.map((message) => message.role), ["user", "bot", "tool-run", "bot", "clarify"]);
   assert.equal(hermes.filter((message) => message.role === "user").length, 1);
   assert.equal(hermes.find((message) => message.role === "clarify").status, "timeout");
@@ -1251,6 +1261,33 @@ test("a split clarify reply is replaced by the server turn", () => {
   ], false);
   assert.equal(other.filter((message) => message.role === "user").length, 2);
   assert.equal(other.some((message) => message.text === "Thinking about Q."), true);
+  const mine = [
+    { role: "user", text: "my question" },
+    { role: "bot", text: "Done: found 40 matches." },
+  ];
+  const foreign = [
+    { role: "user", text: "their question" },
+    { role: "bot", text: "Done: found 40 matches. More" },
+    { role: "tool-run", text: "用咗 1 個工具 · terminal", tools: [{ name: "terminal", tool_call_id: "t1" }] },
+    { role: "bot", text: "and then" },
+  ];
+  const kept = finishWatchedRows(mine, foreign, false, { ownTurn: { userText: "my question" } });
+  assert.equal(kept.filter((message) => message.text === "Done: found 40 matches.").length, 1);
+  assert.equal(kept.filter((message) => message.role === "user").length, 2);
+  const bad = [
+    { role: "user", text: "my question" },
+    { role: "user", text: "their question" },
+    { role: "bot", text: "Done: found 40 matches. More" },
+  ];
+  const server = [
+    { role: "user", text: "my question" },
+    { role: "bot", text: "Done: found 40 matches." },
+    ...foreign,
+  ];
+  assert.equal(historyCountMismatch(bad, server), true);
+  const reopened = finishWatchedRows(bad, server, true, { trustServer: true });
+  assert.equal(reopened.filter((message) => message.text === "Done: found 40 matches.").length, 1);
+  assert.equal(reopened.filter((message) => message.role === "user").map((message) => message.text).join("|"), "my question|their question");
 });
 
 test("a stop catch-up keeps the cancelled user line and the stop note", () => {
