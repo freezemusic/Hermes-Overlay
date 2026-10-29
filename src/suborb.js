@@ -104,8 +104,28 @@ export function suborbLabel(row) {
 export function defaultTaskTitle(botName, date = new Date()) {
   const name = String(botName || "").trim() || "Bot";
   const pad = (n) => String(n).padStart(2, "0");
-  const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
   return `${name} 任務 ${stamp}`;
+}
+
+/** A second default title in the same second gets ` (2)`, then ` (3)`. */
+export function uniqueTaskTitle(title, taken = []) {
+  const base = String(title || "").trim();
+  if (!base) return base;
+  const used = new Set((taken || []).map((item) => String(item || "").trim()).filter(Boolean));
+  if (!used.has(base)) return base;
+  for (let n = 2; n < 100; n += 1) {
+    const next = `${base} (${n})`;
+    if (!used.has(next)) return next;
+  }
+  return `${base} (${used.size + 2})`;
+}
+
+export function sessionCreateError(err) {
+  const text = typeof err === "string" ? err : (err?.message || err?.error || "");
+  const line = String(text || "").trim();
+  if (!line || line === "[object Object]") return "開唔到新對話。";
+  return line;
 }
 
 export function normalizeTaskTitle(raw, botName, date = new Date()) {
@@ -213,6 +233,10 @@ export function capSuborbs(ordered, cap = SUBORB_CAP, reservedIds = []) {
  * Later panels step down. A step that would leave the screen, or shorten the
  * card, starts again at the top of the next column.
  */
+function rangesHit(a, b) {
+  return a.left < b.x + b.w && a.left + a.width > b.x && a.top < b.y + b.h && a.top + a.height > b.y;
+}
+
 export function placeSuborbCascade({
   left = 0,
   top = 0,
@@ -224,40 +248,59 @@ export function placeSuborbCascade({
   panelW = 420,
   panelH = 560,
   step = 36,
+  insetTop = 0,
+  insetRight = 0,
+  insetBottom = 0,
+  insetLeft = 0,
+  avoid = null,
 } = {}) {
-  const w = Math.min(panelW, screenW > 0 ? screenW : panelW);
-  const h = Math.min(panelH, screenH > 0 ? screenH : panelH);
-  let baseLeft = Number(left) || 0;
-  let baseTop = Number(top) || 0;
-  if (screenW > 0) baseLeft = Math.min(Math.max(0, baseLeft), Math.max(0, screenW - w));
-  if (screenH > 0) baseTop = Math.min(Math.max(0, baseTop), Math.max(0, screenH - h));
+  const minX = Math.max(0, Number(insetLeft) || 0);
+  const minY = Math.max(0, Number(insetTop) || 0);
+  const maxX = screenW > 0 ? screenW - Math.max(0, Number(insetRight) || 0) : 0;
+  const maxY = screenH > 0 ? screenH - Math.max(0, Number(insetBottom) || 0) : 0;
+  const spanW = maxX > minX ? maxX - minX : (screenW || panelW);
+  const spanH = maxY > minY ? maxY - minY : (screenH || panelH);
+  const w = Math.min(panelW, spanW > 0 ? spanW : panelW);
+  const h = Math.min(panelH, spanH > 0 ? spanH : panelH);
+  const clamp = (value, lo, hi) => Math.min(Math.max(lo, value), Math.max(lo, hi));
+  let baseLeft = clamp(Number(left) || 0, minX, maxX > 0 ? maxX - w : minX);
+  let baseTop = clamp(Number(top) || 0, minY, maxY > 0 ? maxY - h : minY);
   const xSign = screenW > 0 && baseLeft + w / 2 > screenW / 2 ? -1 : 1;
   let col = 0;
   let row = 0;
   const count = Math.max(0, Number(index) || 0);
+  const fitsX = (x) => x >= minX - 0.5 && (maxX <= 0 || x + w <= maxX + 0.5);
+  const fitsY = (y) => y >= minY - 0.5 && (maxY <= 0 || y + h <= maxY + 0.5);
   for (let i = 0; i < count; i += 1) {
     const downTop = baseTop + (row + 1) * step;
     const downLeft = baseLeft + col * step * xSign;
-    const downFits = (screenH <= 0 || downTop + h <= screenH + 0.5)
-      && downLeft >= -0.5
-      && (screenW <= 0 || downLeft + w <= screenW + 0.5);
-    if (downFits) {
+    if (fitsY(downTop) && fitsX(downLeft)) {
       row += 1;
       continue;
     }
     const nextCol = col + 1;
     const wrappedLeft = baseLeft + nextCol * step * xSign;
-    const wrappedFits = wrappedLeft >= -0.5 && (screenW <= 0 || wrappedLeft + w <= screenW + 0.5);
-    if (!wrappedFits) break;
+    if (!fitsX(wrappedLeft)) break;
     col = nextCol;
     row = 0;
   }
-  return {
+  let box = {
     left: baseLeft + col * step * xSign,
     top: baseTop + row * step,
     width: w,
     height: h,
   };
+  if (avoid && avoid.w > 0 && avoid.h > 0 && rangesHit(box, avoid)) {
+    const candidates = [
+      { ...box, left: clamp(avoid.x - w, minX, maxX > 0 ? maxX - w : minX) },
+      { ...box, left: clamp(avoid.x + avoid.w, minX, maxX > 0 ? maxX - w : minX) },
+      { ...box, top: clamp(avoid.y + avoid.h, minY, maxY > 0 ? maxY - h : minY) },
+      { ...box, top: clamp(avoid.y - h, minY, maxY > 0 ? maxY - h : minY) },
+    ];
+    const clear = candidates.find((next) => fitsX(next.left) && fitsY(next.top) && !rangesHit(next, avoid));
+    if (clear) box = clear;
+  }
+  return box;
 }
 
 /** Drop the plan host, the panel, and the shell together. */

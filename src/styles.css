@@ -3546,6 +3546,9 @@ html[data-pass="1"] .plan-hit-host * {
   overflow: visible !important;
   contain: none;
 }
+.morph[data-state="panel"]:not(.is-collapsing) {
+  z-index: 6;
+}
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) {
   z-index: 2;
 }

@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { botIdFromHit, chooseEscapePanel, elementUnderCursor } from "./proximity.js";
+import { botIdFromHit, chooseEscapePanel, elementUnderCursor, keepOverlayKeyTarget } from "./proximity.js";
 import {
   capSuborbs,
   dispatchOrbClick,
   emptySuborbModel,
   placeSuborbCascade,
+  sessionCreateError,
   reconcileSuborbs,
   releaseSuborbNodes,
   suborbPositions,
@@ -468,4 +469,55 @@ test("a cascade that would shrink the card wraps and keeps the full height", () 
   assert.equal(room.top, 40 + 72);
   const stack = main.slice(main.indexOf("function separateOpenShells"), main.indexOf("function layoutShells"));
   assert.match(stack, /kind === "suborb"\) return false/);
+});
+
+test("a repeated default title is unique, and a failed create shows a notice", () => {
+  const aboveTaskbar = placeSuborbCascade({
+    left: 800,
+    top: 240,
+    width: 420,
+    height: 560,
+    index: 0,
+    screenW: 1280,
+    screenH: 800,
+    insetBottom: 48,
+  });
+  assert.equal(aboveTaskbar.height, 560);
+  assert.ok(aboveTaskbar.top + aboveTaskbar.height <= 800 - 48);
+  const clear = placeSuborbCascade({
+    left: 820,
+    top: 80,
+    width: 420,
+    height: 560,
+    index: 0,
+    screenW: 1280,
+    screenH: 800,
+    avoid: { x: 1180, y: 90, w: 44, h: 44 },
+  });
+  const orb = { x: 1180, y: 90, w: 44, h: 44 };
+  const overlaps = clear.left < orb.x + orb.w && clear.left + clear.width > orb.x
+    && clear.top < orb.y + orb.h && clear.top + clear.height > orb.y;
+  assert.equal(overlaps, false);
+  assert.equal(clear.height, 560);
+  assert.equal(keepOverlayKeyTarget(["suborb:writer:job", "writer"], "suborb:writer:job"), true);
+  assert.equal(keepOverlayKeyTarget(["writer"], "writer"), false);
+  assert.equal(sessionCreateError({}), "開唔到新對話。");
+  const created = main.slice(main.indexOf("async function createTaskSession"), main.indexOf("function installNewSessionButton"));
+  assert.match(created, /uniqueTaskTitle\(title, known\)/);
+  assert.match(created, /noteSessionCreateFailed\(fromId, sessionCreateError\(err\)\)/);
+  assert.match(created, /noteSessionCreateFailed\(fromId, "開唔到新對話。"\)/);
+  const focus = main.slice(main.indexOf("function releaseOverlayFocus"), main.indexOf("function paintLocalProximity"));
+  assert.match(focus, /keepOverlayKeyTarget\(openIds, closingId\)/);
+  assert.match(focus, /invoke\("release_overlay_focus", \{ restore \}\)/);
+  const interaction = readFileSync(new URL("../src-tauri/src/interaction.rs", import.meta.url), "utf8");
+  const linux = interaction.slice(interaction.indexOf("pub fn release_overlay_focus"), interaction.indexOf("pub fn focus_owner_name"));
+  assert.match(linux, /if restore/);
+  assert.match(linux, /focus_overlay_webview/);
+  assert.match(linux, /grab_focus/);
+  assert.match(linux, /set_focus\(None/);
+  assert.match(linux, /not\(target_os = "linux"\)/);
+  const windows = linux.slice(linux.indexOf('not(target_os = "linux")'), linux.indexOf("fn focus_overlay_webview"));
+  assert.doesNotMatch(windows, /grab_focus|set_focus\(\)/);
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-collapsing\) \{\s*z-index:\s*6;/);
 });

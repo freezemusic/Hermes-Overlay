@@ -12,6 +12,8 @@ import {
   gatewayProfile,
   isSuborbId,
   normalizeTaskTitle,
+  sessionCreateError,
+  uniqueTaskTitle,
   parseSuborbId,
   dispatchOrbClick,
   composerHoldsSuborb,
@@ -196,6 +198,7 @@ import {
   composerKeyAction,
   chooseEscapePanel,
   escapeTarget,
+  keepOverlayKeyTarget,
   panelCountsAsOpen,
   ownComposerKey,
   MODIFIER_ARM_MS,
@@ -7886,7 +7889,7 @@ function botsFromSettings(settings) {
 async function sendClientCommand(id, text, action) {
   appendMessage(id, { role: "user", text, command: action.command });
   if (action.command === "new") {
-    await createTaskSession(gatewayProfile(id), action.args || "");
+    await createTaskSession(gatewayProfile(id), action.args || "", id);
     return;
   }
   if (action.command === "stop") {
@@ -9131,7 +9134,7 @@ function setupComposer() {
       closeSlash();
       return;
     }
-    releaseOverlayFocus();
+    releaseOverlayFocus(action.kind === "panel" ? action.id : "");
     closeOpenPanel(action.id);
     syncLatch();
   }, true);
@@ -10855,7 +10858,7 @@ function engagedModifier(now = performance.now()) {
   return next.held;
 }
 
-function releaseOverlayFocus() {
+function releaseOverlayFocus(closingId = "") {
   const active = document.activeElement;
   if (active && active !== document.body && typeof active.blur === "function") active.blur();
   state.heldKeys.clear();
@@ -10864,8 +10867,12 @@ function releaseOverlayFocus() {
   window.clearTimeout(modifierArm.timer);
   modifierArm.timer = 0;
   if (!inTauri()) return;
+  const openIds = [...document.querySelectorAll(".morph")]
+    .filter((shell) => panelCountsAsOpen(escapePanelRecord(shell)))
+    .map((shell) => shell.dataset.botId || "");
+  const restore = keepOverlayKeyTarget(openIds, closingId);
   import("@tauri-apps/api/core")
-    .then(({ invoke }) => invoke("release_overlay_focus"))
+    .then(({ invoke }) => invoke("release_overlay_focus", { restore }))
     .catch(() => {});
 }
 
@@ -11495,6 +11502,15 @@ function releaseSuborbGlow(shell) {
   }
 }
 
+function parentDiscAvoid(shell) {
+  const sub = parseSuborbId(shell?.dataset?.botId || "");
+  if (!sub) return null;
+  const btn = shellFor(sub.profile)?.querySelector?.(".morph-orb");
+  const box = btn?.getBoundingClientRect?.();
+  if (!box || box.width < 1 || box.height < 1) return null;
+  return { x: box.x, y: box.y, w: box.width, h: box.height };
+}
+
 function placeSuborbShell(shell) {
   if (!shell) return null;
   if (shell.dataset.dragged === "1") return clampDraggedShell(shell);
@@ -11519,6 +11535,11 @@ function placeSuborbShell(shell) {
       screenH: vh,
       panelW: PANEL_W,
       panelH: PANEL_H,
+      insetTop: state.workInsets?.top || 0,
+      insetRight: state.workInsets?.right || 0,
+      insetBottom: state.workInsets?.bottom || 0,
+      insetLeft: state.workInsets?.left || 0,
+      avoid: parentDiscAvoid(shell),
     })
     : null;
   shell.style.width = `${box ? box.width : placed.width}px`;
@@ -11546,6 +11567,15 @@ function placeSuborbShell(shell) {
     anchor: { x: placed.anchor.x, y: ay, header },
   } : placed;
   if (!box) releaseSuborbGlow(shell);
+  if (box) {
+    const z = Number(shell.style.zIndex);
+    if (!Number.isFinite(z) || z < 6) shell.style.zIndex = "6";
+    const parentId = parseSuborbId(shell.dataset.botId || "")?.profile || "";
+    const parent = parentId ? shellFor(parentId) : null;
+    if (parent && parent.dataset.state !== "panel" && parent.dataset.opening !== "panel") {
+      parent.style.removeProperty("z-index");
+    }
+  }
   return next;
 }
 
@@ -11725,7 +11755,7 @@ async function sendSuborb(id) {
     return;
   }
   if (action?.command === "new") {
-    await createTaskSession(sub.profile, action.args || "");
+    await createTaskSession(sub.profile, action.args || "", id);
     return;
   }
   const text = composeModeWire(typed, composeModeOf(id));
@@ -11806,18 +11836,31 @@ async function stopSuborb(id) {
   }
 }
 
-async function createTaskSession(profile, rawTitle) {
+function noteSessionCreateFailed(fromId, notice) {
+  showActionError(notice);
+  if (fromId) appendMessage(fromId, { role: "commentary", text: notice });
+}
+
+async function createTaskSession(profile, rawTitle, fromId = "") {
   const bot = state.bots.find((item) => item.id === profile);
-  const title = normalizeTaskTitle(rawTitle, bot?.name || profile);
+  const known = [
+    ...(threadFor(profile).sessions || []).map((row) => row?.title || row?.kept_title || ""),
+    ...(state.suborbExtra.get(profile) || []).map((row) => row?.title || ""),
+  ];
+  let title = normalizeTaskTitle(rawTitle, bot?.name || profile);
+  if (!String(rawTitle || "").trim()) title = uniqueTaskTitle(title, known);
   if (state.mode !== "hermes" || !inTauri()) {
-    showActionError("未設定 Hermes gateway。");
+    noteSessionCreateFailed(fromId, "未設定 Hermes gateway。");
     return;
   }
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const created = await invoke("create_task_session", { profile, title });
     const sessionId = created?.session_id || "";
-    if (!sessionId) return;
+    if (!sessionId) {
+      noteSessionCreateFailed(fromId, "開唔到新對話。");
+      return;
+    }
     const row = {
       id: sessionId,
       title: created.title || title,
@@ -11833,7 +11876,7 @@ async function createTaskSession(profile, rawTitle) {
     noteSuborbList(profile, threadFor(profile).sessions || [], threadFor(profile).sessionId || "");
     openSuborbPanel(suborbPanelId(profile, sessionId));
   } catch (err) {
-    showActionError(String(err));
+    noteSessionCreateFailed(fromId, sessionCreateError(err));
   }
 }
 
@@ -11868,7 +11911,7 @@ function toggleNewSessionForm(panel, id) {
     form.append(input, submit);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      void createTaskSession(gatewayProfile(id), input.value);
+      void createTaskSession(gatewayProfile(id), input.value, id);
       form.hidden = true;
       input.value = "";
     });

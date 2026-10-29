@@ -1518,20 +1518,44 @@ pub fn classify_window_ids(
     FocusOwner::Other
 }
 
-/// Drop the page key target after Esc closes a panel. The window stays
+/// Drop the page key target after Esc closes the last panel. The window stays
 /// mapped. Orb opacity keeps following the global poll.
-pub fn release_overlay_focus(window: &tauri::WebviewWindow) {
+/// `restore` keeps the keyboard on the webview while another panel is open,
+/// so the next Esc still arrives. Windows does not touch focus.
+pub fn release_overlay_focus(window: &tauri::WebviewWindow, restore: bool) {
     #[cfg(target_os = "linux")]
     {
         use gtk::prelude::*;
         if let Ok(gtk_window) = window.gtk_window() {
-            gtk_window.set_focus(None::<&gtk::Widget>);
+            if restore {
+                focus_overlay_webview(gtk_window.upcast_ref::<gtk::Widget>());
+            } else {
+                gtk_window.set_focus(None::<&gtk::Widget>);
+            }
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = window;
+        let _ = (window, restore);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn focus_overlay_webview(widget: &gtk::Widget) -> bool {
+    use gtk::prelude::*;
+    if widget.is::<webkit2gtk::WebView>() {
+        widget.grab_focus();
+        return true;
+    }
+    let found = std::cell::Cell::new(false);
+    if let Some(container) = widget.downcast_ref::<gtk::Container>() {
+        container.foreach(|child| {
+            if !found.get() && focus_overlay_webview(child) {
+                found.set(true);
+            }
+        });
+    }
+    found.get()
 }
 
 pub fn focus_owner_name(owner: FocusOwner) -> &'static str {

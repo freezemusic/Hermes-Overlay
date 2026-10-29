@@ -3399,11 +3399,11 @@ fn modifier_down_now(state: State<'_, AppState>) -> bool {
 
 /// Esc closed a panel. The webview must not keep the next Ctrl chord.
 #[tauri::command]
-fn release_overlay_focus(app: AppHandle) {
+fn release_overlay_focus(app: AppHandle, restore: Option<bool>) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    interaction::release_overlay_focus(&window);
+    interaction::release_overlay_focus(&window, restore.unwrap_or(false));
 }
 
 fn suborb_panel_id(profile: &str, session_id: &str) -> String {

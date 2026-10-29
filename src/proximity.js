@@ -545,6 +545,11 @@ export function panelCountsAsOpen({
   return true;
 }
 
+/** Another open panel still needs the webview to receive Esc. */
+export function keepOverlayKeyTarget(openIds, closingId = "") {
+  return (openIds || []).some((id) => id && id !== closingId);
+}
+
 /** Focused open panel, otherwise the highest open panel. Closed sub-orbs are skipped. */
 export function chooseEscapePanel(panels, focusedId = "") {
   const open = (panels || []).filter((panel) => panelCountsAsOpen(panel));

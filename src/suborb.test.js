@@ -15,6 +15,8 @@ import {
   emptySuborbModel,
   isRenewArchiveTitle,
   normalizeTaskTitle,
+  sessionCreateError,
+  uniqueTaskTitle,
   capSuborbs,
   composerHoldsSuborb,
   reconcileSuborbs,
@@ -191,10 +193,18 @@ test("badges prefer waiting, then failure, then a plan, then unread", () => {
 test("titles skip the gateway fork name and the closed suffix", () => {
   assert.equal(suborbLabel({ title: GATEWAY_FORK_TITLE, kept_title: "MT5 wrapper" }), "MT5 wrapper");
   assert.equal(suborbLabel({ title: GATEWAY_FORK_TITLE }), "任務");
-  assert.equal(normalizeTaskTitle("", "mt-coder", new Date("2026-10-29T12:28:00")), "mt-coder 任務 2026-10-29 12:28");
+  assert.equal(normalizeTaskTitle("", "mt-coder", new Date("2026-10-29T12:28:00")), "mt-coder 任務 2026-10-29 12:28:00");
   assert.equal(normalizeTaskTitle(GATEWAY_FORK_TITLE, "mt-coder", new Date("2026-10-29T12:28:00")), defaultTaskTitle("mt-coder", new Date("2026-10-29T12:28:00")));
   assert.equal(normalizeTaskTitle("包裝（已閂）", "mt-coder"), "包裝");
   assert.equal(defaultTaskTitle("mt-coder", new Date("2026-10-29T12:28:00")).includes(GATEWAY_FORK_TITLE), false);
+  const base = defaultTaskTitle("mt-coder", new Date("2026-10-29T12:28:07"));
+  assert.equal(base.endsWith("12:28:07"), true);
+  assert.equal(uniqueTaskTitle(base, []), base);
+  assert.equal(uniqueTaskTitle(base, [base]), `${base} (2)`);
+  assert.equal(uniqueTaskTitle(base, [base, `${base} (2)`]), `${base} (3)`);
+  assert.equal(sessionCreateError(""), "開唔到新對話。");
+  assert.equal(sessionCreateError({ message: "開唔到新對話。" }), "開唔到新對話。");
+  assert.equal(sessionCreateError("[object Object]"), "開唔到新對話。");
 });
 
 test("sub-orbs sit along the parent edge and stay at least 14px", () => {
