@@ -11502,15 +11502,6 @@ function releaseSuborbGlow(shell) {
   }
 }
 
-function parentDiscAvoid(shell) {
-  const sub = parseSuborbId(shell?.dataset?.botId || "");
-  if (!sub) return null;
-  const btn = shellFor(sub.profile)?.querySelector?.(".morph-orb");
-  const box = btn?.getBoundingClientRect?.();
-  if (!box || box.width < 1 || box.height < 1) return null;
-  return { x: box.x, y: box.y, w: box.width, h: box.height };
-}
-
 function placeSuborbShell(shell) {
   if (!shell) return null;
   if (shell.dataset.dragged === "1") return clampDraggedShell(shell);
@@ -11539,7 +11530,6 @@ function placeSuborbShell(shell) {
       insetRight: state.workInsets?.right || 0,
       insetBottom: state.workInsets?.bottom || 0,
       insetLeft: state.workInsets?.left || 0,
-      avoid: parentDiscAvoid(shell),
     })
     : null;
   shell.style.width = `${box ? box.width : placed.width}px`;
@@ -11552,6 +11542,7 @@ function placeSuborbShell(shell) {
   shell.style.right = "auto";
   shell.style.bottom = "auto";
   shell.dataset.edge = placed.edge;
+  shell.dataset.anchor = placed.anchor.x > (box ? box.width : placed.width) / 2 ? "end" : "start";
   shell.dataset.header = header;
   shell.dataset.ax = String(placed.anchor.x);
   shell.dataset.ay = String(ay);

@@ -3004,6 +3004,13 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 .morph[data-anchor="end"] .center-panel > .panel-header,
 .morph[data-anchor="end"] .settings-head { padding-right: 40px; }
 
+.morph[data-kind="suborb"][data-anchor="end"] .center-panel > .panel-header {
+  padding-right: 64px;
+}
+.morph[data-kind="suborb"][data-anchor="start"] .center-panel > .panel-header {
+  padding-left: 64px;
+}
+
 .morph .plan-window .plan-head {
   flex: 0 1 auto;
   width: 100%;

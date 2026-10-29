@@ -484,21 +484,6 @@ test("a repeated default title is unique, and a failed create shows a notice", (
   });
   assert.equal(aboveTaskbar.height, 560);
   assert.ok(aboveTaskbar.top + aboveTaskbar.height <= 800 - 48);
-  const clear = placeSuborbCascade({
-    left: 820,
-    top: 80,
-    width: 420,
-    height: 560,
-    index: 0,
-    screenW: 1280,
-    screenH: 800,
-    avoid: { x: 1180, y: 90, w: 44, h: 44 },
-  });
-  const orb = { x: 1180, y: 90, w: 44, h: 44 };
-  const overlaps = clear.left < orb.x + orb.w && clear.left + clear.width > orb.x
-    && clear.top < orb.y + orb.h && clear.top + clear.height > orb.y;
-  assert.equal(overlaps, false);
-  assert.equal(clear.height, 560);
   assert.equal(keepOverlayKeyTarget(["suborb:writer:job", "writer"], "suborb:writer:job"), true);
   assert.equal(keepOverlayKeyTarget(["writer"], "writer"), false);
   assert.equal(sessionCreateError({}), "開唔到新對話。");
@@ -520,4 +505,41 @@ test("a repeated default title is unique, and a failed create shows a notice", (
   assert.doesNotMatch(windows, /grab_focus|set_focus\(\)/);
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-collapsing\) \{\s*z-index:\s*6;/);
+});
+
+test("three /new panels step 36px instead of opening on the same point", () => {
+  const origin = {
+    left: 526,
+    top: 580,
+    width: 420,
+    height: 240,
+    screenW: 1920,
+    screenH: 1080,
+    panelW: 420,
+    panelH: 560,
+    insetBottom: 48,
+  };
+  const boxes = [0, 1, 2].map((index) => placeSuborbCascade({ ...origin, index }));
+  assert.equal(new Set(boxes.map((box) => `${box.left},${box.top}`)).size, 3);
+  assert.equal(boxes.every((box) => box.height === 560), true);
+  assert.equal(boxes.every((box) => box.top + box.height <= 1080 - 48), true);
+  const room = [0, 1, 2].map((index) => placeSuborbCascade({
+    left: 526,
+    top: 80,
+    width: 420,
+    height: 560,
+    index,
+    screenW: 1920,
+    screenH: 1400,
+    insetBottom: 48,
+  }));
+  assert.equal(room[1].top, room[0].top + 36);
+  assert.equal(room[2].top, room[0].top + 72);
+  assert.equal(room[1].left, room[0].left);
+  const place = main.slice(main.indexOf("function placeSuborbShell"), main.indexOf("function wireSuborbPanel"));
+  assert.match(place, /openSuborbPanelIndex\(shell\)/);
+  assert.doesNotMatch(place, /parentDiscAvoid/);
+  assert.match(place, /dataset\.anchor/);
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.morph\[data-kind="suborb"\]\[data-anchor="end"\] \.center-panel > \.panel-header \{\s*padding-right:\s*64px;/);
 });

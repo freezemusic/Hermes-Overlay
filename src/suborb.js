@@ -230,13 +230,9 @@ export function capSuborbs(ordered, cap = SUBORB_CAP, reservedIds = []) {
 
 /**
  * Place one open sub-orb panel inside the work area at the full card height.
- * Later panels step down. A step that would leave the screen, or shorten the
- * card, starts again at the top of the next column.
+ * Later panels step 36px down. A step that would leave the work area, or
+ * shorten the card, starts again at the top of the next column.
  */
-function rangesHit(a, b) {
-  return a.left < b.x + b.w && a.left + a.width > b.x && a.top < b.y + b.h && a.top + a.height > b.y;
-}
-
 export function placeSuborbCascade({
   left = 0,
   top = 0,
@@ -252,7 +248,6 @@ export function placeSuborbCascade({
   insetRight = 0,
   insetBottom = 0,
   insetLeft = 0,
-  avoid = null,
 } = {}) {
   const minX = Math.max(0, Number(insetLeft) || 0);
   const minY = Math.max(0, Number(insetTop) || 0);
@@ -284,23 +279,12 @@ export function placeSuborbCascade({
     col = nextCol;
     row = 0;
   }
-  let box = {
+  return {
     left: baseLeft + col * step * xSign,
     top: baseTop + row * step,
     width: w,
     height: h,
   };
-  if (avoid && avoid.w > 0 && avoid.h > 0 && rangesHit(box, avoid)) {
-    const candidates = [
-      { ...box, left: clamp(avoid.x - w, minX, maxX > 0 ? maxX - w : minX) },
-      { ...box, left: clamp(avoid.x + avoid.w, minX, maxX > 0 ? maxX - w : minX) },
-      { ...box, top: clamp(avoid.y + avoid.h, minY, maxY > 0 ? maxY - h : minY) },
-      { ...box, top: clamp(avoid.y - h, minY, maxY > 0 ? maxY - h : minY) },
-    ];
-    const clear = candidates.find((next) => fitsX(next.left) && fitsY(next.top) && !rangesHit(next, avoid));
-    if (clear) box = clear;
-  }
-  return box;
 }
 
 /** Drop the plan host, the panel, and the shell together. */
