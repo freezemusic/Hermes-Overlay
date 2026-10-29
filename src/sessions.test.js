@@ -1112,6 +1112,8 @@ test("a notice stays a card in place, and a result-only tail repaints the closed
   assert.ok(cron.lastIndexOf("paintApprovalBadge") < previewAt);
   assert.match(main, /noticeTickDelay/);
   assert.match(main, /armNoticeClock/);
+  const paint = main.slice(main.indexOf("function paintHistoryNotice"), main.indexOf("function tickVisibleNotices"));
+  assert.match(paint, /armNoticeClock\(\)/);
   const asked = 1_000;
   const delay = noticeTickDelay({
     role: "notice",
@@ -1261,6 +1263,27 @@ test("a split clarify reply is replaced by the server turn", () => {
   ], false);
   assert.equal(other.filter((message) => message.role === "user").length, 2);
   assert.equal(other.some((message) => message.text === "Thinking about Q."), true);
+  const ahead = finishWatchedRows([
+    { role: "user", text: "CLSINGLE please ask" },
+    { role: "bot", text: "Thinking about CLSINGLE." },
+    { role: "clarify", promptId: "p1", status: "answered", question: "Pick" },
+    { role: "bot", text: "mock: clarify answer=\"Rust\"" },
+  ], [
+    { role: "user", text: "their question" },
+    { role: "bot", text: "their reply" },
+    { role: "user", text: "CLSINGLE please ask" },
+    { role: "bot", text: "Thinking about CLSINGLE. mock: clarify answer=\"Rust\"" },
+  ], false, { ownTurn: { userText: "CLSINGLE please ask" } });
+  assert.equal(ahead.filter((message) => message.text === "CLSINGLE please ask").length, 1);
+  assert.equal(ahead.filter((message) => message.text === "their question").length, 1);
+  assert.equal(ahead.filter((message) => message.text === "Thinking about CLSINGLE.").length, 0);
+  assert.equal(ahead.filter((message) => message.role === "bot" && message.text.includes("mock: clarify answer")).length, 1);
+  assert.deepEqual(ahead.map((message) => message.text), [
+    "their question",
+    "their reply",
+    "CLSINGLE please ask",
+    "Thinking about CLSINGLE. mock: clarify answer=\"Rust\"",
+  ]);
   const mine = [
     { role: "user", text: "my question" },
     { role: "bot", text: "Done: found 40 matches." },

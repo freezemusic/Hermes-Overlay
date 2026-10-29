@@ -5041,9 +5041,11 @@ function paintHistoryNotice(node, message, id) {
   }
   if (title.textContent !== copy.title) title.textContent = copy.title;
   if (detail.textContent !== copy.detail) detail.textContent = copy.detail;
+  armNoticeClock();
 }
 
 function tickVisibleNotices() {
+  armNoticeClock.due = 0;
   for (const bot of state.bots) {
     const shell = shellFor(bot.id);
     const open = shell && (shell.dataset.state === "panel" || shell.dataset.visual === "panel");
@@ -5062,9 +5064,8 @@ function tickVisibleNotices() {
 }
 
 function armNoticeClock() {
-  window.clearTimeout(armNoticeClock.timer);
-  let delay = 60000;
   const now = Date.now();
+  let delay = 60000;
   for (const bot of state.bots) {
     const thread = threadFor(bot.id);
     for (const message of thread?.messages || []) {
@@ -5072,7 +5073,14 @@ function armNoticeClock() {
       delay = Math.min(delay, noticeTickDelay(message, now));
     }
   }
-  armNoticeClock.timer = window.setTimeout(tickVisibleNotices, delay);
+  const due = now + delay;
+  if (armNoticeClock.due && armNoticeClock.due <= due + 50) return;
+  window.clearTimeout(armNoticeClock.timer);
+  armNoticeClock.due = due;
+  armNoticeClock.timer = window.setTimeout(() => {
+    armNoticeClock.due = 0;
+    tickVisibleNotices();
+  }, delay);
 }
 
 function bubbleEl(m, id) {
@@ -5486,6 +5494,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   thread.sessions = sessions;
   thread.loading = false;
   rememberPlan(thread, thread.messages);
+  armNoticeClock();
   const keptError = sendErrorDraft(state.sendErrors, id, thread.sessionId);
   const closedError = sendErrorKind(state.sendErrors, id, thread.sessionId) === "closed";
   const pickedRow = (thread.sessions || []).find((row) => row.id === thread.sessionId);
@@ -6761,6 +6770,7 @@ function deliverCron(id, payload) {
     if (cleaned) {
       thread.messages = next;
       if (panelFor(id)) renderChat(id);
+      armNoticeClock();
     }
   } else if (cleaned) {
     thread.bySession.set(sessionId, next);

@@ -1389,10 +1389,7 @@ function replaceOwnTurn(prior, incoming, ownTurn) {
   if (!localBots.length) return null;
   const rows = (incoming || []).filter((message) => message && message.role);
   const tailUser = rows.findIndex((message) => message.role === "user" && String(message.text || "").trim() === userText);
-  const foreignBefore = tailUser >= 0
-    ? rows.slice(0, tailUser).some((message) => message.role === "user")
-    : rows.some((message) => message.role === "user");
-  if (foreignBefore) return null;
+  if (tailUser < 0 && rows.some((message) => message.role === "user")) return null;
   if (tailUser < 0 && !rows.some(isToolRow)) return null;
   const serverTurn = tailUser >= 0 ? rows.slice(tailUser) : rows;
   const serverBots = serverTurn.filter((message) => message.role === "bot" || message.role === "failure").map((message) => String(message.text || ""));
