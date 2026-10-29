@@ -208,11 +208,56 @@ export function capSuborbs(ordered, cap = SUBORB_CAP, reservedIds = []) {
   };
 }
 
-/** Cascade open sub-orb panels so a second one is not the same box. */
-export function suborbPanelShift(index = 0) {
-  const step = 36;
-  const n = Math.max(0, Number(index) || 0);
-  return { x: n * step, y: n * step };
+/**
+ * Place one open sub-orb panel inside the work area at the full card height.
+ * Later panels step down. A step that would leave the screen, or shorten the
+ * card, starts again at the top of the next column.
+ */
+export function placeSuborbCascade({
+  left = 0,
+  top = 0,
+  width = 420,
+  height = 560,
+  index = 0,
+  screenW = 1280,
+  screenH = 800,
+  panelW = 420,
+  panelH = 560,
+  step = 36,
+} = {}) {
+  const w = Math.min(panelW, screenW > 0 ? screenW : panelW);
+  const h = Math.min(panelH, screenH > 0 ? screenH : panelH);
+  let baseLeft = Number(left) || 0;
+  let baseTop = Number(top) || 0;
+  if (screenW > 0) baseLeft = Math.min(Math.max(0, baseLeft), Math.max(0, screenW - w));
+  if (screenH > 0) baseTop = Math.min(Math.max(0, baseTop), Math.max(0, screenH - h));
+  const xSign = screenW > 0 && baseLeft + w / 2 > screenW / 2 ? -1 : 1;
+  let col = 0;
+  let row = 0;
+  const count = Math.max(0, Number(index) || 0);
+  for (let i = 0; i < count; i += 1) {
+    const downTop = baseTop + (row + 1) * step;
+    const downLeft = baseLeft + col * step * xSign;
+    const downFits = (screenH <= 0 || downTop + h <= screenH + 0.5)
+      && downLeft >= -0.5
+      && (screenW <= 0 || downLeft + w <= screenW + 0.5);
+    if (downFits) {
+      row += 1;
+      continue;
+    }
+    const nextCol = col + 1;
+    const wrappedLeft = baseLeft + nextCol * step * xSign;
+    const wrappedFits = wrappedLeft >= -0.5 && (screenW <= 0 || wrappedLeft + w <= screenW + 0.5);
+    if (!wrappedFits) break;
+    col = nextCol;
+    row = 0;
+  }
+  return {
+    left: baseLeft + col * step * xSign,
+    top: baseTop + row * step,
+    width: w,
+    height: h,
+  };
 }
 
 /** Drop the plan host, the panel, and the shell together. */

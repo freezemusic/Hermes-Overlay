@@ -3538,18 +3538,27 @@ html[data-pass="1"] .plan-hit-host * {
   background: transparent;
   box-shadow: none;
   filter: none;
+  overflow: visible !important;
+  contain: none;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc,
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc::before {
+  overflow: visible !important;
+  contain: none;
 }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) {
   z-index: 2;
 }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .bot-panel,
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .plan-window,
-.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-stroke {
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-stroke,
+.plan-hit-host:has(> .plan-window[hidden]) {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
   border: 0;
   box-shadow: none;
+  overflow: visible;
 }
 .morph[data-kind="suborb"] .bot-btn .bot-hit {
   inset: 0;

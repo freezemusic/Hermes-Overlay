@@ -529,6 +529,30 @@ export function guardPublishedHits({
  * Otherwise the panel that holds focus, then the highest open panel.
  * A focused field does not spend the key on blur alone.
  */
+/** A shell that still has a visible open card. A closed sub-orb does not count. */
+export function panelCountsAsOpen({
+  state = "",
+  opening = "",
+  collapsing = false,
+  kind = "",
+  open = false,
+  hidden = false,
+} = {}) {
+  if (collapsing) return false;
+  if (state !== "panel" && opening !== "panel") return false;
+  if (kind === "suborb" && !open && opening !== "panel") return false;
+  if (hidden && opening !== "panel") return false;
+  return true;
+}
+
+/** Focused open panel, otherwise the highest open panel. Closed sub-orbs are skipped. */
+export function chooseEscapePanel(panels, focusedId = "") {
+  const open = (panels || []).filter((panel) => panelCountsAsOpen(panel));
+  if (focusedId && open.some((panel) => panel.id === focusedId)) return focusedId;
+  const ranked = [...open].sort((a, b) => (Number(b.z) || 0) - (Number(a.z) || 0));
+  return ranked[0]?.id || "";
+}
+
 export function escapeTarget({
   menuOpen = false,
   dropdownOpen = false,

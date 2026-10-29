@@ -19,8 +19,8 @@ import {
   releaseSuborbNodes,
   suborbLabel,
   suborbPublishesPanel,
+  placeSuborbCascade,
   suborbPanelId,
-  suborbPanelShift,
   suborbPositions,
   suborbSizePx,
   tailSignals,
@@ -194,7 +194,9 @@ import {
   botIdFromHit,
   POINTER_QUIET_MS,
   composerKeyAction,
+  chooseEscapePanel,
   escapeTarget,
+  panelCountsAsOpen,
   ownComposerKey,
   MODIFIER_ARM_MS,
   nextDropdownOpen,
@@ -575,6 +577,7 @@ function layoutShell(shell) {
       ax: placed.anchor?.x || Number(shell.dataset.ax) || ORB / 2,
       ay: placed.anchor?.y || Number(shell.dataset.ay) || ORB / 2,
     }), shell.dataset.visual || shell.dataset.state || "orb");
+    releaseSuborbGlow(shell);
     return;
   }
   if (shell.dataset.rehearsal === "1") return;
@@ -615,6 +618,7 @@ function parkFinalBox(shell) {
 
 function separateOpenShells(shells, extra) {
   const open = shells.filter((shell) => {
+    if (shell?.dataset?.kind === "suborb") return false;
     if (shell === extra) return true;
     if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return false;
     if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return false;
@@ -8890,19 +8894,30 @@ async function refreshSlash() {
   renderSlashPopup();
 }
 
+function escapePanelRecord(shell) {
+  const body = shell?.querySelector?.(".bot-panel, .center-panel");
+  return {
+    id: shell?.dataset?.botId || "",
+    kind: shell?.dataset?.kind || "",
+    state: shell?.dataset?.state || "",
+    opening: shell?.dataset?.opening || "",
+    collapsing: !!shell?.classList?.contains("is-collapsing"),
+    open: !!shell?.classList?.contains("open"),
+    hidden: !!body?.hidden,
+    z: Number(shell?.style?.zIndex) || 0,
+  };
+}
+
 function topOpenPanelId() {
-  const shells = [...document.querySelectorAll(".morph")].filter(
-    (shell) => shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing"),
-  );
-  shells.sort((a, b) => (Number(b.style.zIndex) || 0) - (Number(a.style.zIndex) || 0));
-  return shells[0]?.dataset.botId || "";
+  const panels = [...document.querySelectorAll(".morph")].map(escapePanelRecord);
+  return chooseEscapePanel(panels, "");
 }
 
 function focusedOpenPanelId() {
   const shell = document.activeElement?.closest?.(".morph");
-  if (!shell || shell.classList.contains("is-collapsing")) return "";
-  if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel") return "";
-  return shell.dataset.botId || "";
+  const record = escapePanelRecord(shell);
+  if (!panelCountsAsOpen(record)) return "";
+  return record.id || "";
 }
 
 function closeOpenPanel(id) {
@@ -11455,6 +11470,31 @@ function paintSuborbDisc(id, row) {
   btn.title = label;
 }
 
+function releaseSuborbGlow(shell) {
+  if (!shell || shell.dataset.kind !== "suborb") return;
+  if (shell.dataset.state === "panel" || shell.dataset.opening === "panel") return;
+  if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+  const clear = (el) => {
+    if (!el) return;
+    el.getAnimations?.().forEach((anim) => {
+      let frames = [];
+      try { frames = anim.effect?.getKeyframes?.() || []; } catch { frames = []; }
+      if (!frames.some((frame) => frame?.clipPath)) return;
+      try { anim.cancel(); } catch { /* already idle */ }
+    });
+    el.style.clipPath = "none";
+    el.style.overflow = "visible";
+  };
+  clear(shell);
+  clear(shell.querySelector(".morph-fill"));
+  clear(shell.querySelector(".morph-stroke"));
+  const disc = shell.querySelector(".suborb-disc");
+  if (disc) {
+    disc.style.overflow = "visible";
+    disc.style.clipPath = "none";
+  }
+}
+
 function placeSuborbShell(shell) {
   if (!shell) return null;
   if (shell.dataset.dragged === "1") return clampDraggedShell(shell);
@@ -11464,25 +11504,49 @@ function placeSuborbShell(shell) {
   const homeX = Number(shell.dataset.homeX);
   const homeY = Number(shell.dataset.homeY);
   const openPanel = shell.dataset.state === "panel" || shell.dataset.opening === "panel";
-  const shift = openPanel ? suborbPanelShift(openSuborbPanelIndex(shell)) : { x: 0, y: 0 };
-  const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2 + shift.x;
-  const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2 + shift.y;
+  const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2;
+  const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
   shell.style.setProperty("--suborb-size", `${size}px`);
   const placed = placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
-  shell.style.width = `${placed.width}px`;
-  shell.style.height = `${placed.height}px`;
-  shell.style.left = `${placed.left}px`;
-  shell.style.top = `${placed.top}px`;
+  const box = openPanel
+    ? placeSuborbCascade({
+      left: placed.left,
+      top: placed.top,
+      width: placed.width,
+      height: placed.height,
+      index: openSuborbPanelIndex(shell),
+      screenW: vw,
+      screenH: vh,
+      panelW: PANEL_W,
+      panelH: PANEL_H,
+    })
+    : null;
+  shell.style.width = `${box ? box.width : placed.width}px`;
+  shell.style.height = `${box ? box.height : placed.height}px`;
+  shell.style.left = `${box ? box.left : placed.left}px`;
+  shell.style.top = `${box ? box.top : placed.top}px`;
+  const header = placed.header === "bottom" ? "bottom" : "top";
+  const height = box ? box.height : placed.height;
+  const ay = box ? (header === "bottom" ? height - ORB / 2 : ORB / 2) : placed.anchor.y;
   shell.style.right = "auto";
   shell.style.bottom = "auto";
   shell.dataset.edge = placed.edge;
-  shell.dataset.header = placed.header === "bottom" ? "bottom" : "top";
+  shell.dataset.header = header;
   shell.dataset.ax = String(placed.anchor.x);
-  shell.dataset.ay = String(placed.anchor.y);
+  shell.dataset.ay = String(ay);
   shell.style.setProperty("--ax", `${placed.anchor.x}px`);
-  shell.style.setProperty("--ay", `${placed.anchor.y}px`);
-  shell.style.transformOrigin = `${placed.anchor.x}px ${placed.anchor.y}px`;
-  return placed;
+  shell.style.setProperty("--ay", `${ay}px`);
+  shell.style.transformOrigin = `${placed.anchor.x}px ${ay}px`;
+  const next = box ? {
+    ...placed,
+    left: box.left,
+    top: box.top,
+    width: box.width,
+    height: box.height,
+    anchor: { x: placed.anchor.x, y: ay, header },
+  } : placed;
+  if (!box) releaseSuborbGlow(shell);
+  return next;
 }
 
 function wireSuborbPanel(panel, id) {
@@ -11607,6 +11671,8 @@ function closeSuborbPanel(id) {
     if (active && panel.contains(active)) active.blur();
   }
   if (shell) {
+    shell.classList.remove("open");
+    shell.style.zIndex = "0";
     shell.dataset.intent = "close";
     void finishClose(shell).finally(() => {
       if (panel) panel.hidden = true;

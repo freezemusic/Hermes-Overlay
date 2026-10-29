@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { botIdFromHit, elementUnderCursor } from "./proximity.js";
+import { botIdFromHit, chooseEscapePanel, elementUnderCursor } from "./proximity.js";
 import {
   capSuborbs,
   dispatchOrbClick,
   emptySuborbModel,
+  placeSuborbCascade,
   reconcileSuborbs,
   releaseSuborbNodes,
-  suborbPanelShift,
   suborbPositions,
   suborbPublishesPanel,
   suborbSizePx,
@@ -371,10 +371,29 @@ test("a new session with five discs stays on the rail and opens a shifted panel"
   assert.equal(kept.shown.some((item) => item.id === "fresh"), true);
   assert.equal(kept.shown.length, 6);
   assert.deepEqual(capSuborbs(kept.shown, 5, ["fresh"]).shown.map((item) => item.id).includes("fresh"), true);
-  assert.deepEqual(suborbPanelShift(0), { x: 0, y: 0 });
-  assert.deepEqual(suborbPanelShift(1), { x: 36, y: 36 });
+  const first = placeSuborbCascade({
+    left: 860,
+    top: 40,
+    width: 420,
+    height: 560,
+    index: 0,
+    screenW: 1280,
+    screenH: 800,
+  });
+  const stepped = placeSuborbCascade({
+    left: 860,
+    top: 40,
+    width: 420,
+    height: 560,
+    index: 1,
+    screenW: 1280,
+    screenH: 800,
+  });
+  assert.equal(first.height, 560);
+  assert.equal(stepped.height, 560);
+  assert.equal(stepped.top, first.top + 36);
   const place = main.slice(main.indexOf("function placeSuborbShell"), main.indexOf("function wireSuborbPanel"));
-  assert.match(place, /suborbPanelShift/);
+  assert.match(place, /placeSuborbCascade/);
   const escape = main.slice(main.indexOf("function closeOpenPanel"), main.indexOf("let composerField"));
   assert.match(escape, /isSuborbId\(id\)\) closeSuborbPanel\(id\)/);
   const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
@@ -383,4 +402,70 @@ test("a new session with five discs stays on the rail and opens a shifted panel"
   assert.ok(actionAt >= 0 && actionAt < endedAt);
   const keys = main.slice(main.indexOf("function wireBotPanel"), main.indexOf("function mountBotPanel", main.indexOf("function wireBotPanel")));
   assert.match(keys, /bareNewSubmits\(picked, input\?\.value/);
+});
+
+test("an idle sub-orb glow is not clipped by the hidden panel shell", () => {
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const idle = css.slice(css.indexOf('.morph[data-kind="suborb"][data-state="orb"]'));
+  assert.match(idle, /overflow:\s*visible !important/);
+  assert.match(idle, /\.suborb-disc::before/);
+  assert.match(idle, /contain:\s*none/);
+  assert.match(idle, /\.plan-hit-host:has\(> \.plan-window\[hidden\]\)/);
+  assert.doesNotMatch(css, /clip-path:\s*none !important/);
+  const glow = main.slice(main.indexOf("function releaseSuborbGlow"), main.indexOf("function placeSuborbShell"));
+  assert.match(glow, /clipPath = "none"/);
+  assert.match(glow, /overflow = "visible"/);
+  assert.match(glow, /getAnimations/);
+  const layout = main.slice(main.indexOf("function layoutShell"), main.indexOf("function parkFinalBox"));
+  assert.match(layout, /releaseSuborbGlow\(shell\)/);
+});
+
+test("Esc after a closed sub-orb closes the main panel that is still open", () => {
+  const panels = [
+    { id: "suborb:writer:job", kind: "suborb", state: "panel", open: false, hidden: true, collapsing: false, z: 9 },
+    { id: "writer", kind: "bot", state: "panel", open: true, hidden: false, collapsing: false, z: 2 },
+  ];
+  assert.equal(chooseEscapePanel(panels, "suborb:writer:job"), "writer");
+  assert.equal(chooseEscapePanel(panels, ""), "writer");
+  assert.equal(chooseEscapePanel([
+    { id: "suborb:writer:job", kind: "suborb", state: "panel", open: true, hidden: false, z: 9 },
+    { id: "writer", kind: "bot", state: "panel", open: true, hidden: false, z: 2 },
+  ], "suborb:writer:job"), "suborb:writer:job");
+  const top = main.slice(main.indexOf("function topOpenPanelId"), main.indexOf("function focusedOpenPanelId"));
+  assert.match(top, /chooseEscapePanel\(panels, ""\)/);
+  const close = main.slice(main.indexOf("function closeSuborbPanel"), main.indexOf("async function loadSuborb"));
+  const drop = close.indexOf('classList.remove("open")');
+  const morph = close.indexOf("finishClose(shell)");
+  assert.ok(drop >= 0 && drop < morph);
+});
+
+test("a cascade that would shrink the card wraps and keeps the full height", () => {
+  const short = placeSuborbCascade({
+    left: 800,
+    top: 500,
+    width: 420,
+    height: 240,
+    index: 1,
+    screenW: 1280,
+    screenH: 800,
+    panelW: 420,
+    panelH: 560,
+  });
+  assert.equal(short.height, 560);
+  assert.ok(short.top + short.height <= 800);
+  assert.ok(short.left >= 0 && short.left + short.width <= 1280);
+  assert.ok(short.left < 800);
+  const room = placeSuborbCascade({
+    left: 40,
+    top: 40,
+    width: 420,
+    height: 560,
+    index: 2,
+    screenW: 1280,
+    screenH: 900,
+  });
+  assert.equal(room.height, 560);
+  assert.equal(room.top, 40 + 72);
+  const stack = main.slice(main.indexOf("function separateOpenShells"), main.indexOf("function layoutShells"));
+  assert.match(stack, /kind === "suborb"\) return false/);
 });
