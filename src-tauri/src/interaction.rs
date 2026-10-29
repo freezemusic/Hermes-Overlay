@@ -1376,6 +1376,14 @@ pub fn is_orb_hit(rect: &HitRect) -> bool {
     rect.round || rect.id.starts_with("bot:")
 }
 
+/// Sub-orb discs use a fixed 0.18 floor (R-SO-08). Main orbs keep `min_opacity`.
+pub fn suborb_hit(id: &str) -> bool {
+    id.starts_with("suborb:")
+        || id.starts_with("suborb-more:")
+        || id.starts_with("bot:suborb:")
+        || id.starts_with("bot:suborb-more:")
+}
+
 /// Per-element frame.
 /// Panels are opaque and captured until the modifier is held, then they wash out
 /// and capture nothing. Orbs are opaque and click-through. The orb whose hit
@@ -1420,7 +1428,12 @@ pub fn interaction_frame(
                     None => ORB_PROXIMITY_PX + 1.0,
                 };
                 let awake = here && held;
-                (orb_visual_opacity(distance, held, cfg.min_opacity), awake)
+                let floor = if suborb_hit(&rect.id) {
+                    0.18
+                } else {
+                    cfg.min_opacity
+                };
+                (orb_visual_opacity(distance, held, floor), awake)
             } else if is_panel_hit(rect) {
                 let opacity = if cursor.is_some() && held {
                     cfg.min_opacity
@@ -4957,5 +4970,44 @@ mod tests {
         let (own, reset) = confirm_focus_owner(samples, FocusOwner::Own);
         assert_eq!(own, FocusOwner::Own);
         assert_eq!(reset, 0);
+    }
+
+    #[test]
+    fn suborb_fades_to_0_18_and_stays_click_through_until_ctrl() {
+        let cfg = InteractionConfig {
+            modifier: "ctrl".into(),
+            fade_enabled: true,
+            fade_distance: 120.0,
+            min_opacity: 0.25,
+        };
+        let sub = HitRect {
+            id: "bot:suborb:mt-coder:task_1".into(),
+            x: 10.0,
+            y: 10.0,
+            w: 20.0,
+            h: 20.0,
+            z: 1,
+            round: true,
+        };
+        let main = HitRect {
+            id: "bot:mt-coder".into(),
+            x: 200.0,
+            y: 10.0,
+            w: 44.0,
+            h: 44.0,
+            z: 1,
+            round: true,
+        };
+        let near = interaction_frame(false, &[], Some((20.0, 20.0)), &[sub.clone(), main.clone()], 12.0, &cfg);
+        let sub_near = near.iter().find(|frame| frame.id == sub.id).unwrap();
+        let main_far = near.iter().find(|frame| frame.id == main.id).unwrap();
+        assert_eq!(sub_near.opacity, 0.18);
+        assert!(!sub_near.capture);
+        assert_eq!(main_far.opacity, 1.0);
+        let held = interaction_frame(true, &[], Some((20.0, 20.0)), &[sub.clone()], 12.0, &cfg);
+        assert_eq!(held[0].opacity, 1.0);
+        assert!(held[0].capture);
+        assert!(suborb_hit(&sub.id));
+        assert!(!suborb_hit(&main.id));
     }
 }

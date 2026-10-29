@@ -4936,6 +4936,7 @@ mod tests {
             kanban_board: String::new(),
             show_bot_names: false,
             show_tool_detail: false,
+            suborb_pins: std::collections::BTreeMap::new(),
             bots: vec![
                 bot("researcher", "20261015_researcher", true, 1792546080.05),
                 bot("writer", "20261015_writer", true, 1792546210.56),

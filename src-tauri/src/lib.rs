@@ -207,6 +207,7 @@ struct PublicSettings {
     needs_setup: bool,
     show_bot_names: bool,
     show_tool_detail: bool,
+    suborb_pins: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -313,6 +314,9 @@ struct SessionChoice {
     end_reason: String,
     /// Closed chat's title when this row still has the gateway default. Empty otherwise.
     kept_title: String,
+    /// Cheap change-check fields from the session list. Not a transcript.
+    message_count: Option<u64>,
+    started_at: f64,
 }
 
 #[derive(Serialize)]
@@ -770,6 +774,8 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
             ended: session.ended,
             end_reason: session.end_reason.clone(),
             kept_title: String::new(),
+            message_count: session.message_count,
+            started_at: session.started_at,
         })
         .collect();
     let routed_away = sessions.iter().any(|session| session.id == active && !hermes::session_route_matches(session));
@@ -787,6 +793,8 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
                 ended: false,
                 end_reason: String::new(),
                 kept_title: String::new(),
+                message_count: None,
+                started_at: 0.0,
             },
         );
     }
@@ -1036,6 +1044,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         needs_setup,
         show_bot_names: cfg.show_bot_names,
         show_tool_detail: cfg.show_tool_detail,
+        suborb_pins: cfg.suborb_pins.clone(),
     })
 }
 
@@ -1239,6 +1248,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         interaction,
         show_bot_names: input.show_bot_names,
         show_tool_detail: input.show_tool_detail,
+        suborb_pins: previous.suborb_pins.clone(),
     };
     config::save(&config_path(&app)?, &cfg)?;
     if let Some(state) = state.as_ref() {
@@ -3394,6 +3404,365 @@ fn release_overlay_focus(app: AppHandle) {
     interaction::release_overlay_focus(&window);
 }
 
+fn suborb_panel_id(profile: &str, session_id: &str) -> String {
+    format!("suborb:{profile}:{session_id}")
+}
+
+fn suborb_title(raw: &str) -> Result<String, String> {
+    let title = raw.trim();
+    if title.is_empty() {
+        return Err("要有標題。".into());
+    }
+    if title == "Continue previous conversation" {
+        return Err("標題唔用。".into());
+    }
+    if title.len() > 120 {
+        return Err("標題太長。".into());
+    }
+    Ok(title.to_string())
+}
+
+#[derive(Serialize)]
+struct CreatedSession {
+    session_id: String,
+    title: String,
+}
+
+/// A new Hermes session for one bot. Does not write the main orb pin.
+#[tauri::command]
+async fn create_task_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    title: String,
+) -> Result<CreatedSession, String> {
+    let title = suborb_title(&title)?;
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?.clone();
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let session_id = hermes::create_session(&state.http, &root, &key, Some(title.as_str()))
+        .await
+        .map_err(|err| match &err {
+            HermesError::Http { status: 400, .. } => "開唔到新對話。".into(),
+            _ => hermes::explain(&err),
+        })?;
+    Ok(CreatedSession { session_id, title })
+}
+
+/// Load one task session for a sub-orb panel. Does not write config.json.
+#[tauri::command]
+async fn open_suborb(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    session_id: String,
+) -> Result<OpenedChat, String> {
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("未揀對話".into());
+    }
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?.clone();
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let listed = hermes::list_sessions_for_bot_chat(&state.http, &root, &key)
+        .await
+        .map_err(|err| explain(&err))?;
+    let Some(chosen) = listed.iter().find(|session| session.id == session_id) else {
+        return Err("搵唔到呢個對話".into());
+    };
+    let read_only = hermes::session_read_only(&chosen.source);
+    let read_only_reason = if read_only {
+        hermes::session_read_only_reason().to_string()
+    } else {
+        String::new()
+    };
+    let messages = hermes::fetch_counted_messages(
+        &state.http,
+        &root,
+        &key,
+        &session_id,
+        chosen.message_count,
+    )
+    .await
+    .map_err(|err| explain(&err))?;
+    remember_watched(&state.bot_chats, &profile, &session_id, &messages, &listed);
+    Ok(OpenedChat {
+        sessions: session_choices(&listed, &session_id),
+        profile,
+        session_id,
+        session_explicit: false,
+        session_anchor: 0.0,
+        session_source: chosen.source.clone(),
+        read_only,
+        read_only_reason,
+        message_count: chosen.message_count,
+        messages,
+    })
+}
+
+#[derive(Serialize)]
+struct SessionTail {
+    session_id: String,
+    message_count: u64,
+    messages: Vec<hermes::UiMessage>,
+    settled: bool,
+}
+
+/// One tail page for a session whose list stamp changed. Not a full transcript.
+#[tauri::command]
+async fn peek_session_tail(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    session_id: String,
+    message_count: Option<u64>,
+) -> Result<SessionTail, String> {
+    let session_id = session_id.trim().to_string();
+    let count = message_count.unwrap_or(0);
+    if session_id.is_empty() {
+        return Err("未揀對話".into());
+    }
+    if count == 0 {
+        return Ok(SessionTail {
+            session_id,
+            message_count: 0,
+            messages: Vec::new(),
+            settled: false,
+        });
+    }
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?.clone();
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let from = count.saturating_sub(40);
+    let limit = (count - from).max(1);
+    let page = hermes::fetch_message_page(&state.http, &root, &key, &session_id, from, limit)
+        .await
+        .map_err(|err| explain(&err))?;
+    let settled = page
+        .messages
+        .last()
+        .map(|message| message.role == "bot" || message.role == "assistant")
+        .unwrap_or(false);
+    Ok(SessionTail {
+        session_id,
+        message_count: count,
+        messages: page.messages,
+        settled,
+    })
+}
+
+/// Send on a sub-orb session. The main orb pin is not read or written.
+#[tauri::command]
+async fn send_suborb(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    session_id: String,
+    text: String,
+    queue: Option<bool>,
+    side: Option<bool>,
+) -> Result<(), String> {
+    let text = text.trim().to_string();
+    let session_id = session_id.trim().to_string();
+    if text.is_empty() || session_id.is_empty() {
+        return Err("訊息係空".into());
+    }
+    let side_turn = side.unwrap_or(false);
+    let queued = queue.unwrap_or(false);
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?.clone();
+    let key = profile_key(&profile)?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let panel = suborb_panel_id(&profile, &session_id);
+    let (stop, stop_requested, generation) = if side_turn {
+        (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            u64::MAX,
+        )
+    } else {
+        let control = begin_stream(&state, &panel, !queued);
+        (
+            Arc::clone(&control.abort),
+            Arc::clone(&control.stop_requested),
+            control.generation,
+        )
+    };
+    let streams = Arc::clone(&state.streams);
+    let run_ids = Arc::clone(&state.run_ids);
+    let queued_run_ids = Arc::clone(&state.queued_run_ids);
+    let http = state.http.clone();
+    if !side_turn {
+        let busy_label = if queued {
+            "排隊中，等佢講完就會行"
+        } else {
+            "思考中…"
+        };
+        emit_status(&app, &panel, "busy", busy_label);
+    }
+    tauri::async_runtime::spawn(async move {
+        let mut emit_turn = |event: TurnEvent| {
+            if !side_turn {
+                let mut streaming = run_ids.lock().unwrap_or_else(|err| err.into_inner());
+                let mut waiting = queued_run_ids.lock().unwrap_or_else(|err| err.into_inner());
+                let current = streaming.get(&panel).cloned().unwrap_or_default();
+                let queued_id = waiting.get(&panel).cloned().unwrap_or_default();
+                match &event {
+                    TurnEvent::Started { run_id } => {
+                        if let Some(id) = hermes::approval_run_id(run_id) {
+                            let (next, next_queued) =
+                                hermes::note_streaming_run(&current, &queued_id, id, queued);
+                            if next.is_empty() {
+                                streaming.remove(&panel);
+                            } else {
+                                streaming.insert(panel.clone(), next);
+                            }
+                            if next_queued.is_empty() {
+                                waiting.remove(&panel);
+                            } else {
+                                waiting.insert(panel.clone(), next_queued);
+                            }
+                        }
+                    }
+                    TurnEvent::Finished { run_id, .. } => {
+                        let (next, next_queued) =
+                            hermes::promote_finished_run(&current, &queued_id, run_id);
+                        if next.is_empty() {
+                            streaming.remove(&panel);
+                        } else {
+                            streaming.insert(panel.clone(), next);
+                        }
+                        if next_queued.is_empty() {
+                            waiting.remove(&panel);
+                        } else {
+                            waiting.insert(panel.clone(), next_queued);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let keep_busy = side_turn
+                || (matches!(event, TurnEvent::Finished { .. })
+                    && !stream_is_current(&streams, &panel, generation));
+            dispatch_turn(&app, &panel, event, keep_busy, side_turn, queued);
+        };
+        let result = hermes::stream_turn(
+            &http,
+            &root,
+            &key,
+            &session_id,
+            &text,
+            &stop,
+            &stop_requested,
+            &mut emit_turn,
+        )
+        .await;
+        end_stream(&streams, &panel, generation);
+        match result {
+            Ok(_) => {}
+            Err(HermesError::Cancelled) => {
+                let keep_busy = side_turn || !stream_is_current(&streams, &panel, generation);
+                if !keep_busy {
+                    emit_status(&app, &panel, "idle", "已停止");
+                }
+                emit(
+                    &app,
+                    serde_json::json!({
+                        "type": "done",
+                        "profile": panel,
+                        "outcome": "cancelled",
+                        "detail": "已停止呢次回覆。",
+                        "keep_busy": keep_busy,
+                        "side": side_turn,
+                    }),
+                );
+            }
+            Err(err) => {
+                let failure = hermes::send_failure(&err);
+                let message = chat_failure_line(&err);
+                if !side_turn && stream_is_current(&streams, &panel, generation) {
+                    if failure.kind == "closed" {
+                        emit_status(&app, &panel, "idle", "對話已關閉");
+                    } else if failure.kind != "busy" && failure.kind != "other" {
+                        emit_status(&app, &panel, "error", &message);
+                    }
+                }
+                emit(
+                    &app,
+                    serde_json::json!({
+                        "type": "error",
+                        "profile": panel,
+                        "message": message,
+                        "kind": failure.kind,
+                        "code": failure.code,
+                        "switch_session_id": "",
+                        "side": side_turn,
+                        "keeps_connected": hermes::failure_keeps_connected(&err),
+                    }),
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Stop the sub-orb run. The main orb stream is left alone.
+#[tauri::command]
+async fn stop_suborb(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    session_id: String,
+    run_id: Option<String>,
+) -> Result<String, String> {
+    let panel = suborb_panel_id(profile.trim(), session_id.trim());
+    request_stream_stop(&state, &panel);
+    let hinted = run_id.unwrap_or_default();
+    let remembered = remembered_run_id(&state, &panel);
+    let targets = hermes::stop_target_ids(&hinted, &remembered);
+    if targets.is_empty() {
+        return Ok("not_active".into());
+    }
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, profile.trim())?;
+    let key = profile_key(profile.trim())?;
+    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    for run_id in targets {
+        match hermes::stop_run(&state.http, &root, &key, &run_id)
+            .await
+            .map_err(|_| "停止未送到。".to_string())?
+        {
+            hermes::StopOutcome::Stopping => return Ok("stopping".into()),
+            hermes::StopOutcome::NotActive => {}
+        }
+    }
+    Ok("not_active".into())
+}
+
+#[tauri::command]
+async fn set_suborb_pin(
+    app: AppHandle,
+    profile: String,
+    session_id: String,
+    pinned: bool,
+) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = config_path(&app)?;
+        config::store_suborb_pin(&path, profile.trim(), session_id.trim(), pinned)?;
+        load_public_settings(app)
+    })
+    .await
+    .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
 /// Orb id latched when the hit check saw Ctrl+press. The page reads this
 /// from a late pointerdown; a newer key sample is not the answer.
 #[tauri::command]
@@ -3613,6 +3982,12 @@ pub fn run() {
             stop_chat,
             list_commands,
             client_command,
+            create_task_session,
+            open_suborb,
+            peek_session_tail,
+            send_suborb,
+            stop_suborb,
+            set_suborb_pin,
             get_kanban_board,
             get_kanban_boards,
             get_kanban_task,

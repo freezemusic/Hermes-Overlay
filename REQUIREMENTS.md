@@ -345,8 +345,8 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-SS-06** 就算 Hermes Desktop 冇開，都要收到 Hermes 主動發出嘅訊息。**（未解決）**
 - 來源：Devon。驗收（Windows）：閂 Hermes Desktop，觸發一個會主動發訊息嘅 cron，overlay 喺 ≤10s 內出膠囊。狀態：❓ / ❓。
 
-**R-SS-07** Bot Chat 以外嘅 session，每條用一粒 sub-orb 代表（將來做，見 R-SO）；主光球唔會用嚟顯示呢啲 session。
-- 來源：Devon（2026-10-21）。狀態：— / —（PR #3 唔包）。
+**R-SS-07** Bot Chat 以外嘅 session，每條用一粒 sub-orb 代表；主光球唔會用嚟顯示呢啲 session。細則見 R-SO-06 至 R-SO-09。啟動、打開主光球、重連都唔會因為子光球而改主光球嘅 Bot Chat 綁定，亦唔會 `POST /api/sessions`。
+- 來源：Devon（2026-10-21；2026-10-29 收窄做任務 session、釘選同已讀收起）。狀態：❓ / ❓（單元測試）。
 
 **R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢。撳下面就可以喺呢個 Bot 嘅 API 對話繼續。」同掣「喺 API 對話繼續」。兩句中間係「。」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），同一句同同一掣出現，狀態係「只可以睇」，唔出錯誤橫額、失敗氣泡或者原始錯誤，唔重試。呢個拒絕要記喺該 session id，今次開 app 期間歷史重載唔可以清走，拒絕嗰句要繼續睇到；`source` 推斷出嚟嘅只讀仍然有效。撳掣先至做：呢個 profile 已有另一條 `api_server` 或 `bot_room`（唔計而家呢條；未封存嘅 Bot Chat 優先）就轉去嗰條；冇先至 `POST /api/sessions`，`source` 係 `api_server`，標題 `Overlay`。啟動、打開、同發送都唔好自己建立。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。Session 選單要分得開同一標題嘅列：已封存加「（已封存）」；唔可以傳嘅 source 加「（Desktop／只可以睇）」呢類短後綴；標題已經以 `(CLI)` 呢類字尾結束就只加「（只可以睇）」，唔好再寫一次來源；可以傳嘅 `api_server`／`bot_room` 唔加。後端要把 `source` 同 `archived` 傳去前端（SS-08-c）。撳繼續掣要跳過每一條已經拒絕過嘅 session；可寫嘅都拒絕過先至建立 `Overlay`（SS-08-d）。被拒絕嘅打字標「未送出」，歷史重載都留低（SS-08-e）。
 
@@ -484,17 +484,48 @@ config.json 只有名單真係多咗 profile，或者空白詳情抄到 descript
 
 ---
 
-## 12. 將來／唔包喺 PR #3（R-SO）
+## 12. 子光球（R-SO）
 
-PR #3 過咗先開新 branch，跟 `SUBORB-SPEC.md` v1（美術監督）。
+R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收細則，同草稿撞嘅地方以新條文為準。PR #3 仍然唔包含呢節嘅實作。
 
-**R-SO-01** Bot Chat 以外嘅 session 每條一粒 sub-orb（Devon 2026-10-21）。每個 Task session 自動出一粒臨時 sub-orb（虛線圈）；Devon 釘選咗先一直留住（實線圈）；未釘選嘅喺完成兼睇完之後 3s 收起。
+**R-SO-01** Bot Chat 以外嘅 session 每條一粒 sub-orb（Devon 2026-10-21）。每個 Task session 自動出一粒臨時 sub-orb（虛線圈）；Devon 釘選咗先一直留住（實線圈）；未釘選嘅喺完成兼睇完之後 3s 收起。細則見 R-SO-06、R-SO-07。
 **R-SO-02** 沿主球所在嗰條邊排成一行；直徑 = 主球 0.45 倍（最細 14px）；最多 5 粒，第 6 個位係「+N」；按釘選／建立時間排，唔因狀態跳位。
-**R-SO-03** 兩條狀態通道：活動（閒置 .45、思考中 1.2s 弧）同角標（失敗 > Plan > 未讀，一次只出一個）。
-**R-SO-04** sub-orb 用同一套 morph、同一條 Ctrl 規則；session 面板 header 用 breadcrumb `BOTNAME / session 標題` 加實心釘。
-**R-SO-05** 閒置冇持續動畫；只動 transform、opacity、clip-path。
-- 驗收：開新 branch 時逐條寫細（盒錄影＋Windows 真點擊），而且**本檔全部 PR #3 項目照樣要過**。
-- 狀態：— / —。
+**R-SO-03** 兩條狀態通道：活動（閒置圈 .45、思考中 1.2s 弧）同角標（等緊答 > 失敗 > Plan > 未讀，一次只出一個）。光碟本體嘅遠近透明度見 R-SO-08，唔再用 .45 做整粒光球嘅靜止透明度。
+**R-SO-04** sub-orb 面板用同一套 Ctrl 規則同同一塊 bot 面板（composer、撰寫模式、工具摺疊、批准／澄清卡、停止、排隊）。Header 係 breadcrumb `BOTNAME / session 標題`，加「釘住」／「取消釘住」。
+**R-SO-05** 閒置冇持續動畫；子光球只動 transform、opacity、clip-path。思考弧只喺 running 時先轉。
+
+**R-SO-06** 子光球發現。Devon 一個任務一條 Hermes session。主光球永遠開該 bot 嘅 Desktop Bot Chat（R-SS-01），程式唔會自動把主面板轉去另一條 session，啟動亦唔建立 session。Bot Chat、主光球而家綁住嗰條、已封存、以及標題以 `_YYYYMMDDHHMM` 或 `_YYYYMMDDHHMMSS` 結尾（renew 封存名）嘅列，永遠唔做子光球。第一次 session 清單係基準：當時已存在、又未釘住嘅列唔出子光球。之後新出現嘅任務列，或者 `message_count`／`last_active` 相對基準有變嘅列，先自動出一粒未釘住嘅子光球。發現沿用而家嘅平價輪詢：只比較清單上嘅 `message_count` 同 `last_active`；有變先攞該列尾頁（最多 40 行），唔好為子光球加全對話輪詢。可見子光球最多 5 粒（R-SO-02）；再多就第 6 個位係「+N」，Ctrl+撳開該 bot 嘅 session picker。次序係釘選先，然後按建立時間，狀態唔好令佢哋跳位。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：模擬清單第一次唔出舊任務；新 id 出一粒；封存同 `標題_202610271200` 唔出；`message_count` 冇變就唔再取訊息；多過 5 粒先出「+N」。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-SO-07** 釘選。Ctrl+右撳子光球（穿透規則同主光球，見 R-CT-02）出「釘住」或「取消釘住」。面板 header 同一個掣。只有呢下先寫 config.json 頂層 `suborb_pins`（profile → session id 陣列），用 splice，唔改 session id、explicit、anchor 同其他鍵。取消到空就刪走個鍵，檔案返到未釘之前嘅位元組。未釘選嘅子光球，任務完成（唔再思考、唔再等答，而且尾頁已settle 或 session 已結束）兼 Devon 已讀（面板打開過，或者而家開住）之後 3000ms 收起。釘住嘅留低，即使已讀同完成。已讀之後再有新 `message_count` 就當未讀，子光球再出。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：釘一次 config 只多 `suborb_pins`；取消釘選之後個鍵消失，session id 不變；完成兼打開面板，3 秒後未釘嘅子光球消失，釘住嘅仲喺。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-SO-08** 子光球點擊同外觀。預設實色、穿透；游標行近先淡，地板 `min_opacity` 0.18；Ctrl 揸住先收到點擊，同主光球同一套命中邊。淡出時間係 R-PL-04 嗰條 280ms `cubic-bezier(.3,.6,.2,1)`，唔好改計劃揭示曲線本身。顏色用該 bot 自己嘅色。未釘係虛線圈，釘咗係實線圈。活動：思考／運行中先轉 1.2s 弧；閒置唔轉。角標一次一個：等你答（澄清或批准）> 失敗 > 有計劃 > 完成未讀。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：冇 Ctrl 撳子光球，後面收到；Ctrl+撳開該 session 面板；近距目標透明度係 0.18，遠距係 1；主光球淡出仍然係 R-OB-05 嘅 160ms。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-SO-09** 子光球面闆。Ctrl+撳子光球開嘅面板同普通 bot 面板一樣可以打字、循環「一般／Plan／旁問」、摺疊工具、出批准卡同澄清卡、停止、steer／排隊。送出打去該 session，唔寫主光球 pin，唔切斷主光球嗰條串流。批准仍然只得「批准（一次）」同「拒絕」，唔自動批准，唔對應 `/yolo`。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：子光球送出嘅 profile 同 session 係該任務；config 嘅 session id 不變；主光球 Bot Chat 嘅串流唔會因為子光球停止而被 abort。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-NS-01** 每個 bot 面板同子光球面闆有掣「開新 session」。撳咗可以打可選標題；留空就用 `<bot 名> 任務 YYYY-MM-DD HH:MM`。經 gateway `POST /api/sessions`（`source: api_server`，Hermes 0.22.5 已有呢條，同 session picker 嘅建立路徑一樣）開一條新 session，然後開做未釘住嘅子光球面闆。Devon 可以之後先釘。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：撳掣之後 gateway 收到一次建立；新子光球出現而且未釘；config 冇 `suborb_pins` 呢條，主光球 session id 不變。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-NS-02** 開新 session 唔好改主光球嘅 Bot Chat 綁定，唔好把主面板轉去新列。標題同選單唔好顯示 `Continue previous conversation`，亦唔好加「（已閂）」。建立失敗先出一句錯誤，唔好寫入金鑰或者 body。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：建立前後主光球 `session_id`／`session_explicit`／`session_anchor` 位元組不變；畫面冇 `Continue previous conversation`，亦冇「（已閂）」。
+- 狀態：❓ / ❓（單元測試）。
+
+- 驗收：盒錄影＋Windows 真點擊仍要另做。**本檔 §1–§11 全部項目照樣要過。**
+- 狀態：❓ / ❓。
 
 ---
 

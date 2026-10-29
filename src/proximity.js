@@ -136,11 +136,13 @@ export function orbFadeOpacity(elapsedMs, {
   from = 1,
   to = 0.25,
   duration = ORB_FADE_MS,
+  ease = orbFadeEase,
 } = {}) {
   const t = Number(elapsedMs) - Number(delay);
   if (!(t > 0)) return from;
   const u = duration > 0 ? Math.min(1, t / duration) : 1;
-  return from + (to - from) * orbFadeEase(u);
+  const curve = typeof ease === "function" ? ease : orbFadeEase;
+  return from + (to - from) * curve(u);
 }
 
 /**
@@ -190,7 +192,7 @@ export function paintOrbOpacity(el, target) {
  * toward `target`. The same target keeps the clock. A repeated poll does
  * not jump back to 1, and a settled target does not write style again.
  */
-export function applyOrbFadeFrame(el, clock, now, target, duration = ORB_FADE_MS, painted) {
+export function applyOrbFadeFrame(el, clock, now, target, duration = ORB_FADE_MS, painted, ease = orbFadeEase) {
   const commit = commitOrbOpacity(
     clock ? { target: clock.target, generation: clock.generation || 1 } : null,
     target,
@@ -199,7 +201,7 @@ export function applyOrbFadeFrame(el, clock, now, target, duration = ORB_FADE_MS
     return { clock, opacity: orbOpacityText(clock.target), running: false, wrote: false };
   }
   const onScreen = Number.isFinite(Number(painted)) ? Number(painted) : 1;
-  const stepped = stepOrbFade(clock, now, commit.target, onScreen, duration);
+  const stepped = stepOrbFade(clock, now, commit.target, onScreen, duration, ease);
   const nextClock = {
     from: stepped.clock.from,
     to: stepped.clock.to,
@@ -268,7 +270,7 @@ export function playOrbFade(polls, { fps = 30, duration = ORB_FADE_MS, restart =
  * the opacity on screen, so a poll cannot jump back to an old endpoint.
  * `running` is false once the value has arrived.
  */
-export function stepOrbFade(clock, now, target, painted, duration = ORB_FADE_MS) {
+export function stepOrbFade(clock, now, target, painted, duration = ORB_FADE_MS, ease = orbFadeEase) {
   const next = roundOrbOpacity(target);
   const time = Number(now);
   const span = Number(duration) > 0 ? Number(duration) : 0;
@@ -277,6 +279,7 @@ export function stepOrbFade(clock, now, target, painted, duration = ORB_FADE_MS)
       from: clock.from,
       to: clock.to,
       duration: span || 1,
+      ease,
     });
     const settled = span === 0 || time - clock.started >= span;
     return { clock, opacity: settled ? next : sample, running: !settled };

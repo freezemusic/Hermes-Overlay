@@ -3516,3 +3516,66 @@ html[data-pass="1"] .plan-hit-host * {
     width: min(360px, 70vw);
   }
 }
+
+.morph[data-kind="suborb"][data-state="orb"] {
+  width: 20px;
+  height: 20px;
+}
+.morph[data-kind="suborb"][data-state="orb"] .suborb-disc {
+  width: 100%;
+  height: 100%;
+  min-width: 14px;
+  min-height: 14px;
+  border-radius: 999px;
+  border: 1px dashed rgb(var(--bot-rgb) / .45);
+  box-sizing: border-box;
+  position: relative;
+}
+.morph[data-kind="suborb"] .suborb-disc[data-pinned="1"] {
+  border-style: solid;
+}
+.morph[data-kind="suborb"] .spinner { display: none; }
+.suborb-disc.is-running {
+  border-color: rgb(var(--bot-rgb));
+}
+.suborb-disc.is-running::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 1px solid transparent;
+  border-top-color: rgb(var(--bot-rgb));
+  animation: spin 1.2s linear infinite;
+  pointer-events: none;
+}
+.suborb-disc.has-plan .unread-dot {
+  display: block;
+  background: rgb(var(--bot-rgb));
+}
+.suborb-disc.is-failed {
+  box-shadow: inset 0 0 0 1.5px #e5484d;
+}
+.suborb-more {
+  font: 600 11px/1 "Barlow Condensed", sans-serif;
+  color: #14142b;
+}
+.morph[data-kind="suborb"] [data-role="session"],
+.morph[data-kind="suborb"] [data-role="tab-bot"] {
+  display: none;
+}
+.new-session-btn { margin: 0 0 8px; }
+.new-session-form {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.new-session-form[hidden] { display: none; }
+.new-session-form input {
+  flex: 1;
+  min-width: 0;
+  font: 13px/1.4 "Noto Sans HK", sans-serif;
+  color: #14142b;
+}
+@media (prefers-reduced-motion: reduce) {
+  .suborb-disc.is-running::after { animation: none; }
+}
