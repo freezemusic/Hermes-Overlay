@@ -684,6 +684,17 @@ fn prefers_hit(
     if candidate_distance > current_distance + f64::EPSILON {
         return false;
     }
+    let both_inside = candidate_distance <= f64::EPSILON && current_distance <= f64::EPSILON;
+    if both_inside && candidate.round && current.round {
+        let candidate_area = candidate.w * candidate.h;
+        let current_area = current.w * current.h;
+        if (candidate_area - current_area).abs() > f64::EPSILON {
+            return candidate_area < current_area;
+        }
+        if candidate.z != current.z {
+            return candidate.z > current.z;
+        }
+    }
     let candidate_latched = id_listed(latched_ids, &candidate.id);
     let current_latched = id_listed(latched_ids, &current.id);
     if candidate_latched != current_latched {
@@ -4174,6 +4185,32 @@ mod tests {
         );
         assert!(frame_of(&latched_center, "center").capture);
         assert!(!frame_of(&latched_center, "settings").capture);
+    }
+
+    #[test]
+    fn overlapping_orbs_prefer_the_smaller_disc() {
+        let rects = vec![
+            HitRect {
+                id: "bot:writer".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 68.0,
+                h: 68.0,
+                z: 8,
+                round: true,
+            },
+            HitRect {
+                id: "bot:suborb:writer:job".into(),
+                x: 40.0,
+                y: 40.0,
+                w: 42.0,
+                h: 42.0,
+                z: 1,
+                round: true,
+            },
+        ];
+        let hit = element_under_cursor(Some((50.0, 50.0)), &rects, HIT_MARGIN_PX, &[]);
+        assert_eq!(hit.map(|rect| rect.id.as_str()), Some("bot:suborb:writer:job"));
     }
 
     #[test]

@@ -558,6 +558,7 @@ function orbOrPillUnder(cursor, rects) {
       area: rect.w * rect.h,
       latched: false,
       z: rect.z || 0,
+      round: !!rect.round,
     };
     if (!best || preferHit(next, best)) best = next;
   }
@@ -577,6 +578,7 @@ export function elementUnderCursor(cursor, rects, margin = HIT_MARGIN_PX, latche
       area: rect.w * rect.h,
       latched: latchedIds.includes(rect.id),
       z: rect.z || 0,
+      round: !!rect.round,
     };
     if (!best || preferHit(next, best)) best = next;
   }
@@ -586,6 +588,10 @@ export function elementUnderCursor(cursor, rects, margin = HIT_MARGIN_PX, latche
 function preferHit(candidate, current) {
   if (candidate.distance < current.distance - 1e-9) return true;
   if (candidate.distance > current.distance + 1e-9) return false;
+  if (candidate.round && current.round && candidate.distance <= 1e-9 && current.distance <= 1e-9) {
+    if (candidate.area !== current.area) return candidate.area < current.area;
+    if (candidate.z !== current.z) return candidate.z > current.z;
+  }
   if (candidate.latched !== current.latched) return candidate.latched;
   if (candidate.z !== current.z) return candidate.z > current.z;
   return candidate.area < current.area;

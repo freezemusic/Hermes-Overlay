@@ -14,10 +14,13 @@ import {
   normalizeTaskTitle,
   parseSuborbId,
   dispatchOrbClick,
+  composerHoldsSuborb,
   reconcileSuborbs,
+  releaseSuborbNodes,
   suborbLabel,
   suborbPublishesPanel,
   suborbPanelId,
+  suborbPanelShift,
   suborbPositions,
   suborbSizePx,
   tailSignals,
@@ -162,6 +165,7 @@ import {
   parseSlashMarker,
   resolveClient,
   shouldRefreshCatalog,
+  bareNewSubmits,
   slashEnterSubmits,
   slashFilterQuery,
 } from "./slash.js";
@@ -3330,6 +3334,7 @@ function settleShell(shell, target) {
     shell._settleGate = 0;
     if (target === "orb") releaseCollapseGate(shell);
     armQuietFlush(shell);
+    if (shell.dataset.kind === "bot") layoutSuborbOrbs();
   });
 }
 
@@ -4035,20 +4040,28 @@ function shellHitLevel(shell) {
 
 /** Visible clip, not the pre-sized layout box. A finished clip animation can
  *  leave WebKitGTK hit-testing the border box for a few frames. */
+function discBeats(candidate, current) {
+  const orbish = (shell) => {
+    const visual = shell.dataset.visual || shell.dataset.state;
+    return visual === "orb" || visual === "pill";
+  };
+  if (orbish(candidate.shell) && orbish(current.shell)) {
+    if (candidate.area < current.area - 0.5) return true;
+    if (candidate.area > current.area + 0.5) return false;
+  }
+  return candidate.level >= current.level;
+}
+
 function visibleShellAt(x, y) {
   let best = null;
-  let bestZ = -Infinity;
   document.querySelectorAll(".morph").forEach((shell) => {
     if (shell.classList.contains("is-collapsing")) return;
     const box = visibleBox(shell);
     if (!pointInBox(x, y, box)) return;
-    const level = shellHitLevel(shell);
-    if (!best || level >= bestZ) {
-      best = shell;
-      bestZ = level;
-    }
+    const next = { shell, level: shellHitLevel(shell), area: box.w * box.h };
+    if (!best || discBeats(next, best)) best = next;
   });
-  return best;
+  return best?.shell || null;
 }
 
 function activateHitShell(shell) {
@@ -6304,6 +6317,8 @@ async function finishClose(shell) {
     scheduleHitSync();
   } finally {
     renderBots();
+    if (shell?.dataset.state !== "panel") shell?.style.removeProperty("z-index");
+    if (shell?.isConnected) layoutSuborbOrbs();
   }
 }
 
@@ -6457,7 +6472,7 @@ function wireBotPanel(panel, id) {
         const picked = items[state.slashIndex];
         if (picked && picked.enabled !== false) {
           event.preventDefault();
-          const submit = event.key === "Enter" && slashEnterSubmits(picked);
+          const submit = event.key === "Enter" && (slashEnterSubmits(picked) || bareNewSubmits(picked, input?.value || ""));
           completeSlash(picked);
           if (submit) sendActive(id);
           return;
@@ -7727,6 +7742,19 @@ async function sendActive(id = state.activeId) {
   const typed = input?.value.trim() || "";
   if (!typed || !id) return;
   const thread = threadFor(id);
+  const text = composeModeWire(typed, composeModeOf(id));
+  const action = resolveClient(text, state.catalog || []);
+  if (action) {
+    closeSlash();
+    input.value = "";
+    input.placeholder = "輸入訊息給呢個 Bot…";
+    state.slashArgsHint = "";
+    syncSlashGhost();
+    state.activeId = id;
+    state.slashPanelId = id;
+    await sendClientCommand(id, text, action);
+    return;
+  }
   if (sessionEnded(currentSessionRow(thread))) {
     showClosedWarning(id);
     return;
@@ -7743,9 +7771,7 @@ async function sendActive(id = state.activeId) {
     thread.dropKeptOnSettle = true;
     thread.cancelHold = false;
   }
-  const text = composeModeWire(typed, composeModeOf(id));
   const busy = state.mode === "hermes" && state.busy.has(id);
-  const action = resolveClient(text, state.catalog || []);
   if (busy && composeSkipsBusyQueue(text)) {
     closeSlash();
     input.value = "";
@@ -7769,10 +7795,6 @@ async function sendActive(id = state.activeId) {
   input.placeholder = "輸入訊息給呢個 Bot…";
   state.slashArgsHint = "";
   syncSlashGhost();
-  if (action) {
-    await sendClientCommand(id, text, action);
-    return;
-  }
   const shown = composeUserMessage(text);
   thread.ownTurnTail = { runId: thread.runId || "", userText: shown.text || text, sentAt: Date.now(), awaitTail: false };
   appendMessage(id, shown);
@@ -8887,6 +8909,7 @@ function closeOpenPanel(id) {
   if (id === "settings") closeSettings();
   else if (id === "kanban") closeKanban();
   else if (id === "cron") closeCron();
+  else if (isSuborbId(id)) closeSuborbPanel(id);
   else if (id) closeBotPanel(id);
 }
 
@@ -9763,7 +9786,6 @@ function hitBlockReason() {
 
 function orbShellAtPoint(x, y) {
   let best = null;
-  let bestZ = -Infinity;
   document.querySelectorAll(".morph").forEach((shell) => {
     const visual = shell.dataset.visual || shell.dataset.state;
     if (visual !== "orb" && visual !== "pill") return;
@@ -9792,11 +9814,8 @@ function orbShellAtPoint(x, y) {
       named = false;
     }
     if (!pointInBox(x, y, box)) return;
-    const level = shellHitLevel(shell);
-    if (!best || level >= bestZ) {
-      best = { shell, box, level, named };
-      bestZ = level;
-    }
+    const next = { shell, box, level: shellHitLevel(shell), named, area: box.w * box.h };
+    if (!best || discBeats(next, best)) best = next;
   });
   return best;
 }
@@ -11111,6 +11130,41 @@ function sessionsForSuborbs(profile, listed) {
   return [...(listed || []), ...extra.filter((row) => row?.id && !seen.has(row.id))];
 }
 
+function suborbHoldIds(profile) {
+  const ids = [];
+  document.querySelectorAll(".morph[data-kind='suborb']").forEach((shell) => {
+    const sub = parseSuborbId(shell.dataset.botId || "");
+    if (!sub || sub.profile !== profile) return;
+    const input = shell.querySelector("[data-role='input']");
+    if (!input) return;
+    const focused = document.activeElement === input || !!input.contains(document.activeElement);
+    if (composerHoldsSuborb({ value: input.value, focused })) ids.push(sub.sessionId);
+  });
+  return ids;
+}
+
+function applySuborbArchive(profile, view) {
+  const drop = new Set(view?.drop || []);
+  if (drop.size) {
+    const extra = (state.suborbExtra.get(profile) || []).filter((row) => row?.id && !drop.has(row.id));
+    state.suborbExtra.set(profile, extra);
+  }
+  const unpin = view?.unpin || [];
+  if (!unpin.length) return;
+  const nextPins = pinsFor(profile).filter((id) => !unpin.includes(id));
+  state.suborbPins = { ...state.suborbPins, [profile]: nextPins };
+  if (state.mode !== "hermes" || !inTauri()) return;
+  for (const sessionId of unpin) {
+    void import("@tauri-apps/api/core").then(({ invoke }) => invoke("set_suborb_pin", {
+      profile,
+      sessionId,
+      pinned: false,
+    })).then((settings) => {
+      if (settings?.suborb_pins) state.suborbPins = settings.suborb_pins;
+    }).catch(() => {});
+  }
+}
+
 function noteSuborbList(profile, sessions, mainId = "") {
   if (!profile || isSuborbId(profile) || !state.suborbModels) return;
   const model = suborbModel(profile);
@@ -11122,13 +11176,17 @@ function noteSuborbList(profile, sessions, mainId = "") {
     if (planForPanel(thread)) model.plans[sub.sessionId] = true;
     model.failed[sub.sessionId] = thread.statusState === "error";
   }
+  const listed = sessions || [];
   const view = reconcileSuborbs(model, {
-    sessions: sessionsForSuborbs(profile, sessions),
+    sessions: sessionsForSuborbs(profile, listed),
     mainId: mainId || threadFor(profile).sessionId || "",
     pinned: pinsFor(profile),
     openIds: suborbOpenSessionIds(profile),
+    holdIds: suborbHoldIds(profile),
+    listedIds: listed.map((row) => row?.id).filter(Boolean),
     now: Date.now(),
   });
+  applySuborbArchive(profile, view);
   view.model.peeked = model.peeked || {};
   state.suborbModels.set(profile, view.model);
   state.suborbViews = state.suborbViews || new Map();
@@ -11267,7 +11325,7 @@ function renderSuborbs() {
     const id = shell.dataset.botId || "";
     if (keep.has(id)) return;
     state.openIds = closePanel(state.openIds, id);
-    shell.remove();
+    releaseSuborbNodes(shell);
   });
   scheduleHitSync();
 }
@@ -11405,8 +11463,10 @@ function placeSuborbShell(shell) {
   const size = suborbSizePx(ORB);
   const homeX = Number(shell.dataset.homeX);
   const homeY = Number(shell.dataset.homeY);
-  const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2;
-  const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
+  const openPanel = shell.dataset.state === "panel" || shell.dataset.opening === "panel";
+  const shift = openPanel ? suborbPanelShift(openSuborbPanelIndex(shell)) : { x: 0, y: 0 };
+  const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2 + shift.x;
+  const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2 + shift.y;
   shell.style.setProperty("--suborb-size", `${size}px`);
   const placed = placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
   shell.style.width = `${placed.width}px`;
@@ -11488,9 +11548,24 @@ function paintSuborbComposeModes(profile) {
   });
 }
 
+function openSuborbPanelIndex(shell) {
+  const open = [...document.querySelectorAll(".morph[data-kind='suborb']")].filter((item) => (
+    item.dataset.state === "panel" || item.dataset.opening === "panel" || item.classList.contains("is-morphing")
+  ));
+  const index = open.indexOf(shell);
+  return index < 0 ? open.length : index;
+}
+
 function openSuborbPanel(id) {
-  const shell = shellFor(id);
-  const panel = panelFor(id);
+  let shell = shellFor(id);
+  let panel = panelFor(id);
+  const subEarly = parseSuborbId(id);
+  if ((!shell || !panel) && subEarly) {
+    state.openIds = openPanel(state.openIds, id);
+    noteSuborbList(subEarly.profile, threadFor(subEarly.profile).sessions || [], threadFor(subEarly.profile).sessionId || "");
+    shell = shellFor(id);
+    panel = panelFor(id);
+  }
   if (!shell || !panel) return;
   if (shell.classList.contains("open") && (shell.dataset.state === "panel" || shell.dataset.opening === "panel")) {
     focusOpenPanel(id);
@@ -11517,6 +11592,13 @@ function openSuborbPanel(id) {
 function closeSuborbPanel(id) {
   const shell = shellFor(id);
   const panel = panelFor(id);
+  const sub = parseSuborbId(id);
+  if (sub) {
+    const model = suborbModel(sub.profile);
+    model.closedAt = model.closedAt || {};
+    model.closedAt[sub.sessionId] = Date.now();
+    delete model.dismissAt[sub.sessionId];
+  }
   state.openIds = closePanel(state.openIds, id);
   if (state.activeId === id) state.activeId = state.openIds.at(-1) || null;
   if (state.slashPanelId === id) state.slashPanelId = state.activeId || "";

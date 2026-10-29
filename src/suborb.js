@@ -157,6 +157,8 @@ export function emptySuborbModel() {
     retired: {},
     forced: {},
     dismissAt: {},
+    closedAt: {},
+    known: {},
     settled: {},
     plans: {},
     waiting: {},
@@ -164,6 +166,67 @@ export function emptySuborbModel() {
     localBusy: {},
     peeked: {},
   };
+}
+
+/** Focus or typed text keeps an unpinned sub-orb on the rail. */
+export function composerHoldsSuborb({ value = "", focused = false } = {}) {
+  return !!focused || String(value || "").length > 0;
+}
+
+/**
+ * Visible discs. A just-created or open session stays on the rail.
+ * Extra pins past the cap still overflow. A new reserved disc may pass the
+ * cap when every other disc is pinned. The oldest idle unpinned disc overflows first.
+ */
+export function capSuborbs(ordered, cap = SUBORB_CAP, reservedIds = []) {
+  const reserve = new Set(reservedIds);
+  const pins = [];
+  const reserved = [];
+  const flex = [];
+  for (const row of ordered || []) {
+    if (reserve.has(row.id)) reserved.push(row);
+    else if (row.pinned) pins.push(row);
+    else flex.push(row);
+  }
+  const pinShown = reserved.length ? pins : pins.slice(0, cap);
+  const pinOver = reserved.length ? [] : pins.slice(cap);
+  const room = Math.max(0, cap - pinShown.length - reserved.length);
+  const dropFirst = [
+    ...flex.filter((row) => !row.running),
+    ...flex.filter((row) => row.running),
+  ];
+  const dropCount = Math.max(0, flex.length - Math.min(flex.length, room));
+  const dropped = new Set(dropFirst.slice(0, dropCount).map((row) => row.id));
+  const keep = new Set([
+    ...pinShown.map((row) => row.id),
+    ...reserved.map((row) => row.id),
+    ...flex.filter((row) => !dropped.has(row.id)).map((row) => row.id),
+  ]);
+  return {
+    shown: (ordered || []).filter((row) => keep.has(row.id)),
+    overflow: [...pinOver, ...dropFirst.filter((row) => dropped.has(row.id))],
+  };
+}
+
+/** Cascade open sub-orb panels so a second one is not the same box. */
+export function suborbPanelShift(index = 0) {
+  const step = 36;
+  const n = Math.max(0, Number(index) || 0);
+  return { x: n * step, y: n * step };
+}
+
+/** Drop the plan host, the panel, and the shell together. */
+export function releaseSuborbNodes(shell) {
+  if (!shell) return;
+  const host = shell._planHost;
+  if (host?.remove) host.remove();
+  shell._planHost = null;
+  const doc = shell.ownerDocument;
+  doc?.querySelectorAll?.(".plan-hit-host")?.forEach((node) => {
+    const owner = node._planShell;
+    if (!owner || owner === shell || owner.isConnected === false) node.remove();
+  });
+  shell.remove?.();
 }
 
 function stampOf(row) {
@@ -187,13 +250,16 @@ function stampMoved(prev, next) {
  * Which task sessions are on the orb, and which ids need a tail fetch.
  * The first list is a baseline: historical rows stay hidden unless pinned or forced.
  * A later new id, or a stamp that moved, becomes a sub-orb.
- * Unpinned rows leave SUBORB_DISMISS_MS after the task is finished and read.
+ * An unpinned row leaves only after its panel is closed, the task is finished
+ * and read, and SUBORB_DISMISS_MS has passed since that close.
  */
 export function reconcileSuborbs(model, {
   sessions = [],
   mainId = "",
   pinned = [],
   openIds = [],
+  holdIds = [],
+  listedIds = null,
   now = 0,
 } = {}) {
   const next = {
@@ -204,6 +270,8 @@ export function reconcileSuborbs(model, {
     retired: { ...(model?.retired || {}) },
     forced: { ...(model?.forced || {}) },
     dismissAt: { ...(model?.dismissAt || {}) },
+    closedAt: { ...(model?.closedAt || {}) },
+    known: { ...(model?.known || {}) },
     settled: { ...(model?.settled || {}) },
     plans: { ...(model?.plans || {}) },
     waiting: { ...(model?.waiting || {}) },
@@ -218,11 +286,30 @@ export function reconcileSuborbs(model, {
     next.seen = true;
   }
   const open = new Set(openIds);
+  const hold = new Set(holdIds);
   const pin = new Set(pinned);
+  const dropIds = new Set();
+  const unpin = [];
+  for (const row of sessions || []) {
+    if (row?.id && row.archived) dropIds.add(row.id);
+  }
+  if (Array.isArray(listedIds) && listedIds.length) {
+    const listed = new Set(listedIds.filter(Boolean));
+    for (const id of listed) next.known[id] = true;
+    for (const id of Object.keys(next.known)) {
+      if (!listed.has(id)) dropIds.add(id);
+    }
+  }
+  for (const id of dropIds) {
+    delete next.forced[id];
+    delete next.dismissAt[id];
+    delete next.closedAt[id];
+    if (pin.has(id)) unpin.push(id);
+  }
   const peek = [];
   const live = [];
   for (const row of sessions || []) {
-    if (!eligibleSuborb(row, mainId)) continue;
+    if (!row?.id || dropIds.has(row.id) || !eligibleSuborb(row, mainId)) continue;
     const stamp = stampOf(row);
     const key = stampKey(stamp);
     const prev = next.previous[row.id];
@@ -265,15 +352,23 @@ export function reconcileSuborbs(model, {
     const hasRead = next.read[row.id] != null && next.read[row.id] >= count;
     const settled = next.settled[row.id] !== false;
     const finished = !running && !waiting && (row.ended || (count > 0 && settled && !countGrew));
-    if (!pinnedHere && finished && hasRead) {
-      if (!next.dismissAt[row.id]) next.dismissAt[row.id] = now + SUBORB_DISMISS_MS;
-      if (now >= next.dismissAt[row.id]) {
+    const panelOpen = open.has(row.id);
+    const held = hold.has(row.id);
+    if (panelOpen) {
+      delete next.closedAt[row.id];
+      delete next.dismissAt[row.id];
+    } else if (!pinnedHere && finished && hasRead && !held) {
+      if (!next.closedAt[row.id]) next.closedAt[row.id] = now;
+      const due = next.closedAt[row.id] + SUBORB_DISMISS_MS;
+      if (now >= due) {
         next.retired[row.id] = key;
         delete next.forced[row.id];
         delete next.dismissAt[row.id];
+        delete next.closedAt[row.id];
         next.previous[row.id] = stamp;
         continue;
       }
+      next.dismissAt[row.id] = due;
     } else {
       delete next.dismissAt[row.id];
     }
@@ -298,11 +393,15 @@ export function reconcileSuborbs(model, {
     next.previous[row.id] = stamp;
   }
   const ordered = orderSuborbRows(live, pinned);
+  const reserved = [...open, ...Object.keys(next.forced).filter((id) => next.forced[id])];
+  const capped = capSuborbs(ordered, SUBORB_CAP, reserved);
   return {
     model: next,
-    shown: ordered.slice(0, SUBORB_CAP),
-    overflow: ordered.slice(SUBORB_CAP),
+    shown: capped.shown,
+    overflow: capped.overflow,
     peek,
+    unpin,
+    drop: [...dropIds],
   };
 }
 

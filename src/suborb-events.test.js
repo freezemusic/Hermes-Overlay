@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { botIdFromHit } from "./proximity.js";
+import { botIdFromHit, elementUnderCursor } from "./proximity.js";
 import {
+  capSuborbs,
   dispatchOrbClick,
   emptySuborbModel,
   reconcileSuborbs,
+  releaseSuborbNodes,
+  suborbPanelShift,
   suborbPositions,
   suborbPublishesPanel,
   suborbSizePx,
@@ -127,7 +130,8 @@ test("the 3s dismiss timer re-evaluates instead of redrawing the old list", () =
     openIds: ["job"],
     now: 10 + 3000,
   });
-  assert.equal(later.shown.length, 0);
+  assert.equal(later.shown.length, 1);
+  assert.equal(later.model.dismissAt.job, undefined);
   const note = main.slice(main.indexOf("function noteSuborbList"), main.indexOf("function reevalSuborbs"));
   assert.match(note, /armSuborbDismiss/);
   assert.doesNotMatch(note, /setTimeout\(\(\) => renderSuborbs\(\)\)/);
@@ -228,4 +232,155 @@ test("the first click on 開新 session reveals the form, and main /new does not
   assert.match(command, /createTaskSession\(gatewayProfile\(id\)/);
   const rustNew = rust.slice(rust.indexOf('"new" =>'), rust.indexOf('"title" =>'));
   assert.doesNotMatch(rustNew, /pin_explicit/);
+});
+
+test("an open unpinned sub-orb stays until the panel has been closed for 3s", () => {
+  const dom = new JSDOM("<!doctype html><body><div id='rail'></div></body>");
+  const { document } = dom.window;
+  const rail = document.getElementById("rail");
+  const shell = document.createElement("div");
+  shell.className = "morph";
+  shell.dataset.kind = "suborb";
+  shell.dataset.state = "panel";
+  const input = document.createElement("textarea");
+  input.dataset.role = "input";
+  input.value = "仲未送";
+  shell.append(input);
+  rail.append(shell);
+  const base = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot, row("job", { message_count: 1, last_active: 2 })],
+    mainId: "bot-chat",
+    now: 0,
+  });
+  const moved = reconcileSuborbs(base.model, {
+    sessions: [bot, row("job", { message_count: 2, last_active: 4, ended: true })],
+    mainId: "bot-chat",
+    now: 1,
+  });
+  moved.model.settled.job = true;
+  moved.model.read.job = 2;
+  const open = reconcileSuborbs(moved.model, {
+    sessions: [bot, row("job", { message_count: 2, last_active: 4, ended: true })],
+    mainId: "bot-chat",
+    openIds: ["job"],
+    now: 3000,
+  });
+  assert.equal(open.shown.length, 1);
+  const typing = reconcileSuborbs(open.model, {
+    sessions: [bot, row("job", { message_count: 2, last_active: 4, ended: true })],
+    mainId: "bot-chat",
+    holdIds: ["job"],
+    now: 9000,
+  });
+  assert.equal(typing.shown.length, 1);
+  assert.equal(input.value.length > 0, true);
+  const closed = reconcileSuborbs(typing.model, {
+    sessions: [bot, row("job", { message_count: 2, last_active: 4, ended: true })],
+    mainId: "bot-chat",
+    now: 9000,
+  });
+  closed.model.closedAt.job = 9000;
+  const due = reconcileSuborbs(closed.model, {
+    sessions: [bot, row("job", { message_count: 2, last_active: 4, ended: true })],
+    mainId: "bot-chat",
+    now: 12000,
+  });
+  assert.equal(due.shown.length, 0);
+  const close = main.slice(main.indexOf("function closeSuborbPanel"), main.indexOf("async function loadSuborb"));
+  assert.match(close, /closedAt\[sub\.sessionId\] = Date\.now\(\)/);
+  const note = main.slice(main.indexOf("function noteSuborbList"), main.indexOf("function reevalSuborbs"));
+  assert.match(note, /holdIds: suborbHoldIds/);
+});
+
+test("a smaller orb wins a point that also sits in the main orb hit", () => {
+  const mainOrb = { id: "bot:writer", x: 0, y: 0, w: 68, h: 68, z: 8, round: true };
+  const sub = { id: "bot:suborb:writer:job", x: 40, y: 40, w: 42, h: 42, z: 1, round: true };
+  assert.equal(elementUnderCursor({ x: 50, y: 50 }, [mainOrb, sub], 12), "bot:suborb:writer:job");
+  const same = { id: "bot:suborb:writer:next", x: 40, y: 40, w: 42, h: 42, z: 4, round: true };
+  assert.equal(elementUnderCursor({ x: 50, y: 50 }, [sub, same], 12), "bot:suborb:writer:next");
+  const finish = main.slice(main.indexOf("async function finishClose"), main.indexOf("function showBotTab"));
+  assert.match(finish, /layoutSuborbOrbs\(\)/);
+  const settle = main.slice(main.indexOf("function settleShell"), main.indexOf("function stopShellTransition"));
+  assert.match(settle, /layoutSuborbOrbs\(\)/);
+  const at = main.slice(main.indexOf("function orbShellAtPoint"), main.indexOf("function ctrlOrbRect"));
+  assert.match(at, /discBeats/);
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.morph\[data-kind="suborb"\] \.bot-btn \.bot-hit \{\s*inset:\s*0;/);
+});
+
+test("removing a sub-orb tears down its plan host", () => {
+  const dom = new JSDOM("<!doctype html><body><div class='bot-rail'></div></body>");
+  const { document } = dom.window;
+  const rail = document.querySelector(".bot-rail");
+  const shell = document.createElement("div");
+  shell.className = "morph";
+  shell.dataset.kind = "suborb";
+  const plan = document.createElement("div");
+  plan.className = "plan-window";
+  const host = document.createElement("div");
+  host.className = "plan-hit-host";
+  host.append(plan);
+  host._planShell = shell;
+  shell._planHost = host;
+  rail.append(shell, host);
+  releaseSuborbNodes(shell);
+  assert.equal(rail.querySelector(".plan-hit-host"), null);
+  assert.equal(rail.querySelector(".plan-window"), null);
+  assert.equal(shell.isConnected, false);
+  const paint = main.slice(main.indexOf("function renderSuborbs"), main.indexOf("function layoutSuborbOrbs"));
+  assert.match(paint, /releaseSuborbNodes\(shell\)/);
+  assert.doesNotMatch(paint, /shell\.remove\(\)/);
+});
+
+test("a new session with five discs stays on the rail and opens a shifted panel", () => {
+  const seed = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot],
+    mainId: "bot-chat",
+    now: 0,
+  });
+  const tasks = [0, 1, 2, 3, 4].map((i) => row(`t${i}`, { started_at: i + 1 }));
+  const five = reconcileSuborbs(seed.model, {
+    sessions: [bot, ...tasks],
+    mainId: "bot-chat",
+    now: 1,
+  });
+  assert.equal(five.shown.length, 5);
+  five.model.forced.fresh = true;
+  const born = reconcileSuborbs(five.model, {
+    sessions: [bot, ...tasks, row("fresh", { started_at: 40 })],
+    mainId: "bot-chat",
+    openIds: ["fresh"],
+    now: 2,
+  });
+  assert.equal(born.shown.some((item) => item.id === "fresh"), true);
+  assert.deepEqual(born.overflow.map((item) => item.id), ["t0"]);
+  const pinned = tasks.map((item) => item.id);
+  const overCap = reconcileSuborbs(five.model, {
+    sessions: [bot, ...tasks, row("fresh", { started_at: 40 })],
+    mainId: "bot-chat",
+    pinned,
+    now: 3,
+  });
+  overCap.model.forced.fresh = true;
+  const kept = reconcileSuborbs(overCap.model, {
+    sessions: [bot, ...tasks, row("fresh", { started_at: 40 })],
+    mainId: "bot-chat",
+    pinned,
+    now: 4,
+  });
+  assert.equal(kept.shown.some((item) => item.id === "fresh"), true);
+  assert.equal(kept.shown.length, 6);
+  assert.deepEqual(capSuborbs(kept.shown, 5, ["fresh"]).shown.map((item) => item.id).includes("fresh"), true);
+  assert.deepEqual(suborbPanelShift(0), { x: 0, y: 0 });
+  assert.deepEqual(suborbPanelShift(1), { x: 36, y: 36 });
+  const place = main.slice(main.indexOf("function placeSuborbShell"), main.indexOf("function wireSuborbPanel"));
+  assert.match(place, /suborbPanelShift/);
+  const escape = main.slice(main.indexOf("function closeOpenPanel"), main.indexOf("let composerField"));
+  assert.match(escape, /isSuborbId\(id\)\) closeSuborbPanel\(id\)/);
+  const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
+  const actionAt = send.indexOf("if (action)");
+  const endedAt = send.indexOf("sessionEnded");
+  assert.ok(actionAt >= 0 && actionAt < endedAt);
+  const keys = main.slice(main.indexOf("function wireBotPanel"), main.indexOf("function mountBotPanel", main.indexOf("function wireBotPanel")));
+  assert.match(keys, /bareNewSubmits\(picked, input\?\.value/);
 });

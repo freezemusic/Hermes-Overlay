@@ -15,6 +15,8 @@ import {
   emptySuborbModel,
   isRenewArchiveTitle,
   normalizeTaskTitle,
+  capSuborbs,
+  composerHoldsSuborb,
   reconcileSuborbs,
   suborbChannels,
   suborbLabel,
@@ -98,14 +100,33 @@ test("a moved stamp asks for a tail and an unpinned finished read leaves after 3
     now: 10,
   });
   assert.equal(read.shown.length, 1);
-  assert.equal(read.model.dismissAt.job, 10 + SUBORB_DISMISS_MS);
-  const gone = reconcileSuborbs(read.model, {
+  assert.equal(read.model.dismissAt.job, undefined);
+  const stillOpen = reconcileSuborbs(read.model, {
     sessions: [bot, task("job", { message_count: 3, last_active: 9 })],
     mainId: "bot-chat",
     openIds: ["job"],
     now: 10 + SUBORB_DISMISS_MS,
   });
+  assert.equal(stillOpen.shown.length, 1);
+  const closed = reconcileSuborbs(stillOpen.model, {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9 })],
+    mainId: "bot-chat",
+    now: 10,
+  });
+  closed.model.closedAt.job = 10;
+  const waiting = reconcileSuborbs(closed.model, {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9 })],
+    mainId: "bot-chat",
+    now: 10 + SUBORB_DISMISS_MS - 1,
+  });
+  assert.equal(waiting.shown.length, 1);
+  const gone = reconcileSuborbs(waiting.model, {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9 })],
+    mainId: "bot-chat",
+    now: 10 + SUBORB_DISMISS_MS,
+  });
   assert.equal(gone.shown.length, 0);
+  assert.equal(composerHoldsSuborb({ value: "未送", focused: false }), true);
 });
 
 test("a pin stays after it is finished and read, and status does not reorder", () => {
@@ -191,6 +212,64 @@ test("a tail is a plan only when the plan detector agrees, and a bot line is set
   assert.equal(plan.settled, true);
   assert.equal(tailSignals([{ role: "user", text: "hello" }]).settled, false);
   assert.equal(tailSignals([{ role: "bot", text: "路徑 .hermes/plans/x.md" }]).plan, false);
+});
+
+test("a new disc stays visible and an archived row drops its pin", () => {
+  const seed = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot],
+    mainId: "bot-chat",
+    listedIds: ["bot-chat"],
+    now: 0,
+  });
+  const tasks = [0, 1, 2, 3, 4].map((i) => task(`t${i}`, { started_at: i + 1 }));
+  const five = reconcileSuborbs(seed.model, {
+    sessions: [bot, ...tasks],
+    mainId: "bot-chat",
+    listedIds: ["bot-chat", ...tasks.map((item) => item.id)],
+    now: 1,
+  });
+  five.model.forced.fresh = true;
+  const born = reconcileSuborbs(five.model, {
+    sessions: [bot, ...tasks, task("fresh", { started_at: 40 })],
+    mainId: "bot-chat",
+    listedIds: ["bot-chat", ...tasks.map((item) => item.id)],
+    now: 2,
+  });
+  assert.equal(born.shown.some((item) => item.id === "fresh"), true);
+  assert.equal(born.overflow.some((item) => item.id === "t0"), true);
+  assert.equal(born.unpin.includes("fresh"), false);
+  const pinned = reconcileSuborbs(born.model, {
+    sessions: [bot, task("kept", { archived: false }), task("old", { archived: true })],
+    listedIds: ["bot-chat", "kept", "old"],
+    pinned: ["old", "kept"],
+    now: 3,
+  });
+  assert.equal(pinned.shown.some((item) => item.id === "old"), false);
+  assert.equal(pinned.unpin.includes("old"), true);
+  assert.equal(pinned.unpin.includes("kept"), false);
+  const seen = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot, task("gone")],
+    listedIds: ["bot-chat", "gone"],
+    pinned: ["gone"],
+    now: 4,
+  });
+  const dropped = reconcileSuborbs(seen.model, {
+    sessions: [bot, task("gone")],
+    listedIds: ["bot-chat"],
+    pinned: ["gone"],
+    now: 5,
+  });
+  assert.deepEqual(dropped.unpin, ["gone"]);
+  assert.equal(dropped.shown.some((item) => item.id === "gone"), false);
+  const pending = reconcileSuborbs(dropped.model, {
+    sessions: [bot, task("brand")],
+    listedIds: ["bot-chat"],
+    pinned: ["brand"],
+    now: 6,
+  });
+  assert.equal(pending.unpin.includes("brand"), false);
+  assert.equal(pending.shown.some((item) => item.id === "brand"), true);
+  assert.equal(capSuborbs(born.shown, 5, ["fresh"]).shown.some((item) => item.id === "fresh"), true);
 });
 
 test("the sub-orb fade uses the plan curve and a 0.18 floor", () => {

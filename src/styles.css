@@ -3536,6 +3536,23 @@ html[data-pass="1"] .plan-hit-host * {
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing),
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-fill {
   background: transparent;
+  box-shadow: none;
+  filter: none;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) {
+  z-index: 2;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .bot-panel,
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .plan-window,
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-stroke {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  box-shadow: none;
+}
+.morph[data-kind="suborb"] .bot-btn .bot-hit {
+  inset: 0;
 }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc {
   width: var(--suborb-size, 20px);
@@ -3547,7 +3564,7 @@ html[data-pass="1"] .plan-hit-host * {
   box-sizing: border-box;
   position: absolute;
 }
-.morph[data-kind="suborb"] .suborb-disc[data-pinned="1"] {
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc[data-pinned="1"] {
   border-style: solid;
 }
 .morph[data-kind="suborb"] .spinner { display: none; }
