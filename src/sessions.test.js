@@ -1284,6 +1284,34 @@ test("a split clarify reply is replaced by the server turn", () => {
     "CLSINGLE please ask",
     "Thinking about CLSINGLE. mock: clarify answer=\"Rust\"",
   ]);
+  const repeated = finishWatchedRows([
+    { role: "user", text: "earlier" },
+    { role: "bot", text: "ok sure thing" },
+    { role: "user", text: "CLSINGLE please ask" },
+    { role: "bot", text: "Thinking about CLSINGLE." },
+    { role: "bot", text: "mock: clarify answer=\"Rust\"" },
+  ], [
+    { role: "user", text: "their question" },
+    { role: "bot", text: "ok sure thing" },
+    { role: "user", text: "CLSINGLE please ask" },
+    { role: "bot", text: "Thinking about CLSINGLE. mock: clarify answer=\"Rust\"" },
+  ], false, { ownTurn: { userText: "CLSINGLE please ask" } });
+  assert.equal(repeated.filter((message) => message.text === "ok sure thing").length, 2);
+  assert.equal(repeated.filter((message) => message.text === "their question").length, 1);
+  const already = finishWatchedRows([
+    { role: "user", text: "their question" },
+    { role: "bot", text: "ok sure thing" },
+    { role: "user", text: "CLSINGLE please ask" },
+    { role: "bot", text: "Thinking about CLSINGLE." },
+    { role: "bot", text: "mock: clarify answer=\"Rust\"" },
+  ], [
+    { role: "user", text: "their question" },
+    { role: "bot", text: "ok sure thing" },
+    { role: "user", text: "CLSINGLE please ask" },
+    { role: "bot", text: "Thinking about CLSINGLE. mock: clarify answer=\"Rust\"" },
+  ], false, { ownTurn: { userText: "CLSINGLE please ask" } });
+  assert.equal(already.filter((message) => message.text === "ok sure thing").length, 1);
+  assert.equal(already.filter((message) => message.text === "their question").length, 1);
   const mine = [
     { role: "user", text: "my question" },
     { role: "bot", text: "Done: found 40 matches." },

@@ -1397,7 +1397,7 @@ function replaceOwnTurn(prior, incoming, ownTurn) {
   if (!serverBots.length && !serverTurn.some(isToolRow)) return null;
   const prefix = list.slice(0, userIndex);
   const lead = tailUser > 0 ? rows.slice(0, tailUser) : [];
-  const leadFresh = lead.filter((row) => !prefix.some((have) => have?.role === row.role && have?.text === row.text));
+  const leadFresh = unseenMessages(prefix, lead).fresh;
   const head = tailUser >= 0 ? [] : [user];
   const kept = span.filter((message) => {
     if (!message || message === user) return false;
