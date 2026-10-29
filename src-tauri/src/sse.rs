@@ -2,6 +2,8 @@
 pub struct SseEvent {
     pub event: String,
     pub data: String,
+    /// SSE `id:` line. `/v1/runs/{id}/events` uses it as `Last-Event-ID`.
+    pub id: String,
 }
 
 /// Split complete SSE frames from `buf`. The returned string is the incomplete tail.
@@ -99,6 +101,7 @@ pub fn push_utf8(pending: &mut Vec<u8>, buf: &mut String, bytes: &[u8]) {
 
 fn parse_block(block: &str) -> Option<SseEvent> {
     let mut event = String::new();
+    let mut id = String::new();
     let mut data_lines: Vec<String> = Vec::new();
     for raw in block.split('\n') {
         let line = raw.trim_end_matches('\r');
@@ -107,6 +110,8 @@ fn parse_block(block: &str) -> Option<SseEvent> {
         }
         if let Some(rest) = line.strip_prefix("event:") {
             event = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("id:") {
+            id = rest.trim().to_string();
         } else if let Some(rest) = line.strip_prefix("data:") {
             let rest = rest.strip_prefix(' ').unwrap_or(rest);
             data_lines.push(rest.to_string());
@@ -121,6 +126,7 @@ fn parse_block(block: &str) -> Option<SseEvent> {
     Some(SseEvent {
         event,
         data: data_lines.join("\n"),
+        id,
     })
 }
 

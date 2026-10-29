@@ -53,6 +53,23 @@ test("assistant markdown renders headings, lists, code, tables, and CJK", () => 
   assert.match(html, /甲<br>乙/);
 });
 
+test("a windows plan path keeps every backslash in the chat and plan preview", () => {
+  const path = "C:\\Users\\freez\\Desktop\\MetaTrader Workbench\\.hermes\\plans\\2026-10-26_210008-mt5-wrapper-next.md";
+  const eaten = "C:\\Users\\freez\\Desktop\\MetaTrader Workbench.hermes\\plans\\2026-10-26_210008-mt5-wrapper-next.md";
+  const html = renderAssistantMarkdown(`前文\n\n${path}\n\n**粗體**`, purify);
+  const doc = new JSDOM(`<!DOCTYPE html><body>${html}</body>`).window.document;
+  const shown = [...doc.querySelectorAll("code")].map((node) => node.textContent);
+  assert.ok(shown.includes(path));
+  assert.equal(doc.body.textContent.includes("Workbench.hermes\\"), false);
+  assert.match(html, /<strong>粗體<\/strong>/);
+  const eatenHtml = renderAssistantMarkdown(eaten, purify);
+  const eatenDoc = new JSDOM(`<!DOCTYPE html><body>${eatenHtml}</body>`).window.document;
+  assert.ok([...eatenDoc.querySelectorAll("code")].some((node) => node.textContent === eaten));
+  const fenced = renderAssistantMarkdown("```\n" + path + "\n```", purify);
+  const fenceDoc = new JSDOM(`<!DOCTYPE html><body>${fenced}</body>`).window.document;
+  assert.equal(fenceDoc.querySelector("pre code")?.textContent.includes(path), true);
+});
+
 test("sanitizes raw html, event handlers, and javascript urls", () => {
   const html = renderAssistantMarkdown(
     [

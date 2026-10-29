@@ -1,12 +1,36 @@
 //! Profile API keys and the optional dashboard session token live in the OS keychain.
 //! The JSON config never stores them.
+//!
+//! `sync-secret-service` `get_password` blocks until the collection unlocks.
+//! Called on the GTK thread, that freezes the overlay, ignores SIGTERM, and
+//! stays stuck after the prompt is cancelled. Reads run on a worker with a
+//! short timeout so a locked keyring becomes a banner instead of a hang.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, OnceLock};
+use std::thread;
+use std::time::Duration;
 
 const DEFAULT_SERVICE: &str = "com.freezemusic.hermes-overlay";
 const DASHBOARD_ACCOUNT: &str = "dashboard-session-token";
+pub const KANBAN_ACCESS_ACCOUNT: &str = "kanban-access-token";
+pub const KANBAN_REFRESH_ACCOUNT: &str = "kanban-refresh-token";
+pub const KANBAN_COOKIE_ACCOUNT: &str = "kanban-session-cookie";
+pub const KANBAN_USER_ACCOUNT: &str = "kanban-basic-username";
+pub const KANBAN_PASSWORD_ACCOUNT: &str = "kanban-basic-password";
+
+const KANBAN_ACCOUNTS: [&str; 5] = [
+    KANBAN_ACCESS_ACCOUNT,
+    KANBAN_REFRESH_ACCOUNT,
+    KANBAN_COOKIE_ACCOUNT,
+    KANBAN_USER_ACCOUNT,
+    KANBAN_PASSWORD_ACCOUNT,
+];
 
 static SERVICE_NAME: OnceLock<String> = OnceLock::new();
+
+#[cfg(test)]
+static TEST_KEYRING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Keychain service follows the bundle identifier, so a `.dev` build cannot overwrite installed keys.
 pub fn service_for(identifier: &str) -> String {
@@ -49,11 +73,80 @@ fn classify(err: keyring::Error) -> Result<Lookup, String> {
     }
 }
 
-pub fn get_profile_key(profile: &str) -> Result<Lookup, String> {
-    match entry(&account_for_profile(profile))?.get_password() {
+const KEYRING_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Set when a read did not return before the timeout. Later reads fail
+/// immediately until that worker finishes, so one locked prompt cannot
+/// queue a 3s wait per profile.
+static KEYRING_STUCK: AtomicBool = AtomicBool::new(false);
+
+fn keyring_unavailable() -> String {
+    "鑰匙圈錯誤：鎖定或者未有回應。請解鎖之後再試。".into()
+}
+
+fn keyring_worker() -> &'static mpsc::Sender<Box<dyn FnOnce() + Send>> {
+    static TX: OnceLock<mpsc::Sender<Box<dyn FnOnce() + Send>>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        let _ = thread::Builder::new().name("keyring".into()).spawn(move || {
+            while let Ok(job) = rx.recv() {
+                job();
+            }
+        });
+        tx
+    })
+}
+
+/// Run one keyring read off the caller. `get_password` blocks until the
+/// Secret Service collection unlocks; on the GTK thread that freezes the
+/// overlay and ignores SIGTERM. The caller waits at most `timeout`.
+fn run_keyring<T: Send + 'static>(
+    timeout: Duration,
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    if KEYRING_STUCK.load(Ordering::Acquire) {
+        return Err(keyring_unavailable());
+    }
+    let (tx, rx) = mpsc::channel();
+    let done = Arc::new(AtomicBool::new(false));
+    let finished = Arc::clone(&done);
+    let sent = keyring_worker().send(Box::new(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+        // Publish completion before clearing the stuck flag, so a caller that
+        // already timed out cannot leave the flag set after this job ends.
+        finished.store(true, Ordering::Release);
+        KEYRING_STUCK.store(false, Ordering::Release);
+        let _ = tx.send(match result {
+            Ok(value) => value,
+            Err(_) => Err("鑰匙圈錯誤：讀取中斷。".into()),
+        });
+    }));
+    if sent.is_err() {
+        return Err("鑰匙圈錯誤：讀取開唔到。".into());
+    }
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            KEYRING_STUCK.store(true, Ordering::Release);
+            if done.load(Ordering::Acquire) {
+                KEYRING_STUCK.store(false, Ordering::Release);
+            }
+            Err(keyring_unavailable())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err("鑰匙圈錯誤：讀取中斷。".into()),
+    }
+}
+
+fn read_password(account: &str) -> Result<Lookup, String> {
+    match entry(account)?.get_password() {
         Ok(value) => Ok(Lookup::Value(value)),
         Err(err) => classify(err),
     }
+}
+
+pub fn get_profile_key(profile: &str) -> Result<Lookup, String> {
+    let account = account_for_profile(profile);
+    run_keyring(KEYRING_TIMEOUT, move || read_password(&account))
 }
 
 pub fn set_profile_key(profile: &str, key: &str) -> Result<(), String> {
@@ -74,10 +167,7 @@ pub fn delete_profile_key(profile: &str) -> Result<(), String> {
 }
 
 pub fn get_dashboard_token() -> Result<Lookup, String> {
-    match entry(DASHBOARD_ACCOUNT)?.get_password() {
-        Ok(value) => Ok(Lookup::Value(value)),
-        Err(err) => classify(err),
-    }
+    run_keyring(KEYRING_TIMEOUT, || read_password(DASHBOARD_ACCOUNT))
 }
 
 pub fn set_dashboard_token(token: &str) -> Result<(), String> {
@@ -97,15 +187,50 @@ pub fn delete_dashboard_token() -> Result<(), String> {
     delete_account(DASHBOARD_ACCOUNT)
 }
 
+fn kanban_account(account: &str) -> Result<(), String> {
+    if KANBAN_ACCOUNTS.contains(&account) {
+        Ok(())
+    } else {
+        Err("唔可以改其他程式嘅鑰匙圈項目".into())
+    }
+}
+
+pub fn get_kanban_secret(account: &str) -> Result<Lookup, String> {
+    kanban_account(account)?;
+    let account = account.to_string();
+    run_keyring(KEYRING_TIMEOUT, move || read_password(&account))
+}
+
+pub fn set_kanban_secret(account: &str, value: &str) -> Result<(), String> {
+    kanban_account(account)?;
+    let value = value.trim();
+    if value.is_empty() {
+        return delete_kanban_secret(account);
+    }
+    if value.chars().any(|c| c == '\n' || c == '\r' || c == '\0') {
+        return Err("鑰匙圈內容唔可以有換行".into());
+    }
+    entry(account)?
+        .set_password(value)
+        .map_err(|e| format!("寫入鑰匙圈失敗：{e}"))
+}
+
+pub fn delete_kanban_secret(account: &str) -> Result<(), String> {
+    kanban_account(account)?;
+    delete_account(account)
+}
+
 /// `true` when this process is using keyring's in-memory mock store.
 /// That happens if the crate is built without a platform backend feature:
 /// `set_password` appears to work, then a later `Entry` cannot see the secret.
 pub fn store_is_mock() -> Result<bool, String> {
-    let entry = entry("store-kind")?;
-    Ok(entry
-        .get_credential()
-        .downcast_ref::<keyring::mock::MockCredential>()
-        .is_some())
+    run_keyring(KEYRING_TIMEOUT, || {
+        let entry = entry("store-kind")?;
+        Ok(entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .is_some())
+    })
 }
 
 fn delete_account(account: &str) -> Result<(), String> {
@@ -119,6 +244,18 @@ fn delete_account(account: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kanban_secrets_stay_on_overlay_accounts() {
+        assert!(set_kanban_secret(DASHBOARD_ACCOUNT, "nope").is_err());
+        assert!(set_kanban_secret("profile:default", "nope").is_err());
+        assert!(get_kanban_secret("login").is_err());
+        assert!(delete_kanban_secret("hermes").is_err());
+        for account in KANBAN_ACCOUNTS {
+            assert_ne!(account, DASHBOARD_ACCOUNT);
+            assert!(!account.starts_with("profile:"));
+        }
+    }
 
     #[test]
     fn keyring_service_follows_the_bundle_identifier() {
@@ -135,7 +272,43 @@ mod tests {
     }
 
     #[test]
+    fn a_slow_keyring_read_returns_before_the_prompt_can_hang_the_app() {
+        let _guard = super::TEST_KEYRING.lock().unwrap_or_else(|err| err.into_inner());
+        let started = std::time::Instant::now();
+        let result: Result<String, String> = run_keyring(Duration::from_millis(40), || {
+            thread::sleep(Duration::from_millis(400));
+            Ok("secret".to_string())
+        });
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "timed out too late: {:?}",
+            started.elapsed()
+        );
+        let err = result.expect_err("slow read");
+        assert!(err.contains("鑰匙圈錯誤"), "{err}");
+        let again = std::time::Instant::now();
+        let blocked: Result<String, String> =
+            run_keyring(Duration::from_millis(80), || Ok("later".to_string()));
+        assert!(
+            again.elapsed() < Duration::from_millis(200),
+            "a queued read waited on the stuck prompt: {:?}",
+            again.elapsed()
+        );
+        assert!(blocked.is_err(), "a read behind a stuck prompt must time out");
+        thread::sleep(Duration::from_millis(450));
+    }
+
+    #[test]
+    fn a_fast_keyring_read_returns_the_value() {
+        let _guard = super::TEST_KEYRING.lock().unwrap_or_else(|err| err.into_inner());
+        let result: Result<String, String> =
+            run_keyring(Duration::from_millis(200), || Ok("ok".to_string()));
+        assert_eq!(result.expect("fast read"), "ok");
+    }
+
+    #[test]
     fn platform_backend_is_not_the_mock_store() {
+        let _guard = super::TEST_KEYRING.lock().unwrap_or_else(|err| err.into_inner());
         match store_is_mock() {
             Ok(true) => {
                 panic!("keyring resolved to the in-memory mock store; saved API keys will vanish")
