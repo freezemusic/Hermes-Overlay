@@ -36,6 +36,7 @@
     "allow-send-suborb",
     "allow-stop-suborb",
     "allow-set-suborb-pin",
+    "allow-seed-session-lists",
     "allow-get-kanban-board",
     "allow-get-kanban-boards",
     "allow-set-kanban-board",

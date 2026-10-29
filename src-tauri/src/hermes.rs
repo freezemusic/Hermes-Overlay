@@ -63,6 +63,8 @@ pub struct SessionSummary {
     pub end_reason: String,
     /// Gateway routing key. Empty when the list did not include one.
     pub session_key: String,
+    /// The list said this row is running, when it sent such a flag.
+    pub busy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -757,7 +759,7 @@ pub fn session_list_fingerprint(sessions: &[SessionSummary]) -> String {
         .iter()
         .map(|session| {
             format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 session.id,
                 session.title,
                 session.last_active.to_bits(),
@@ -767,11 +769,24 @@ pub fn session_list_fingerprint(sessions: &[SessionSummary]) -> String {
                 session.ended,
                 session.source,
                 session.preview,
+                session.busy,
             )
         })
         .collect();
     parts.sort();
     parts.join("\n")
+}
+
+fn session_busy(item: &Value) -> bool {
+    for key in ["running", "busy", "active", "in_progress", "has_active_run"] {
+        if json_flag(item, key) == Some(true) {
+            return true;
+        }
+    }
+    matches!(
+        item.get("status").and_then(Value::as_str).unwrap_or("").trim(),
+        "running" | "busy" | "thinking" | "in_progress"
+    )
 }
 
 fn json_flag(item: &Value, key: &str) -> Option<bool> {
@@ -969,6 +984,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 .to_string();
             let (ended, end_reason) = session_closed(item);
             let session_key = routing_key_of(item);
+            let busy = session_busy(item);
             Some(SessionSummary {
                 id,
                 title,
@@ -984,6 +1000,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 ended,
                 end_reason,
                 session_key,
+                busy,
             })
         })
         .collect();
@@ -4470,6 +4487,7 @@ mod tests {
             ended: false,
             end_reason: String::new(),
             session_key: String::new(),
+            busy: false,
         }
     }
 
@@ -4496,6 +4514,7 @@ mod tests {
             ended: false,
             end_reason: String::new(),
             session_key: String::new(),
+            busy: false,
         }
     }
 

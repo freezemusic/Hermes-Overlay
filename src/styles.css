@@ -3517,19 +3517,35 @@ html[data-pass="1"] .plan-hit-host * {
   }
 }
 
-.morph[data-kind="suborb"][data-state="orb"] {
-  width: 20px;
-  height: 20px;
+.morph[data-kind="suborb"] {
+  background: rgba(0, 0, 242, .45);
 }
-.morph[data-kind="suborb"][data-state="orb"] .suborb-disc {
-  width: 100%;
-  height: 100%;
-  min-width: 14px;
-  min-height: 14px;
+.morph[data-kind="suborb"] .morph-fill {
+  background:
+    var(--glass-sheen),
+    var(--glass-tint),
+    linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    var(--noise),
+    rgba(248, 248, 252, .92);
+}
+.morph[data-kind="suborb"][data-state="panel"] {
+  filter: drop-shadow(0 6px 24px rgba(0, 0, 242, .12));
+  box-shadow: 0 0 0 1px rgba(0, 0, 242, .45);
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing),
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-fill {
+  background: transparent;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc {
+  width: var(--suborb-size, 20px);
+  height: var(--suborb-size, 20px);
+  left: calc(var(--ax, 22px) - (var(--suborb-size, 20px) / 2));
+  top: calc(var(--ay, 22px) - (var(--suborb-size, 20px) / 2));
   border-radius: 999px;
   border: 1px dashed rgb(var(--bot-rgb) / .45);
   box-sizing: border-box;
-  position: relative;
+  position: absolute;
 }
 .morph[data-kind="suborb"] .suborb-disc[data-pinned="1"] {
   border-style: solid;

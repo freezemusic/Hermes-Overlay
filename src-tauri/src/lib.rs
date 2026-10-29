@@ -317,6 +317,7 @@ struct SessionChoice {
     /// Cheap change-check fields from the session list. Not a transcript.
     message_count: Option<u64>,
     started_at: f64,
+    busy: bool,
 }
 
 #[derive(Serialize)]
@@ -776,6 +777,7 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
             kept_title: String::new(),
             message_count: session.message_count,
             started_at: session.started_at,
+            busy: session.busy,
         })
         .collect();
     let routed_away = sessions.iter().any(|session| session.id == active && !hermes::session_route_matches(session));
@@ -795,6 +797,7 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
                 kept_title: String::new(),
                 message_count: None,
                 started_at: 0.0,
+                busy: false,
             },
         );
     }
@@ -3099,7 +3102,6 @@ async fn client_command(
             let session_id = hermes::create_session(&state.http, &root, &key, title)
                 .await
                 .map_err(|err| explain(&err))?;
-            pin_explicit(&app, &state, &input.profile, &root, &key, &session_id).await;
             Ok(ClientCommandOut {
                 command,
                 notice: format!("新 session {session_id}"),
@@ -3763,6 +3765,44 @@ async fn set_suborb_pin(
     .map_err(|err| format!("讀唔到設定：{err}"))?
 }
 
+/// Re-send each profile's session list once the page is ready.
+/// Clears the watcher fingerprint so the next poll also emits, without downloading transcripts.
+#[tauri::command]
+async fn seed_session_lists(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let cfg = load_config(&app)?;
+    if cfg.mode() != "hermes" {
+        return Ok(());
+    }
+    {
+        let mut watched = state.bot_chats.lock().unwrap_or_else(|err| err.into_inner());
+        for chat in watched.values_mut() {
+            chat.fingerprint.clear();
+        }
+    }
+    for bot in cfg.bots.iter().filter(|bot| bot.enabled) {
+        let Ok(key) = profile_key(&bot.profile) else {
+            continue;
+        };
+        let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+        let Ok(sessions) = hermes::list_sessions_for_bot_chat(&state.http, &root, &key).await else {
+            continue;
+        };
+        let pin = load_pin(&app, &state, &bot.profile);
+        let resolved = hermes::session_for_startup(&sessions, &pin.id, pin.explicit, pin.anchor)
+            .map(|session| session.id);
+        emit(
+            &app,
+            serde_json::json!({
+                "type": "sessions",
+                "profile": bot.profile,
+                "session_id": resolved.clone().unwrap_or_default(),
+                "sessions": session_choices(&sessions, resolved.as_deref().unwrap_or("")),
+            }),
+        );
+    }
+    Ok(())
+}
+
 /// Orb id latched when the hit check saw Ctrl+press. The page reads this
 /// from a late pointerdown; a newer key sample is not the answer.
 #[tauri::command]
@@ -3988,6 +4028,7 @@ pub fn run() {
             send_suborb,
             stop_suborb,
             set_suborb_pin,
+            seed_session_lists,
             get_kanban_board,
             get_kanban_boards,
             get_kanban_task,
@@ -4340,6 +4381,7 @@ mod tests {
             ended: false,
             end_reason: String::new(),
             session_key: String::new(),
+            busy: false,
         };
         let archived = crate::hermes::SessionSummary {
             id: "old".into(),
@@ -4356,6 +4398,7 @@ mod tests {
             ended: false,
             end_reason: String::new(),
             session_key: String::new(),
+            busy: false,
         };
         let rows = super::session_choices(&[desktop, archived], "missing");
         assert_eq!(rows[0].id, "missing");

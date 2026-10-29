@@ -494,12 +494,12 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 **R-SO-04** sub-orb 面板用同一套 Ctrl 規則同同一塊 bot 面板（composer、撰寫模式、工具摺疊、批准／澄清卡、停止、排隊）。Header 係 breadcrumb `BOTNAME / session 標題`，加「釘住」／「取消釘住」。
 **R-SO-05** 閒置冇持續動畫；子光球只動 transform、opacity、clip-path。思考弧只喺 running 時先轉。
 
-**R-SO-06** 子光球發現。Devon 一個任務一條 Hermes session。主光球永遠開該 bot 嘅 Desktop Bot Chat（R-SS-01），程式唔會自動把主面板轉去另一條 session，啟動亦唔建立 session。Bot Chat、主光球而家綁住嗰條、已封存、以及標題以 `_YYYYMMDDHHMM` 或 `_YYYYMMDDHHMMSS` 結尾（renew 封存名）嘅列，永遠唔做子光球。第一次 session 清單係基準：當時已存在、又未釘住嘅列唔出子光球。之後新出現嘅任務列，或者 `message_count`／`last_active` 相對基準有變嘅列，先自動出一粒未釘住嘅子光球。發現沿用而家嘅平價輪詢：只比較清單上嘅 `message_count` 同 `last_active`；有變先攞該列尾頁（最多 40 行），唔好為子光球加全對話輪詢。可見子光球最多 5 粒（R-SO-02）；再多就第 6 個位係「+N」，Ctrl+撳開該 bot 嘅 session picker。次序係釘選先，然後按建立時間，狀態唔好令佢哋跳位。
+**R-SO-06** 子光球發現。Devon 一個任務一條 Hermes session。主光球永遠開該 bot 嘅 Desktop Bot Chat（R-SS-01），程式唔會自動把主面板轉去另一條 session，啟動亦唔建立 session。Bot Chat、主光球而家綁住嗰條、已封存、以及標題以 `_YYYYMMDDHHMM` 或 `_YYYYMMDDHHMMSS` 結尾（renew 封存名）嘅列，永遠唔做子光球。第一次 session 清單係基準：當時已存在、又未釘住嘅列唔出子光球。之後新出現嘅任務列，或者 `message_count`／`last_active` 相對基準有變嘅列，先自動出一粒未釘住嘅子光球。發現沿用而家嘅平價輪詢：只比較清單上嘅 `message_count` 同 `last_active`；有變先攞該列尾頁（最多 40 行），唔好為子光球加全對話輪詢。頁面準備好之後要再播一次而家嘅清單（唔下載全文），等啟動之後第一條外面開嘅任務唔會被當成基準，釘住嘅子光球亦唔使等下一次清單變化先出現。可見子光球最多 5 粒（R-SO-02）；再多就第 6 個位係「+N」，Ctrl+撳開該 bot 嘅 session picker。次序係釘選先，然後按建立時間，狀態唔好令佢哋跳位。
 - 來源：Devon（2026-10-29）。
 - 驗收（盒）：模擬清單第一次唔出舊任務；新 id 出一粒；封存同 `標題_202610271200` 唔出；`message_count` 冇變就唔再取訊息；多過 5 粒先出「+N」。
 - 狀態：❓ / ❓（單元測試）。
 
-**R-SO-07** 釘選。Ctrl+右撳子光球（穿透規則同主光球，見 R-CT-02）出「釘住」或「取消釘住」。面板 header 同一個掣。只有呢下先寫 config.json 頂層 `suborb_pins`（profile → session id 陣列），用 splice，唔改 session id、explicit、anchor 同其他鍵。取消到空就刪走個鍵，檔案返到未釘之前嘅位元組。未釘選嘅子光球，任務完成（唔再思考、唔再等答，而且尾頁已settle 或 session 已結束）兼 Devon 已讀（面板打開過，或者而家開住）之後 3000ms 收起。釘住嘅留低，即使已讀同完成。已讀之後再有新 `message_count` 就當未讀，子光球再出。
+**R-SO-07** 釘選。Ctrl+右撳子光球（穿透規則同主光球，見 R-CT-02）出「釘住」或「取消釘住」。面板 header 同一個掣。只有呢下先寫 config.json 頂層 `suborb_pins`（profile → session id 陣列），用 splice，唔改 session id、explicit、anchor 同其他鍵。取消到空就刪走個鍵，檔案返到未釘之前嘅位元組。未釘選嘅子光球，任務完成（唔再思考、唔再等答，而且尾頁已 settle 或 session 已結束）兼 Devon 已讀（面板打開過，或者而家開住）之後 3000ms 收起。3 秒到就要再算一次，唔好等下一次清單變化。尾頁最後一行仲係用戶、bot 未答完，子光球保持運行弧。釘住嘅留低，即使已讀同完成。已讀之後再有新 `message_count` 就當未讀，子光球再出。
 - 來源：Devon（2026-10-29）。
 - 驗收（盒）：釘一次 config 只多 `suborb_pins`；取消釘選之後個鍵消失，session id 不變；完成兼打開面板，3 秒後未釘嘅子光球消失，釘住嘅仲喺。
 - 狀態：❓ / ❓（單元測試）。
@@ -519,9 +519,9 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 - 驗收（盒）：撳掣之後 gateway 收到一次建立；新子光球出現而且未釘；config 冇 `suborb_pins` 呢條，主光球 session id 不變。
 - 狀態：❓ / ❓（單元測試）。
 
-**R-NS-02** 開新 session 唔好改主光球嘅 Bot Chat 綁定，唔好把主面板轉去新列。標題同選單唔好顯示 `Continue previous conversation`，亦唔好加「（已閂）」。建立失敗先出一句錯誤，唔好寫入金鑰或者 body。
+**R-NS-02** 開新 session 唔好改主光球嘅 Bot Chat 綁定，唔好把主面板轉去新列。主面板打 `/new`（可帶標題）同撳「開新 session」係同一條路：開一條未釘住嘅子光球並打開佢個面板，唔好再 pin 主光球。標題同選單唔好顯示 `Continue previous conversation`，亦唔好加「（已閂）」。建立失敗先出一句錯誤，唔好寫入金鑰或者 body。
 - 來源：Devon（2026-10-29）。
-- 驗收（盒）：建立前後主光球 `session_id`／`session_explicit`／`session_anchor` 位元組不變；畫面冇 `Continue previous conversation`，亦冇「（已閂）」。
+- 驗收（盒）：建立前後主光球 `session_id`／`session_explicit`／`session_anchor` 位元組不變；畫面冇 `Continue previous conversation`，亦冇「（已閂）」。主面板打 `/new 標題` 之後主光球仍然係 Bot Chat，新標題出現喺未釘住嘅子光球。
 - 狀態：❓ / ❓（單元測試）。
 
 - 驗收：盒錄影＋Windows 真點擊仍要另做。**本檔 §1–§11 全部項目照樣要過。**

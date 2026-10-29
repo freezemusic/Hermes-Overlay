@@ -13,8 +13,10 @@ import {
   isSuborbId,
   normalizeTaskTitle,
   parseSuborbId,
+  dispatchOrbClick,
   reconcileSuborbs,
   suborbLabel,
+  suborbPublishesPanel,
   suborbPanelId,
   suborbPositions,
   suborbSizePx,
@@ -558,12 +560,19 @@ function placeShellElement(shell) {
 }
 
 function layoutShell(shell) {
-  if (shell?.dataset?.kind === "suborb") {
-    if (shell.dataset.dragged === "1") return;
-    placeSuborbShell(shell);
+  if (!shell || shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+  if (shell.dataset.kind === "suborb") {
+    if (shell.dataset.dragged === "1" || shell.dataset.rehearsal === "1") return;
+    const placed = placeSuborbShell(shell);
+    if (!placed) return;
+    paintClip(shell, insetsFor(shell.dataset.visual || shell.dataset.state || "orb", {
+      boxW: placed.width,
+      boxH: placed.height,
+      ax: placed.anchor?.x || Number(shell.dataset.ax) || ORB / 2,
+      ay: placed.anchor?.y || Number(shell.dataset.ay) || ORB / 2,
+    }), shell.dataset.visual || shell.dataset.state || "orb");
     return;
   }
-  if (!shell || shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
   if (shell.dataset.rehearsal === "1") return;
   if (document.querySelector(".morph.is-collapsing")) return;
   if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return;
@@ -4043,12 +4052,14 @@ function visibleShellAt(x, y) {
 }
 
 function activateHitShell(shell) {
-  const hitId = shell?.dataset.botId || "";
-  if (!hitId) return;
-  if (hitId === "settings") focusSettings();
-  else if (hitId === "kanban") toggleKanban();
-  else if (hitId === "cron") toggleCron();
-  else selectBot(hitId);
+  dispatchOrbClick(shell?.dataset.botId || "", {
+    settings: () => focusSettings(),
+    kanban: () => toggleKanban(),
+    cron: () => toggleCron(),
+    picker: (profile) => { void openParentSessionPicker(profile); },
+    suborb: (id) => openSuborbPanel(id),
+    bot: (id) => selectBot(id),
+  });
 }
 
 function attachShell(shell, id) {
@@ -7848,6 +7859,10 @@ function botsFromSettings(settings) {
 
 async function sendClientCommand(id, text, action) {
   appendMessage(id, { role: "user", text, command: action.command });
+  if (action.command === "new") {
+    await createTaskSession(gatewayProfile(id), action.args || "");
+    return;
+  }
   if (action.command === "stop") {
     await stopActive(id);
     return;
@@ -7960,6 +7975,7 @@ function useHermes(settings) {
   }
   renderBots();
   renderSuborbs();
+  void seedSessionLists();
   prefetchBotChats();
   armChatRefresh();
   armRosterSync();
@@ -9473,16 +9489,26 @@ function collectHits() {
         if (spilled) box = laid;
       }
       if (box.w < 1 || box.h < 1) return;
+      const panelBody = shell.querySelector?.(".bot-panel");
+      const asOrb = shell.dataset.state === "orb" || (
+        shell.dataset.kind === "suborb" && !suborbPublishesPanel({
+          state: shell.dataset.state,
+          hidden: !panelBody || panelBody.hidden,
+          open: shell.classList.contains("open"),
+          opening: shell.dataset.opening || "",
+          morphing: shell.classList.contains("is-morphing") || shell.classList.contains("is-content-promoted"),
+        })
+      );
       const rect = {
-        id,
+        id: asOrb ? hitFor(shell.dataset.botId, "orb") : id,
         x: box.x,
         y: box.y,
         w: box.w,
         h: box.h,
         z: level,
-        round: shell.dataset.state === "orb",
+        round: asOrb,
       };
-      if (shell.dataset.state === "orb") {
+      if (asOrb) {
         const button = shell.querySelector(".morph-orb")?.getBoundingClientRect();
         const disc = button && button.width >= 1 && button.height >= 1
           ? { x: button.x, y: button.y, w: button.width, h: button.height }
@@ -9505,7 +9531,7 @@ function collectHits() {
         && shell.dataset.planOpen === "1"
         && shell.dataset.state === "panel"
         && (seam || (!shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")));
-      if (planVisible) {
+      if (planVisible && !asOrb) {
         // scaleX changes the border box. The hit rect is the layout width,
         // published once before the seam so GDK does not reshape every frame.
         const cached = Number(shell.dataset.planWidth);
@@ -9526,10 +9552,12 @@ function collectHits() {
           rect.h = union.h;
         }
       }
-      if (shell.dataset.state !== "orb") coverBottomFooter(rect, shell);
+      if (asOrb) {
+        // A closed sub-orb keeps the disc hit. The card is not in the list.
+      } else if (shell.dataset.state !== "orb") coverBottomFooter(rect, shell);
       rects.push(rect);
     }
-    if (shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) {
+    if (shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing") && !(shell.dataset.kind === "suborb" && !shell.classList.contains("open") && shell.dataset.opening !== "panel")) {
       const slash = role(shell, "slash");
       if (slash?.dataset.hitId) push(slash.dataset.hitId, slash, level + 20);
       pushCloseHit(rects, shell, level);
@@ -10661,13 +10689,16 @@ function readOrbOpacity(el) {
 function tickOrbFades() {
   orbFadeFrame = 0;
   const now = performance.now();
-  const duration = reducedMotion() ? 1 : ORB_FADE_MS;
   let running = false;
   document.querySelectorAll('.morph[data-state="orb"][data-hit-id]').forEach((el) => {
     if (el.classList.contains("is-cron-live") && el.dataset.orbCovered !== "1") return;
     const clock = orbFadeClocks.get(el);
     if (!clock || clock.settled) return;
-    const stepped = applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el));
+    const suborbFade = el.dataset.kind === "suborb";
+    const duration = reducedMotion() ? 1 : (suborbFade ? SUBORB_FADE_MS : ORB_FADE_MS);
+    const stepped = suborbFade
+      ? applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el), planEase)
+      : applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el));
     orbFadeClocks.set(el, stepped.clock);
     if (stepped.running) running = true;
   });
@@ -11105,12 +11136,38 @@ function noteSuborbList(profile, sessions, mainId = "") {
   for (const row of view.peek) {
     void peekSuborbTail(profile, row);
   }
-  const wait = Object.values(view.model.dismissAt || {}).find((at) => at > Date.now());
-  if (wait) {
-    window.clearTimeout(noteSuborbList.timer);
-    noteSuborbList.timer = window.setTimeout(() => renderSuborbs(), Math.max(0, wait - Date.now()) + 20);
-  }
   renderSuborbs();
+  armSuborbDismiss();
+}
+
+function armSuborbDismiss() {
+  let soonest = 0;
+  for (const model of state.suborbModels?.values?.() || []) {
+    for (const at of Object.values(model.dismissAt || {})) {
+      if (at > Date.now() && (!soonest || at < soonest)) soonest = at;
+    }
+  }
+  window.clearTimeout(noteSuborbList.timer);
+  if (!soonest) return;
+  noteSuborbList.timer = window.setTimeout(() => reevalSuborbs(), Math.max(0, soonest - Date.now()) + 20);
+}
+
+async function seedSessionLists() {
+  if (state.mode !== "hermes" || !inTauri()) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("seed_session_lists");
+  } catch {
+    /* The next list change still reconciles. */
+  }
+}
+
+function reevalSuborbs() {
+  for (const bot of state.bots || []) {
+    if (!state.suborbModels?.has(bot.id) && !pinsFor(bot.id).length) continue;
+    const thread = threadFor(bot.id);
+    noteSuborbList(bot.id, thread.sessions || [], thread.sessionId || "");
+  }
 }
 
 const suborbPeeks = new Set();
@@ -11166,7 +11223,7 @@ function renderSuborbs() {
     const view = state.suborbViews.get(bot.id);
     if (!view) continue;
     const anchor = parentOrbBox(bot.id);
-    const size = suborbSizePx(anchor?.parent || ORB);
+    const size = suborbSizePx(ORB);
     const slots = anchor
       ? suborbPositions({
         edge: anchor.edge,
@@ -11190,7 +11247,9 @@ function renderSuborbs() {
         shell.dataset.edge = anchor?.edge || "right";
       }
       paintSuborbDisc(id, row);
-      if (shell.dataset.state !== "panel") placeSuborbShell(shell);
+      if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel" && !shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")) {
+        placeSuborbShell(shell);
+      }
     });
     if (view.overflow.length) {
       const id = `suborb-more:${bot.id}`;
@@ -11228,12 +11287,20 @@ function ensureSuborbShell(bot, row) {
   shell.dataset.state = "orb";
   shell.dataset.visual = "orb";
   shell.dataset.hitId = `bot:${id}`;
+  const stroke = document.createElement("div");
+  stroke.className = "morph-stroke";
+  stroke.setAttribute("aria-hidden", "true");
+  const fill = document.createElement("div");
+  fill.className = "morph-fill";
+  const glow = document.createElement("div");
+  glow.className = "morph-glow";
+  fill.appendChild(glow);
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "bot-btn morph-orb suborb-disc";
   btn.dataset.botId = id;
   fillOrb(btn);
-  shell.append(btn);
+  shell.append(stroke, fill, btn, previewNode());
   const tpl = document.getElementById("bot-panel-template");
   if (tpl) {
     const fragment = tpl.content.cloneNode(true);
@@ -11335,27 +11402,13 @@ function placeSuborbShell(shell) {
   if (shell.dataset.dragged === "1") return clampDraggedShell(shell);
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
+  const size = suborbSizePx(ORB);
   const homeX = Number(shell.dataset.homeX);
   const homeY = Number(shell.dataset.homeY);
-  const opening = shell.dataset.state === "panel" || shell.dataset.visual === "panel";
-  if (!opening) {
-    const size = suborbSizePx(ORB);
-    const left = Number.isFinite(homeX) ? homeX : 8;
-    const top = Number.isFinite(homeY) ? homeY : 8;
-    shell.style.width = `${size}px`;
-    shell.style.height = `${size}px`;
-    shell.style.left = `${Math.round(left)}px`;
-    shell.style.top = `${Math.round(top)}px`;
-    shell.style.right = "auto";
-    shell.style.bottom = "auto";
-    shell.dataset.ax = String(size / 2);
-    shell.dataset.ay = String(size / 2);
-    return { width: size, height: size, left, top };
-  }
-  const size = suborbSizePx(ORB);
-  const ax = (Number.isFinite(homeX) ? homeX : 80) + size / 2;
-  const ay = (Number.isFinite(homeY) ? homeY : 80) + size / 2;
-  const placed = placeShell(ax, ay, PANEL_W, PANEL_H, vw, vh);
+  const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2;
+  const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
+  shell.style.setProperty("--suborb-size", `${size}px`);
+  const placed = placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
   shell.style.width = `${placed.width}px`;
   shell.style.height = `${placed.height}px`;
   shell.style.left = `${placed.left}px`;
@@ -11366,6 +11419,9 @@ function placeSuborbShell(shell) {
   shell.dataset.header = placed.header === "bottom" ? "bottom" : "top";
   shell.dataset.ax = String(placed.anchor.x);
   shell.dataset.ay = String(placed.anchor.y);
+  shell.style.setProperty("--ax", `${placed.anchor.x}px`);
+  shell.style.setProperty("--ay", `${placed.anchor.y}px`);
+  shell.style.transformOrigin = `${placed.anchor.x}px ${placed.anchor.y}px`;
   return placed;
 }
 
@@ -11436,38 +11492,48 @@ function openSuborbPanel(id) {
   const shell = shellFor(id);
   const panel = panelFor(id);
   if (!shell || !panel) return;
+  if (shell.classList.contains("open") && (shell.dataset.state === "panel" || shell.dataset.opening === "panel")) {
+    focusOpenPanel(id);
+    return;
+  }
   panel.hidden = false;
-  markVisual(shell, "panel");
-  shell.dataset.intent = "";
   state.openIds = openPanel(state.openIds, id);
   state.activeId = id;
   state.slashPanelId = id;
-  placeSuborbShell(shell);
   const sub = parseSuborbId(id);
   if (sub) {
     const model = suborbModel(sub.profile);
     const count = suborbSessionRow(sub.profile, sub.sessionId)?.message_count;
     if (count != null) model.read[sub.sessionId] = Number(count) || 0;
+    noteSuborbList(sub.profile, threadFor(sub.profile).sessions || [], threadFor(sub.profile).sessionId || "");
   }
   raisePanel(shell);
+  shell.dataset.intent = "open";
+  void runShellMorph(shell, "panel");
   void loadSuborb(id);
-  renderChat(id);
   scheduleHitSync();
 }
 
 function closeSuborbPanel(id) {
   const shell = shellFor(id);
   const panel = panelFor(id);
-  if (panel) panel.hidden = true;
   state.openIds = closePanel(state.openIds, id);
   if (state.activeId === id) state.activeId = state.openIds.at(-1) || null;
-  if (shell) {
-    markVisual(shell, "orb");
-    shell.dataset.intent = "";
+  if (state.slashPanelId === id) state.slashPanelId = state.activeId || "";
+  if (panel) {
+    const active = document.activeElement;
+    if (active && panel.contains(active)) active.blur();
   }
-  const sub = parseSuborbId(id);
-  if (sub) noteSuborbList(sub.profile, threadFor(sub.profile).sessions || [], threadFor(sub.profile).sessionId || "");
-  else renderSuborbs();
+  if (shell) {
+    shell.dataset.intent = "close";
+    void finishClose(shell).finally(() => {
+      if (panel) panel.hidden = true;
+      shell.classList.remove("open");
+      reevalSuborbs();
+    });
+    return;
+  }
+  reevalSuborbs();
 }
 
 async function loadSuborb(id) {
@@ -11650,6 +11716,7 @@ function toggleNewSessionForm(panel, id) {
     submit.type = "submit";
     submit.className = "send-btn";
     submit.textContent = "建立";
+    form.hidden = true;
     form.append(input, submit);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -12878,7 +12945,14 @@ function placeRehearsalStand(shell) {
     event.stopPropagation();
     if (orbOpenedThisPress()) return;
     if (pageOpenBlocked() || !orbClickAllowed(event)) return;
-    selectBot(id);
+    dispatchOrbClick(id, {
+      settings: () => focusSettings(),
+      kanban: () => toggleKanban(),
+      cron: () => toggleCron(),
+      picker: (profile) => { void openParentSessionPicker(profile); },
+      suborb: (subId) => openSuborbPanel(subId),
+      bot: () => selectBot(id),
+    });
   });
   stand.addEventListener("contextmenu", (event) => {
     event.preventDefault();

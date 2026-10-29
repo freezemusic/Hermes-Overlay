@@ -46,6 +46,50 @@ export function isSuborbId(id) {
   return !!parseSuborbId(id);
 }
 
+/** Ctrl-click and the rehearsal stand-in both come through here.
+ *  `suborb:` opens that session. `suborb-more:` opens the parent picker.
+ *  Anything else stays on the normal bot path. */
+export function dispatchOrbClick(id, hooks = {}) {
+  const key = String(id || "");
+  if (!key) return "ignore";
+  if (key === "settings") {
+    hooks.settings?.();
+    return "settings";
+  }
+  if (key === "kanban") {
+    hooks.kanban?.();
+    return "kanban";
+  }
+  if (key === "cron") {
+    hooks.cron?.();
+    return "cron";
+  }
+  if (key.startsWith("suborb-more:")) {
+    hooks.picker?.(key.slice("suborb-more:".length));
+    return "picker";
+  }
+  if (isSuborbId(key)) {
+    hooks.suborb?.(key);
+    return "suborb";
+  }
+  hooks.bot?.(key);
+  return "bot";
+}
+
+/** A closed or unstyled sub-orb panel must not publish its card as a hit. */
+export function suborbPublishesPanel({
+  state = "",
+  hidden = false,
+  open = false,
+  opening = "",
+  morphing = false,
+} = {}) {
+  if (hidden && opening !== "panel" && !morphing) return false;
+  if (state !== "panel" && opening !== "panel") return false;
+  if (!open && !morphing && opening !== "panel") return false;
+  return true;
+}
+
 export function gatewayProfile(id) {
   return parseSuborbId(id)?.profile || id;
 }
@@ -206,11 +250,13 @@ export function reconcileSuborbs(model, {
     );
     if (countGrew || (isNew && count > 0)) peek.push(row.id);
     if (countGrew) next.settled[row.id] = false;
+    const awaitingReply = next.settled[row.id] === false && count > 0 && !row.ended;
     const running = !!(
       next.localBusy[row.id]
       || row.busy
       || activeOnly
-      || (countGrew && !next.settled[row.id])
+      || awaitingReply
+      || (countGrew && next.settled[row.id] !== true)
     );
     const waiting = !!(next.waiting[row.id] || row.pending);
     const failed = !!(next.failed[row.id] || row.failed);

@@ -114,6 +114,11 @@ description = "Pin or unpin one sub-orb session in config.json."
 commands.allow = ["set_suborb_pin"]
 
 [[permission]]
+identifier = "allow-seed-session-lists"
+description = "Re-emit session lists once the overlay page is ready."
+commands.allow = ["seed_session_lists"]
+
+[[permission]]
 identifier = "allow-get-kanban-board"
 description = "Read the kanban board from hermes serve on port 9119."
 commands.allow = ["get_kanban_board"]

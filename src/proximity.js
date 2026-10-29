@@ -429,6 +429,7 @@ export function botIdFromHit(hitId) {
   const id = String(hitId || "");
   if (id.startsWith("bot:")) return id.slice(4);
   if (id.startsWith("pill:")) return id.slice(5);
+  if (id.startsWith("suborb:") || id.startsWith("suborb-more:")) return id;
   return "";
 }
 
