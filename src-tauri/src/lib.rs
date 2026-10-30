@@ -1698,7 +1698,7 @@ async fn open_explicit_session(
     let Some(chosen) = listed.iter().find(|session| session.id == session_id) else {
         return Err("搵唔到呢個對話".into());
     };
-    let read_only = hermes::session_read_only(&chosen.source);
+    let read_only = hermes::session_read_only_in(chosen, &listed);
     let read_only_reason = if read_only {
         hermes::session_read_only_reason().to_string()
     } else {
@@ -1857,7 +1857,7 @@ async fn note_landed_session(
     let Some(next) = hermes::landed_session_id(posted, reported, known_ids, &after) else {
         if after
             .iter()
-            .any(|session| session.id == posted && session.ended)
+            .any(|session| session.id == posted && hermes::session_send_closed(session, &after))
         {
             emit_session_offer(app, profile, &hermes::closed_switch_id(&after, posted), "");
         }
@@ -1969,7 +1969,7 @@ async fn send_chat(
     let session_id = target.id;
     if sessions
         .iter()
-        .any(|session| session.id == session_id && session.ended)
+        .any(|session| session.id == session_id && hermes::session_send_closed(session, &sessions))
     {
         return Err(hermes::CLOSED_SESSION_LINE.into());
     }
@@ -4198,7 +4198,7 @@ mod tests {
         let send = src.find("async fn send_chat").expect("send");
         let send_end = src.find("async fn respond_approval").expect("approval");
         let body = &src[send..send_end];
-        assert!(body.contains("session.ended"));
+        assert!(body.contains("session_send_closed"));
         assert!(body.contains("CLOSED_SESSION_LINE"));
         assert!(body.contains("note_landed_session"));
         assert!(body.contains("failure.kind"));

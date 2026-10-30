@@ -31,6 +31,53 @@ export function sessionReadOnly(source) {
   return !sessionAcceptsSend(source);
 }
 
+/** Sources Hermes 0.22.5 keeps as a local chat. A bound row reads `local`. */
+export function isLocalChatSource(source) {
+  const value = String(source || "").trim().toLowerCase();
+  return ["local", "cli", "tui", "gui", "desktop", "oneshot", "tool", "acp"].includes(value);
+}
+
+/**
+ * `session` is this profile's Desktop Bot Chat and the only row titled
+ * "Bot Chat" (Hermes' unique title index allows one).
+ */
+export function isMainBotChat(session, sessions) {
+  const titled = (sessions || []).filter((row) => row && isBotChat(row) && sessionRouteMatches(row));
+  if (titled.length !== 1) return false;
+  const chat = canonicalBotChat(sessions);
+  return !!chat && !!session && chat.id === session.id;
+}
+
+/**
+ * Read-only with the list in hand. Hermes' Bot Chat door takes a send into
+ * the Desktop Bot Chat when its source is local. Other rows keep R-SS-08.
+ */
+export function sessionReadOnlyIn(session, sessions) {
+  if (isMainBotChat(session, sessions) && isLocalChatSource(session?.source)) return false;
+  return sessionReadOnly(session?.source);
+}
+
+/** Hermes reopens its Bot Chat on the next turn, so only other rows are closed for a send. */
+export function sessionSendClosed(session, sessions) {
+  return sessionEnded(session) && !isMainBotChat(session, sessions);
+}
+
+/** Hermes 0.22.5 moves an `api_server` Bot Chat aside on the next Bot Chat turn. */
+export function botChatSendDisplaces(session, sessions) {
+  const value = String(session?.source || "").trim().toLowerCase();
+  return isMainBotChat(session, sessions) && (value === "api_server" || value === "" || value === "bot_peer_dm");
+}
+
+export const BOT_CHAT_UNBOUND_LINE = "呢個 Bot Chat 未喺新版 Hermes 開過，伺服器未肯收。喺 Hermes Desktop 開一次呢個 Bot 嘅 Bot Chat，之後就可以喺度傳。";
+export const BOT_CHAT_NOT_LOCAL_LINE = "伺服器話呢個 Bot Chat 唔係本機對話，唔肯收。要喺擁有佢嘅 Hermes Desktop 開一次。";
+
+export function botChatRefusalLine(text) {
+  const value = String(text || "").toLowerCase();
+  if (value.includes("bot_chat_unbound")) return BOT_CHAT_UNBOUND_LINE;
+  if (value.includes("bot_chat_not_local")) return BOT_CHAT_NOT_LOCAL_LINE;
+  return "";
+}
+
 export const SESSION_READ_ONLY_REASON = "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢";
 
 export const CONTINUE_API_LABEL = "喺 API 對話繼續";
@@ -171,7 +218,7 @@ export function resolveSession(sessions, pin = {}) {
       explicit: true,
       anchor,
       source: saved.source || "",
-      readOnly: sessionReadOnly(saved.source),
+      readOnly: sessionReadOnlyIn(saved, sessions),
     };
   }
   const preferred = canonicalBotChat(sessions);
@@ -181,7 +228,7 @@ export function resolveSession(sessions, pin = {}) {
       explicit: false,
       anchor: preferred.id === remembered ? anchor : (Number(preferred.last_active) || 0),
       source: preferred.source || "",
-      readOnly: sessionReadOnly(preferred.source),
+      readOnly: sessionReadOnlyIn(preferred, sessions),
     };
   }
   if (saved && !retiredBotChat(saved)) {
@@ -190,7 +237,7 @@ export function resolveSession(sessions, pin = {}) {
       explicit: false,
       anchor,
       source: saved.source || "",
-      readOnly: sessionReadOnly(saved.source),
+      readOnly: sessionReadOnlyIn(saved, sessions),
     };
   }
   return null;

@@ -126,10 +126,10 @@ test("Bot Chat is the default even when another session is newer", () => {
   assert.equal(mostRecentBotChat(mixed).id, "desk-chat");
   const deskOpen = resolveSession(mixed, {});
   assert.equal(deskOpen.id, "desk-chat");
-  assert.equal(deskOpen.readOnly, true);
+  assert.equal(deskOpen.readOnly, true); // two "Bot Chat" rows: not a gateway list, source rule stays
   assert.equal(resolveSession(mixed, { id: "tui-chat", explicit: true, anchor: 1 }).id, "tui-chat");
   assert.equal(mostRecentBotChat([tui]).id, "tui-chat");
-  assert.equal(resolveSession([tui], {}).readOnly, true);
+  assert.equal(resolveSession([tui], {}).readOnly, false);
   assert.deepEqual(orderSessions(mixed).map((session) => session.id), ["tui-chat", "desk-chat", "notes"]);
 });
 
@@ -145,7 +145,7 @@ test("Devon Bot Chats: the hidden titled row wins, including an empty one", () =
   }];
   const forest = resolveSession(forex, { id: "saved-other", explicit: true, anchor: 1 });
   assert.equal(forest.id, "20261001_013827_25b1eb");
-  assert.equal(forest.readOnly, true);
+  assert.equal(forest.readOnly, false);
   assert.equal(forest.id, "20261001_013827_25b1eb");
   assert.equal(SESSION_READ_ONLY_REASON, "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢");
 
@@ -252,7 +252,7 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
   }];
   const forest = resolveSession(forex, { id: "20261001_013827_25b1eb", explicit: false, anchor: 1759279107 });
   assert.equal(forest.id, "20261001_013827_25b1eb");
-  assert.equal(forest.readOnly, true);
+  assert.equal(forest.readOnly, false);
   assert.equal(forest.anchor, 1759279107);
   assert.equal(storedPinAfterResolve(
     { id: "20261001_013827_25b1eb", explicit: false, anchor: 1759279107 },
@@ -495,7 +495,7 @@ test("foreign session sources stay readable and permission_denied stays plain", 
     const row = { id: `row-${source || "empty"}`, title: "Bot Chat", source };
     const opened = resolveSession([row], {});
     assert.equal(opened.id, row.id, source);
-    assert.equal(opened.readOnly, true, source);
+    assert.equal(opened.readOnly, source === "", source); // the Bot Chat row itself
     assert.equal(sessionReadOnly(source), true, source);
   }
   for (const source of ["api_server", "API_Server", "bot_room", "Bot_Room"]) {
