@@ -136,11 +136,13 @@ export function orbFadeOpacity(elapsedMs, {
   from = 1,
   to = 0.25,
   duration = ORB_FADE_MS,
+  ease = orbFadeEase,
 } = {}) {
   const t = Number(elapsedMs) - Number(delay);
   if (!(t > 0)) return from;
   const u = duration > 0 ? Math.min(1, t / duration) : 1;
-  return from + (to - from) * orbFadeEase(u);
+  const curve = typeof ease === "function" ? ease : orbFadeEase;
+  return from + (to - from) * curve(u);
 }
 
 /**
@@ -190,7 +192,7 @@ export function paintOrbOpacity(el, target) {
  * toward `target`. The same target keeps the clock. A repeated poll does
  * not jump back to 1, and a settled target does not write style again.
  */
-export function applyOrbFadeFrame(el, clock, now, target, duration = ORB_FADE_MS, painted) {
+export function applyOrbFadeFrame(el, clock, now, target, duration = ORB_FADE_MS, painted, ease = orbFadeEase) {
   const commit = commitOrbOpacity(
     clock ? { target: clock.target, generation: clock.generation || 1 } : null,
     target,
@@ -199,7 +201,7 @@ export function applyOrbFadeFrame(el, clock, now, target, duration = ORB_FADE_MS
     return { clock, opacity: orbOpacityText(clock.target), running: false, wrote: false };
   }
   const onScreen = Number.isFinite(Number(painted)) ? Number(painted) : 1;
-  const stepped = stepOrbFade(clock, now, commit.target, onScreen, duration);
+  const stepped = stepOrbFade(clock, now, commit.target, onScreen, duration, ease);
   const nextClock = {
     from: stepped.clock.from,
     to: stepped.clock.to,
@@ -268,7 +270,7 @@ export function playOrbFade(polls, { fps = 30, duration = ORB_FADE_MS, restart =
  * the opacity on screen, so a poll cannot jump back to an old endpoint.
  * `running` is false once the value has arrived.
  */
-export function stepOrbFade(clock, now, target, painted, duration = ORB_FADE_MS) {
+export function stepOrbFade(clock, now, target, painted, duration = ORB_FADE_MS, ease = orbFadeEase) {
   const next = roundOrbOpacity(target);
   const time = Number(now);
   const span = Number(duration) > 0 ? Number(duration) : 0;
@@ -277,6 +279,7 @@ export function stepOrbFade(clock, now, target, painted, duration = ORB_FADE_MS)
       from: clock.from,
       to: clock.to,
       duration: span || 1,
+      ease,
     });
     const settled = span === 0 || time - clock.started >= span;
     return { clock, opacity: settled ? next : sample, running: !settled };
@@ -392,10 +395,36 @@ export function orbNearOpacity(minOpacity = 0.25) {
  * the orb is opaque. Inside the radius with the modifier up it is the near floor.
  * An unknown distance stays opaque so a missing cursor sample does not flash.
  */
-export function orbProximityOpacity(distance, { held = false, minOpacity = 0.25 } = {}) {
-  if (!(distance >= 0) || distance > ORB_PROXIMITY_PX) return 1;
+export function orbProximityOpacity(distance, { held = false, minOpacity = 0.25, rest = 1 } = {}) {
+  const resting = Number.isFinite(rest) ? Math.min(1, Math.max(REST_OPACITY_FLOOR, rest)) : 1;
+  if (!(distance >= 0) || distance > ORB_PROXIMITY_PX) return resting;
   if (held) return 1;
-  return orbNearOpacity(minOpacity);
+  return Math.min(orbNearOpacity(minOpacity), resting);
+}
+
+/** Most see-through a resting orb or panel may be (R-OB-07, R-CT-11). */
+export const REST_TRANSPARENCY_MAX = 0.8;
+/** 1 - REST_TRANSPARENCY_MAX, rounded so frames compare exactly. */
+export const REST_OPACITY_FLOOR = 0.2;
+
+/** Settings see-through (0 = solid) to a clamped fraction. Unknown is solid. */
+export function normalizeRestTransparency(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(REST_TRANSPARENCY_MAX, Math.max(0, n));
+}
+
+/** Opacity of an orb or panel at rest for a see-through fraction. */
+export function restOpacity(transparency) {
+  return Math.round((1 - normalizeRestTransparency(transparency)) * 100) / 100;
+}
+
+/** Panel opacity: rest when the modifier is up, the Ctrl value (never less see-through) when held. */
+export function panelOpacity(held, { minOpacity = 0.25, rest = 1 } = {}) {
+  const resting = Number.isFinite(rest) ? rest : 1;
+  if (!held) return resting;
+  const floor = Number.isFinite(minOpacity) ? minOpacity : 0.25;
+  return Math.min(floor, resting);
 }
 
 /** Orb DOM writes and the plan rehearsal wait this long after pointerdown. */
@@ -426,6 +455,7 @@ export function botIdFromHit(hitId) {
   const id = String(hitId || "");
   if (id.startsWith("bot:")) return id.slice(4);
   if (id.startsWith("pill:")) return id.slice(5);
+  if (id.startsWith("suborb:") || id.startsWith("suborb-more:")) return id;
   return "";
 }
 
@@ -525,6 +555,35 @@ export function guardPublishedHits({
  * Otherwise the panel that holds focus, then the highest open panel.
  * A focused field does not spend the key on blur alone.
  */
+/** A shell that still has a visible open card. A closed sub-orb does not count. */
+export function panelCountsAsOpen({
+  state = "",
+  opening = "",
+  collapsing = false,
+  kind = "",
+  open = false,
+  hidden = false,
+} = {}) {
+  if (collapsing) return false;
+  if (state !== "panel" && opening !== "panel") return false;
+  if (kind === "suborb" && !open && opening !== "panel") return false;
+  if (hidden && opening !== "panel") return false;
+  return true;
+}
+
+/** Another open panel still needs the webview to receive Esc. */
+export function keepOverlayKeyTarget(openIds, closingId = "") {
+  return (openIds || []).some((id) => id && id !== closingId);
+}
+
+/** Focused open panel, otherwise the highest open panel. Closed sub-orbs are skipped. */
+export function chooseEscapePanel(panels, focusedId = "") {
+  const open = (panels || []).filter((panel) => panelCountsAsOpen(panel));
+  if (focusedId && open.some((panel) => panel.id === focusedId)) return focusedId;
+  const ranked = [...open].sort((a, b) => (Number(b.z) || 0) - (Number(a.z) || 0));
+  return ranked[0]?.id || "";
+}
+
 export function escapeTarget({
   menuOpen = false,
   dropdownOpen = false,
@@ -554,6 +613,7 @@ function orbOrPillUnder(cursor, rects) {
       area: rect.w * rect.h,
       latched: false,
       z: rect.z || 0,
+      round: !!rect.round,
     };
     if (!best || preferHit(next, best)) best = next;
   }
@@ -573,6 +633,7 @@ export function elementUnderCursor(cursor, rects, margin = HIT_MARGIN_PX, latche
       area: rect.w * rect.h,
       latched: latchedIds.includes(rect.id),
       z: rect.z || 0,
+      round: !!rect.round,
     };
     if (!best || preferHit(next, best)) best = next;
   }
@@ -582,6 +643,10 @@ export function elementUnderCursor(cursor, rects, margin = HIT_MARGIN_PX, latche
 function preferHit(candidate, current) {
   if (candidate.distance < current.distance - 1e-9) return true;
   if (candidate.distance > current.distance + 1e-9) return false;
+  if (candidate.round && current.round && candidate.distance <= 1e-9 && current.distance <= 1e-9) {
+    if (candidate.area !== current.area) return candidate.area < current.area;
+    if (candidate.z !== current.z) return candidate.z > current.z;
+  }
   if (candidate.latched !== current.latched) return candidate.latched;
   if (candidate.z !== current.z) return candidate.z > current.z;
   return candidate.area < current.area;
@@ -607,6 +672,8 @@ export function elementStates({
   rects = [],
   margin = HIT_MARGIN_PX,
   minOpacity = 0.18,
+  orbRest = 1,
+  panelRest = 1,
 } = {}) {
   const under = (held && orbOrPillUnder(cursor, rects))
     || elementUnderCursor(cursor, rects, margin, latchedIds);
@@ -624,14 +691,14 @@ export function elementStates({
       const awake = here && held;
       return {
         id: rect.id,
-        opacity: orbProximityOpacity(distance, { held, minOpacity: floor }),
+        opacity: orbProximityOpacity(distance, { held, minOpacity: floor, rest: orbRest }),
         capture: awake,
       };
     }
     if (isPanelHit(rect)) {
       return {
         id: rect.id,
-        opacity: cursor && held ? floor : 1,
+        opacity: panelOpacity(!!cursor && held, { minOpacity: floor, rest: panelRest }),
         capture: here && !held,
       };
     }

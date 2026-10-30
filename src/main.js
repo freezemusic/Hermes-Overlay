@@ -6,6 +6,30 @@
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
 import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, plansIn, rememberPlan } from "./plan.js";
+import {
+  SUBORB_FADE_MS,
+  emptySuborbModel,
+  gatewayProfile,
+  isSuborbId,
+  PULL_SUBORB_LABEL,
+  pullOutCandidates,
+  normalizeTaskTitle,
+  sessionCreateError,
+  uniqueTaskTitle,
+  parseSuborbId,
+  dispatchOrbClick,
+  composerHoldsSuborb,
+  reconcileSuborbs,
+  releaseSuborbNodes,
+  suborbLabel,
+  suborbPublishesPanel,
+  placeSuborbCascade,
+  suborbCascadeOrigin,
+  suborbPanelId,
+  suborbPositions,
+  suborbSizePx,
+  tailSignals,
+} from "./suborb.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
   CONTENT_IN_MS,
@@ -23,6 +47,7 @@ import {
   COLLAPSE_EASE,
   planEase,
   seamAdvanceMs,
+  seamCadenceMs,
   seamFrameStep,
   seamVisibleMs,
   seamClipStillClosed,
@@ -67,7 +92,7 @@ import {
   chatTailAction,
   pinnedScrollTop,
 } from "./morph.js";
-import { isProfileEnabled, keyBannerSlot, panelErrorSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
+import { isProfileEnabled, keyBannerSlot, panelErrorSlot, profilesNeedingKeys, ROSTER_CONFIRM_MS, rosterPresence, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
 import {
   approvalFailure,
   approvalPending,
@@ -94,7 +119,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, sessionReadOnlyIn, sessionSendClosed, BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE, botChatRefusalLine, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, holdsOwnTurnUser, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -146,6 +171,7 @@ import {
   parseSlashMarker,
   resolveClient,
   shouldRefreshCatalog,
+  bareNewSubmits,
   slashEnterSubmits,
   slashFilterQuery,
 } from "./slash.js";
@@ -154,6 +180,9 @@ import {
   applyDropdownDismiss,
   colorForIndex,
   elementStates,
+  normalizeRestTransparency,
+  panelOpacity,
+  restOpacity,
   focusLossAction,
   latchedElementIds,
   osFocusAction,
@@ -174,7 +203,10 @@ import {
   botIdFromHit,
   POINTER_QUIET_MS,
   composerKeyAction,
+  chooseEscapePanel,
   escapeTarget,
+  keepOverlayKeyTarget,
+  panelCountsAsOpen,
   ownComposerKey,
   MODIFIER_ARM_MS,
   nextDropdownOpen,
@@ -187,6 +219,7 @@ import {
 } from "./proximity.js";
 import { applyOrbName, layoutOrbNames, orbHitRect } from "./names.js";
 
+const NEW_SESSION_LABEL = "開新 session";
 const MOCK_BOTS = [
   {
     id: "planner",
@@ -500,6 +533,7 @@ function clampDraggedShell(shell) {
 
 function placeShellElement(shell) {
   if (shell?.dataset?.dragged === "1") return clampDraggedShell(shell);
+  if (shell?.dataset?.kind === "suborb") return placeSuborbShell(shell);
   const id = shell.dataset.botId;
   const size = boxSize(id);
   const point = anchorPoint(id);
@@ -544,6 +578,19 @@ function placeShellElement(shell) {
 
 function layoutShell(shell) {
   if (!shell || shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+  if (shell.dataset.kind === "suborb") {
+    if (shell.dataset.dragged === "1" || shell.dataset.rehearsal === "1") return;
+    const placed = placeSuborbShell(shell);
+    if (!placed) return;
+    paintClip(shell, insetsFor(shell.dataset.visual || shell.dataset.state || "orb", {
+      boxW: placed.width,
+      boxH: placed.height,
+      ax: placed.anchor?.x || Number(shell.dataset.ax) || ORB / 2,
+      ay: placed.anchor?.y || Number(shell.dataset.ay) || ORB / 2,
+    }), shell.dataset.visual || shell.dataset.state || "orb");
+    releaseSuborbGlow(shell);
+    return;
+  }
   if (shell.dataset.rehearsal === "1") return;
   if (document.querySelector(".morph.is-collapsing")) return;
   if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return;
@@ -582,6 +629,7 @@ function parkFinalBox(shell) {
 
 function separateOpenShells(shells, extra) {
   const open = shells.filter((shell) => {
+    if (shell?.dataset?.kind === "suborb") return false;
     if (shell === extra) return true;
     if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return false;
     if (state.dragHitId && state.dragHitId === shell.dataset.hitId) return false;
@@ -651,6 +699,7 @@ function layoutShells() {
   const shells = [...document.querySelectorAll(".morph")];
   shells.forEach((shell) => layoutShell(shell));
   separateOpenShells(shells);
+  layoutSuborbOrbs();
   seatKanbanClose();
   paintOrbNames();
   scheduleHitSync();
@@ -1185,9 +1234,20 @@ function restingTransform(value) {
 
 function idleOrbOpacity(shell) {
   void shell;
-  // Resting orbs are opaque (R-OB-05). The near fade is the proximity poll,
-  // not this collapse floor. A missing cursor must not leave the disc dim.
-  return 1;
+  // Resting orbs are opaque by default (R-OB-05); the resting see-through
+  // setting is the only thing that dims them (R-OB-07). The near fade is
+  // the proximity poll, not this collapse floor.
+  return orbRestOpacity();
+}
+
+/** Resting orb opacity from settings. 1 unless the user picked see-through. */
+function orbRestOpacity() {
+  return restOpacity(state.interaction?.orbRestTransparency);
+}
+
+/** Resting panel opacity from settings. 1 unless the user picked see-through. */
+function panelRestOpacity() {
+  return restOpacity(state.interaction?.panelRestTransparency);
 }
 
 function planWidthPx() {
@@ -2347,6 +2407,12 @@ function watchPresent(shell, anim, tag) {
 
 /** A 1px tick outside the viewport keeps a composited transform beside the
  *  shell clip. It is not a child of the shell, so the orb tile is not retiled. */
+/** R-PL-04: WebKitGTK stops presenting clip-path writes promptly once the
+ *  seam-pump has finished (box frames: 75-113ms holds, always after +280ms).
+ *  The reveal clock can end past 280ms (stall frames, flat tail), so the
+ *  open pump outlives the curve. The clip itself stays 280ms. */
+const SEAM_PUMP_SPAN = 3;
+
 function pumpSeamPresent(shell, duration) {
   if (!(duration > 0)) return null;
   shell?.querySelectorAll(":scope > .seam-tick").forEach((node) => node.remove());
@@ -2454,6 +2520,16 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
   let shownMs = 0;
   let frameMs = 0;
   let pace = false;
+  // R-PL-04: cadence from the last three gaps (not the first one), and the
+  // wall clock since pacing started, so a slow or doubled frame cannot
+  // stretch the 280ms reveal.
+  const gaps = [];
+  let wallStamp = 0;
+  let wallBase = 0;
+  const startWall = (stamp) => {
+    wallStamp = stamp;
+    wallBase = shownMs;
+  };
   const sampleLate = (stamp) => {
     if (!anim || anim.playState === "idle") return;
     if (anim.playState === "finished") {
@@ -2465,7 +2541,11 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
     presented += 1;
     const gap = lastStamp ? Math.abs(lastStamp - stamp) : 0;
     lastStamp = stamp;
-    if (!frameMs && gap >= 8 && gap <= 40) frameMs = gap;
+    if (gap > 0) {
+      gaps.push(gap);
+      if (gaps.length > 3) gaps.shift();
+      frameMs = seamCadenceMs(gaps);
+    }
     const lie = current > 400;
     if ((anim.playState === "paused" || lie) && !pace) {
       try { anim.currentTime = 0; } catch { /* keep the pin */ }
@@ -2506,6 +2586,7 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
       }
       shownMs = shown > 0 ? shown : seamVisibleMs(current);
       pace = true;
+      startWall(stamp);
       requestAnimationFrame(sampleLate);
       return;
     }
@@ -2519,6 +2600,7 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
       heldOpen = true;
       confirm(presented);
       pace = true;
+      startWall(stamp);
       requestAnimationFrame(sampleLate);
       return;
     }
@@ -2534,6 +2616,7 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
       heldOpen = true;
       confirm(presented);
       pace = true;
+      startWall(stamp);
     } else if (pace) {
       const frame = frameMs || 16;
       let next = seamAdvanceMs(current, {
@@ -2541,6 +2624,7 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
         gapMs: gap,
         frameMs: frame,
         duration: PLAN_GROW_MS,
+        wallMs: wallStamp ? wallBase + (stamp - wallStamp) : null,
       });
       if (shownMs > 0 && next <= shownMs + 0.5 && next < PLAN_GROW_MS) {
         next = Math.min(PLAN_GROW_MS, shownMs + frame);
@@ -2683,7 +2767,7 @@ function beginSeamClip(shell) {
   alignSeamClock(anim, () => {
     shell.style.clipPath = to;
   }, warm, shell);
-  pumpSeamPresent(shell, duration);
+  pumpSeamPresent(shell, duration * SEAM_PUMP_SPAN);
   watchPresent(shell, anim, "plan");
   seamLog("clip-open", `prev=${previous?.playState || "none"} dur=${duration}`);
   return anim;
@@ -3300,6 +3384,7 @@ function settleShell(shell, target) {
     shell._settleGate = 0;
     if (target === "orb") releaseCollapseGate(shell);
     armQuietFlush(shell);
+    if (shell.dataset.kind === "bot") layoutSuborbOrbs();
   });
 }
 
@@ -3778,7 +3863,7 @@ function bindPanelDrag(panel) {
 }
 
 function removeBotPanels() {
-  document.querySelectorAll(".morph[data-kind='bot']").forEach((shell) => shell.remove());
+  document.querySelectorAll(".morph[data-kind='bot'], .morph[data-kind='suborb']").forEach((shell) => shell.remove());
   state.openIds = [];
 }
 
@@ -3804,6 +3889,8 @@ const state = {
     fadeEnabled: true,
     fadeDistance: 120,
     minOpacity: 0.25,
+    orbRestTransparency: 0,
+    panelRestTransparency: 0,
     supported: true,
   },
   pointerHitId: "",
@@ -3828,6 +3915,9 @@ const state = {
   reconnectTimer: 0,
   gatewayClock: 0,
   openIds: [],
+  suborbPins: {},
+  suborbModels: new Map(),
+  suborbExtra: new Map(),
   anchors: {},
   panelPos: {},
   panelZ: 4,
@@ -3848,6 +3938,8 @@ const state = {
     doneOpen: false,
   },
   rosterTimer: 0,
+  /** R-SY-09 removal: profiles missing from recent remote lists. Memory only. */
+  rosterGone: { misses: {}, gone: [] },
   keyPromptBots: [],
   prefetchDeferred: false,
   kanbanPaintDue: null,
@@ -4002,29 +4094,39 @@ function shellHitLevel(shell) {
 
 /** Visible clip, not the pre-sized layout box. A finished clip animation can
  *  leave WebKitGTK hit-testing the border box for a few frames. */
+function discBeats(candidate, current) {
+  const orbish = (shell) => {
+    const visual = shell.dataset.visual || shell.dataset.state;
+    return visual === "orb" || visual === "pill";
+  };
+  if (orbish(candidate.shell) && orbish(current.shell)) {
+    if (candidate.area < current.area - 0.5) return true;
+    if (candidate.area > current.area + 0.5) return false;
+  }
+  return candidate.level >= current.level;
+}
+
 function visibleShellAt(x, y) {
   let best = null;
-  let bestZ = -Infinity;
   document.querySelectorAll(".morph").forEach((shell) => {
     if (shell.classList.contains("is-collapsing")) return;
     const box = visibleBox(shell);
     if (!pointInBox(x, y, box)) return;
-    const level = shellHitLevel(shell);
-    if (!best || level >= bestZ) {
-      best = shell;
-      bestZ = level;
-    }
+    const next = { shell, level: shellHitLevel(shell), area: box.w * box.h };
+    if (!best || discBeats(next, best)) best = next;
   });
-  return best;
+  return best?.shell || null;
 }
 
 function activateHitShell(shell) {
-  const hitId = shell?.dataset.botId || "";
-  if (!hitId) return;
-  if (hitId === "settings") focusSettings();
-  else if (hitId === "kanban") toggleKanban();
-  else if (hitId === "cron") toggleCron();
-  else selectBot(hitId);
+  dispatchOrbClick(shell?.dataset.botId || "", {
+    settings: () => focusSettings(),
+    kanban: () => toggleKanban(),
+    cron: () => toggleCron(),
+    picker: (profile) => { void openParentSessionPicker(profile); },
+    suborb: (id) => openSuborbPanel(id),
+    bot: (id) => selectBot(id),
+  });
 }
 
 function attachShell(shell, id) {
@@ -4699,7 +4801,7 @@ function renderChat(id = state.activeId, options = {}) {
   }
   const panel = panelFor(id);
   if (!panel) return;
-  const bot = state.bots.find((b) => b.id === id);
+  const bot = botForPanel(id);
   const chat = role(panel, "chat");
   if (!bot || !chat) return;
   if (debugFile.enabled) debugLog("render-panel", `id=${id} force=${force ? 1 : 0} tag=${tag} call=${callerTag("renderChat")}`);
@@ -5395,6 +5497,7 @@ function setBotStatus(id, text, statusState) {
   thread.statusState = statusState;
   if (statusState === "busy") state.busy.add(id);
   else state.busy.delete(id);
+  if (isSuborbId(id)) paintSuborbDisc(id);
   const shell = shellFor(id);
   if (shell && (visualQuiet(shell) || presentationBusy())) {
     setStatusText(id, text);
@@ -5498,7 +5601,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   const keptError = sendErrorDraft(state.sendErrors, id, thread.sessionId);
   const closedError = sendErrorKind(state.sendErrors, id, thread.sessionId) === "closed";
   const pickedRow = (thread.sessions || []).find((row) => row.id === thread.sessionId);
-  const closedHere = sessionEnded(pickedRow);
+  const closedHere = sessionSendClosed(pickedRow, thread.sessions);
   if (closedHere || closedError) {
     thread.closedOffer = true;
     const storedSwitch = sendErrorSwitch(state.sendErrors, id, thread.sessionId);
@@ -5699,14 +5802,14 @@ async function pickSession(id, sessionId) {
     showSession(thread, sessionId, (stored || [{ role: "bot", text: "（舊對話）" }]).map((message) => ({ ...message })));
     thread.sessionExplicit = true;
     thread.sessionAnchor = anchor;
-    const locked = readOnlyLocked(state.deniedSessions, id, sessionId, sessionReadOnly(picked?.source));
+    const locked = readOnlyLocked(state.deniedSessions, id, sessionId, sessionReadOnlyIn(picked, thread.sessions));
     thread.sessionReadOnly = locked;
     thread.sessionReadOnlyReason = locked ? SESSION_READ_ONLY_REASON : "";
     thread.loaded = true;
     if (select) delete select.dataset.key;
     renderChat(id);
     renderBots();
-    if (sessionEnded(picked)) showClosedWarning(id);
+    if (sessionSendClosed(picked, thread.sessions)) showClosedWarning(id);
     return;
   }
   try {
@@ -6070,19 +6173,38 @@ async function recoverGateway() {
   return true;
 }
 
+/** A bot that still has its panel, a sub-orb panel, or a run going keeps its orb for now. */
+function rosterBotBusy(id) {
+  if (state.busy.has(id) || state.openIds.includes(id)) return true;
+  if (shellFor(id)?.dataset.state === "panel") return true;
+  const prefix = `suborb:${id}:`;
+  if (state.openIds.some((open) => String(open).startsWith(prefix))) return true;
+  return [...document.querySelectorAll('.morph[data-kind="suborb"]')]
+    .some((shell) => shell.dataset.botId?.startsWith(prefix) && shell.dataset.state === "panel");
+}
+
+/** Track profiles that left the remote list. True when a confirm read is due. */
+function noteRosterPresence(synced) {
+  const next = rosterPresence(state.rosterGone, synced?.bots || [], synced?.listed_profiles ?? null, rosterBotBusy);
+  if (next.changed) debugLog("roster-gone", `gone=${next.gone.join(",") || "-"}`);
+  state.rosterGone = { misses: next.misses, gone: next.gone };
+  return next.confirm;
+}
+
 function applyRoster(synced) {
+  const confirm = noteRosterPresence(synced);
+  if (confirm && state.mode === "hermes") armRosterSync(ROSTER_CONFIRM_MS);
   const next = botsFromSettings(synced);
   state.settings = synced;
   const prev = state.bots.map((bot) => bot.id).join("\n");
   const ids = next.map((bot) => bot.id).join("\n");
-  if (prev === ids) {
-    state.bots = next.map((bot) => {
-      const old = state.bots.find((item) => item.id === bot.id);
-      return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, hasKey: bot.hasKey, composeMode: bot.composeMode } : bot;
-    });
-  } else {
-    state.bots = next;
-  }
+  // Keep each remaining bot's own object fields (float spot and the like) when
+  // a profile joins or leaves, so open panels and the other orbs stay put.
+  state.bots = next.map((bot) => {
+    const old = state.bots.find((item) => item.id === bot.id);
+    return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, hasKey: bot.hasKey, composeMode: bot.composeMode } : bot;
+  });
+  if (prev !== ids) debugLog("roster-ids", `ids=${ids.split("\n").join(",")}`);
   renderBots();
 }
 
@@ -6091,13 +6213,14 @@ function stopRosterSync() {
   state.rosterTimer = 0;
 }
 
-function armRosterSync() {
+function armRosterSync(soon = 0) {
   stopRosterSync();
-  const wait = rosterSyncDelayMs(Math.random);
+  const wait = soon > 0 ? soon : rosterSyncDelayMs(Math.random);
   state.rosterTimer = window.setTimeout(() => {
     state.rosterTimer = 0;
     void tickRoster().finally(() => {
-      if (state.mode === "hermes") armRosterSync();
+      // A confirm read armed during the tick wins over the minute wait.
+      if (state.mode === "hermes" && !state.rosterTimer) armRosterSync();
     });
   }, wait);
 }
@@ -6268,6 +6391,8 @@ async function finishClose(shell) {
     scheduleHitSync();
   } finally {
     renderBots();
+    if (shell?.dataset.state !== "panel") shell?.style.removeProperty("z-index");
+    if (shell?.isConnected) layoutSuborbOrbs();
   }
 }
 
@@ -6421,7 +6546,7 @@ function wireBotPanel(panel, id) {
         const picked = items[state.slashIndex];
         if (picked && picked.enabled !== false) {
           event.preventDefault();
-          const submit = event.key === "Enter" && slashEnterSubmits(picked);
+          const submit = event.key === "Enter" && (slashEnterSubmits(picked) || bareNewSubmits(picked, input?.value || ""));
           completeSlash(picked);
           if (submit) sendActive(id);
           return;
@@ -6444,6 +6569,8 @@ function wireBotPanel(panel, id) {
       osModifierDown: state.osModifierDown,
     }) === "send") sendActive(id);
   });
+  installNewSessionButton(panel, id);
+  installPullSuborbButton(panel, id);
 }
 
 async function loadSoul(id) {
@@ -6681,6 +6808,7 @@ function deliverSessions(id, payload) {
   const sessions = stampKeptTitles(payload?.sessions || [], thread.keptTitles);
   thread.sessions = sessions;
   paintSessionSelect(id);
+  noteSuborbList(id, sessions, thread.sessionId || payload?.session_id || "");
   const nextId = String(payload?.session_id || "");
   if (
     !thread.loaded
@@ -6721,7 +6849,10 @@ function deliverCron(id, payload) {
   const thread = threadFor(id);
   const viewing = thread.sessionId === sessionId;
   const existing = viewing ? thread.messages : thread.bySession.get(sessionId) || [];
-  if (sessionRunIsLive(thread, sessionId)) {
+  const ownUserOnly = !payload.reset && !thread.heldWatch
+    && String(thread.liveSessionId || thread.sessionId || "") === sessionId
+    && holdsOwnTurnUser(incoming, thread.ownTurnTail);
+  if (sessionRunIsLive(thread, sessionId) || ownUserOnly) {
     thread.heldWatch = holdWatchedTail(thread.heldWatch, incoming, { reset: !!payload.reset });
     return;
   }
@@ -6893,7 +7024,7 @@ function currentSessionRow(thread) {
 
 function closedSwitchIdFor(id) {
   const thread = threadFor(id);
-  if (!thread?.closedOffer && sendErrorKind(state.sendErrors, id, thread?.sessionId) !== "closed" && !sessionEnded(currentSessionRow(thread))) {
+  if (!thread?.closedOffer && sendErrorKind(state.sendErrors, id, thread?.sessionId) !== "closed" && !sessionSendClosed(currentSessionRow(thread), thread?.sessions)) {
     return "";
   }
   return thread?.closedSwitchId || closedSwitchTarget(thread?.sessions, thread?.sessionId)?.id || "";
@@ -6973,6 +7104,50 @@ function noteSendFailed(id, raw, meta = {}) {
   }
   setBotStatus(id, "連線錯誤", "error");
   setBanner(text, "error");
+}
+
+const WHOLE_REPLY_CATCH_UP_MS = 1200;
+
+/** One quiet transcript read after a turn that finished with no streamed text. */
+function armWholeReplyCatchUp(id) {
+  const thread = threadFor(id);
+  const sessionId = thread.sessionId;
+  window.setTimeout(() => {
+    if (state.mode !== "hermes" || !inTauri()) return;
+    const now = threadFor(id);
+    if (now.sessionId !== sessionId || state.busy.has(id)) return;
+    const last = [...(now.messages || [])].reverse().find((item) => item.role === "user" || item.role === "bot");
+    if (last?.role === "bot") return;
+    debugLog("whole-reply-catch-up", `id=${id}`);
+    void claimProfiles([id], () => refreshBotQuiet(id));
+  }, WHOLE_REPLY_CATCH_UP_MS);
+}
+
+/** R-SS-08: Hermes' Bot Chat door refused (`bot_chat_unbound`/`bot_chat_not_local`). Rust may already have sent the plain line. */
+function botChatRefusal(raw) {
+  const text = String(raw || "");
+  return botChatRefusalLine(text) || [BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE].find((line) => text.includes(line)) || "";
+}
+
+/** Show the plain line, keep the typed text as 未送出, stay connected, and do not retry. */
+function noteBotChatRefused(id, line) {
+  const thread = threadFor(id);
+  retainOutgoing(id);
+  rememberUnsent(state.unsentDrafts, id, thread.sessionId, markUnsentDraft(thread.messages));
+  releaseOutgoing(id);
+  repaintUnsent(id);
+  thread.queued = false;
+  thread.watchReply = false;
+  clearRunSession(thread);
+  const messages = runMessages(id);
+  if (!messages.some((item) => item.text === line && (item.role === "commentary" || item.role === "failure"))) {
+    appendOnce(id, { role: "commentary", text: line });
+  }
+  noteActivity(id, { type: "failed", text: line });
+  thread.statusState = "idle";
+  state.busy.delete(id);
+  setBotStatus(id, "閒置", "idle");
+  if (panelFor(id)) renderChat(id);
 }
 
 function noteReadOnly(id) {
@@ -7076,7 +7251,7 @@ function closeOtherClarifies(messages, promptId) {
 
 async function answerApproval(id, message, choice) {
   if (!message || message.status !== "pending") return;
-  const posted = approvalPost(id, message.runId, message.requestId, choice, message.executionGeneration);
+  const posted = approvalPost(gatewayProfile(id), message.runId, message.requestId, choice, message.executionGeneration);
   if (!posted) return;
   message.status = "sending";
   if (panelFor(id)) renderChat(id);
@@ -7112,7 +7287,7 @@ async function answerApproval(id, message, choice) {
 
 async function answerClarify(id, message, answer) {
   if (!message || message.status !== "pending") return;
-  const posted = clarifyPost(id, message.runId, message.promptId, message.executionGeneration, answer);
+  const posted = clarifyPost(gatewayProfile(id), message.runId, message.promptId, message.executionGeneration, answer);
   if (!posted) {
     message.status = "error";
     message.notice = CLARIFY_SEND_FAIL;
@@ -7160,7 +7335,7 @@ async function recoverRunControls(id) {
   if (!waiting) return;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const snapshot = await invoke("load_run_controls", { profile: id, runId: thread.runId });
+    const snapshot = await invoke("load_run_controls", { profile: gatewayProfile(id), runId: thread.runId });
     const status = String(snapshot?.status || "");
     const dropMissing = status === "started" || status === "running" || status === "waiting_for_approval";
     const messages = runMessages(id);
@@ -7456,6 +7631,10 @@ function handleHermes(payload) {
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
     const detail = payload.detail || "";
     const blocked = textIsExecuteCodeBlocked(detail) || detail === EXECUTE_CODE_BLOCKED_LINE;
+    if (payload.outcome === "failed" && botChatRefusal(detail)) {
+      noteBotChatRefused(id, botChatRefusal(detail));
+      return;
+    }
     if (payload.outcome === "failed" && isPermissionDeniedText(detail)) {
       lockIfPermissionDenied(id, detail);
       return;
@@ -7474,6 +7653,9 @@ function handleHermes(payload) {
       thread.messages = dropRetiredTurn(thread.messages);
       thread.dropKeptOnSettle = false;
     }
+    // F5: a Bot Chat door turn may end with no live text at all. Read the
+    // transcript once so the reply shows instead of an empty finished turn.
+    if (payload.outcome === "completed" && !String(live?.text || "").trim()) armWholeReplyCatchUp(id);
     if (payload.outcome === "completed") {
       thread.queued = false;
       thread.watchReply = false;
@@ -7536,6 +7718,10 @@ function handleHermes(payload) {
   }
   if (payload.type === "error") {
     const raw = payload.message || "未知錯誤";
+    if (botChatRefusal(raw)) {
+      noteBotChatRefused(id, botChatRefusal(raw));
+      return;
+    }
     if (isPermissionDeniedText(raw)) {
       lockIfPermissionDenied(id, raw);
       return;
@@ -7592,32 +7778,35 @@ function noteComposeCatalog(id, commands, hint) {
 }
 
 function offeredFor(id) {
-  const entry = state.composeCatalogs.get(id);
+  const entry = state.composeCatalogs.get(gatewayProfile(id));
   if (!entry?.exposed) return { plan: true, btw: true };
   return offeredComposeModes(entry.commands, true);
 }
 
 function composeModeOf(id) {
-  const stored = state.bots.find((bot) => bot.id === id)?.composeMode;
+  const stored = state.bots.find((bot) => bot.id === gatewayProfile(id))?.composeMode;
   return effectiveComposeMode(stored, offeredFor(id));
 }
 
 const composeCatalogLoads = new Set();
 
 async function loadComposeCatalog(id) {
-  if (!id || state.mode !== "hermes" || !inTauri()) return;
-  if (state.composeCatalogs.has(id) || composeCatalogLoads.has(id)) return;
-  composeCatalogLoads.add(id);
+  const profile = gatewayProfile(id);
+  if (!profile || state.mode !== "hermes" || !inTauri()) return;
+  if (state.composeCatalogs.has(profile) || composeCatalogLoads.has(profile)) return;
+  composeCatalogLoads.add(profile);
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const result = await invoke("list_commands", { profile: id });
-    noteComposeCatalog(id, result.commands || [], result.hint || "");
+    const result = await invoke("list_commands", { profile });
+    noteComposeCatalog(profile, result.commands || [], result.hint || "");
   } catch (err) {
-    noteComposeCatalog(id, [], String(err));
+    noteComposeCatalog(profile, [], String(err));
   } finally {
-    composeCatalogLoads.delete(id);
+    composeCatalogLoads.delete(profile);
   }
   paintComposeMode(id);
+  if (profile !== id) paintComposeMode(profile);
+  paintSuborbComposeModes(profile);
 }
 
 function paintComposeMode(id) {
@@ -7631,6 +7820,7 @@ function paintComposeMode(id) {
     chip.setAttribute("aria-pressed", mode ? "true" : "false");
   }
   if (composer) composer.classList.toggle("is-compose-mode", !!mode);
+  if (!isSuborbId(id)) paintSuborbComposeModes(id);
   void loadComposeCatalog(id);
 }
 
@@ -7676,12 +7866,29 @@ function demoReply(shown) {
 }
 
 async function sendActive(id = state.activeId) {
+  if (isSuborbId(id)) {
+    await sendSuborb(id);
+    return;
+  }
   const panel = panelFor(id);
   const input = role(panel, "input");
   const typed = input?.value.trim() || "";
   if (!typed || !id) return;
   const thread = threadFor(id);
-  if (sessionEnded(currentSessionRow(thread))) {
+  const text = composeModeWire(typed, composeModeOf(id));
+  const action = resolveClient(text, state.catalog || []);
+  if (action) {
+    closeSlash();
+    input.value = "";
+    input.placeholder = "輸入訊息給呢個 Bot…";
+    state.slashArgsHint = "";
+    syncSlashGhost();
+    state.activeId = id;
+    state.slashPanelId = id;
+    await sendClientCommand(id, text, action);
+    return;
+  }
+  if (sessionSendClosed(currentSessionRow(thread), thread.sessions)) {
     showClosedWarning(id);
     return;
   }
@@ -7697,9 +7904,7 @@ async function sendActive(id = state.activeId) {
     thread.dropKeptOnSettle = true;
     thread.cancelHold = false;
   }
-  const text = composeModeWire(typed, composeModeOf(id));
   const busy = state.mode === "hermes" && state.busy.has(id);
-  const action = resolveClient(text, state.catalog || []);
   if (busy && composeSkipsBusyQueue(text)) {
     closeSlash();
     input.value = "";
@@ -7723,10 +7928,6 @@ async function sendActive(id = state.activeId) {
   input.placeholder = "輸入訊息給呢個 Bot…";
   state.slashArgsHint = "";
   syncSlashGhost();
-  if (action) {
-    await sendClientCommand(id, text, action);
-    return;
-  }
   const shown = composeUserMessage(text);
   thread.ownTurnTail = { runId: thread.runId || "", userText: shown.text || text, sentAt: Date.now(), awaitTail: false };
   appendMessage(id, shown);
@@ -7748,6 +7949,10 @@ async function sendActive(id = state.activeId) {
     await invoke("send_chat", { profile: sentId, text });
   } catch (err) {
     const raw = String(err);
+    if (botChatRefusal(raw)) {
+      noteBotChatRefused(sentId, botChatRefusal(raw));
+      return;
+    }
     if (isPermissionDeniedText(raw)) {
       lockIfPermissionDenied(sentId, raw);
       return;
@@ -7798,7 +8003,8 @@ async function continueApiSession(id) {
 }
 
 function botsFromSettings(settings) {
-  return (settings.bots || []).filter(isProfileEnabled).map((bot) => ({
+  const gone = new Set(state.rosterGone?.gone || []);
+  return (settings.bots || []).filter((bot) => isProfileEnabled(bot) && !gone.has(bot.profile)).map((bot) => ({
     id: bot.profile,
     name: bot.display_name || bot.profile,
     short: shortLabel(bot.display_name || bot.profile),
@@ -7813,6 +8019,10 @@ function botsFromSettings(settings) {
 
 async function sendClientCommand(id, text, action) {
   appendMessage(id, { role: "user", text, command: action.command });
+  if (action.command === "new") {
+    await createTaskSession(gatewayProfile(id), action.args || "", id);
+    return;
+  }
   if (action.command === "stop") {
     await stopActive(id);
     return;
@@ -7905,6 +8115,9 @@ function useHermes(settings) {
   adoptKanbanPick(settings);
   state.showBotNames = !!settings?.show_bot_names;
   state.showToolDetail = !!settings?.show_tool_detail;
+  state.suborbPins = settings?.suborb_pins || {};
+  state.suborbModels = new Map();
+  state.suborbExtra = new Map();
   state.composeCatalogs.clear();
   state.bots = botsFromSettings(settings);
   state.threads = new Map();
@@ -7921,6 +8134,8 @@ function useHermes(settings) {
     setBanner("已連接設定。點頭像載入該 Bot 嘅 Bot Chat。", "ok");
   }
   renderBots();
+  renderSuborbs();
+  void seedSessionLists();
   prefetchBotChats();
   armChatRefresh();
   armRosterSync();
@@ -7935,7 +8150,9 @@ async function connectHermes(settings) {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const synced = await invoke("sync_profiles");
+    const confirm = noteRosterPresence(synced);
     useHermes(synced);
+    if (confirm) armRosterSync(ROSTER_CONFIRM_MS);
     announceNewKeys(before, synced);
   } catch (err) {
     useHermes(settings);
@@ -8047,6 +8264,14 @@ function openOrbMenu(id, x, y) {
   if (!menu) return;
   menu.hidden = false;
   menu.dataset.profile = id;
+  menu.dataset.kind = isSuborbId(id) ? "suborb" : "bot";
+  const hide = $("#orb-menu-hide");
+  const pin = ensureSuborbPinButton();
+  if (hide) hide.hidden = menu.dataset.kind === "suborb";
+  if (pin) {
+    pin.hidden = menu.dataset.kind !== "suborb";
+    pin.textContent = suborbPinned(id) ? "取消釘住" : "釘住";
+  }
   menu.style.left = "0px";
   menu.style.top = "0px";
   const box = menu.getBoundingClientRect();
@@ -8064,6 +8289,11 @@ function closeOrbMenu() {
   if (!menu || menu.hidden) return;
   menu.hidden = true;
   delete menu.dataset.profile;
+  delete menu.dataset.kind;
+  const hide = $("#orb-menu-hide");
+  if (hide) hide.hidden = false;
+  const pin = $("#orb-menu-pin");
+  if (pin) pin.hidden = true;
   scheduleHitSync();
 }
 
@@ -8134,8 +8364,16 @@ function applyInteraction(raw) {
     fadeEnabled: interaction.fade_enabled !== false && interaction.fadeEnabled !== false,
     fadeDistance: Number(interaction.fade_distance ?? interaction.fadeDistance ?? 120),
     minOpacity: Number(interaction.min_opacity ?? interaction.minOpacity ?? 0.25),
+    orbRestTransparency: normalizeRestTransparency(
+      interaction.orb_rest_transparency ?? interaction.orbRestTransparency ?? 0,
+    ),
+    panelRestTransparency: normalizeRestTransparency(
+      interaction.panel_rest_transparency ?? interaction.panelRestTransparency ?? 0,
+    ),
     supported: interaction.supported !== false,
   };
+  // A saved change repaints open panels now. Orbs follow the next frame.
+  paintHeldPanels(state.modifierHeld === true);
   document.querySelectorAll(".interact-hint").forEach((hint) => {
     hint.textContent = hintText();
   });
@@ -8147,8 +8385,25 @@ function readInteractionForm() {
     modifier: $("#interaction-modifier").value,
     fade_enabled: state.interaction?.fadeEnabled !== false && state.settings?.interaction?.fade_enabled !== false,
     fade_distance: Number.isFinite(fadeDistance) ? fadeDistance : 120,
-    min_opacity: Number($("#interaction-min-opacity").value) / 100,
+    // The form shows see-through (higher = more see-through); the file keeps opacity.
+    min_opacity: percentToOpacity($("#interaction-min-opacity").value, 0.25),
+    orb_rest_transparency: percentToTransparency($("#interaction-orb-rest").value),
+    panel_rest_transparency: percentToTransparency($("#interaction-panel-rest").value),
   };
+}
+
+/** Ctrl field: see-through % to the stored opacity, inside 0.05–0.60. */
+function percentToOpacity(raw, fallback) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || String(raw).trim() === "") return fallback;
+  return Math.min(0.6, Math.max(0.05, Math.round(100 - n) / 100));
+}
+
+/** Rest fields: see-through % to a 0–0.80 fraction. Empty is solid. */
+function percentToTransparency(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return normalizeRestTransparency(Math.round(n) / 100);
 }
 
 function fillSettings(settings) {
@@ -8178,7 +8433,11 @@ function fillSettings(settings) {
   const interaction = settings?.interaction || state.interaction;
   $("#interaction-modifier").value = interaction.modifier || "ctrl";
   const min = interaction.min_opacity ?? interaction.minOpacity ?? 0.25;
-  $("#interaction-min-opacity").value = String(Math.round(Number(min) * 100));
+  $("#interaction-min-opacity").value = String(100 - Math.round(Number(min) * 100));
+  const orbRest = interaction.orb_rest_transparency ?? interaction.orbRestTransparency ?? 0;
+  const panelRest = interaction.panel_rest_transparency ?? interaction.panelRestTransparency ?? 0;
+  $("#interaction-orb-rest").value = String(Math.round(normalizeRestTransparency(orbRest) * 100));
+  $("#interaction-panel-rest").value = String(Math.round(normalizeRestTransparency(panelRest) * 100));
   const showNames = $("#show-bot-names");
   if (showNames) showNames.checked = !!settings?.show_bot_names;
   const showTools = $("#show-tool-detail");
@@ -8609,6 +8868,10 @@ async function sendWhileBusy(id, text) {
   } catch (err) {
     thread.queued = false;
     const raw = String(err);
+    if (botChatRefusal(raw)) {
+      noteBotChatRefused(id, botChatRefusal(raw));
+      return;
+    }
     if (isPermissionDeniedText(raw)) {
       lockIfPermissionDenied(id, raw);
       return;
@@ -8622,6 +8885,10 @@ async function sendWhileBusy(id, text) {
 }
 
 async function stopActive(id) {
+  if (isSuborbId(id)) {
+    await stopSuborb(id);
+    return;
+  }
   const profile = id || state.activeId;
   if (!profile || state.mode !== "hermes" || !inTauri()) return;
   const thread = armStopGate(profile);
@@ -8796,25 +9063,37 @@ async function refreshSlash() {
   renderSlashPopup();
 }
 
+function escapePanelRecord(shell) {
+  const body = shell?.querySelector?.(".bot-panel, .center-panel");
+  return {
+    id: shell?.dataset?.botId || "",
+    kind: shell?.dataset?.kind || "",
+    state: shell?.dataset?.state || "",
+    opening: shell?.dataset?.opening || "",
+    collapsing: !!shell?.classList?.contains("is-collapsing"),
+    open: !!shell?.classList?.contains("open"),
+    hidden: !!body?.hidden,
+    z: Number(shell?.style?.zIndex) || 0,
+  };
+}
+
 function topOpenPanelId() {
-  const shells = [...document.querySelectorAll(".morph")].filter(
-    (shell) => shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing"),
-  );
-  shells.sort((a, b) => (Number(b.style.zIndex) || 0) - (Number(a.style.zIndex) || 0));
-  return shells[0]?.dataset.botId || "";
+  const panels = [...document.querySelectorAll(".morph")].map(escapePanelRecord);
+  return chooseEscapePanel(panels, "");
 }
 
 function focusedOpenPanelId() {
   const shell = document.activeElement?.closest?.(".morph");
-  if (!shell || shell.classList.contains("is-collapsing")) return "";
-  if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel") return "";
-  return shell.dataset.botId || "";
+  const record = escapePanelRecord(shell);
+  if (!panelCountsAsOpen(record)) return "";
+  return record.id || "";
 }
 
 function closeOpenPanel(id) {
   if (id === "settings") closeSettings();
   else if (id === "kanban") closeKanban();
   else if (id === "cron") closeCron();
+  else if (isSuborbId(id)) closeSuborbPanel(id);
   else if (id) closeBotPanel(id);
 }
 
@@ -8890,6 +9169,16 @@ function foreignFieldFocus() {
   return active.dataset?.role !== "input";
 }
 
+/** Space on a keyboard-focused ＋ (開新 session) presses it instead of typing into the composer. */
+function newSessionKeyFocus(key) {
+  return key === " " && document.activeElement?.dataset?.role === "new-session";
+}
+
+/** A field inside a hidden form, such as the closed 開新 session title, must not keep catching typed keys. */
+function composerFieldHidden(field) {
+  return !!field?.closest?.("[hidden]");
+}
+
 function composerIsBusy(field) {
   const id = field?.closest?.(".morph")?.dataset?.botId || "";
   return !!id && state.busy.has(id);
@@ -8899,7 +9188,7 @@ function setupComposer() {
   window.addEventListener("keydown", (event) => {
     if (!foreignFieldFocus() && event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
       const latched = openPanelComposer();
-      if (latched && !composerHostOpen(composerField)) composerField = latched;
+      if (latched && (!composerHostOpen(composerField) || composerFieldHidden(composerField))) composerField = latched;
     }
     const action = composerKeyAction({
       key: event.key,
@@ -8934,7 +9223,7 @@ function setupComposer() {
       sendActive(id);
       return;
     }
-    if (action === "insert" && composerField && !foreignFieldFocus()) {
+    if (action === "insert" && composerField && !foreignFieldFocus() && !newSessionKeyFocus(event.key)) {
       restoreComposer();
       if (event.target !== composerField) {
         insertComposerKey(composerField, event.key);
@@ -9021,7 +9310,7 @@ function setupComposer() {
       closeSlash();
       return;
     }
-    releaseOverlayFocus();
+    releaseOverlayFocus(action.kind === "panel" ? action.id : "");
     closeOpenPanel(action.id);
     syncLatch();
   }, true);
@@ -9093,8 +9382,15 @@ function setupComposer() {
     $("#kanban-user")?.focus();
   });
   $("#orb-menu-hide")?.addEventListener("click", () => {
-    const id = $("#orb-menu")?.dataset.profile;
+    const menu = $("#orb-menu");
+    if (menu?.dataset.kind === "suborb") return;
+    const id = menu?.dataset.profile;
     if (id) void setProfileShown(id, false);
+  });
+  ensureSuborbPinButton()?.addEventListener("click", () => {
+    const id = $("#orb-menu")?.dataset.profile;
+    if (id) void toggleSuborbPin(id);
+    closeOrbMenu();
   });
   window.addEventListener("pointerdown", (event) => {
     const menu = $("#orb-menu");
@@ -9410,16 +9706,26 @@ function collectHits() {
         if (spilled) box = laid;
       }
       if (box.w < 1 || box.h < 1) return;
+      const panelBody = shell.querySelector?.(".bot-panel");
+      const asOrb = shell.dataset.state === "orb" || (
+        shell.dataset.kind === "suborb" && !suborbPublishesPanel({
+          state: shell.dataset.state,
+          hidden: !panelBody || panelBody.hidden,
+          open: shell.classList.contains("open"),
+          opening: shell.dataset.opening || "",
+          morphing: shell.classList.contains("is-morphing") || shell.classList.contains("is-content-promoted"),
+        })
+      );
       const rect = {
-        id,
+        id: asOrb ? hitFor(shell.dataset.botId, "orb") : id,
         x: box.x,
         y: box.y,
         w: box.w,
         h: box.h,
         z: level,
-        round: shell.dataset.state === "orb",
+        round: asOrb,
       };
-      if (shell.dataset.state === "orb") {
+      if (asOrb) {
         const button = shell.querySelector(".morph-orb")?.getBoundingClientRect();
         const disc = button && button.width >= 1 && button.height >= 1
           ? { x: button.x, y: button.y, w: button.width, h: button.height }
@@ -9442,7 +9748,7 @@ function collectHits() {
         && shell.dataset.planOpen === "1"
         && shell.dataset.state === "panel"
         && (seam || (!shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")));
-      if (planVisible) {
+      if (planVisible && !asOrb) {
         // scaleX changes the border box. The hit rect is the layout width,
         // published once before the seam so GDK does not reshape every frame.
         const cached = Number(shell.dataset.planWidth);
@@ -9463,10 +9769,12 @@ function collectHits() {
           rect.h = union.h;
         }
       }
-      if (shell.dataset.state !== "orb") coverBottomFooter(rect, shell);
+      if (asOrb) {
+        // A closed sub-orb keeps the disc hit. The card is not in the list.
+      } else if (shell.dataset.state !== "orb") coverBottomFooter(rect, shell);
       rects.push(rect);
     }
-    if (shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing")) {
+    if (shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing") && !(shell.dataset.kind === "suborb" && !shell.classList.contains("open") && shell.dataset.opening !== "panel")) {
       const slash = role(shell, "slash");
       if (slash?.dataset.hitId) push(slash.dataset.hitId, slash, level + 20);
       pushCloseHit(rects, shell, level);
@@ -9672,7 +9980,6 @@ function hitBlockReason() {
 
 function orbShellAtPoint(x, y) {
   let best = null;
-  let bestZ = -Infinity;
   document.querySelectorAll(".morph").forEach((shell) => {
     const visual = shell.dataset.visual || shell.dataset.state;
     if (visual !== "orb" && visual !== "pill") return;
@@ -9701,11 +10008,8 @@ function orbShellAtPoint(x, y) {
       named = false;
     }
     if (!pointInBox(x, y, box)) return;
-    const level = shellHitLevel(shell);
-    if (!best || level >= bestZ) {
-      best = { shell, box, level, named };
-      bestZ = level;
-    }
+    const next = { shell, box, level: shellHitLevel(shell), named, area: box.w * box.h };
+    if (!best || discBeats(next, best)) best = next;
   });
   return best;
 }
@@ -10206,7 +10510,10 @@ function paintOpenedHeldLook() {
 
 function paintHeldPanels(down) {
   const floor = Number(state.interaction?.minOpacity);
-  const next = down ? String(Number.isFinite(floor) ? floor : 0.25) : "1";
+  const next = String(panelOpacity(down, {
+    minOpacity: Number.isFinite(floor) ? floor : 0.25,
+    rest: panelRestOpacity(),
+  }));
   const panels = document.querySelectorAll('.morph[data-state="panel"]');
   panels.forEach((shell) => {
     // Inline opacity on the shell. The plan stays at 1 so the two layers
@@ -10215,7 +10522,10 @@ function paintHeldPanels(down) {
     // costs the frame the key was supposed to paint in.
     paintLayerOpacity(shell, next);
     const plan = planNode(shell);
-    if (plan) paintLayerOpacity(plan, "1");
+    // A plan inside the shell already takes the shell's opacity. A hosted
+    // plan (outside the shell) keeps today's Ctrl look and takes the panel
+    // resting see-through, which is 1 by default (R-CT-11).
+    if (plan) paintLayerOpacity(plan, shell.contains(plan) ? "1" : String(panelRestOpacity()));
   });
   return panels.length;
 }
@@ -10289,13 +10599,16 @@ function applyFrames(frames, interactiveAll = false) {
   document.querySelectorAll("[data-hit-id]").forEach((el) => {
     const known = map.get(el.dataset.hitId);
     const nested = !!el.parentElement?.closest?.("[data-hit-id]");
-    const value = known == null || nested ? 1 : known.opacity;
+    const orbRest = el.classList?.contains("morph") && el.dataset.state === "orb" && !nested
+      ? orbRestOpacity()
+      : 1;
+    const value = nested ? 1 : known == null ? orbRest : known.opacity;
     const nextOpacity = String(value);
     // A finished orb-idle fill is the dim already on screen. Cancelling it
     // when this frame does not know the orb would paint the lit fallback.
     el.getAnimations?.().forEach((anim) => {
       if (anim.id !== "orb-idle" || anim.playState === "running") return;
-      if (known == null && nextOpacity === "1") return;
+      if (known == null && nextOpacity === String(orbRest)) return;
       anim.cancel();
     });
     const panelShell = el.classList?.contains("morph") && el.dataset.state === "panel";
@@ -10321,14 +10634,25 @@ function applyFrames(frames, interactiveAll = false) {
       // keep this clock. A settled target does not write again.
       // A panel that meets the disc plus its halo fades this orb to 0.
       const aim = el.dataset.orbCovered === "1" ? 0 : value;
-      const stepped = applyOrbFadeFrame(
-        el,
-        orbFadeClocks.get(el) || null,
-        performance.now(),
-        aim,
-        reducedMotion() ? 1 : ORB_FADE_MS,
-        readOrbOpacity(el),
-      );
+      const suborbFade = el.dataset.kind === "suborb";
+      const stepped = suborbFade
+        ? applyOrbFadeFrame(
+          el,
+          orbFadeClocks.get(el) || null,
+          performance.now(),
+          aim,
+          reducedMotion() ? 1 : SUBORB_FADE_MS,
+          readOrbOpacity(el),
+          planEase,
+        )
+        : applyOrbFadeFrame(
+          el,
+          orbFadeClocks.get(el) || null,
+          performance.now(),
+          aim,
+          reducedMotion() ? 1 : ORB_FADE_MS,
+          readOrbOpacity(el),
+        );
       orbFadeClocks.set(el, stepped.clock);
       if (stepped.running) scheduleOrbFade();
     } else if (!panelShell && el.style.getPropertyValue("--hit-opacity") !== nextOpacity) {
@@ -10401,7 +10725,7 @@ function syncOrbNameFade() {
       continue;
     }
     const covered = shell.dataset.orbCovered === "1";
-    const next = shell.style.opacity || (covered ? "0.00" : "1");
+    const next = shell.style.opacity || (covered ? "0.00" : String(orbRestOpacity()));
     if (label.style.opacity !== next) label.style.opacity = next;
     const settled = covered && Number.parseFloat(next) <= 0.01;
     if (settled) label.hidden = true;
@@ -10503,7 +10827,7 @@ function paintOrbNames() {
     const channels = shell?.style.getPropertyValue("--bot-rgb")?.trim();
     if (channels) node.style.setProperty("--bot-rgb", channels);
     const covered = shell?.dataset.orbCovered === "1";
-    const opacity = shell?.style.opacity || (covered ? "0.00" : "1");
+    const opacity = shell?.style.opacity || (covered ? "0.00" : String(orbRestOpacity()));
     if (node.style.opacity !== opacity) node.style.opacity = opacity;
     if (covered && Number.parseFloat(opacity) <= 0.01) node.hidden = true;
     if (state.modifierHeld === true && !covered) node.dataset.hitCapture = "1";
@@ -10587,13 +10911,16 @@ function readOrbOpacity(el) {
 function tickOrbFades() {
   orbFadeFrame = 0;
   const now = performance.now();
-  const duration = reducedMotion() ? 1 : ORB_FADE_MS;
   let running = false;
   document.querySelectorAll('.morph[data-state="orb"][data-hit-id]').forEach((el) => {
     if (el.classList.contains("is-cron-live") && el.dataset.orbCovered !== "1") return;
     const clock = orbFadeClocks.get(el);
     if (!clock || clock.settled) return;
-    const stepped = applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el));
+    const suborbFade = el.dataset.kind === "suborb";
+    const duration = reducedMotion() ? 1 : (suborbFade ? SUBORB_FADE_MS : ORB_FADE_MS);
+    const stepped = suborbFade
+      ? applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el), planEase)
+      : applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el));
     orbFadeClocks.set(el, stepped.clock);
     if (stepped.running) running = true;
   });
@@ -10716,7 +11043,7 @@ function engagedModifier(now = performance.now()) {
   return next.held;
 }
 
-function releaseOverlayFocus() {
+function releaseOverlayFocus(closingId = "") {
   const active = document.activeElement;
   if (active && active !== document.body && typeof active.blur === "function") active.blur();
   state.heldKeys.clear();
@@ -10725,8 +11052,12 @@ function releaseOverlayFocus() {
   window.clearTimeout(modifierArm.timer);
   modifierArm.timer = 0;
   if (!inTauri()) return;
+  const openIds = [...document.querySelectorAll(".morph")]
+    .filter((shell) => panelCountsAsOpen(escapePanelRecord(shell)))
+    .map((shell) => shell.dataset.botId || "");
+  const restore = keepOverlayKeyTarget(openIds, closingId);
   import("@tauri-apps/api/core")
-    .then(({ invoke }) => invoke("release_overlay_focus"))
+    .then(({ invoke }) => invoke("release_overlay_focus", { restore }))
     .catch(() => {});
 }
 
@@ -10744,6 +11075,8 @@ function paintLocalProximity(rects) {
     rects: list,
     fadeDistance: cfg.fadeDistance,
     minOpacity: cfg.minOpacity,
+    orbRest: orbRestOpacity(),
+    panelRest: panelRestOpacity(),
     fadeEnabled: cfg.fadeEnabled,
   });
   applyFrames(frames);
@@ -10949,6 +11282,1003 @@ function setupProximity() {
 }
 
 const watchdogs = new Map();
+
+function botForPanel(id) {
+  const found = state.bots.find((bot) => bot.id === id);
+  if (found) return found;
+  const sub = parseSuborbId(id);
+  if (!sub) return null;
+  const parent = state.bots.find((bot) => bot.id === sub.profile);
+  if (!parent) return null;
+  const row = suborbSessionRow(sub.profile, sub.sessionId);
+  const label = suborbLabel(row || { title: sub.sessionId });
+  return {
+    id,
+    name: `${parent.name} / ${label}`,
+    color: parent.color,
+    short: Array.from(label)[0] || parent.short || "任",
+    detail: parent.detail || "",
+    status: "",
+  };
+}
+
+function suborbSessionRow(profile, sessionId) {
+  const listed = (threadFor(profile).sessions || []).find((row) => row.id === sessionId);
+  if (listed) return listed;
+  return (state.suborbExtra.get(profile) || []).find((row) => row.id === sessionId) || null;
+}
+
+function suborbModel(profile) {
+  if (!state.suborbModels.has(profile)) state.suborbModels.set(profile, emptySuborbModel());
+  return state.suborbModels.get(profile);
+}
+
+function pinsFor(profile) {
+  const raw = state.suborbPins?.[profile];
+  return Array.isArray(raw) ? raw : [];
+}
+
+function suborbPinned(id) {
+  const sub = parseSuborbId(id);
+  if (!sub) return false;
+  return pinsFor(sub.profile).includes(sub.sessionId);
+}
+
+function suborbOpenSessionIds(profile) {
+  const ids = [];
+  for (const id of state.openIds) {
+    const sub = parseSuborbId(id);
+    if (sub?.profile === profile) ids.push(sub.sessionId);
+  }
+  return ids;
+}
+
+function sessionsForSuborbs(profile, listed) {
+  const extra = state.suborbExtra.get(profile) || [];
+  const seen = new Set((listed || []).map((row) => row.id));
+  return [...(listed || []), ...extra.filter((row) => row?.id && !seen.has(row.id))];
+}
+
+function suborbHoldIds(profile) {
+  const ids = [];
+  document.querySelectorAll(".morph[data-kind='suborb']").forEach((shell) => {
+    const sub = parseSuborbId(shell.dataset.botId || "");
+    if (!sub || sub.profile !== profile) return;
+    const input = shell.querySelector("[data-role='input']");
+    if (!input) return;
+    const focused = document.activeElement === input || !!input.contains(document.activeElement);
+    if (composerHoldsSuborb({ value: input.value, focused })) ids.push(sub.sessionId);
+  });
+  return ids;
+}
+
+function applySuborbArchive(profile, view) {
+  const drop = new Set(view?.drop || []);
+  if (drop.size) {
+    const extra = (state.suborbExtra.get(profile) || []).filter((row) => row?.id && !drop.has(row.id));
+    state.suborbExtra.set(profile, extra);
+  }
+  const unpin = view?.unpin || [];
+  if (!unpin.length) return;
+  const nextPins = pinsFor(profile).filter((id) => !unpin.includes(id));
+  state.suborbPins = { ...state.suborbPins, [profile]: nextPins };
+  if (state.mode !== "hermes" || !inTauri()) return;
+  for (const sessionId of unpin) {
+    void import("@tauri-apps/api/core").then(({ invoke }) => invoke("set_suborb_pin", {
+      profile,
+      sessionId,
+      pinned: false,
+    })).then((settings) => {
+      if (settings?.suborb_pins) state.suborbPins = settings.suborb_pins;
+    }).catch(() => {});
+  }
+}
+
+function noteSuborbList(profile, sessions, mainId = "") {
+  if (!profile || isSuborbId(profile) || !state.suborbModels) return;
+  const model = suborbModel(profile);
+  for (const [id, thread] of state.threads) {
+    const sub = parseSuborbId(id);
+    if (!sub || sub.profile !== profile) continue;
+    model.localBusy[sub.sessionId] = state.busy.has(id);
+    model.waiting[sub.sessionId] = (thread.messages || []).some((message) => approvalPending(message) || clarifyPending(message));
+    if (planForPanel(thread)) model.plans[sub.sessionId] = true;
+    model.failed[sub.sessionId] = thread.statusState === "error";
+  }
+  const listed = sessions || [];
+  const view = reconcileSuborbs(model, {
+    sessions: sessionsForSuborbs(profile, listed),
+    mainId: mainId || threadFor(profile).sessionId || "",
+    pinned: pinsFor(profile),
+    openIds: suborbOpenSessionIds(profile),
+    holdIds: suborbHoldIds(profile),
+    listedIds: listed.map((row) => row?.id).filter(Boolean),
+    now: Date.now(),
+  });
+  applySuborbArchive(profile, view);
+  view.model.peeked = model.peeked || {};
+  state.suborbModels.set(profile, view.model);
+  state.suborbViews = state.suborbViews || new Map();
+  state.suborbViews.set(profile, view);
+  for (const row of view.peek) {
+    void peekSuborbTail(profile, row);
+  }
+  renderSuborbs();
+  armSuborbDismiss();
+}
+
+function armSuborbDismiss() {
+  let soonest = 0;
+  for (const model of state.suborbModels?.values?.() || []) {
+    for (const at of Object.values(model.dismissAt || {})) {
+      if (at > Date.now() && (!soonest || at < soonest)) soonest = at;
+    }
+  }
+  window.clearTimeout(noteSuborbList.timer);
+  if (!soonest) return;
+  noteSuborbList.timer = window.setTimeout(() => reevalSuborbs(), Math.max(0, soonest - Date.now()) + 20);
+}
+
+async function seedSessionLists() {
+  if (state.mode !== "hermes" || !inTauri()) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("seed_session_lists");
+  } catch {
+    /* The next list change still reconciles. */
+  }
+}
+
+function reevalSuborbs() {
+  for (const bot of state.bots || []) {
+    if (!state.suborbModels?.has(bot.id) && !pinsFor(bot.id).length) continue;
+    const thread = threadFor(bot.id);
+    noteSuborbList(bot.id, thread.sessions || [], thread.sessionId || "");
+  }
+}
+
+const suborbPeeks = new Set();
+
+async function peekSuborbTail(profile, sessionId) {
+  const key = `${profile}:${sessionId}`;
+  if (suborbPeeks.has(key) || !inTauri()) return;
+  const row = suborbSessionRow(profile, sessionId);
+  const stampKey = `${row?.message_count ?? "x"}:${row?.last_active ?? 0}`;
+  const model = suborbModel(profile);
+  model.peeked = model.peeked || {};
+  if (model.peeked[sessionId] === stampKey) return;
+  model.peeked[sessionId] = stampKey;
+  suborbPeeks.add(key);
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const tail = await invoke("peek_session_tail", {
+      profile,
+      sessionId,
+      messageCount: row?.message_count ?? null,
+    });
+    const signals = tailSignals(tail?.messages || []);
+    const model = suborbModel(profile);
+    model.settled[sessionId] = !!(tail?.settled || signals.settled);
+    if (signals.plan) model.plans[sessionId] = true;
+    noteSuborbList(profile, threadFor(profile).sessions || [], threadFor(profile).sessionId || "");
+  } catch {
+    /* The next stamp change fetches the tail again. */
+  } finally {
+    suborbPeeks.delete(key);
+  }
+}
+
+function parentOrbBox(profile) {
+  const shell = shellFor(profile);
+  const orb = shell?.querySelector(".morph-orb");
+  const box = orb?.getBoundingClientRect?.();
+  if (!box || box.width < 1 || box.height < 1) return null;
+  return {
+    edge: shell.dataset.edge || "right",
+    x: box.x + box.width / 2,
+    y: box.y + box.height / 2,
+    parent: box.width,
+  };
+}
+
+function renderSuborbs() {
+  if (!state.suborbViews) return;
+  const rail = $("#bot-rail");
+  if (!rail) return;
+  const keep = new Set();
+  for (const bot of state.bots) {
+    const view = state.suborbViews.get(bot.id);
+    if (!view) continue;
+    const anchor = parentOrbBox(bot.id);
+    const size = suborbSizePx(ORB);
+    const slots = anchor
+      ? suborbPositions({
+        edge: anchor.edge,
+        x: anchor.x,
+        y: anchor.y,
+        parent: anchor.parent,
+        count: view.shown.length + (view.overflow.length ? 1 : 0),
+        size,
+        screenW: window.innerWidth || 1280,
+        screenH: window.innerHeight || 800,
+      })
+      : [];
+    view.shown.forEach((row, index) => {
+      const id = suborbPanelId(bot.id, row.id);
+      keep.add(id);
+      const shell = ensureSuborbShell(bot, row);
+      const slot = slots[index];
+      if (slot) {
+        shell.dataset.homeX = String(slot.x);
+        shell.dataset.homeY = String(slot.y);
+        shell.dataset.edge = anchor?.edge || "right";
+      }
+      paintSuborbDisc(id, row);
+      if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel" && !shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")) {
+        placeSuborbShell(shell);
+      }
+    });
+    if (view.overflow.length) {
+      const id = `suborb-more:${bot.id}`;
+      keep.add(id);
+      const shell = ensureSuborbMore(bot, view.overflow.length);
+      const slot = slots[view.shown.length];
+      if (slot) {
+        shell.dataset.homeX = String(slot.x);
+        shell.dataset.homeY = String(slot.y);
+      }
+      placeSuborbShell(shell);
+    }
+  }
+  rail.querySelectorAll(".morph[data-kind='suborb']").forEach((shell) => {
+    const id = shell.dataset.botId || "";
+    if (keep.has(id)) return;
+    state.openIds = closePanel(state.openIds, id);
+    releaseSuborbNodes(shell);
+  });
+  // R-OB-06: a sub-orb that just appeared or moved gets its plate now, not on the next paint.
+  if (state.showBotNames) paintOrbNames();
+  scheduleHitSync();
+}
+
+function layoutSuborbOrbs() {
+  renderSuborbs();
+}
+
+function ensureSuborbShell(bot, row) {
+  const id = suborbPanelId(bot.id, row.id);
+  let shell = shellFor(id);
+  if (shell) return shell;
+  shell = document.createElement("div");
+  shell.className = "morph";
+  shell.dataset.kind = "suborb";
+  shell.dataset.botId = id;
+  shell.dataset.state = "orb";
+  shell.dataset.visual = "orb";
+  shell.dataset.hitId = `bot:${id}`;
+  const stroke = document.createElement("div");
+  stroke.className = "morph-stroke";
+  stroke.setAttribute("aria-hidden", "true");
+  const fill = document.createElement("div");
+  fill.className = "morph-fill";
+  const glow = document.createElement("div");
+  glow.className = "morph-glow";
+  fill.appendChild(glow);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "bot-btn morph-orb suborb-disc";
+  btn.dataset.botId = id;
+  fillOrb(btn);
+  shell.append(stroke, fill, btn, previewNode());
+  const tpl = document.getElementById("bot-panel-template");
+  if (tpl) {
+    const fragment = tpl.content.cloneNode(true);
+    const panel = fragment.querySelector(".bot-panel");
+    const plan = fragment.querySelector(".plan-window");
+    panel.dataset.botId = id;
+    panel.dataset.panelKey = id;
+    panel.classList.add("morph-body", "content");
+    panel.hidden = true;
+    const slash = role(panel, "slash");
+    if (slash) slash.dataset.hitId = `slash:${id}`;
+    const close = role(panel, "close");
+    if (close) close.dataset.hitId = `close:${id}`;
+    shell.append(panel);
+    if (plan) shell.append(plan);
+    wireSuborbPanel(panel, id);
+    if (plan) wirePlanWindow(plan, id);
+    bindPanelDrag(panel);
+    if (plan) bindPanelDrag(plan);
+  }
+  btn.addEventListener("click", (event) => {
+    if (shell.dataset.state === "panel") {
+      focusOpenPanel(id);
+      return;
+    }
+    if (pageOpenBlocked() || !orbClickAllowed(event)) return;
+    openSuborbPanel(id);
+  });
+  btn.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    if (shell.dataset.state !== "orb") return;
+    if (!modifierHeld(event)) return;
+    event.stopPropagation();
+    openOrbMenu(id, event.clientX, event.clientY);
+  });
+  $("#bot-rail")?.appendChild(shell);
+  return shell;
+}
+
+function ensureSuborbMore(bot, count) {
+  const id = `suborb-more:${bot.id}`;
+  let shell = shellFor(id);
+  if (!shell) {
+    shell = document.createElement("div");
+    shell.className = "morph";
+    shell.dataset.kind = "suborb";
+    shell.dataset.botId = id;
+    shell.dataset.state = "orb";
+    shell.dataset.visual = "orb";
+    shell.dataset.hitId = id;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "bot-btn morph-orb suborb-disc suborb-more";
+    btn.dataset.botId = id;
+    btn.textContent = `+${count}`;
+    btn.addEventListener("click", (event) => {
+      if (pageOpenBlocked() || !orbClickAllowed(event)) return;
+      void openParentSessionPicker(bot.id);
+    });
+    shell.append(btn);
+    $("#bot-rail")?.appendChild(shell);
+  }
+  const btn = shell.querySelector("button");
+  if (btn) btn.textContent = `+${count}`;
+  applyBotColor(shell, bot.color);
+  applyBotColor(btn, bot.color);
+  return shell;
+}
+
+function paintSuborbDisc(id, row) {
+  const shell = shellFor(id);
+  const btn = shell?.querySelector(".suborb-disc");
+  if (!shell || !btn || shell.dataset.botId?.startsWith("suborb-more:")) return;
+  const sub = parseSuborbId(id);
+  const parent = state.bots.find((bot) => bot.id === sub?.profile);
+  const view = sub ? state.suborbViews?.get(sub.profile) : null;
+  const live = row || view?.shown?.find((item) => item.id === sub?.sessionId);
+  if (parent) {
+    applyBotColor(shell, parent.color);
+    applyBotColor(btn, parent.color);
+  }
+  const pinned = !!live?.pinned || suborbPinned(id);
+  btn.dataset.pinned = pinned ? "1" : "0";
+  btn.classList.toggle("is-running", live?.channels?.activity === "running");
+  btn.classList.toggle("has-approval", live?.channels?.badge === "waiting");
+  btn.classList.toggle("has-unread", live?.channels?.badge === "unread");
+  btn.classList.toggle("has-plan", live?.channels?.badge === "plan");
+  btn.classList.toggle("is-failed", live?.channels?.badge === "failed");
+  const glyph = btn.querySelector(".orb-glyph");
+  const letter = Array.from(live?.title || "任")[0] || "任";
+  if (glyph && glyph.textContent !== letter) glyph.textContent = letter;
+  const label = live?.title || "任務";
+  btn.setAttribute("aria-label", pinned ? `${label}，已釘住` : label);
+  btn.title = label;
+  // R-OB-06 plate shows the task title only, not the 已釘住 suffix.
+  if (btn.dataset.orbName !== label) btn.dataset.orbName = label;
+}
+
+function releaseSuborbGlow(shell) {
+  if (!shell || shell.dataset.kind !== "suborb") return;
+  if (shell.dataset.state === "panel" || shell.dataset.opening === "panel") return;
+  if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+  const clear = (el) => {
+    if (!el) return;
+    el.getAnimations?.().forEach((anim) => {
+      let frames = [];
+      try { frames = anim.effect?.getKeyframes?.() || []; } catch { frames = []; }
+      if (!frames.some((frame) => frame?.clipPath)) return;
+      try { anim.cancel(); } catch { /* already idle */ }
+    });
+    el.style.clipPath = "none";
+    el.style.overflow = "visible";
+  };
+  clear(shell);
+  clear(shell.querySelector(".morph-fill"));
+  clear(shell.querySelector(".morph-stroke"));
+  const disc = shell.querySelector(".suborb-disc");
+  if (disc) {
+    disc.style.overflow = "visible";
+    disc.style.clipPath = "none";
+  }
+}
+
+function placeSuborbShell(shell) {
+  if (!shell) return null;
+  if (shell.dataset.dragged === "1") return clampDraggedShell(shell);
+  const vw = window.innerWidth || 1280;
+  const vh = window.innerHeight || 800;
+  const size = suborbSizePx(ORB);
+  const homeX = Number(shell.dataset.homeX);
+  const homeY = Number(shell.dataset.homeY);
+  const openPanel = shell.dataset.state === "panel" || shell.dataset.opening === "panel";
+  const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2;
+  const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
+  shell.style.setProperty("--suborb-size", `${size}px`);
+  const placed = placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
+  const origin = openPanel ? cascadeOriginBox(shell, size, vw, vh) || placed : placed;
+  const box = openPanel
+    ? placeSuborbCascade({
+      left: origin.left,
+      top: origin.top,
+      width: placed.width,
+      height: placed.height,
+      index: openSuborbPanelIndex(shell),
+      screenW: vw,
+      screenH: vh,
+      panelW: PANEL_W,
+      panelH: PANEL_H,
+      insetTop: state.workInsets?.top || 0,
+      insetRight: state.workInsets?.right || 0,
+      insetBottom: state.workInsets?.bottom || 0,
+      insetLeft: state.workInsets?.left || 0,
+    })
+    : null;
+  shell.style.width = `${box ? box.width : placed.width}px`;
+  shell.style.height = `${box ? box.height : placed.height}px`;
+  shell.style.left = `${box ? box.left : placed.left}px`;
+  shell.style.top = `${box ? box.top : placed.top}px`;
+  const header = placed.header === "bottom" ? "bottom" : "top";
+  const height = box ? box.height : placed.height;
+  const ay = box ? (header === "bottom" ? height - ORB / 2 : ORB / 2) : placed.anchor.y;
+  shell.style.right = "auto";
+  shell.style.bottom = "auto";
+  shell.dataset.edge = placed.edge;
+  shell.dataset.anchor = placed.anchor.x > (box ? box.width : placed.width) / 2 ? "end" : "start";
+  shell.dataset.header = header;
+  shell.dataset.ax = String(placed.anchor.x);
+  shell.dataset.ay = String(ay);
+  shell.style.setProperty("--ax", `${placed.anchor.x}px`);
+  shell.style.setProperty("--ay", `${ay}px`);
+  shell.style.transformOrigin = `${placed.anchor.x}px ${ay}px`;
+  const next = box ? {
+    ...placed,
+    left: box.left,
+    top: box.top,
+    width: box.width,
+    height: box.height,
+    anchor: { x: placed.anchor.x, y: ay, header },
+  } : placed;
+  if (!box) releaseSuborbGlow(shell);
+  if (box) {
+    const z = Number(shell.style.zIndex);
+    if (!Number.isFinite(z) || z < 6) shell.style.zIndex = "6";
+    const parentId = parseSuborbId(shell.dataset.botId || "")?.profile || "";
+    const parent = parentId ? shellFor(parentId) : null;
+    if (parent && parent.dataset.state !== "panel" && parent.dataset.opening !== "panel") {
+      parent.style.removeProperty("z-index");
+    }
+  }
+  return next;
+}
+
+function wireSuborbPanel(panel, id) {
+  role(panel, "close")?.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeSuborbPanel(id);
+  });
+  role(panel, "tab-bot")?.setAttribute("hidden", "");
+  const session = role(panel, "session");
+  if (session) session.hidden = true;
+  const pin = document.createElement("button");
+  pin.type = "button";
+  pin.className = "icon-btn suborb-pin";
+  pin.dataset.role = "pin";
+  pin.addEventListener("click", () => { void toggleSuborbPin(id); });
+  role(panel, "close")?.before(pin);
+  role(panel, "send")?.addEventListener("click", () => { void sendSuborb(id); });
+  role(panel, "stop")?.addEventListener("click", () => { void stopSuborb(id); });
+  role(panel, "compose-mode")?.addEventListener("click", () => {
+    const profile = gatewayProfile(id);
+    void cycleComposeMode(profile).then(() => paintComposeMode(id));
+  });
+  const input = role(panel, "input");
+  input?.addEventListener("keydown", (event) => {
+    if (event.shiftKey && (event.key === "Tab" || event.code === "Tab")) {
+      event.preventDefault();
+      const profile = gatewayProfile(id);
+      void cycleComposeMode(profile).then(() => paintComposeMode(id));
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      void sendSuborb(id);
+    }
+  });
+  installNewSessionButton(panel, id);
+  // The panel is not registered yet, so paint the pin on this panel directly (it was blank).
+  paintSuborbPin(id, panel);
+}
+
+function paintSuborbPin(id, panel = panelFor(id)) {
+  const pin = role(panel, "pin");
+  if (!pin) return;
+  const on = suborbPinned(id);
+  pin.textContent = on ? "取消釘住" : "釘住";
+  pin.title = pin.textContent;
+  pin.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+function paintSuborbComposeModes(profile) {
+  document.querySelectorAll(".morph[data-kind='suborb']").forEach((shell) => {
+    const sub = parseSuborbId(shell.dataset.botId || "");
+    if (!sub || sub.profile !== profile) return;
+    const panel = shell.querySelector(".bot-panel");
+    const mode = composeModeOf(profile);
+    const chip = role(panel, "compose-mode");
+    const composer = panel?.querySelector(".composer");
+    if (chip) {
+      chip.textContent = composeModeLabel(mode);
+      chip.setAttribute("aria-pressed", mode ? "true" : "false");
+    }
+    if (composer) composer.classList.toggle("is-compose-mode", !!mode);
+  });
+}
+
+function openSuborbShells() {
+  return [...document.querySelectorAll(".morph[data-kind='suborb']")].filter((item) => (
+    item.dataset.state === "panel" || item.dataset.opening === "panel" || item.classList.contains("is-morphing")
+  ));
+}
+
+function openSuborbPanelIndex(shell) {
+  const open = openSuborbShells();
+  const index = open.indexOf(shell);
+  return index < 0 ? open.length : index;
+}
+
+/** The panel box at the first open sub-orb's disc home; every cascade step starts there. */
+function cascadeOriginBox(shell, size, vw, vh) {
+  const first = suborbCascadeOrigin(openSuborbShells(), shell);
+  if (!first) return null;
+  const homeX = Number(first.dataset.homeX);
+  const homeY = Number(first.dataset.homeY);
+  const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2;
+  const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
+  return placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
+}
+
+function openSuborbPanel(id) {
+  let shell = shellFor(id);
+  let panel = panelFor(id);
+  const subEarly = parseSuborbId(id);
+  if ((!shell || !panel) && subEarly) {
+    state.openIds = openPanel(state.openIds, id);
+    noteSuborbList(subEarly.profile, threadFor(subEarly.profile).sessions || [], threadFor(subEarly.profile).sessionId || "");
+    shell = shellFor(id);
+    panel = panelFor(id);
+  }
+  if (!shell || !panel) return;
+  if (shell.classList.contains("open") && (shell.dataset.state === "panel" || shell.dataset.opening === "panel")) {
+    focusOpenPanel(id);
+    return;
+  }
+  panel.hidden = false;
+  state.openIds = openPanel(state.openIds, id);
+  state.activeId = id;
+  state.slashPanelId = id;
+  const sub = parseSuborbId(id);
+  if (sub) {
+    const model = suborbModel(sub.profile);
+    const count = suborbSessionRow(sub.profile, sub.sessionId)?.message_count;
+    if (count != null) model.read[sub.sessionId] = Number(count) || 0;
+    noteSuborbList(sub.profile, threadFor(sub.profile).sessions || [], threadFor(sub.profile).sessionId || "");
+  }
+  raisePanel(shell);
+  shell.dataset.intent = "open";
+  void runShellMorph(shell, "panel");
+  void loadSuborb(id);
+  scheduleHitSync();
+}
+
+function closeSuborbPanel(id) {
+  const shell = shellFor(id);
+  const panel = panelFor(id);
+  const sub = parseSuborbId(id);
+  if (sub) {
+    const model = suborbModel(sub.profile);
+    model.closedAt = model.closedAt || {};
+    model.closedAt[sub.sessionId] = Date.now();
+    delete model.dismissAt[sub.sessionId];
+  }
+  state.openIds = closePanel(state.openIds, id);
+  if (state.activeId === id) state.activeId = state.openIds.at(-1) || null;
+  if (state.slashPanelId === id) state.slashPanelId = state.activeId || "";
+  if (panel) {
+    const active = document.activeElement;
+    if (active && panel.contains(active)) active.blur();
+  }
+  if (shell) {
+    shell.classList.remove("open");
+    shell.style.zIndex = "0";
+    shell.dataset.intent = "close";
+    void finishClose(shell).finally(() => {
+      if (panel) panel.hidden = true;
+      shell.classList.remove("open");
+      reevalSuborbs();
+    });
+    return;
+  }
+  reevalSuborbs();
+}
+
+async function loadSuborb(id) {
+  const sub = parseSuborbId(id);
+  if (!sub || state.mode !== "hermes" || !inTauri()) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const opened = await invoke("open_suborb", { profile: sub.profile, sessionId: sub.sessionId });
+    const thread = threadFor(id);
+    thread.messages = presentTranscript(opened.messages || []);
+    thread.sessionId = opened.session_id || sub.sessionId;
+    thread.sessionExplicit = false;
+    thread.sessionReadOnly = !!opened.read_only;
+    thread.sessionReadOnlyReason = opened.read_only_reason || "";
+    thread.sessions = opened.sessions || threadFor(sub.profile).sessions || [];
+    thread.loaded = true;
+    thread.loading = false;
+    rememberPlan(thread, thread.messages);
+    const model = suborbModel(sub.profile);
+    model.read[sub.sessionId] = opened.message_count ?? thread.messages.length;
+    if (planForPanel(thread)) model.plans[sub.sessionId] = true;
+    renderChat(id);
+    paintSuborbDisc(id);
+  } catch (err) {
+    setBotStatus(id, "連線錯誤", "error");
+    showActionError(String(err));
+  }
+}
+
+async function sendSuborb(id) {
+  const panel = panelFor(id);
+  const input = role(panel, "input");
+  const typed = input?.value.trim() || "";
+  const sub = parseSuborbId(id);
+  if (!typed || !sub) return;
+  const thread = threadFor(id);
+  if (input) input.value = "";
+  const action = resolveClient(typed, state.catalog || []);
+  if (action?.command === "stop") {
+    await stopSuborb(id);
+    return;
+  }
+  if (action?.command === "new") {
+    await createTaskSession(sub.profile, action.args || "", id);
+    return;
+  }
+  const text = composeModeWire(typed, composeModeOf(id));
+  thread.followTail = true;
+  appendMessage(id, composeUserMessage(text));
+  const busy = state.busy.has(id);
+  if (busy && !composeSkipsBusyQueue(text)) {
+    await sendSuborbBusy(id, sub, thread, text);
+    return;
+  }
+  await postSuborb(id, sub, text, { side: busy && composeSkipsBusyQueue(text) });
+}
+
+async function sendSuborbBusy(id, sub, thread, text) {
+  let joined = false;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    joined = (await invoke("steer_run", { profile: sub.profile, runId: thread.runId, text })) === "joined";
+  } catch {
+    joined = false;
+  }
+  if (joined) {
+    appendMessage(id, { role: "commentary", text: "已加入呢一輪" });
+    return;
+  }
+  appendMessage(id, { role: "commentary", text: "排隊中，等佢講完就會行" });
+  thread.queued = true;
+  await postSuborb(id, sub, text, { queue: true });
+}
+
+async function postSuborb(id, sub, text, { side = false, queue = false } = {}) {
+  if (!side) setBotStatus(id, queue ? "排隊中" : "思考中…", "busy");
+  const model = suborbModel(sub.profile);
+  model.localBusy[sub.sessionId] = !side;
+  paintSuborbDisc(id);
+  if (state.mode !== "hermes" || !inTauri()) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("send_suborb", {
+      profile: sub.profile,
+      sessionId: sub.sessionId,
+      text,
+      side,
+      queue,
+    });
+  } catch (err) {
+    model.localBusy[sub.sessionId] = false;
+    noteSendFailed(id, String(err));
+  }
+}
+
+async function stopSuborb(id) {
+  const sub = parseSuborbId(id);
+  if (!sub) return;
+  const thread = threadFor(id);
+  const posted = streamingRunId(thread);
+  if (state.mode !== "hermes" || !inTauri()) {
+    setBotStatus(id, "已停止", "idle");
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let result = await invoke("stop_suborb", {
+      profile: sub.profile,
+      sessionId: sub.sessionId,
+      runId: posted,
+    });
+    const again = stopAfterMiss(thread, posted);
+    if (result === "not_active" && again.retry) {
+      result = await invoke("stop_suborb", {
+        profile: sub.profile,
+        sessionId: sub.sessionId,
+        runId: again.retry,
+      });
+    }
+  } catch (err) {
+    showActionError(String(err).startsWith("停止未送到") ? "停止未送到。" : "停止未送到。");
+  }
+}
+
+function noteSessionCreateFailed(fromId, notice) {
+  showActionError(notice);
+  if (fromId) appendMessage(fromId, { role: "commentary", text: notice });
+}
+
+async function createTaskSession(profile, rawTitle, fromId = "") {
+  const bot = state.bots.find((item) => item.id === profile);
+  const known = [
+    ...(threadFor(profile).sessions || []).map((row) => row?.title || row?.kept_title || ""),
+    ...(state.suborbExtra.get(profile) || []).map((row) => row?.title || ""),
+  ];
+  let title = normalizeTaskTitle(rawTitle, bot?.name || profile);
+  if (!String(rawTitle || "").trim()) title = uniqueTaskTitle(title, known);
+  if (state.mode !== "hermes" || !inTauri()) {
+    noteSessionCreateFailed(fromId, "未設定 Hermes gateway。");
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const created = await invoke("create_task_session", { profile, title });
+    const sessionId = created?.session_id || "";
+    if (!sessionId) {
+      noteSessionCreateFailed(fromId, "開唔到新對話。");
+      return;
+    }
+    const row = {
+      id: sessionId,
+      title: created.title || title,
+      message_count: 0,
+      last_active: Date.now() / 1000,
+      started_at: Date.now() / 1000,
+      source: "api_server",
+    };
+    const extra = state.suborbExtra.get(profile) || [];
+    extra.push(row);
+    state.suborbExtra.set(profile, extra);
+    suborbModel(profile).forced[sessionId] = true;
+    noteSuborbList(profile, threadFor(profile).sessions || [], threadFor(profile).sessionId || "");
+    openSuborbPanel(suborbPanelId(profile, sessionId));
+  } catch (err) {
+    noteSessionCreateFailed(fromId, sessionCreateError(err));
+  }
+}
+
+/** R-SO-10: icon beside ＋ that lists quiet sessions to pull out as an unpinned sub-orb. */
+function installPullSuborbButton(panel, id) {
+  if (!panel || isSuborbId(id) || role(panel, "pull-suborb")) return;
+  const session = role(panel, "session");
+  if (!session) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "icon-btn pull-suborb-btn";
+  button.dataset.role = "pull-suborb";
+  button.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="5.5" cy="10.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8.5 7.5 13 3M9.5 3H13v3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  button.title = PULL_SUBORB_LABEL;
+  button.setAttribute("aria-label", PULL_SUBORB_LABEL);
+  button.setAttribute("aria-haspopup", "true");
+  button.setAttribute("aria-expanded", "false");
+  (role(panel, "new-session") || session).after(button);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    togglePullSuborbList(panel, id);
+  });
+}
+
+function closePullSuborbList(panel) {
+  const list = role(panel, "pull-suborb-list");
+  if (list) list.hidden = true;
+  role(panel, "pull-suborb")?.setAttribute("aria-expanded", "false");
+}
+
+function togglePullSuborbList(panel, id) {
+  let list = role(panel, "pull-suborb-list");
+  if (list && !list.hidden) {
+    closePullSuborbList(panel);
+    return;
+  }
+  if (!list) {
+    list = document.createElement("div");
+    list.dataset.role = "pull-suborb-list";
+    list.className = "pull-suborb-list";
+    list.setAttribute("role", "menu");
+    list.setAttribute("aria-label", PULL_SUBORB_LABEL);
+    list.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      closePullSuborbList(panel);
+      role(panel, "pull-suborb")?.focus();
+    });
+    list.addEventListener("focusout", (event) => {
+      const next = event.relatedTarget;
+      if (next && (list.contains(next) || next === role(panel, "pull-suborb"))) return;
+      closePullSuborbList(panel);
+    });
+    role(panel, "session")?.closest(".chat-head")?.appendChild(list);
+  }
+  const thread = threadFor(id);
+  const rows = pullOutCandidates(thread.sessions || [], thread.sessionId || "");
+  const items = rows.map((row) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "pull-suborb-row";
+    item.setAttribute("role", "menuitem");
+    item.dataset.sessionId = row.id;
+    const label = `${PULL_SUBORB_LABEL}：${row.title}`;
+    item.title = label;
+    item.setAttribute("aria-label", label);
+    item.textContent = row.title;
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closePullSuborbList(panel);
+      pullOutSuborb(gatewayProfile(id), row.id);
+    });
+    return item;
+  });
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "pull-suborb-empty";
+    empty.textContent = "冇可以拎出嘅對話";
+    items.push(empty);
+  }
+  list.replaceChildren(...items);
+  list.hidden = false;
+  role(panel, "pull-suborb")?.setAttribute("aria-expanded", "true");
+  list.querySelector("button")?.focus();
+}
+
+/**
+ * R-SO-10: open an existing session as an unpinned sub-orb, the same way a
+ * just-created session takes a visible disc (R-SO-06). The main panel stays
+ * on Bot Chat: it does not switch, create, or write anything.
+ */
+function pullOutSuborb(profile, sessionId) {
+  if (!profile || !sessionId) return;
+  const model = suborbModel(profile);
+  model.forced[sessionId] = true;
+  delete model.retired[sessionId];
+  delete model.closedAt[sessionId];
+  delete model.dismissAt[sessionId];
+  const thread = threadFor(profile);
+  noteSuborbList(profile, thread.sessions || [], thread.sessionId || "");
+  debugLog("pull-suborb", `profile=${profile} session=${sessionId}`);
+  openSuborbPanel(suborbPanelId(profile, sessionId));
+}
+
+function installNewSessionButton(panel, id) {
+  if (!panel || role(panel, "new-session")) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "icon-btn new-session-btn";
+  button.dataset.role = "new-session";
+  button.textContent = "＋";
+  button.title = NEW_SESSION_LABEL;
+  button.setAttribute("aria-label", NEW_SESSION_LABEL);
+  button.setAttribute("aria-expanded", "false");
+  // Compact icon beside the session picker; a sub-orb has no picker, so it sits in the header actions.
+  const session = role(panel, "session");
+  if (!isSuborbId(id) && session) session.after(button);
+  else (role(panel, "pin") || role(panel, "close"))?.before(button);
+  button.addEventListener("click", () => toggleNewSessionForm(panel, id));
+}
+
+function toggleNewSessionForm(panel, id) {
+  let form = role(panel, "new-session-form");
+  if (!form) {
+    form = document.createElement("form");
+    form.dataset.role = "new-session-form";
+    form.className = "new-session-form";
+    const input = document.createElement("input");
+    input.dataset.role = "new-session-title";
+    input.type = "text";
+    input.placeholder = "標題（可留空）";
+    input.setAttribute("aria-label", "新 session 標題");
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.className = "send-btn";
+    submit.textContent = "建立";
+    form.hidden = true;
+    form.append(input, submit);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void createTaskSession(gatewayProfile(id), input.value, id);
+      form.hidden = true;
+      input.value = "";
+      role(panel, "new-session")?.setAttribute("aria-expanded", "false");
+    });
+    const composer = panel.querySelector(".composer");
+    composer?.insertBefore(form, composer.firstChild);
+  }
+  form.hidden = !form.hidden;
+  role(panel, "new-session")?.setAttribute("aria-expanded", form.hidden ? "false" : "true");
+  if (!form.hidden) form.querySelector("input")?.focus();
+}
+
+async function toggleSuborbPin(id) {
+  const sub = parseSuborbId(id);
+  if (!sub) return;
+  const next = !suborbPinned(id);
+  const modelPins = pinsFor(sub.profile).filter((sessionId) => sessionId !== sub.sessionId);
+  if (next) modelPins.push(sub.sessionId);
+  state.suborbPins = { ...state.suborbPins, [sub.profile]: modelPins };
+  paintSuborbPin(id);
+  paintSuborbDisc(id);
+  if (state.mode !== "hermes" || !inTauri()) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const settings = await invoke("set_suborb_pin", {
+      profile: sub.profile,
+      sessionId: sub.sessionId,
+      pinned: next,
+    });
+    if (settings?.suborb_pins) state.suborbPins = settings.suborb_pins;
+    noteSuborbList(sub.profile, threadFor(sub.profile).sessions || [], threadFor(sub.profile).sessionId || "");
+  } catch (err) {
+    showActionError(String(err));
+  }
+}
+
+function ensureSuborbPinButton() {
+  let pin = $("#orb-menu-pin");
+  if (pin) return pin;
+  const menu = $("#orb-menu");
+  if (!menu) return null;
+  pin = document.createElement("button");
+  pin.type = "button";
+  pin.id = "orb-menu-pin";
+  pin.className = "orb-menu-btn";
+  pin.hidden = true;
+  pin.textContent = "釘住";
+  menu.append(pin);
+  return pin;
+}
+
+async function openParentSessionPicker(profile) {
+  if (!state.openIds.includes(profile)) selectBot(profile);
+  const select = role(panelFor(profile), "session");
+  if (!select) return;
+  paintSessionSelect(profile, { rebuild: true });
+  select.focus();
+  if (typeof select.showPicker === "function") {
+    try { select.showPicker(); } catch { /* The focused menu is enough. */ }
+  }
+}
 
 function cssEscape(value) {
   if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(value);
@@ -12115,7 +13445,14 @@ function placeRehearsalStand(shell) {
     event.stopPropagation();
     if (orbOpenedThisPress()) return;
     if (pageOpenBlocked() || !orbClickAllowed(event)) return;
-    selectBot(id);
+    dispatchOrbClick(id, {
+      settings: () => focusSettings(),
+      kanban: () => toggleKanban(),
+      cron: () => toggleCron(),
+      picker: (profile) => { void openParentSessionPicker(profile); },
+      suborb: (subId) => openSuborbPanel(subId),
+      bot: () => selectBot(id),
+    });
   });
   stand.addEventListener("contextmenu", (event) => {
     event.preventDefault();
@@ -12154,7 +13491,12 @@ function restorePlanRehearsal(shell, saved, stand) {
   delete shell.dataset.rehearsal;
   delete shell._rehearsalHit;
   if (saved?.rail && shell.parentElement !== saved.rail) saved.rail.append(shell);
-  if (saved?.opacity) shell.style.opacity = saved.opacity;
+  // A fade sample written while the rehearsal pinned opacity 1 is the orb's
+  // real look. Restoring the pre-rehearsal value left a resting orb solid,
+  // because the settled fade does not write again (R-OB-05, R-OB-07).
+  const faded = shell.dataset.state === "orb" ? shell.dataset.orbFade || "" : "";
+  if (faded) shell.style.opacity = faded;
+  else if (saved?.opacity) shell.style.opacity = saved.opacity;
   else shell.style.removeProperty("opacity");
   if (saved?.pointer) shell.style.pointerEvents = saved.pointer;
   else shell.style.removeProperty("pointer-events");
@@ -12567,6 +13909,7 @@ async function boot() {
     adoptKanbanPick(settings);
     state.showBotNames = !!settings?.show_bot_names;
     state.showToolDetail = !!settings?.show_tool_detail;
+    state.suborbPins = settings?.suborb_pins || {};
     applyInteraction(settings.interaction);
     if (settings.needs_setup) {
       useMock(SETUP_BANNER, "settings");

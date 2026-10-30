@@ -63,6 +63,8 @@ pub struct SessionSummary {
     pub end_reason: String,
     /// Gateway routing key. Empty when the list did not include one.
     pub session_key: String,
+    /// The list said this row is running, when it sent such a flag.
+    pub busy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -291,6 +293,76 @@ pub fn session_read_only(source: &str) -> bool {
     !session_accepts_send(source)
 }
 
+/// Sources Hermes 0.22.5 keeps as a local chat. Its Bot Chat door
+/// (`gateway/platforms/api_server_bot_chat.py::admit_peer_turn`) takes an
+/// API-key turn into such a Bot Chat. A row a native open bound reads
+/// `local` afterwards.
+pub fn is_local_chat_source(source: &str) -> bool {
+    matches!(
+        source.trim().to_ascii_lowercase().as_str(),
+        "local" | "cli" | "tui" | "gui" | "desktop" | "oneshot" | "tool" | "acp"
+    )
+}
+
+/// `session` is this profile's Desktop Bot Chat (`canonical_bot_chat`), and
+/// the only row titled `Bot Chat`. Hermes' unique title index allows one; a
+/// list with two is not a gateway list, and keeps the source rule.
+pub fn is_main_bot_chat(session: &SessionSummary, sessions: &[SessionSummary]) -> bool {
+    let titled = sessions
+        .iter()
+        .filter(|row| is_bot_chat_title(&row.title) && session_route_matches(row))
+        .count();
+    titled == 1 && canonical_bot_chat(sessions).is_some_and(|chat| chat.id == session.id)
+}
+
+/// Read-only with the list in hand. The Desktop Bot Chat with a local source
+/// takes a send through Hermes' Bot Chat door, so it is not read-only.
+/// Every other row keeps `session_read_only` (R-SS-08).
+pub fn session_read_only_in(session: &SessionSummary, sessions: &[SessionSummary]) -> bool {
+    if is_main_bot_chat(session, sessions) && is_local_chat_source(&session.source) {
+        return false;
+    }
+    session_read_only(&session.source)
+}
+
+/// The send gate for a row the server closed. Hermes reopens its Bot Chat on
+/// the next turn (`end_reason` `cli_close`/`tui_shutdown` clears), so the
+/// Desktop Bot Chat is never treated as closed.
+pub fn session_send_closed(session: &SessionSummary, sessions: &[SessionSummary]) -> bool {
+    session.ended && !is_main_bot_chat(session, sessions)
+}
+
+/// Hermes 0.22.5 moves an `api_server` row that holds the `Bot Chat` title
+/// aside on the next Bot Chat turn: it is renamed `Bot Chat (API <id>)`,
+/// made visible, and a new empty local `Bot Chat` takes the turn
+/// (`gateway/session_bot.py::displaceable_bot_chat`, `_displace_bot_chat`).
+/// Not wired yet: the send policy for this case waits for Devon (FINDINGS.md D1).
+#[allow(dead_code)]
+pub fn bot_chat_send_displaces(session: &SessionSummary, sessions: &[SessionSummary]) -> bool {
+    is_main_bot_chat(session, sessions)
+        && matches!(
+            session.source.trim().to_ascii_lowercase().as_str(),
+            "api_server" | "" | "bot_peer_dm"
+        )
+}
+
+pub const BOT_CHAT_UNBOUND_LINE: &str =
+    "呢個 Bot Chat 未喺新版 Hermes 開過，伺服器未肯收。喺 Hermes Desktop 開一次呢個 Bot 嘅 Bot Chat，之後就可以喺度傳。";
+pub const BOT_CHAT_NOT_LOCAL_LINE: &str =
+    "伺服器話呢個 Bot Chat 唔係本機對話，唔肯收。要喺擁有佢嘅 Hermes Desktop 開一次。";
+
+/// Plain line for a Bot Chat door refusal (`bot_chat_unbound`, `bot_chat_not_local`).
+pub fn bot_chat_refusal_line(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("bot_chat_unbound") {
+        Some(BOT_CHAT_UNBOUND_LINE)
+    } else if lower.contains("bot_chat_not_local") {
+        Some(BOT_CHAT_NOT_LOCAL_LINE)
+    } else {
+        None
+    }
+}
+
 pub fn session_read_only_reason() -> &'static str {
     "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢"
 }
@@ -389,8 +461,13 @@ pub fn approval_request_id(request_id: &str) -> Option<&str> {
     Some(id)
 }
 
-fn finish_resolved(session: &SessionSummary, explicit: bool, anchor: f64) -> ResolvedSession {
-    let read_only = session_read_only(&session.source);
+fn finish_resolved(
+    session: &SessionSummary,
+    sessions: &[SessionSummary],
+    explicit: bool,
+    anchor: f64,
+) -> ResolvedSession {
+    let read_only = session_read_only_in(session, sessions);
     ResolvedSession {
         id: session.id.clone(),
         explicit,
@@ -556,7 +633,7 @@ pub fn send_session_target(
     let pinned = sessions.iter().find(|session| session.id == pin_id);
     let mismatch = pinned.is_some_and(|session| !session_route_matches(session));
     if explicit && !pin_id.is_empty() && !mismatch {
-        if pinned.is_some_and(|session| session_read_only(&session.source)) {
+        if pinned.is_some_and(|session| session_read_only_in(session, sessions)) {
             return Err(session_read_only_reason().to_string());
         }
         return Ok(SendTarget {
@@ -599,16 +676,16 @@ pub fn session_for_startup(
     let saved = sessions.iter().find(|session| session.id == remembered && session_route_matches(session));
     if explicit {
         if let Some(saved) = saved {
-            return Some(finish_resolved(saved, true, anchor));
+            return Some(finish_resolved(saved, sessions, true, anchor));
         }
     }
     if let Some(chat) = canonical_bot_chat(sessions) {
         let used = if chat.id == remembered { anchor } else { chat.last_active };
-        return Some(finish_resolved(chat, false, used));
+        return Some(finish_resolved(chat, sessions, false, used));
     }
     if let Some(saved) = saved {
         if !retired_bot_chat(saved) {
-            return Some(finish_resolved(saved, false, anchor));
+            return Some(finish_resolved(saved, sessions, false, anchor));
         }
     }
     None
@@ -757,7 +834,7 @@ pub fn session_list_fingerprint(sessions: &[SessionSummary]) -> String {
         .iter()
         .map(|session| {
             format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 session.id,
                 session.title,
                 session.last_active.to_bits(),
@@ -767,11 +844,24 @@ pub fn session_list_fingerprint(sessions: &[SessionSummary]) -> String {
                 session.ended,
                 session.source,
                 session.preview,
+                session.busy,
             )
         })
         .collect();
     parts.sort();
     parts.join("\n")
+}
+
+fn session_busy(item: &Value) -> bool {
+    for key in ["running", "busy", "active", "in_progress", "has_active_run"] {
+        if json_flag(item, key) == Some(true) {
+            return true;
+        }
+    }
+    matches!(
+        item.get("status").and_then(Value::as_str).unwrap_or("").trim(),
+        "running" | "busy" | "thinking" | "in_progress"
+    )
 }
 
 fn json_flag(item: &Value, key: &str) -> Option<bool> {
@@ -969,6 +1059,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 .to_string();
             let (ended, end_reason) = session_closed(item);
             let session_key = routing_key_of(item);
+            let busy = session_busy(item);
             Some(SessionSummary {
                 id,
                 title,
@@ -984,6 +1075,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 ended,
                 end_reason,
                 session_key,
+                busy,
             })
         })
         .collect();
@@ -1576,9 +1668,9 @@ pub fn closed_switch_id(sessions: &[SessionSummary], current: &str) -> String {
     let live = |session: &&SessionSummary| {
         session.id != current
             && session_route_matches(session)
-            && !session.ended
+            && !session_send_closed(session, sessions)
             && !session.archived
-            && !session_read_only(&session.source)
+            && !session_read_only_in(session, sessions)
     };
     if let Some(chat) = canonical_bot_chat(sessions) {
         if live(&chat) {
@@ -3936,7 +4028,9 @@ fn failure_detail(payload: &Value, prior: Option<&str>) -> String {
 }
 
 fn plain_permission_detail(text: String) -> String {
-    if text_is_permission_denied(&text) {
+    if let Some(line) = bot_chat_refusal_line(&text) {
+        line.to_string()
+    } else if text_is_permission_denied(&text) {
         session_read_only_reason().to_string()
     } else if text_is_execute_code_blocked(&text) {
         execute_code_blocked_line().to_string()
@@ -4470,7 +4564,91 @@ mod tests {
             ended: false,
             end_reason: String::new(),
             session_key: String::new(),
+            busy: false,
         }
+    }
+
+    fn rss_chat(id: &str, source: &str, hidden: bool) -> SessionSummary {
+        let mut row = summary_source(id, "Bot Chat", 50.0, source);
+        row.hidden = Some(hidden);
+        row
+    }
+
+    #[test]
+    fn rss_local_bot_chat_takes_a_send_whatever_its_source() {
+        // Box Hermes 0.22.5 (rss-research/exp e1, e4): a `cli`/`local`/bound `tui`
+        // Bot Chat answers `POST /v1/runs` through the Bot Chat door.
+        for source in ["tui", "cli", "local", "desktop", "gui"] {
+            let rows = vec![
+                rss_chat("chat", source, true),
+                summary_source("other", "Plan", 90.0, source),
+            ];
+            assert!(!session_read_only_in(&rows[0], &rows), "{source}");
+            assert!(session_read_only_in(&rows[1], &rows), "{source} non-Bot-Chat stays R-SS-08");
+            let resolved = session_for_startup(&rows, "", false, 0.0).expect("chat");
+            assert_eq!(resolved.id, "chat");
+            assert!(!resolved.read_only, "{source}");
+            let target = send_session_target(&rows, "", false, 0.0).expect("send");
+            assert_eq!(target.id, "chat");
+        }
+    }
+
+    #[test]
+    fn rss_explicit_non_bot_chat_tui_row_stays_read_only() {
+        let rows = vec![
+            rss_chat("chat", "tui", true),
+            summary_source("20261015_011713_2242f9", "Continue previous plan work #3", 90.0, "desktop"),
+        ];
+        let resolved = session_for_startup(&rows, "20261015_011713_2242f9", true, 7.0).expect("pin");
+        assert!(resolved.read_only);
+        assert!(send_session_target(&rows, "20261015_011713_2242f9", true, 7.0).is_err());
+    }
+
+    #[test]
+    fn rss_unknown_or_empty_source_bot_chat_stays_read_only() {
+        let rows = vec![rss_chat("chat", "", true)];
+        assert!(session_read_only_in(&rows[0], &rows));
+        let rows = vec![rss_chat("chat", "telegram", true)];
+        assert!(session_read_only_in(&rows[0], &rows));
+    }
+
+    #[test]
+    fn rss_ended_bot_chat_is_not_closed_but_other_rows_are() {
+        // e4: after `hermes chat -c "Bot Chat"` the row read `end_reason=cli_close`,
+        // and the next API turn landed in the same id.
+        let mut chat = rss_chat("chat", "tui", true);
+        chat.ended = true;
+        chat.end_reason = "cli_close".into();
+        let mut task = summary_source("task", "MT5 wrapper", 90.0, "api_server");
+        task.ended = true;
+        let rows = vec![chat, task];
+        assert!(!session_send_closed(&rows[0], &rows));
+        assert!(session_send_closed(&rows[1], &rows));
+        assert_eq!(closed_switch_id(&rows, "task"), "chat");
+    }
+
+    #[test]
+    fn rss_api_server_bot_chat_is_flagged_as_displacing() {
+        // e2: the api_ title holder was renamed `Bot Chat (API <id>)` and the turn
+        // landed in a new empty local Bot Chat.
+        let rows = vec![rss_chat("api_1792573589_0c14ed12", "api_server", true)];
+        assert!(bot_chat_send_displaces(&rows[0], &rows));
+        assert!(!session_read_only_in(&rows[0], &rows));
+        let rows = vec![rss_chat("chat", "tui", true)];
+        assert!(!bot_chat_send_displaces(&rows[0], &rows));
+        let other = summary_source("x", "Overlay", 1.0, "api_server");
+        assert!(!bot_chat_send_displaces(&other, &[other.clone()]));
+    }
+
+    #[test]
+    fn rss_bot_chat_refusals_get_a_plain_line() {
+        let unbound = "Bot Chat admission refused: bot_chat_unbound (this profile's 'Bot Chat' is not a local chat; open it once with `hermes chat -c \"Bot Chat\"` on that host)";
+        assert_eq!(bot_chat_refusal_line(unbound), Some(BOT_CHAT_UNBOUND_LINE));
+        assert_eq!(plain_permission_detail(unbound.into()), BOT_CHAT_UNBOUND_LINE);
+        assert_eq!(bot_chat_refusal_line("Bot Chat admission refused: bot_chat_not_local"), Some(BOT_CHAT_NOT_LOCAL_LINE));
+        assert_eq!(bot_chat_refusal_line("permission_denied"), None);
+        let payload = serde_json::json!({"error": unbound, "reason": "bot_chat_unbound"});
+        assert_eq!(failure_detail(&payload, None), BOT_CHAT_UNBOUND_LINE);
     }
 
     fn devon_chat(
@@ -4496,6 +4674,7 @@ mod tests {
             ended: false,
             end_reason: String::new(),
             session_key: String::new(),
+            busy: false,
         }
     }
 
@@ -4773,7 +4952,7 @@ mod tests {
         assert_eq!(canonical_bot_chat(&[tui.clone()]).unwrap().id, "tui-chat");
         let tui_open = session_for_startup(&[tui.clone()], "", false, 0.0).unwrap();
         assert_eq!(tui_open.id, "tui-chat");
-        assert!(tui_open.read_only);
+        assert!(!tui_open.read_only); // R-SS research: the lone Desktop Bot Chat takes a send via the 0.22.5 Bot Chat door
         assert_eq!(
             fallback_session(&[tui.clone()]).map(|session| session.id.as_str()),
             None
@@ -4868,7 +5047,7 @@ mod tests {
         assert!(!kept_desktop.read_only);
         let tui_only = session_for_startup(&plain, "", false, 0.0).unwrap();
         assert_eq!(tui_only.id, "tui-chat");
-        assert!(tui_only.read_only);
+        assert!(!tui_only.read_only); // R-SS research: the lone Desktop Bot Chat takes a send via the 0.22.5 Bot Chat door
         assert!(session_for_startup(
             &[summary("desktop", "System Architect", 99.0)],
             "",
@@ -4936,6 +5115,7 @@ mod tests {
             kanban_board: String::new(),
             show_bot_names: false,
             show_tool_detail: false,
+            suborb_pins: std::collections::BTreeMap::new(),
             bots: vec![
                 bot("researcher", "20261015_researcher", true, 1792546080.05),
                 bot("writer", "20261015_writer", true, 1792546210.56),
@@ -4985,8 +5165,8 @@ mod tests {
         )];
         let opened = session_for_startup(&forex, "saved-other", true, 0.0).unwrap();
         assert_eq!(opened.id, "20261001_013827_25b1eb");
-        assert!(opened.read_only);
-        assert_eq!(opened.read_only_reason, session_read_only_reason());
+        assert!(!opened.read_only); // R-SS research: the lone Desktop Bot Chat takes a send via the 0.22.5 Bot Chat door
+        assert_eq!(opened.read_only_reason, "");
         assert_eq!(
             session_read_only_reason(),
             "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢"
@@ -5201,7 +5381,7 @@ mod tests {
         let forest = session_for_startup(&forex, "20261001_013827_25b1eb", false, 1759279107.0)
             .unwrap();
         assert_eq!(forest.id, "20261001_013827_25b1eb");
-        assert!(forest.read_only);
+        assert!(!forest.read_only); // R-SS research: the lone Desktop Bot Chat takes a send via the 0.22.5 Bot Chat door
         assert_eq!(forest.anchor, 1759279107.0);
         assert!(stored_pin_after_resolve(
             "20261001_013827_25b1eb",
@@ -5424,7 +5604,7 @@ mod tests {
         forex.hidden = Some(true);
         let forest = session_for_startup(&[forex], "", false, 0.0).unwrap();
         assert_eq!(forest.id, "20261001_013827_25b1eb");
-        assert!(forest.read_only);
+        assert!(!forest.read_only); // R-SS research: the lone Desktop Bot Chat takes a send via the 0.22.5 Bot Chat door
 
         let mut ff_chat = devon_chat(
             "api_1792573589_0c14ed12",

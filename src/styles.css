@@ -3004,6 +3004,13 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 .morph[data-anchor="end"] .center-panel > .panel-header,
 .morph[data-anchor="end"] .settings-head { padding-right: 40px; }
 
+.morph[data-kind="suborb"][data-anchor="end"] .center-panel > .panel-header {
+  padding-right: 64px;
+}
+.morph[data-kind="suborb"][data-anchor="start"] .center-panel > .panel-header {
+  padding-left: 64px;
+}
+
 .morph .plan-window .plan-head {
   flex: 0 1 auto;
   width: 100%;
@@ -3515,4 +3522,171 @@ html[data-pass="1"] .plan-hit-host * {
     left: 8%;
     width: min(360px, 70vw);
   }
+}
+
+.morph[data-kind="suborb"] {
+  background: rgba(0, 0, 242, .45);
+}
+.morph[data-kind="suborb"] .morph-fill {
+  background:
+    var(--glass-sheen),
+    var(--glass-tint),
+    linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    var(--noise),
+    rgba(248, 248, 252, .92);
+}
+.morph[data-kind="suborb"][data-state="panel"] {
+  filter: drop-shadow(0 6px 24px rgba(0, 0, 242, .12));
+  box-shadow: 0 0 0 1px rgba(0, 0, 242, .45);
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing),
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-fill {
+  background: transparent;
+  box-shadow: none;
+  filter: none;
+  overflow: visible !important;
+  contain: none;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc,
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc::before {
+  overflow: visible !important;
+  contain: none;
+}
+.morph[data-state="panel"]:not(.is-collapsing) {
+  z-index: 6;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) {
+  z-index: 2;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .bot-panel,
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .plan-window,
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-stroke,
+.plan-hit-host:has(> .plan-window[hidden]) {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+.morph[data-kind="suborb"] .bot-btn .bot-hit {
+  inset: 0;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc {
+  width: var(--suborb-size, 20px);
+  height: var(--suborb-size, 20px);
+  left: calc(var(--ax, 22px) - (var(--suborb-size, 20px) / 2));
+  top: calc(var(--ay, 22px) - (var(--suborb-size, 20px) / 2));
+  border-radius: 999px;
+  border: 1px dashed rgb(var(--bot-rgb) / .45);
+  box-sizing: border-box;
+  position: absolute;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc[data-pinned="1"] {
+  border-style: solid;
+}
+.morph[data-kind="suborb"] .spinner { display: none; }
+.suborb-disc.is-running {
+  border-color: rgb(var(--bot-rgb));
+}
+.suborb-disc.is-running::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 1px solid transparent;
+  border-top-color: rgb(var(--bot-rgb));
+  animation: spin 1.2s linear infinite;
+  pointer-events: none;
+}
+.suborb-disc.has-plan .unread-dot {
+  display: block;
+  background: rgb(var(--bot-rgb));
+}
+.suborb-disc.is-failed {
+  box-shadow: inset 0 0 0 1.5px #e5484d;
+}
+.suborb-more {
+  font: 600 11px/1 "Barlow Condensed", sans-serif;
+  color: #14142b;
+}
+.morph[data-kind="suborb"] [data-role="session"],
+.morph[data-kind="suborb"] [data-role="tab-bot"] {
+  display: none;
+}
+/* R-NS-01: panel controls are compact icons with a tooltip, not wide text bars. */
+.chat-head .session-select { flex: 1 1 auto; min-width: 0; }
+.icon-btn.new-session-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font: 500 16px/1 var(--font-label);
+}
+.icon-btn.new-session-btn[aria-expanded="true"] { background: var(--bot-10); }
+/* R-SO-10: same 24px icon as ＋; the list floats inside the panel so the row height stays. */
+.chat-head { position: relative; }
+.icon-btn.pull-suborb-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+.icon-btn.pull-suborb-btn[aria-expanded="true"] { background: var(--bot-10); }
+.icon-btn.pull-suborb-btn:focus-visible { outline: 2px solid #0000f2; outline-offset: 1px; }
+.pull-suborb-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+  width: min(260px, 100%);
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: #f8f8fc;
+  border: 1px solid rgb(var(--bot-rgb, 0 0 242) / .2);
+  border-radius: 2px;
+}
+.pull-suborb-list[hidden] { display: none; }
+.pull-suborb-row {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: 13px/18px "Noto Sans HK", sans-serif;
+  color: #14142b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.pull-suborb-row:hover, .pull-suborb-row:focus-visible { background: var(--bot-10); outline: none; }
+.pull-suborb-empty { margin: 0; padding: 4px 8px; font: 12px/18px "Noto Sans HK", sans-serif; color: #14142b; }
+.icon-btn.new-session-btn:focus-visible { outline: 2px solid #0000f2; outline-offset: 1px; }
+.new-session-form {
+  flex: 1 0 100%;
+  display: flex;
+  gap: 8px;
+  margin: 0;
+}
+.new-session-form[hidden] { display: none; }
+.new-session-form input {
+  flex: 1;
+  min-width: 0;
+  font: 13px/1.4 "Noto Sans HK", sans-serif;
+  color: #14142b;
+}
+@media (prefers-reduced-motion: reduce) {
+  .suborb-disc.is-running::after { animation: none; }
 }

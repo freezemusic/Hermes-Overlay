@@ -632,14 +632,18 @@ pub fn monitor_work_insets(window: &tauri::WebviewWindow) -> (u32, u32, u32, u32
     }
 }
 
-fn orb_visual_opacity(distance: f64, held: bool, min_opacity: f64) -> f64 {
+/// Far away the orb sits at its resting opacity (R-OB-07, 1 by default).
+/// Near with the modifier up it fades to the near floor, never brighter
+/// than rest. Near with the modifier held it is solid, so the orb you can
+/// click always reads as clickable.
+fn orb_visual_opacity(distance: f64, held: bool, near_floor: f64, rest: f64) -> f64 {
     if distance > ORB_PROXIMITY_PX {
-        return 1.0;
+        return rest;
     }
     if held {
         return 1.0;
     }
-    orb_near_opacity(min_opacity)
+    near_floor.min(rest)
 }
 
 /// The single element whose rect (plus margin) contains the cursor.
@@ -683,6 +687,17 @@ fn prefers_hit(
     }
     if candidate_distance > current_distance + f64::EPSILON {
         return false;
+    }
+    let both_inside = candidate_distance <= f64::EPSILON && current_distance <= f64::EPSILON;
+    if both_inside && candidate.round && current.round {
+        let candidate_area = candidate.w * candidate.h;
+        let current_area = current.w * current.h;
+        if (candidate_area - current_area).abs() > f64::EPSILON {
+            return candidate_area < current_area;
+        }
+        if candidate.z != current.z {
+            return candidate.z > current.z;
+        }
     }
     let candidate_latched = id_listed(latched_ids, &candidate.id);
     let current_latched = id_listed(latched_ids, &current.id);
@@ -1376,6 +1391,17 @@ pub fn is_orb_hit(rect: &HitRect) -> bool {
     rect.round || rect.id.starts_with("bot:")
 }
 
+/// Sub-orb near-cursor floor (R-SO-08). Main orbs use `orb_near_opacity`.
+pub const SUBORB_NEAR_OPACITY: f64 = 0.18;
+
+/// Sub-orb discs use a fixed 0.18 floor (R-SO-08). Main orbs keep `min_opacity`.
+pub fn suborb_hit(id: &str) -> bool {
+    id.starts_with("suborb:")
+        || id.starts_with("suborb-more:")
+        || id.starts_with("bot:suborb:")
+        || id.starts_with("bot:suborb-more:")
+}
+
 /// Per-element frame.
 /// Panels are opaque and captured until the modifier is held, then they wash out
 /// and capture nothing. Orbs are opaque and click-through. The orb whose hit
@@ -1420,12 +1446,20 @@ pub fn interaction_frame(
                     None => ORB_PROXIMITY_PX + 1.0,
                 };
                 let awake = here && held;
-                (orb_visual_opacity(distance, held, cfg.min_opacity), awake)
-            } else if is_panel_hit(rect) {
-                let opacity = if cursor.is_some() && held {
-                    cfg.min_opacity
+                let floor = if suborb_hit(&rect.id) {
+                    SUBORB_NEAR_OPACITY
                 } else {
-                    1.0
+                    orb_near_opacity(cfg.min_opacity)
+                };
+                let rest = cfg.orb_rest_opacity();
+                (orb_visual_opacity(distance, held, floor, rest), awake)
+            } else if is_panel_hit(rect) {
+                let rest = cfg.panel_rest_opacity();
+                // Held is never less see-through than rest (R-CT-05, R-CT-11).
+                let opacity = if cursor.is_some() && held {
+                    cfg.min_opacity.min(rest)
+                } else {
+                    rest
                 };
                 (opacity, here && !held)
             } else {
@@ -1494,20 +1528,44 @@ pub fn classify_window_ids(
     FocusOwner::Other
 }
 
-/// Drop the page key target after Esc closes a panel. The window stays
+/// Drop the page key target after Esc closes the last panel. The window stays
 /// mapped. Orb opacity keeps following the global poll.
-pub fn release_overlay_focus(window: &tauri::WebviewWindow) {
+/// `restore` keeps the keyboard on the webview while another panel is open,
+/// so the next Esc still arrives. Windows does not touch focus.
+pub fn release_overlay_focus(window: &tauri::WebviewWindow, restore: bool) {
     #[cfg(target_os = "linux")]
     {
         use gtk::prelude::*;
         if let Ok(gtk_window) = window.gtk_window() {
-            gtk_window.set_focus(None::<&gtk::Widget>);
+            if restore {
+                focus_overlay_webview(gtk_window.upcast_ref::<gtk::Widget>());
+            } else {
+                gtk_window.set_focus(None::<&gtk::Widget>);
+            }
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = window;
+        let _ = (window, restore);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn focus_overlay_webview(widget: &gtk::Widget) -> bool {
+    use gtk::prelude::*;
+    if widget.is::<webkit2gtk::WebView>() {
+        widget.grab_focus();
+        return true;
+    }
+    let found = std::cell::Cell::new(false);
+    if let Some(container) = widget.downcast_ref::<gtk::Container>() {
+        container.foreach(|child| {
+            if !found.get() && focus_overlay_webview(child) {
+                found.set(true);
+            }
+        });
+    }
+    found.get()
 }
 
 pub fn focus_owner_name(owner: FocusOwner) -> &'static str {
@@ -3790,6 +3848,7 @@ mod tests {
             fade_enabled: true,
             fade_distance: 120.0,
             min_opacity: 0.18,
+            ..InteractionConfig::default()
         }
     }
 
@@ -4161,6 +4220,32 @@ mod tests {
         );
         assert!(frame_of(&latched_center, "center").capture);
         assert!(!frame_of(&latched_center, "settings").capture);
+    }
+
+    #[test]
+    fn overlapping_orbs_prefer_the_smaller_disc() {
+        let rects = vec![
+            HitRect {
+                id: "bot:writer".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 68.0,
+                h: 68.0,
+                z: 8,
+                round: true,
+            },
+            HitRect {
+                id: "bot:suborb:writer:job".into(),
+                x: 40.0,
+                y: 40.0,
+                w: 42.0,
+                h: 42.0,
+                z: 1,
+                round: true,
+            },
+        ];
+        let hit = element_under_cursor(Some((50.0, 50.0)), &rects, HIT_MARGIN_PX, &[]);
+        assert_eq!(hit.map(|rect| rect.id.as_str()), Some("bot:suborb:writer:job"));
     }
 
     #[test]
@@ -4957,5 +5042,98 @@ mod tests {
         let (own, reset) = confirm_focus_owner(samples, FocusOwner::Own);
         assert_eq!(own, FocusOwner::Own);
         assert_eq!(reset, 0);
+    }
+
+    #[test]
+    fn suborb_fades_to_0_18_and_stays_click_through_until_ctrl() {
+        let cfg = InteractionConfig {
+            modifier: "ctrl".into(),
+            fade_enabled: true,
+            fade_distance: 120.0,
+            min_opacity: 0.25,
+            ..InteractionConfig::default()
+        };
+        let sub = HitRect {
+            id: "bot:suborb:mt-coder:task_1".into(),
+            x: 10.0,
+            y: 10.0,
+            w: 20.0,
+            h: 20.0,
+            z: 1,
+            round: true,
+        };
+        let main = HitRect {
+            id: "bot:mt-coder".into(),
+            x: 200.0,
+            y: 10.0,
+            w: 44.0,
+            h: 44.0,
+            z: 1,
+            round: true,
+        };
+        let near = interaction_frame(false, &[], Some((20.0, 20.0)), &[sub.clone(), main.clone()], 12.0, &cfg);
+        let sub_near = near.iter().find(|frame| frame.id == sub.id).unwrap();
+        let main_far = near.iter().find(|frame| frame.id == main.id).unwrap();
+        assert_eq!(sub_near.opacity, 0.18);
+        assert!(!sub_near.capture);
+        assert_eq!(main_far.opacity, 1.0);
+        let held = interaction_frame(true, &[], Some((20.0, 20.0)), &[sub.clone()], 12.0, &cfg);
+        assert_eq!(held[0].opacity, 1.0);
+        assert!(held[0].capture);
+        assert!(suborb_hit(&sub.id));
+        assert!(!suborb_hit(&main.id));
+    }
+
+    #[test]
+    fn rest_transparency_dims_orbs_and_panels_without_touching_capture() {
+        let rects = vec![
+            HitRect { id: "bot:a".into(), x: 0.0, y: 0.0, w: 44.0, h: 44.0, z: 1, round: true },
+            HitRect { id: "bot:suborb:a:t1".into(), x: 300.0, y: 0.0, w: 20.0, h: 20.0, z: 1, round: true },
+            HitRect { id: "panel:a".into(), x: 0.0, y: 200.0, w: 300.0, h: 300.0, z: 2, round: false },
+            HitRect { id: "close:a".into(), x: 280.0, y: 200.0, w: 20.0, h: 20.0, z: 3, round: false },
+        ];
+        let solid = InteractionConfig::default();
+        let mut cfg = InteractionConfig { min_opacity: 0.18, ..InteractionConfig::default() };
+        cfg.orb_rest_transparency = 0.4;
+        cfg.panel_rest_transparency = 0.4;
+        let op = |frames: &[ElementFrame], id: &str| frames.iter().find(|f| f.id == id).unwrap().clone();
+        // Default: today's look, everything solid at rest.
+        let base = interaction_frame(false, &[], Some((700.0, 700.0)), &rects, HIT_MARGIN_PX, &solid);
+        assert!(base.iter().all(|f| f.opacity == 1.0));
+        // Far, modifier up: orbs and sub-orbs at 60%, panel at 60%, close stays solid.
+        let far = interaction_frame(false, &[], Some((700.0, 700.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(op(&far, "bot:a").opacity, 0.6);
+        assert_eq!(op(&far, "bot:suborb:a:t1").opacity, 0.6);
+        assert_eq!(op(&far, "panel:a").opacity, 0.6);
+        assert_eq!(op(&far, "close:a").opacity, 1.0);
+        // Missing cursor: rest, not solid and not near.
+        let none = interaction_frame(false, &[], None, &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(op(&none, "bot:a").opacity, 0.6);
+        // Near, modifier up: the usual near floors (R-OB-05 / R-SO-08), still click-through.
+        let near = interaction_frame(false, &[], Some((22.0, 22.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(op(&near, "bot:a").opacity, 0.18);
+        assert!(!op(&near, "bot:a").capture);
+        // Over the panel, modifier up: panel captures at any rest value.
+        let on_panel = interaction_frame(false, &[], Some((100.0, 300.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(op(&on_panel, "panel:a").opacity, 0.6);
+        assert!(op(&on_panel, "panel:a").capture);
+        // Held: panel at the Ctrl value and passes through; near orb solid and clickable.
+        let held = interaction_frame(true, &[], Some((22.0, 22.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(op(&held, "panel:a").opacity, 0.18);
+        assert!(!op(&held, "panel:a").capture);
+        assert_eq!(op(&held, "bot:a").opacity, 1.0);
+        assert!(op(&held, "bot:a").capture);
+        // Max: near floor never brighter than rest; held panel never less see-through than rest.
+        cfg.orb_rest_transparency = 0.8;
+        cfg.panel_rest_transparency = 0.8;
+        cfg.min_opacity = 0.6;
+        let near_max = interaction_frame(false, &[], Some((22.0, 22.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(op(&near_max, "bot:a").opacity, 0.2);
+        let held_max = interaction_frame(true, &[], Some((100.0, 300.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(op(&held_max, "panel:a").opacity, 0.2);
+        // Out-of-range file values are clamped, never invisible.
+        cfg.orb_rest_transparency = 5.0;
+        let clamp = interaction_frame(false, &[], Some((700.0, 700.0)), &rects, HIT_MARGIN_PX, &cfg);
+        assert_eq!(op(&clamp, "bot:a").opacity, 0.2);
     }
 }

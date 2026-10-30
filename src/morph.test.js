@@ -18,6 +18,8 @@ import {
   overlappedCollapseInsets,
   planEase,
   seamAdvanceMs,
+  seamCadenceMs,
+  SEAM_FRAME_FLOOR_MS,
   seamFrameStep,
   seamVisibleMs,
   seamClipOutset,
@@ -1216,4 +1218,106 @@ test("the settled plan host includes the outward edge in the same frame", () => 
   assert.match(grow, /releasePlanDock\(plan\)/);
   assert.ok(grow.indexOf("releasePlanDock(plan)") < grow.indexOf('plan.style.transform = "none"'));
   assert.doesNotMatch(present, /translate3d/);
+});
+
+/** Replays the seam pace loop (alignSeamClock) over real rAF gaps.
+ *  `learn: "first"` is the 0a17a08 main.js (frameMs = first gap 8..40, no
+ *  wall clock); `learn: "cadence"` is the main.js queue patch (median of the
+ *  last three gaps, wall clock passed). Returns wall ms at the last sample
+ *  and every shown value. */
+function replaySeam(gaps, { learn = "cadence" } = {}) {
+  let shown = 20;
+  let wall = 20;
+  let frameMs = 0;
+  const seen = [];
+  const shownList = [shown];
+  for (const gap of gaps) {
+    wall += gap;
+    seen.push(gap);
+    if (learn === "first") {
+      if (!frameMs && gap >= 8 && gap <= 40) frameMs = gap;
+    } else frameMs = seamCadenceMs(seen);
+    const frame = frameMs || 16;
+    const elapsed = shown + gap;
+    let next = seamAdvanceMs(elapsed, {
+      shownMs: shown,
+      gapMs: gap,
+      frameMs: frame,
+      duration: PLAN_GROW_MS,
+      wallMs: learn === "first" ? null : wall,
+    });
+    if (next <= shown + 0.5 && next < PLAN_GROW_MS) {
+      next = Math.min(PLAN_GROW_MS, shown + frame);
+      if (shown <= 20.5) next = Math.min(45, next);
+    }
+    if (shown <= 20.5 && elapsed > 45) next = Math.min(next, 45);
+    shown = next;
+    shownList.push(shown);
+    if (shown >= PLAN_GROW_MS - 0.5) return { wall, shown: shownList };
+  }
+  return { wall: Infinity, shown: shownList };
+}
+
+const repeat = (gap, n) => Array.from({ length: n }, () => gap);
+
+test("R-PL-04: seam cadence is the median of recent gaps, floored at one 60Hz frame", () => {
+  assert.equal(SEAM_FRAME_FLOOR_MS, 16);
+  assert.equal(seamCadenceMs([]), 16);
+  assert.equal(seamCadenceMs([9]), 16);
+  assert.equal(seamCadenceMs([9, 17, 16]), 16);
+  assert.equal(seamCadenceMs([40, 31, 43]), 40);
+  assert.equal(seamCadenceMs([16, 16, 147]), 16);
+  assert.equal(seamCadenceMs([16, 147, 147]), 50);
+  assert.equal(seamCadenceMs([0, 900, 33]), 33);
+});
+
+test("R-PL-04: a doubled first callback no longer turns the 280ms reveal into slow motion", () => {
+  // v132 L1-2 (debug-e2): first pace gap 9ms, then a healthy 16–17ms
+  // cadence. 0a17a08 learned frameMs=9, treated every 17ms gap as a stall
+  // and moved 9ms of curve per frame: wall 400ms, 13 captured frames.
+  const gaps = [9, ...repeat(17, 30)];
+  const fixed = replaySeam(gaps, { learn: "first" }); // floor alone, old main.js
+  assert.ok(fixed.wall <= PLAN_GROW_MS + 17, `wall ${fixed.wall}`);
+  const queued = replaySeam(gaps);
+  assert.ok(queued.wall <= PLAN_GROW_MS + 17, `wall ${queued.wall}`);
+});
+
+test("R-PL-04: a steady ~30fps box follows the clock instead of crawling at half speed", () => {
+  // base1-t1-2 (17:28 London): first gap 21, then 40/31/43/28/34/30/38/30.
+  // With frameMs learned from the first gap every gap was a stall: wall 358ms.
+  const gaps = [21, 40, 31, 43, 28, 34, 30, 38, 30, 33, 33, 33, 33, 33];
+  const queued = replaySeam(gaps);
+  assert.ok(queued.wall <= PLAN_GROW_MS + 40, `wall ${queued.wall}`);
+  const old = replaySeam(gaps, { learn: "first" });
+  assert.ok(old.wall > queued.wall, "the old pace was slower");
+});
+
+test("R-PL-04: a hole still advances one frame, then the shown clock catches up with the wall", () => {
+  // base1-t1-3: 14, 18, then an 82ms hole and ~33ms frames.
+  const gaps = [14, 18, 82, 47, 33, 34, 35, 32, 22, 5, 19, 13, 16, 26, 14, 16, 16, 16, 16];
+  const queued = replaySeam(gaps);
+  const { shown } = queued;
+  // Right after the hole: at most one frame of curve (no jump).
+  const holeAt = 3; // shown index after the 82ms gap
+  assert.ok(shown[holeAt] - shown[holeAt - 1] <= 33, `step ${shown[holeAt] - shown[holeAt - 1]}`);
+  for (let i = 1; i < shown.length; i += 1) assert.ok(shown[i] > shown[i - 1], `monotonic at ${i}`);
+  assert.ok(queued.wall <= PLAN_GROW_MS + 50, `wall ${queued.wall}`);
+  const old = replaySeam(gaps, { learn: "first" });
+  assert.ok(old.wall >= queued.wall, `old ${old.wall} new ${queued.wall}`);
+});
+
+test("R-PL-04: catch-up never passes the wall clock or the 280ms end, and the gates hold on 60Hz", () => {
+  assert.equal(seamAdvanceMs(66, { shownMs: 50, gapMs: 16, frameMs: 16, wallMs: 60 }), 66);
+  assert.equal(seamAdvanceMs(66, { shownMs: 50, gapMs: 16, frameMs: 16, wallMs: 200 }), 82);
+  assert.equal(seamAdvanceMs(270, { shownMs: 254, gapMs: 16, frameMs: 16, wallMs: 400 }), 280);
+  // Stall still wins over catch-up: one frame only.
+  assert.equal(seamAdvanceMs(177, { shownMs: 30, gapMs: 147, frameMs: 16, wallMs: 177 }), 46);
+  // Plain 60Hz: same samples as following the clock; ~100ms ≤80%, ~200ms ≥90%.
+  const { shown, wall } = replaySeam(repeat(16, 40));
+  assert.ok(wall <= PLAN_GROW_MS + 16);
+  const at = (ms) => shown[Math.min(shown.length - 1, Math.round((ms - 20) / 16))];
+  assert.ok(planEase(at(100) / PLAN_GROW_MS) <= 0.8 + 1e-9, `100ms ${planEase(at(100) / PLAN_GROW_MS)}`);
+  assert.ok(planEase(at(200) / PLAN_GROW_MS) >= 0.9, `200ms ${planEase(at(200) / PLAN_GROW_MS)}`);
+  assert.equal(PLAN_GROW_MS, 280);
+  assert.equal(PLAN_EASE, "cubic-bezier(.3,.6,.2,1)");
 });

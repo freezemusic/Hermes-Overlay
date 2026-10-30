@@ -148,7 +148,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClip, /const duration = PLAN_GROW_MS/);
   assert.match(seamClip, /alignSeamClock\(anim/);
   assert.match(seamClip, /warmPresented/);
-  assert.match(seamClip, /pumpSeamPresent\(shell, duration\)/);
+  // R-PL-04: the pump must outlive a reveal that ends late.
+  assert.match(seamClip, /pumpSeamPresent\(shell, duration \* SEAM_PUMP_SPAN\)/);
+  assert.match(mainSrc, /const SEAM_PUMP_SPAN = 3;/);
   assert.match(seamClip, /shell\.style\.clipPath = from/);
   assert.doesNotMatch(seamClip, /drivePresentedSeam|__hermesSeamFrame|transition = "none"/);
   assert.doesNotMatch(seamClip, /\.pause\(\)|startTime|setKeyframes|updateTiming|PLAN_GROW_MS - 12/);
@@ -413,6 +415,11 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClock, /seamFrameStep/);
   assert.match(seamClock, /seamVisibleMs/);
   assert.match(seamClock, /seamAdvanceMs/);
+  // R-PL-04: cadence is re-measured every frame and the wall clock is passed,
+  // not a frameMs learned once from the first (possibly doubled) gap.
+  assert.match(seamClock, /seamCadenceMs\(gaps\)/);
+  assert.match(seamClock, /wallMs: wallStamp/);
+  assert.doesNotMatch(seamClock, /!frameMs && gap >= 8/);
   assert.match(seamClock, /currentTime = 20/);
   assert.match(seamClock, /currentTime = 45/);
   assert.match(seamClock, /shownMs <= 20\.5/);
@@ -757,7 +764,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(heldPaint, /data-state="panel"/);
   assert.match(heldPaint, /style\.opacity/);
   assert.match(heldPaint, /planNode\(shell\)/);
-  assert.match(heldPaint, /paintLayerOpacity\(plan, "1"\)/);
+  // In-shell plan stays 1; a hosted plan keeps its resting look (1 by default) through Ctrl.
+  assert.match(heldPaint, /paintLayerOpacity\(plan, shell\.contains\(plan\) \? "1" : String\(panelRestOpacity\(\)\)\)/);
   assert.match(mainSrc, /function planNode\(shell\)[\s\S]*?\.plan-window/);
   assert.doesNotMatch(heldPaint, /requestAnimationFrame/);
   assert.doesNotMatch(heldPaint, /setProperty\("--hit-opacity"/);
@@ -1014,7 +1022,8 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.doesNotMatch(main, /seatOpenPlan|unseatOpenPlan|planSeat/);
   const idleOpacity = main.slice(main.indexOf("function idleOrbOpacity"), main.indexOf("function planWidthPx"));
   assert.doesNotMatch(idleOpacity, /0\.55/);
-  assert.match(idleOpacity, /return 1/);
+  // Solid by default: restOpacity(0) is 1 (proximity.test.js, R-OB-07).
+  assert.match(idleOpacity, /return orbRestOpacity\(\);/);
   assert.match(main, /上次 /);
   assert.doesNotMatch(main.slice(main.indexOf("function closeKanban"), main.indexOf("function startKanbanPoll")), /stopKanbanPoll/);
   const hermes = readFileSync(new URL("../src-tauri/src/hermes.rs", import.meta.url), "utf8");
@@ -1484,4 +1493,11 @@ test("open then close restores the same idle orb halo", () => {
     assert.equal(dim.playState, "finished", gesture);
     assert.deepEqual(snap(), idle, gesture);
   }
+});
+
+test("plan rehearsal restore keeps the orb's latest fade sample (R-OB-07)", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const body = main.slice(main.indexOf("delete shell._rehearsalHit;"), main.indexOf("if (saved?.pointer) shell.style.pointerEvents"));
+  assert.match(body, /shell\.dataset\.state === "orb" \? shell\.dataset\.orbFade/);
+  assert.ok(body.indexOf("if (faded) shell.style.opacity = faded") < body.indexOf("saved.opacity"));
 });

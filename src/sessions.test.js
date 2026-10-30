@@ -126,10 +126,10 @@ test("Bot Chat is the default even when another session is newer", () => {
   assert.equal(mostRecentBotChat(mixed).id, "desk-chat");
   const deskOpen = resolveSession(mixed, {});
   assert.equal(deskOpen.id, "desk-chat");
-  assert.equal(deskOpen.readOnly, true);
+  assert.equal(deskOpen.readOnly, true); // two "Bot Chat" rows: not a gateway list, source rule stays
   assert.equal(resolveSession(mixed, { id: "tui-chat", explicit: true, anchor: 1 }).id, "tui-chat");
   assert.equal(mostRecentBotChat([tui]).id, "tui-chat");
-  assert.equal(resolveSession([tui], {}).readOnly, true);
+  assert.equal(resolveSession([tui], {}).readOnly, false);
   assert.deepEqual(orderSessions(mixed).map((session) => session.id), ["tui-chat", "desk-chat", "notes"]);
 });
 
@@ -145,7 +145,7 @@ test("Devon Bot Chats: the hidden titled row wins, including an empty one", () =
   }];
   const forest = resolveSession(forex, { id: "saved-other", explicit: true, anchor: 1 });
   assert.equal(forest.id, "20261001_013827_25b1eb");
-  assert.equal(forest.readOnly, true);
+  assert.equal(forest.readOnly, false);
   assert.equal(forest.id, "20261001_013827_25b1eb");
   assert.equal(SESSION_READ_ONLY_REASON, "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢");
 
@@ -252,7 +252,7 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
   }];
   const forest = resolveSession(forex, { id: "20261001_013827_25b1eb", explicit: false, anchor: 1759279107 });
   assert.equal(forest.id, "20261001_013827_25b1eb");
-  assert.equal(forest.readOnly, true);
+  assert.equal(forest.readOnly, false);
   assert.equal(forest.anchor, 1759279107);
   assert.equal(storedPinAfterResolve(
     { id: "20261001_013827_25b1eb", explicit: false, anchor: 1759279107 },
@@ -495,7 +495,7 @@ test("foreign session sources stay readable and permission_denied stays plain", 
     const row = { id: `row-${source || "empty"}`, title: "Bot Chat", source };
     const opened = resolveSession([row], {});
     assert.equal(opened.id, row.id, source);
-    assert.equal(opened.readOnly, true, source);
+    assert.equal(opened.readOnly, source === "", source); // the Bot Chat row itself
     assert.equal(sessionReadOnly(source), true, source);
   }
   for (const source of ["api_server", "API_Server", "bot_room", "Bot_Room"]) {
@@ -1536,7 +1536,7 @@ test("the session menu separates desktop, archived, and api Bot Chats", () => {
   assert.equal(sendErrorDraft(closedErrors, "mt-orch", "e969").includes("個 bot 仲忙"), false);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
-  const endedAt = send.indexOf("sessionEnded");
+  const endedAt = send.indexOf("sessionSendClosed");
   const invokeAt = send.indexOf('await invoke("send_chat"');
   assert.ok(endedAt >= 0 && invokeAt > endedAt);
   const failed = main.slice(main.indexOf('if (payload.type === "session.moved")'), main.indexOf("async function sendActive"));
@@ -1836,4 +1836,34 @@ test("an in-flight typed line survives a re-render", () => {
   assert.match(opened, /mergePendingSend/);
   const failedNote = main.slice(main.indexOf("function noteSendFailed"), main.indexOf("function noteReadOnly"));
   assert.ok(failedNote.indexOf("retainOutgoing") >= 0 && failedNote.indexOf("retainOutgoing") < failedNote.indexOf("markUnsentDraft"));
+});
+
+test("S20: our user line read after the run ended is held until the reply, not shown twice", async () => {
+  const sessions = await import("./sessions.js");
+  const user = "v141 B17 clsingle 181707 CLSINGLE";
+  const reply = 'Thinking about CLSINGLE. mock: clarify answer="Rust"';
+  const local = [
+    { role: "bot", text: "older" },
+    { role: "user", text: user },
+    { role: "bot", text: "Thinking about CLSINGLE." },
+    { role: "bot", text: 'mock: clarify answer="Rust"' },
+  ];
+  const ownTurn = { runId: "run_1", userText: user, sentAt: 1, awaitTail: true };
+  // The watcher saw message_count +1: only our user row was stored when it looked.
+  const userTail = [{ role: "user", text: user }];
+  assert.equal(typeof sessions.holdsOwnTurnUser, "function");
+  assert.equal(sessions.holdsOwnTurnUser(userTail, ownTurn), true);
+  let held = sessions.holdWatchedTail(null, userTail);
+  held = sessions.holdWatchedTail(held, [{ role: "bot", text: reply }]);
+  const shown = sessions.releaseHeldWatch(local, held);
+  assert.deepEqual(shown.map((message) => `${message.role}:${message.text}`), ["bot:older", `user:${user}`, `bot:${reply}`]);
+  // Only our own just-finished turn, and only a user-only tail.
+  assert.equal(sessions.holdsOwnTurnUser(userTail, { ...ownTurn, awaitTail: false }), false);
+  assert.equal(sessions.holdsOwnTurnUser([{ role: "user", text: "someone else" }], ownTurn), false);
+  assert.equal(sessions.holdsOwnTurnUser([...userTail, { role: "bot", text: reply }], ownTurn), false);
+  assert.equal(sessions.holdsOwnTurnUser([], ownTurn), false);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const cron = main.slice(main.indexOf("function deliverCron"), main.indexOf("function bannerSticky"));
+  assert.match(cron, /holdsOwnTurnUser\(incoming, thread\.ownTurnTail\)/);
+  assert.ok(cron.indexOf("holdsOwnTurnUser") < cron.indexOf("finishWatchedRows"));
 });

@@ -190,6 +190,15 @@ export function slashEnterSubmits(command) {
   return !!command && command.enabled !== false && !String(command.args_hint || "").trim();
 }
 
+/** A bare `/new` sends on the first Enter. A title still completes first. */
+export function bareNewSubmits(command, value) {
+  if (!command || command.enabled === false) return false;
+  const name = String(command.name || "").replace(/^\//, "").trim().toLowerCase();
+  if (name !== "new") return false;
+  const parsed = parseSlashInput(String(value || "").trim());
+  return !!parsed && parsed.name === "new" && !parsed.args;
+}
+
 /** Ghost args hint while the input is still only the command token. */
 export function inlineArgsHint(value, argsHint) {
   const hint = String(argsHint || "").trim();

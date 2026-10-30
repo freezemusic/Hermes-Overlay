@@ -548,6 +548,8 @@ pub struct NativeProfileRead {
     pub profiles: Vec<DiscoveredProfile>,
     pub secrets: KanbanSecrets,
     pub changed: bool,
+    /// True only when `GET /api/profiles` answered 2xx with a list (R-SY-09 removal).
+    pub listed: bool,
 }
 
 /// `GET {origin}/api/profiles` with the Kanban native access token.
@@ -563,6 +565,7 @@ pub async fn read_native_profiles(
             profiles: Vec::new(),
             secrets,
             changed: false,
+            listed: false,
         };
     }
     let timeout = Duration::from_secs(4);
@@ -590,18 +593,20 @@ pub async fn read_native_profiles(
                     profiles: Vec::new(),
                     secrets,
                     changed,
+                    listed: false,
                 };
             }
         }
     }
-    let profiles = match listed {
-        ProfileBearer::Listed(rows) => rows,
-        ProfileBearer::Expired | ProfileBearer::Missed => Vec::new(),
+    let (profiles, listed) = match listed {
+        ProfileBearer::Listed(rows) => (rows, true),
+        ProfileBearer::Expired | ProfileBearer::Missed => (Vec::new(), false),
     };
     NativeProfileRead {
         profiles,
         secrets,
         changed,
+        listed,
     }
 }
 
@@ -820,57 +825,134 @@ where
     exchange_code(http, origin, &code, &verifier).await
 }
 
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 3;
+                        continue;
+                    }
+                    Err(_) => out.push(b'%'),
+                }
+            }
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// What one loopback request carried. Only `/cb` with `code` or `error` ends the wait.
+#[derive(Debug, PartialEq, Eq)]
+enum Callback {
+    Code(String, String),
+    Denied,
+    Other,
+}
+
+fn parse_callback(head: &str) -> Callback {
+    let target = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if path != "/cb" {
+        return Callback::Other;
+    }
+    let mut code = String::new();
+    let mut state = String::new();
+    let mut denied = false;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        match key {
+            "code" => code = percent_decode(value),
+            "state" => state = percent_decode(value),
+            "error" => denied = true,
+            _ => {}
+        }
+    }
+    if !code.is_empty() {
+        Callback::Code(code, state)
+    } else if denied {
+        Callback::Denied
+    } else {
+        Callback::Other
+    }
+}
+
+fn reply(sock: &mut std::net::TcpStream, status: &str, page: &str) {
+    let header = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        page.len()
+    );
+    let _ = sock.write_all(header.as_bytes());
+    let _ = sock.write_all(page.as_bytes());
+}
+
+/// Waits for the browser's redirect to `/cb`. Browsers also open idle
+/// preconnect sockets and ask for `/favicon.ico`; those get a short answer and
+/// the wait goes on, so the first stray socket cannot end the sign-in.
 fn wait_loopback(listener: TcpListener, timeout: Duration) -> Result<(String, String), HermesError> {
     listener
         .set_nonblocking(true)
         .map_err(|err| HermesError::Protocol(format!("登入回呼：{err}")))?;
     let start = std::time::Instant::now();
-    let (mut sock, _) = loop {
-        match listener.accept() {
-            Ok(pair) => break pair,
+    loop {
+        let mut sock = match listener.accept() {
+            Ok((sock, _)) => sock,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if start.elapsed() > timeout {
                     return Err(HermesError::Protocol("登入逾時。可以喺設定填帳號密碼。".into()));
                 }
                 std::thread::sleep(Duration::from_millis(40));
+                continue;
             }
             Err(err) => return Err(HermesError::Protocol(format!("登入回呼：{err}"))),
-        }
-    };
-    sock.set_read_timeout(Some(Duration::from_secs(2))).ok();
-    let mut buf = [0u8; 4096];
-    let n = sock.read(&mut buf).unwrap_or(0);
-    let head = String::from_utf8_lossy(&buf[..n]);
-    let path = head
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("");
-    let query = path.split_once('?').map(|(_, query)| query).unwrap_or("");
-    let mut code = String::new();
-    let mut state = String::new();
-    for pair in query.split('&') {
-        let Some((key, value)) = pair.split_once('=') else {
-            continue;
         };
-        let value = value.replace('+', " ");
-        if key == "code" {
-            code = value;
-        } else if key == "state" {
-            state = value;
+        let _ = sock.set_nonblocking(false);
+        sock.set_read_timeout(Some(Duration::from_millis(1500))).ok();
+        let mut buf = [0u8; 8192];
+        let mut len = 0;
+        while len < buf.len() {
+            match sock.read(&mut buf[len..]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    len += n;
+                    if buf[..len].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let head = String::from_utf8_lossy(&buf[..len]).into_owned();
+        match parse_callback(&head) {
+            Callback::Code(code, state) => {
+                reply(&mut sock, "200 OK", "已登入 Kanban。可以關閉呢個分頁。");
+                return Ok((code, state));
+            }
+            Callback::Denied => {
+                reply(&mut sock, "200 OK", "Kanban 登入取消咗。可以關閉呢個分頁。");
+                return Err(HermesError::Protocol("Kanban 登入取消咗".into()));
+            }
+            Callback::Other => {
+                if len > 0 {
+                    reply(&mut sock, "404 Not Found", "");
+                }
+            }
         }
     }
-    let page = "已登入 Kanban。可以關閉呢個分頁。";
-    let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        page.len()
-    );
-    let _ = sock.write_all(header.as_bytes());
-    let _ = sock.write_all(page.as_bytes());
-    if code.is_empty() {
-        return Err(HermesError::Protocol("登入回呼冇 code".into()));
-    }
-    Ok((code, state))
 }
 
 #[cfg(test)]
@@ -1559,5 +1641,164 @@ mod tests {
             }),
             LOGIN_MESSAGE
         );
+    }
+}
+
+#[cfg(test)]
+mod loopback_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    fn spawn_wait() -> (u16, std::thread::JoinHandle<Result<(String, String), HermesError>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle =
+            std::thread::spawn(move || wait_loopback(listener, Duration::from_secs(10)));
+        (port, handle)
+    }
+
+    fn get(port: u16, path: &str) -> String {
+        let mut sock = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(sock, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+        let mut out = String::new();
+        let _ = sock.read_to_string(&mut out);
+        out
+    }
+
+    #[test]
+    fn a_browser_preconnect_and_favicon_do_not_end_the_sign_in() {
+        let (port, handle) = spawn_wait();
+        // Chrome-style speculative socket: opened, nothing sent, closed.
+        drop(TcpStream::connect(("127.0.0.1", port)).unwrap());
+        let favicon = get(port, "/favicon.ico");
+        assert!(favicon.starts_with("HTTP/1.1 404"), "{favicon}");
+        let page = get(port, "/cb?code=abc%2Dx_9&state=s%3D1");
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        let (code, state) = handle.join().unwrap().unwrap();
+        assert_eq!(code, "abc-x_9");
+        assert_eq!(state, "s=1");
+    }
+
+    #[test]
+    fn a_denied_callback_ends_the_wait_with_an_error() {
+        let (port, handle) = spawn_wait();
+        let page = get(port, "/cb?error=access_denied&state=x");
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(handle.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn the_authorize_url_keeps_its_ampersands_away_from_cmd() {
+        let url = authorize_url("http://10.0.0.1:9119", "CH", "http://127.0.0.1:5/cb", "ST");
+        // Every PKCE field rides after an `&`. cmd.exe /C start would cut them all off.
+        assert!(url.contains("&code_challenge=CH&code_challenge_method=S256&redirect_uri="));
+        let lib = include_str!("lib.rs");
+        let start = lib.find("fn open_system_browser").expect("opener");
+        let body = &lib[start..start + lib[start..].find("\n}\n").expect("end")];
+        assert!(body.contains("tauri_plugin_opener::open_url"), "{body}");
+        assert!(!body.contains("Command::new(\"cmd\")"), "{body}");
+        assert!(!body.contains("\"start\""), "{body}");
+    }
+}
+
+/// Live check against a real gated `hermes serve` (box only, never Devon's server).
+/// `KANBAN_LIVE_ORIGIN=http://172.30.0.2:9119 KANBAN_LIVE_BROWSER=/path/browser.py \
+///  KANBAN_LIVE_USER=.. KANBAN_LIVE_PASS_FILE=.. cargo test live_box -- --ignored --nocapture`
+/// The browser script plays the system browser. Nothing here prints a token.
+#[cfg(test)]
+mod live_box {
+    use super::*;
+
+    fn env(name: &str) -> String {
+        std::env::var(name).unwrap_or_default()
+    }
+
+    fn count(board: &KanbanBoard) -> usize {
+        board.columns.iter().map(|column| column.tasks.len()).sum()
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_native_login_reads_refreshes_and_password_cookie() {
+        let origin = env("KANBAN_LIVE_ORIGIN");
+        let browser = env("KANBAN_LIVE_BROWSER");
+        assert!(!origin.is_empty() && !browser.is_empty(), "set KANBAN_LIVE_*");
+        let http = Client::builder()
+            .pool_idle_timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let tokens = native_pkce_login(&http, &origin, Duration::from_secs(30), move |url| {
+            std::process::Command::new(&browser)
+                .arg(url)
+                .spawn()
+                .map(|_| ())
+                .map_err(|err| err.to_string())
+        })
+        .await
+        .expect("native login");
+        assert!(!tokens.access_token.is_empty() && !tokens.refresh_token.is_empty());
+        let secrets = KanbanSecrets {
+            access_token: tokens.access_token.clone(),
+            refresh_token: tokens.refresh_token.clone(),
+            ..KanbanSecrets::default()
+        };
+        let (board, secrets, changed) = read_board(&http, &origin, "", secrets).await.unwrap();
+        assert!(!board.needs_login && !board.unavailable, "{}", board.message);
+        assert!(!changed);
+        eprintln!("bearer board: {} cards, {} columns", count(&board), board.columns.len());
+        let (list, secrets, _) = read_boards(&http, &origin, secrets).await.unwrap();
+        eprintln!("boards: {:?} current {}", list.boards, list.current);
+        assert!(!list.current.is_empty());
+        let first = board
+            .columns
+            .iter()
+            .flat_map(|column| column.tasks.iter())
+            .next()
+            .map(|task| task.id.clone())
+            .expect("a card on the box board");
+        let (detail, secrets, _) = read_task(&http, &origin, &first, secrets).await.unwrap();
+        eprintln!(
+            "task {}: status {} comments {} events {}",
+            detail.task.id,
+            detail.task.status,
+            detail.comments.len(),
+            detail.events.len()
+        );
+        let profiles = read_native_profiles(&http, &origin, secrets.clone()).await;
+        eprintln!("profiles via bearer: {}", profiles.profiles.len());
+        assert!(!profiles.profiles.is_empty());
+
+        let wait = env("KANBAN_LIVE_EXPIRE_WAIT").parse::<u64>().unwrap_or(0);
+        if wait > 0 {
+            eprintln!("waiting {wait}s for the access token to expire");
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+            let before = secrets.clone();
+            let (board, after, changed) = read_board(&http, &origin, "", secrets).await.unwrap();
+            assert!(changed, "expired access must refresh");
+            assert!(!board.needs_login, "{}", board.message);
+            assert_ne!(after.access_token, before.access_token);
+            assert!(!after.refresh_token.is_empty());
+            eprintln!(
+                "after expiry: refreshed, {} cards, refresh rotated: {}",
+                count(&board),
+                after.refresh_token != before.refresh_token
+            );
+        }
+
+        let user = env("KANBAN_LIVE_USER");
+        let pass_file = env("KANBAN_LIVE_PASS_FILE");
+        if !user.is_empty() && !pass_file.is_empty() {
+            let password = std::fs::read_to_string(&pass_file).unwrap().trim().to_string();
+            let cookie = password_login(&http, &origin, &user, &password).await.unwrap();
+            assert!(!cookie.is_empty());
+            let secrets = KanbanSecrets {
+                session_cookie: cookie,
+                ..KanbanSecrets::default()
+            };
+            let (board, _, _) = read_board(&http, &origin, "", secrets).await.unwrap();
+            assert!(!board.needs_login, "{}", board.message);
+            eprintln!("cookie board: {} cards", count(&board));
+        }
     }
 }

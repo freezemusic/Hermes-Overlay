@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -54,6 +55,25 @@ pub struct InteractionConfig {
     pub fade_distance: f64,
     #[serde(default = "default_min_opacity")]
     pub min_opacity: f64,
+    /// Resting see-through of every orb and sub-orb, 0 = solid (R-OB-07).
+    /// Omitted from the file while it is 0, so old files never gain it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub orb_rest_transparency: f64,
+    /// Resting see-through of every open panel, 0 = solid (R-CT-11).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub panel_rest_transparency: f64,
+}
+
+impl InteractionConfig {
+    /// Orb opacity with the cursor away and the modifier up (R-OB-07).
+    pub fn orb_rest_opacity(&self) -> f64 {
+        1.0 - normalize_rest_transparency(self.orb_rest_transparency)
+    }
+
+    /// Panel opacity with the modifier up (R-CT-11).
+    pub fn panel_rest_opacity(&self) -> f64 {
+        1.0 - normalize_rest_transparency(self.panel_rest_transparency)
+    }
 }
 
 impl Default for InteractionConfig {
@@ -63,6 +83,8 @@ impl Default for InteractionConfig {
             fade_enabled: default_true(),
             fade_distance: default_fade_distance(),
             min_opacity: default_min_opacity(),
+            orb_rest_transparency: 0.0,
+            panel_rest_transparency: 0.0,
         }
     }
 }
@@ -94,10 +116,19 @@ pub struct AppConfig {
     /// Per-run expand flags are not stored here.
     #[serde(default, skip_serializing_if = "skip_false")]
     pub show_tool_detail: bool,
+    /// R-SO-07. Pinned sub-orb session ids, keyed by profile.
+    /// Omitted while empty so an untouched config.json stays byte-identical.
+    /// Written only by an explicit 釘住 / 取消釘住.
+    #[serde(default, skip_serializing_if = "skip_empty_pins")]
+    pub suborb_pins: BTreeMap<String, Vec<String>>,
 }
 
 fn skip_false(value: &bool) -> bool {
     !*value
+}
+
+fn skip_empty_pins(pins: &BTreeMap<String, Vec<String>>) -> bool {
+    pins.is_empty()
 }
 
 fn one() -> u32 {
@@ -139,6 +170,22 @@ pub fn normalize_fade_distance(value: f64) -> f64 {
     value.clamp(24.0, 480.0)
 }
 
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
+}
+
+/// Most see-through a resting orb or panel may be. 80% keeps panel text
+/// readable and leaves a 20% disc to find (R-OB-07, R-CT-11).
+pub const REST_TRANSPARENCY_MAX: f64 = 0.8;
+
+/// 0 = solid. Unknown values fall back to solid, never to see-through.
+pub fn normalize_rest_transparency(value: f64) -> f64 {
+    if !value.is_finite() {
+        return 0.0;
+    }
+    value.clamp(0.0, REST_TRANSPARENCY_MAX)
+}
+
 pub fn normalize_min_opacity(value: f64) -> f64 {
     if !value.is_finite() {
         return default_min_opacity();
@@ -158,6 +205,7 @@ impl Default for AppConfig {
             interaction: InteractionConfig::default(),
             show_bot_names: false,
             show_tool_detail: false,
+            suborb_pins: BTreeMap::new(),
         }
     }
 }
@@ -812,6 +860,125 @@ pub fn store_show_tool_detail(path: &Path, enabled: bool) -> Result<bool, String
     Ok(true)
 }
 
+fn valid_suborb_session(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn read_suborb_pins(value: &serde_json::Value) -> BTreeMap<String, Vec<String>> {
+    let mut out = BTreeMap::new();
+    let Some(object) = value.get("suborb_pins").and_then(|item| item.as_object()) else {
+        return out;
+    };
+    for (profile, ids) in object {
+        let Some(list) = ids.as_array() else { continue };
+        let mut rows = Vec::new();
+        for id in list {
+            let Some(text) = id.as_str() else { continue };
+            let text = text.trim();
+            if valid_suborb_session(text) && !rows.iter().any(|have: &String| have == text) {
+                rows.push(text.to_string());
+            }
+        }
+        if !rows.is_empty() && validate_profile(profile).is_ok() {
+            out.insert(profile.clone(), rows);
+        }
+    }
+    out
+}
+
+fn insert_suborb_pins(text: &str, body: &str) -> Result<String, String> {
+    let bytes = text.as_bytes();
+    let close = root_object_close(bytes).ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    let mut j = close;
+    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    let field = format!("\n  \"suborb_pins\": {body}\n");
+    let mut out = String::with_capacity(text.len() + field.len() + 1);
+    if j > 0 && bytes[j - 1] == b'{' {
+        out.push_str(&text[..j]);
+        out.push_str(&field);
+        out.push_str(&text[close..]);
+        return Ok(out);
+    }
+    out.push_str(&text[..j]);
+    out.push(',');
+    out.push_str(&field);
+    out.push_str(&text[close..]);
+    Ok(out)
+}
+
+/// Writes one profile's pinned sub-orb session id.
+/// Splices only `suborb_pins`. Session id, explicit, anchor, and every other key stay put.
+/// An empty map removes the key so a file that never pinned stays byte-identical.
+pub fn store_suborb_pin(
+    path: &Path,
+    profile: &str,
+    session_id: &str,
+    pinned: bool,
+) -> Result<bool, String> {
+    let profile = profile.trim();
+    validate_profile(profile)?;
+    let session_id = session_id.trim();
+    if !valid_suborb_session(session_id) {
+        return Err("session 唔合法".into());
+    }
+    if !path.exists() {
+        return Err(format!("名單冇 profile「{profile}」"));
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    let bots = value
+        .get("bots")
+        .and_then(|item| item.as_array())
+        .ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    if !bots.iter().any(|bot| bot.get("profile").and_then(|item| item.as_str()) == Some(profile)) {
+        return Err(format!("名單冇 profile「{profile}」"));
+    }
+    let mut pins = read_suborb_pins(&value);
+    let list = pins.entry(profile.to_string()).or_default();
+    let had = list.iter().any(|id| id == session_id);
+    if pinned {
+        if had {
+            return Ok(false);
+        }
+        list.push(session_id.to_string());
+    } else if had {
+        list.retain(|id| id != session_id);
+        if list.is_empty() {
+            pins.remove(profile);
+        }
+    } else {
+        return Ok(false);
+    }
+    let patched = if pins.is_empty() {
+        match top_level_field(&text, "suborb_pins") {
+            Some(span) => remove_top_level_field(&text, &span),
+            None => text.clone(),
+        }
+    } else if let Some(span) = top_level_field(&text, "suborb_pins") {
+        let body = serde_json::to_string(&pins).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+        let mut out = String::with_capacity(text.len() + body.len());
+        out.push_str(&text[..span.value_start]);
+        out.push_str(&body);
+        out.push_str(&text[span.value_end..]);
+        out
+    } else {
+        let body = serde_json::to_string(&pins).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+        insert_suborb_pins(&text, &body)?
+    };
+    if patched == text {
+        return Ok(false);
+    }
+    write_config_text(path, &patched)?;
+    Ok(true)
+}
+
 fn object_field(text: &str, object_start: usize, name: &str) -> Option<JsonField> {
     let bytes = text.as_bytes();
     if object_start >= bytes.len() || bytes[object_start] != b'{' {
@@ -1269,6 +1436,34 @@ mod tests {
         assert_eq!(normalize_modifier("ALT"), "alt");
         assert_eq!(normalize_fade_distance(8.0), 24.0);
         assert_eq!(normalize_min_opacity(0.9), 0.6);
+        assert_eq!(cfg.interaction.orb_rest_transparency, 0.0);
+        assert_eq!(cfg.interaction.panel_rest_transparency, 0.0);
+        assert_eq!(cfg.interaction.orb_rest_opacity(), 1.0);
+        assert_eq!(cfg.interaction.panel_rest_opacity(), 1.0);
+    }
+
+    #[test]
+    fn rest_transparency_is_bounded_and_omitted_while_solid() {
+        assert_eq!(normalize_rest_transparency(-0.2), 0.0);
+        assert_eq!(normalize_rest_transparency(0.4), 0.4);
+        assert_eq!(normalize_rest_transparency(0.95), REST_TRANSPARENCY_MAX);
+        assert_eq!(normalize_rest_transparency(f64::NAN), 0.0);
+        let old = r#"{"interaction":{"modifier":"ctrl","fade_enabled":true,"fade_distance":120.0,"min_opacity":0.6}}"#;
+        let cfg: AppConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(cfg.interaction.min_opacity, 0.6);
+        assert_eq!(cfg.interaction.orb_rest_opacity(), 1.0);
+        assert_eq!(cfg.interaction.panel_rest_opacity(), 1.0);
+        let text = serde_json::to_string(&cfg.interaction).unwrap();
+        assert!(!text.contains("rest_transparency"));
+        let mut seen = cfg.interaction.clone();
+        seen.orb_rest_transparency = 0.4;
+        seen.panel_rest_transparency = 2.0;
+        assert!((seen.orb_rest_opacity() - 0.6).abs() < 1e-9);
+        assert!((seen.panel_rest_opacity() - 0.2).abs() < 1e-9);
+        let text = serde_json::to_string(&seen).unwrap();
+        assert!(text.contains("\"orb_rest_transparency\":0.4"));
+        let back: InteractionConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.orb_rest_transparency, 0.4);
     }
 
     #[test]
@@ -2031,6 +2226,43 @@ other:
         let (start, end) = bot_object_bounds(&flipped, "beta").unwrap();
         assert_eq!(&flipped[start..end], beta_on);
         assert_eq!(load(&path).unwrap().bots[1].compose_mode, "btw");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn suborb_pin_splices_only_that_map() {
+        let dir = std::env::temp_dir().join(format!("hermes-overlay-suborb-pin-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let before = r##"{
+  "version": 1,
+  "bots": [
+    {
+      "profile": "mt-coder",
+      "display_name": "Coder",
+      "session_id": "api_bot",
+      "session_explicit": true,
+      "session_anchor": 4.0,
+      "enabled": true
+    }
+  ]
+}"##;
+        fs::write(&path, before).unwrap();
+        assert_eq!(store_suborb_pin(&path, "mt-coder", "task_1", true).unwrap(), true);
+        let pinned = fs::read_to_string(&path).unwrap();
+        assert!(
+            pinned.contains("\"suborb_pins\"") && pinned.contains("task_1"),
+            "{pinned}"
+        );
+        assert!(pinned.contains("\"session_id\": \"api_bot\""));
+        assert!(pinned.contains("\"session_explicit\": true"));
+        assert_eq!(store_suborb_pin(&path, "mt-coder", "task_1", true).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), pinned.as_bytes());
+        assert_eq!(store_suborb_pin(&path, "mt-coder", "task_1", false).unwrap(), true);
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        assert!(store_suborb_pin(&path, "mt-coder", "bad id", true).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
         let _ = fs::remove_dir_all(&dir);
     }
 }

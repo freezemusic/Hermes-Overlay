@@ -206,3 +206,58 @@ test("the quiet tick claims roster, prompts for a new key, and does not write ke
   const login = main.slice(main.indexOf("function showKanbanLogin"), main.indexOf("function paintKanban"));
   assert.match(login, /replaceChildren\(\)/);
 });
+
+test("R-SY-09 removal: two listed misses hide an orb, a failed read or an all-miss list hides nobody", async () => {
+  const { rosterPresence, ROSTER_GONE_AFTER, ROSTER_CONFIRM_MS } = await import("./roster.js");
+  assert.equal(ROSTER_GONE_AFTER, 2);
+  assert.ok(ROSTER_CONFIRM_MS <= 10_000);
+  const bots = [{ profile: "default" }, { profile: "writer" }, { profile: "hr-8words" }, { profile: "own", base_url: "http://x" }];
+  let s = rosterPresence(null, bots, ["default", "writer", "hr-8words"]);
+  assert.deepEqual(s.gone, []);
+  assert.equal(s.confirm, false);
+  // first miss: not hidden yet, ask for a quick confirm read
+  s = rosterPresence(s, bots, ["default", "writer"]);
+  assert.deepEqual(s.gone, []);
+  assert.equal(s.confirm, true);
+  assert.equal(s.misses["hr-8words"], 1);
+  // a failed read (null) keeps everything as it was
+  const kept = rosterPresence(s, bots, null);
+  assert.deepEqual(kept.misses, s.misses);
+  assert.deepEqual(kept.gone, []);
+  // second miss hides, own base_url row never counts
+  s = rosterPresence(s, bots, ["default", "writer"]);
+  assert.deepEqual(s.gone, ["hr-8words"]);
+  assert.equal(s.changed, true);
+  assert.equal(s.misses.own, undefined);
+  // a list that misses every profile is a bad read: nobody hides
+  const bad = rosterPresence(null, bots, ["someone-else"]);
+  assert.deepEqual(bad.gone, []);
+  assert.deepEqual(rosterPresence(null, bots, []).gone, []);
+  // busy bot waits until it is free
+  let b = rosterPresence(null, bots, ["default", "writer"], () => true);
+  b = rosterPresence(b, bots, ["default", "writer"], () => true);
+  assert.deepEqual(b.gone, []);
+  b = rosterPresence(b, bots, ["default", "writer"], () => false);
+  assert.deepEqual(b.gone, ["hr-8words"]);
+  // back on the list: shows again at once
+  s = rosterPresence(s, bots, ["default", "writer", "hr-8words"]);
+  assert.deepEqual(s.gone, []);
+  assert.equal(s.changed, true);
+  assert.equal(s.misses["hr-8words"], undefined);
+});
+
+test("R-SY-09 removal is memory only and keeps the other orbs' objects", () => {
+  const main = fs.readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const apply = main.slice(main.indexOf("/** A bot that still has its panel"), main.indexOf("function stopRosterSync"));
+  assert.match(apply, /rosterPresence\(state\.rosterGone/);
+  assert.match(apply, /listed_profiles/);
+  assert.match(apply, /armRosterSync\(ROSTER_CONFIRM_MS\)/);
+  assert.match(apply, /\{ \.\.\.old, name: bot\.name/);
+  assert.doesNotMatch(apply, /invoke\(|set_profile_enabled|save_settings|suborb_pin/);
+  const from = main.slice(main.indexOf("function botsFromSettings"), main.indexOf("async function sendClientCommand"));
+  assert.match(from, /rosterGone/);
+  const arm = main.slice(main.indexOf("function armRosterSync"), main.indexOf("async function tickRoster"));
+  assert.match(arm, /!state\.rosterTimer\) armRosterSync\(\)/);
+  const connect = main.slice(main.indexOf("async function connectHermes"), main.indexOf("function ensureSettingsList"));
+  assert.match(connect, /noteRosterPresence\(synced\)/);
+});
