@@ -3615,11 +3615,25 @@ html[data-pass="1"] .plan-hit-host * {
 .morph[data-kind="suborb"] [data-role="tab-bot"] {
   display: none;
 }
-.new-session-btn { margin: 0 0 8px; }
+/* R-NS-01: panel controls are compact icons with a tooltip, not wide text bars. */
+.chat-head .session-select { flex: 1 1 auto; min-width: 0; }
+.icon-btn.new-session-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font: 500 16px/1 var(--font-label);
+}
+.icon-btn.new-session-btn[aria-expanded="true"] { background: var(--bot-10); }
+.icon-btn.new-session-btn:focus-visible { outline: 2px solid #0000f2; outline-offset: 1px; }
 .new-session-form {
+  flex: 1 0 100%;
   display: flex;
   gap: 8px;
-  margin: 0 0 8px;
+  margin: 0;
 }
 .new-session-form[hidden] { display: none; }
 .new-session-form input {

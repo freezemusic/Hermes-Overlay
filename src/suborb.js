@@ -232,6 +232,8 @@ export function capSuborbs(ordered, cap = SUBORB_CAP, reservedIds = []) {
  * Place one open sub-orb panel inside the work area at the full card height.
  * Later panels step 36px down. A step that would leave the work area, or
  * shorten the card, starts again at the top of the next column.
+ * Every open panel must pass the same left/top (the cascade origin from
+ * suborbCascadeOrigin), so each one is a full 36px step from the last (S23).
  */
 export function placeSuborbCascade({
   left = 0,
@@ -266,25 +268,44 @@ export function placeSuborbCascade({
   const count = Math.max(0, Number(index) || 0);
   const fitsX = (x) => x >= minX - 0.5 && (maxX <= 0 || x + w <= maxX + 0.5);
   const fitsY = (y) => y >= minY - 0.5 && (maxY <= 0 || y + h <= maxY + 0.5);
+  // col is a signed column offset in steps. Columns go away from the screen edge
+  // first; when that side is used up they continue on the other side of the base.
+  let dir = xSign;
+  let flipped = false;
   for (let i = 0; i < count; i += 1) {
     const downTop = baseTop + (row + 1) * step;
-    const downLeft = baseLeft + col * step * xSign;
+    const downLeft = baseLeft + col * step;
     if (fitsY(downTop) && fitsX(downLeft)) {
       row += 1;
       continue;
     }
-    const nextCol = col + 1;
-    const wrappedLeft = baseLeft + nextCol * step * xSign;
-    if (!fitsX(wrappedLeft)) break;
+    let nextCol = col + dir;
+    if (!fitsX(baseLeft + nextCol * step)) {
+      if (flipped) break;
+      flipped = true;
+      dir = -dir;
+      nextCol = dir;
+      if (!fitsX(baseLeft + nextCol * step)) break;
+    }
     col = nextCol;
     row = 0;
   }
   return {
-    left: baseLeft + col * step * xSign,
+    left: baseLeft + col * step,
     top: baseTop + row * step,
     width: w,
     height: h,
   };
+}
+
+/**
+ * The shell whose disc home anchors the cascade: the first open sub-orb panel.
+ * Using each panel's own disc home made the step drift by the disc spacing
+ * (+62px one way, about -10px after the side flips; S23).
+ */
+export function suborbCascadeOrigin(open = [], shell = null) {
+  const list = Array.isArray(open) ? open.filter(Boolean) : [];
+  return list.length ? list[0] : shell;
 }
 
 /** Drop the plan host, the panel, and the shell together. */

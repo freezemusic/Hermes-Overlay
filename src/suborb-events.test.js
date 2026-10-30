@@ -8,6 +8,7 @@ import {
   dispatchOrbClick,
   emptySuborbModel,
   placeSuborbCascade,
+  suborbCascadeOrigin,
   sessionCreateError,
   reconcileSuborbs,
   releaseSuborbNodes,
@@ -542,4 +543,92 @@ test("three /new panels step 36px instead of opening on the same point", () => {
   assert.match(place, /dataset\.anchor/);
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   assert.match(css, /\.morph\[data-kind="suborb"\]\[data-anchor="end"\] \.center-panel > \.panel-header \{\s*padding-right:\s*64px;/);
+});
+
+test("S23: after the /new cascade wraps, every panel still steps a full 36px", () => {
+  // Box layout: 1920x1200, taskbar 41px, panels docked at the bottom (top 580, full 560 height).
+  const base = { left: 592, top: 580, width: 420, height: 560, screenW: 1920, screenH: 1200, panelW: 420, panelH: 560, insetBottom: 41 };
+  const boxes = Array.from({ length: 10 }, (_, index) => placeSuborbCascade({ ...base, index }));
+  boxes.forEach((box, index) => {
+    assert.equal(box.height, 560);
+    assert.equal(box.top, 580);
+    assert.equal(box.left, 592 + index * 36);
+    assert.ok(box.left + box.width <= 1920 && box.top + box.height <= 1200 - 41);
+  });
+  assert.equal(new Set(boxes.map((box) => `${box.left},${box.top}`)).size, boxes.length);
+  // Once one side runs out, the columns continue on the other side of the origin, still 36px apart.
+  const side = { left: 700, top: 240, width: 420, height: 560, screenW: 1280, screenH: 800, panelW: 420, panelH: 560 };
+  const lefts = Array.from({ length: 24 }, (_, index) => placeSuborbCascade({ ...side, index }).left);
+  assert.equal(lefts[19], 700 - 19 * 36);
+  assert.equal(lefts[20], 736);
+  assert.equal(lefts[21], 772);
+  for (let i = 1; i <= 21; i += 1) assert.equal(Math.abs(lefts[i] - lefts[i - 1]) % 36, 0);
+  assert.equal(new Set(lefts.slice(0, 24)).size >= 23, true);
+  // The origin is the first open panel's disc, not each panel's own disc (the drift behind S23).
+  const a = { id: "a" };
+  const b = { id: "b" };
+  assert.equal(suborbCascadeOrigin([a, b], b), a);
+  assert.equal(suborbCascadeOrigin([], b), b);
+  const place = main.slice(main.indexOf("function placeSuborbShell"), main.indexOf("function wireSuborbPanel"));
+  assert.match(place, /cascadeOriginBox\(shell, size, vw, vh\)/);
+  assert.match(place, /left: origin\.left,\s*top: origin\.top,/);
+  const originBox = main.slice(main.indexOf("function cascadeOriginBox"), main.indexOf("function openSuborbPanel("));
+  assert.match(originBox, /suborbCascadeOrigin\(openSuborbShells\(\), shell\)/);
+});
+
+test("開新 session is a compact ＋ icon beside the session picker, with a tooltip", () => {
+  const install = main.slice(main.indexOf("function installNewSessionButton"), main.indexOf("function toggleNewSessionForm"));
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const template = html.slice(html.indexOf('<template id="bot-panel-template">'), html.indexOf("</template>"));
+  const build = (suborb) => {
+    const dom = new JSDOM(`<!doctype html><body>${template.replace(/^<template[^>]*>/, "")}</body>`);
+    const { document } = dom.window;
+    const panel = document.querySelector(".bot-panel");
+    const role = (root, name) => root?.querySelector(`[data-role="${name}"]`);
+    if (suborb) {
+      const pin = document.createElement("button");
+      pin.dataset.role = "pin";
+      role(panel, "close").before(pin);
+    }
+    const toggled = [];
+    const run = new Function("document", "role", "isSuborbId", "NEW_SESSION_LABEL", "toggleNewSessionForm", "panel", "id",
+      `${install}\ninstallNewSessionButton(panel, id);`);
+    run(document, role, (id) => id.startsWith("suborb:"), "開新 session", (p, id) => toggled.push(id), panel, suborb ? "suborb:writer:job" : "writer");
+    const button = role(panel, "new-session");
+    button.click();
+    return { panel, button, toggled };
+  };
+  const mainPanel = build(false);
+  assert.equal(mainPanel.button.textContent, "＋");
+  assert.equal(mainPanel.button.title, "開新 session");
+  assert.equal(mainPanel.button.getAttribute("aria-label"), "開新 session");
+  assert.equal(mainPanel.button.type, "button");
+  assert.equal(mainPanel.button.classList.contains("continue-btn"), false);
+  assert.equal(mainPanel.button.previousElementSibling.dataset.role, "session");
+  assert.equal(mainPanel.button.closest(".chat-head") !== null, true);
+  assert.equal(mainPanel.panel.querySelector(".composer [data-role='new-session']"), null);
+  assert.deepEqual(mainPanel.toggled, ["writer"]);
+  const sub = build(true);
+  assert.equal(sub.button.closest(".panel-actions") !== null, true);
+  assert.equal(sub.button.nextElementSibling.dataset.role, "pin");
+  assert.deepEqual(sub.toggled, ["suborb:writer:job"]);
+  const wire = main.slice(main.indexOf("function wireSuborbPanel"), main.indexOf("function paintSuborbPin"));
+  assert.match(wire, /paintSuborbPin\(id, panel\)/);
+  assert.match(main, /function paintSuborbPin\(id, panel = panelFor\(id\)\)/);
+  const toggle = main.slice(main.indexOf("function toggleNewSessionForm"), main.indexOf("async function toggleSuborbPin"));
+  assert.match(toggle, /composer\?\.insertBefore\(form, composer\.firstChild\)/);
+  assert.match(toggle, /aria-expanded/);
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const rule = css.slice(css.indexOf(".icon-btn.new-session-btn {"), css.indexOf("}", css.indexOf(".icon-btn.new-session-btn {")));
+  assert.match(rule, /width: 24px/);
+  assert.match(rule, /height: 24px/);
+  assert.match(css, /\.icon-btn\.new-session-btn:focus-visible/);
+  assert.match(css, /\.new-session-form \{\s*flex: 1 0 100%/);
+  const keys = main.slice(main.indexOf("function setupComposer"), main.indexOf('window.addEventListener("keyup"', main.indexOf("function setupComposer")));
+  assert.match(keys, /action === "insert" && composerField && !foreignFieldFocus\(\) && !newSessionKeyFocus\(event\.key\)/);
+  assert.match(keys, /composerHostOpen\(composerField\) \|\| composerFieldHidden\(composerField\)\)\) composerField = latched/);
+  const hiddenField = main.slice(main.indexOf("function composerFieldHidden"), main.indexOf("function composerIsBusy"));
+  assert.match(hiddenField, /closest\?\.\("\[hidden\]"\)/);
+  const space = main.slice(main.indexOf("function newSessionKeyFocus"), main.indexOf("function composerIsBusy"));
+  assert.match(space, /key === " " && document\.activeElement\?\.dataset\?\.role === "new-session"/);
 });

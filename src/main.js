@@ -22,6 +22,7 @@ import {
   suborbLabel,
   suborbPublishesPanel,
   placeSuborbCascade,
+  suborbCascadeOrigin,
   suborbPanelId,
   suborbPositions,
   suborbSizePx,
@@ -212,6 +213,7 @@ import {
 } from "./proximity.js";
 import { applyOrbName, layoutOrbNames, orbHitRect } from "./names.js";
 
+const NEW_SESSION_LABEL = "開新 session";
 const MOCK_BOTS = [
   {
     id: "planner",
@@ -9003,6 +9005,16 @@ function foreignFieldFocus() {
   return active.dataset?.role !== "input";
 }
 
+/** Space on a keyboard-focused ＋ (開新 session) presses it instead of typing into the composer. */
+function newSessionKeyFocus(key) {
+  return key === " " && document.activeElement?.dataset?.role === "new-session";
+}
+
+/** A field inside a hidden form, such as the closed 開新 session title, must not keep catching typed keys. */
+function composerFieldHidden(field) {
+  return !!field?.closest?.("[hidden]");
+}
+
 function composerIsBusy(field) {
   const id = field?.closest?.(".morph")?.dataset?.botId || "";
   return !!id && state.busy.has(id);
@@ -9012,7 +9024,7 @@ function setupComposer() {
   window.addEventListener("keydown", (event) => {
     if (!foreignFieldFocus() && event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
       const latched = openPanelComposer();
-      if (latched && !composerHostOpen(composerField)) composerField = latched;
+      if (latched && (!composerHostOpen(composerField) || composerFieldHidden(composerField))) composerField = latched;
     }
     const action = composerKeyAction({
       key: event.key,
@@ -9047,7 +9059,7 @@ function setupComposer() {
       sendActive(id);
       return;
     }
-    if (action === "insert" && composerField && !foreignFieldFocus()) {
+    if (action === "insert" && composerField && !foreignFieldFocus() && !newSessionKeyFocus(event.key)) {
       restoreComposer();
       if (event.target !== composerField) {
         insertComposerKey(composerField, event.key);
@@ -11515,10 +11527,11 @@ function placeSuborbShell(shell) {
   const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
   shell.style.setProperty("--suborb-size", `${size}px`);
   const placed = placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
+  const origin = openPanel ? cascadeOriginBox(shell, size, vw, vh) || placed : placed;
   const box = openPanel
     ? placeSuborbCascade({
-      left: placed.left,
-      top: placed.top,
+      left: origin.left,
+      top: origin.top,
       width: placed.width,
       height: placed.height,
       index: openSuborbPanelIndex(shell),
@@ -11606,14 +11619,16 @@ function wireSuborbPanel(panel, id) {
     }
   });
   installNewSessionButton(panel, id);
-  paintSuborbPin(id);
+  // The panel is not registered yet, so paint the pin on this panel directly (it was blank).
+  paintSuborbPin(id, panel);
 }
 
-function paintSuborbPin(id) {
-  const pin = role(panelFor(id), "pin");
+function paintSuborbPin(id, panel = panelFor(id)) {
+  const pin = role(panel, "pin");
   if (!pin) return;
   const on = suborbPinned(id);
   pin.textContent = on ? "取消釘住" : "釘住";
+  pin.title = pin.textContent;
   pin.setAttribute("aria-pressed", on ? "true" : "false");
 }
 
@@ -11633,12 +11648,27 @@ function paintSuborbComposeModes(profile) {
   });
 }
 
-function openSuborbPanelIndex(shell) {
-  const open = [...document.querySelectorAll(".morph[data-kind='suborb']")].filter((item) => (
+function openSuborbShells() {
+  return [...document.querySelectorAll(".morph[data-kind='suborb']")].filter((item) => (
     item.dataset.state === "panel" || item.dataset.opening === "panel" || item.classList.contains("is-morphing")
   ));
+}
+
+function openSuborbPanelIndex(shell) {
+  const open = openSuborbShells();
   const index = open.indexOf(shell);
   return index < 0 ? open.length : index;
+}
+
+/** The panel box at the first open sub-orb's disc home; every cascade step starts there. */
+function cascadeOriginBox(shell, size, vw, vh) {
+  const first = suborbCascadeOrigin(openSuborbShells(), shell);
+  if (!first) return null;
+  const homeX = Number(first.dataset.homeX);
+  const homeY = Number(first.dataset.homeY);
+  const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2;
+  const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
+  return placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
 }
 
 function openSuborbPanel(id) {
@@ -11875,11 +11905,16 @@ function installNewSessionButton(panel, id) {
   if (!panel || role(panel, "new-session")) return;
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "continue-btn new-session-btn";
+  button.className = "icon-btn new-session-btn";
   button.dataset.role = "new-session";
-  button.textContent = "開新 session";
-  const composer = panel.querySelector(".composer");
-  composer?.insertBefore(button, composer.firstChild);
+  button.textContent = "＋";
+  button.title = NEW_SESSION_LABEL;
+  button.setAttribute("aria-label", NEW_SESSION_LABEL);
+  button.setAttribute("aria-expanded", "false");
+  // Compact icon beside the session picker; a sub-orb has no picker, so it sits in the header actions.
+  const session = role(panel, "session");
+  if (!isSuborbId(id) && session) session.after(button);
+  else (role(panel, "pin") || role(panel, "close"))?.before(button);
   button.addEventListener("click", () => toggleNewSessionForm(panel, id));
 }
 
@@ -11905,10 +11940,13 @@ function toggleNewSessionForm(panel, id) {
       void createTaskSession(gatewayProfile(id), input.value, id);
       form.hidden = true;
       input.value = "";
+      role(panel, "new-session")?.setAttribute("aria-expanded", "false");
     });
-    role(panel, "new-session")?.after(form);
+    const composer = panel.querySelector(".composer");
+    composer?.insertBefore(form, composer.firstChild);
   }
   form.hidden = !form.hidden;
+  role(panel, "new-session")?.setAttribute("aria-expanded", form.hidden ? "false" : "true");
   if (!form.hidden) form.querySelector("input")?.focus();
 }
 
