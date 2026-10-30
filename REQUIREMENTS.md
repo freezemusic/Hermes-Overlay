@@ -525,6 +525,11 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 - 驗收（盒）：子光球送出嘅 profile 同 session 係該任務；config 嘅 session id 不變；主光球 Bot Chat 嘅串流唔會因為子光球停止而被 abort。
 - 狀態：❓ / ❓（單元測試）。
 
+**R-SO-10** 拎舊 session 出嚟做子光球（Devon 2026-10-30）。主面板 session 揀選器隔籬（「＋」右邊）有一粒細 icon 掣，同「＋」一樣 24px，冇字，tooltip 同 aria-label 係「拎出做子光球」，唔令嗰行變高。原生揀選器唔放得入掣，所以撳 icon 喺面板入面出一張細清單（浮喺對話上面、唔出面板外，命中區跟面板），每行係一條 session 標題，tooltip／aria-label「拎出做子光球：標題」。清單跟 R-SO-06 嘅規則：唔列 Bot Chat、主光球而家綁住嗰條、已封存、同 `_YYYYMMDDHHMM`／`_YYYYMMDDHHMMSS` 結尾嘅 renew 封存列；冇得揀就寫「冇可以拎出嘅對話」。撳一行就用 R-SO-06「啱啱建立或者打開嘅 session 一定佔一粒可見光碟並打開面板」嗰條路，開一粒未釘嘅子光球同佢嘅面板。主面板留喺 Bot Chat：唔叫 `select_session`，config.json 嘅 `session_id`、explicit、anchor 位元組唔變；唔 POST `/api/sessions`；唔寫 config，除非之後 Devon 自己釘住（R-SO-07）。子光球面板唔顯示呢粒掣。Esc 或者焦點離開就收起清單。
+- 來源：Devon 2026-10-30 17:25（倫敦）：而家冇辦法將一條靜咗嘅舊 session 變子光球；揀選器只會切主面板，啟動時已有嘅 session 當基準，永遠唔出光球。
+- 驗收（單元＋盒）：清單唔包 Bot Chat／綁住列／封存／renew 名；撳一行之後出未釘子光球同面板，主面板 session 唔變，冇 `select_session`、冇 POST，config 位元組一樣；掣冇字、24px、唔令 header 變高。
+- 狀態：❓ / ❓。
+
 **R-NS-01** 每個 bot 面板同子光球面闆有一粒細嘅「＋」圖示掣（24px 見方，同標題列其他控制一樣嘅框同字色），tooltip（`title`）同 `aria-label` 都係「開新 session」。主面板放喺 session 選單隔籬同一行；子光球面闆冇選單，就放喺標題列「釘住」左邊。唔可以用成行闊嘅文字掣，亦唔可以令標題列或者選單嗰行變高。鍵盤 Tab 去到，Enter／Space 撳得；撳咗喺 composer 頂出標題表格（`aria-expanded` 跟住變），焦點去標題輸入。**通則：面板入面嘅控制一律係細圖示掣加 tooltip，唔好用大文字掣。** 撳咗可以打可選標題；留空就用 `<bot 名> 任務 YYYY-MM-DD HH:MM:SS`。同一秒再建立就加 ` (2)`。經 gateway `POST /api/sessions`（`source: api_server`，Hermes 0.22.5 已有呢條，同 session picker 嘅建立路徑一樣）開一條新 session，然後開做未釘住嘅子光球面闆。Devon 可以之後先釘。
 - 來源：Devon（2026-10-29）。
 - 驗收（盒）：「＋」同 session 選單同一行，標題列高度同改之前一樣；撳掣之後 gateway 收到一次建立；新子光球出現而且未釘；config 冇 `suborb_pins` 呢條，主光球 session id 不變。

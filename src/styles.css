@@ -3628,6 +3628,51 @@ html[data-pass="1"] .plan-hit-host * {
   font: 500 16px/1 var(--font-label);
 }
 .icon-btn.new-session-btn[aria-expanded="true"] { background: var(--bot-10); }
+/* R-SO-10: same 24px icon as ＋; the list floats inside the panel so the row height stays. */
+.chat-head { position: relative; }
+.icon-btn.pull-suborb-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+.icon-btn.pull-suborb-btn[aria-expanded="true"] { background: var(--bot-10); }
+.icon-btn.pull-suborb-btn:focus-visible { outline: 2px solid #0000f2; outline-offset: 1px; }
+.pull-suborb-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+  width: min(260px, 100%);
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: #f8f8fc;
+  border: 1px solid rgb(var(--bot-rgb, 0 0 242) / .2);
+  border-radius: 2px;
+}
+.pull-suborb-list[hidden] { display: none; }
+.pull-suborb-row {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: 13px/18px "Noto Sans HK", sans-serif;
+  color: #14142b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.pull-suborb-row:hover, .pull-suborb-row:focus-visible { background: var(--bot-10); outline: none; }
+.pull-suborb-empty { margin: 0; padding: 4px 8px; font: 12px/18px "Noto Sans HK", sans-serif; color: #14142b; }
 .icon-btn.new-session-btn:focus-visible { outline: 2px solid #0000f2; outline-offset: 1px; }
 .new-session-form {
   flex: 1 0 100%;

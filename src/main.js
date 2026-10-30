@@ -11,6 +11,8 @@ import {
   emptySuborbModel,
   gatewayProfile,
   isSuborbId,
+  PULL_SUBORB_LABEL,
+  pullOutCandidates,
   normalizeTaskTitle,
   sessionCreateError,
   uniqueTaskTitle,
@@ -6543,6 +6545,7 @@ function wireBotPanel(panel, id) {
     }) === "send") sendActive(id);
   });
   installNewSessionButton(panel, id);
+  installPullSuborbButton(panel, id);
 }
 
 async function loadSoul(id) {
@@ -11987,6 +11990,107 @@ async function createTaskSession(profile, rawTitle, fromId = "") {
   } catch (err) {
     noteSessionCreateFailed(fromId, sessionCreateError(err));
   }
+}
+
+/** R-SO-10: icon beside ＋ that lists quiet sessions to pull out as an unpinned sub-orb. */
+function installPullSuborbButton(panel, id) {
+  if (!panel || isSuborbId(id) || role(panel, "pull-suborb")) return;
+  const session = role(panel, "session");
+  if (!session) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "icon-btn pull-suborb-btn";
+  button.dataset.role = "pull-suborb";
+  button.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="5.5" cy="10.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8.5 7.5 13 3M9.5 3H13v3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  button.title = PULL_SUBORB_LABEL;
+  button.setAttribute("aria-label", PULL_SUBORB_LABEL);
+  button.setAttribute("aria-haspopup", "true");
+  button.setAttribute("aria-expanded", "false");
+  (role(panel, "new-session") || session).after(button);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    togglePullSuborbList(panel, id);
+  });
+}
+
+function closePullSuborbList(panel) {
+  const list = role(panel, "pull-suborb-list");
+  if (list) list.hidden = true;
+  role(panel, "pull-suborb")?.setAttribute("aria-expanded", "false");
+}
+
+function togglePullSuborbList(panel, id) {
+  let list = role(panel, "pull-suborb-list");
+  if (list && !list.hidden) {
+    closePullSuborbList(panel);
+    return;
+  }
+  if (!list) {
+    list = document.createElement("div");
+    list.dataset.role = "pull-suborb-list";
+    list.className = "pull-suborb-list";
+    list.setAttribute("role", "menu");
+    list.setAttribute("aria-label", PULL_SUBORB_LABEL);
+    list.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      closePullSuborbList(panel);
+      role(panel, "pull-suborb")?.focus();
+    });
+    list.addEventListener("focusout", (event) => {
+      const next = event.relatedTarget;
+      if (next && (list.contains(next) || next === role(panel, "pull-suborb"))) return;
+      closePullSuborbList(panel);
+    });
+    role(panel, "session")?.closest(".chat-head")?.appendChild(list);
+  }
+  const thread = threadFor(id);
+  const rows = pullOutCandidates(thread.sessions || [], thread.sessionId || "");
+  const items = rows.map((row) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "pull-suborb-row";
+    item.setAttribute("role", "menuitem");
+    item.dataset.sessionId = row.id;
+    const label = `${PULL_SUBORB_LABEL}：${row.title}`;
+    item.title = label;
+    item.setAttribute("aria-label", label);
+    item.textContent = row.title;
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closePullSuborbList(panel);
+      pullOutSuborb(gatewayProfile(id), row.id);
+    });
+    return item;
+  });
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "pull-suborb-empty";
+    empty.textContent = "冇可以拎出嘅對話";
+    items.push(empty);
+  }
+  list.replaceChildren(...items);
+  list.hidden = false;
+  role(panel, "pull-suborb")?.setAttribute("aria-expanded", "true");
+  list.querySelector("button")?.focus();
+}
+
+/**
+ * R-SO-10: open an existing session as an unpinned sub-orb, the same way a
+ * just-created session takes a visible disc (R-SO-06). The main panel stays
+ * on Bot Chat: it does not switch, create, or write anything.
+ */
+function pullOutSuborb(profile, sessionId) {
+  if (!profile || !sessionId) return;
+  const model = suborbModel(profile);
+  model.forced[sessionId] = true;
+  delete model.retired[sessionId];
+  delete model.closedAt[sessionId];
+  delete model.dismissAt[sessionId];
+  const thread = threadFor(profile);
+  noteSuborbList(profile, thread.sessions || [], thread.sessionId || "");
+  debugLog("pull-suborb", `profile=${profile} session=${sessionId}`);
+  openSuborbPanel(suborbPanelId(profile, sessionId));
 }
 
 function installNewSessionButton(panel, id) {

@@ -309,3 +309,35 @@ test("the sub-orb fade uses the plan curve and a 0.18 floor", () => {
   const send = rust.slice(rust.indexOf("async fn send_chat"), rust.indexOf("fn dispatch_turn"));
   assert.doesNotMatch(send, /create_session/);
 });
+
+test("R-SO-10 pull-out list skips Bot Chat, the bound row, archived and renew names", async () => {
+  const { pullOutCandidates, PULL_SUBORB_LABEL } = await import("./suborb.js");
+  assert.equal(PULL_SUBORB_LABEL, "拎出做子光球");
+  const rows = [
+    { id: "chat", title: "Bot Chat", last_active: 9 },
+    { id: "bound", title: "bound task", last_active: 8 },
+    { id: "old", title: "old task", last_active: 1 },
+    { id: "arch", title: "gone", archived: true, last_active: 7 },
+    { id: "renew", title: "Bot Chat_202610291200", last_active: 6 },
+    { id: "renew14", title: "x_20261029120000", last_active: 6 },
+    { id: "new", title: "new task", last_active: 5 },
+  ];
+  assert.deepEqual(pullOutCandidates(rows, "bound").map((row) => row.id), ["new", "old"]);
+  assert.deepEqual(pullOutCandidates([], ""), []);
+});
+
+test("R-SO-10 pull-out opens an unpinned sub-orb without select, POST, or config write", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const body = main.slice(main.indexOf("/** R-SO-10: icon beside"), main.indexOf("function installNewSessionButton"));
+  assert.match(body, /PULL_SUBORB_LABEL/);
+  assert.match(body, /button\.title = PULL_SUBORB_LABEL/);
+  assert.match(body, /aria-label", PULL_SUBORB_LABEL/);
+  assert.doesNotMatch(body, /button\.textContent/);
+  assert.match(body, /isSuborbId\(id\)/);
+  assert.match(body, /forced\[sessionId\] = true/);
+  assert.match(body, /openSuborbPanel\(suborbPanelId\(profile, sessionId\)\)/);
+  assert.doesNotMatch(body, /invoke\(|select_session|pickSession|create_task_session|set_suborb_pin|sessionExplicit|sessionAnchor/);
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.icon-btn\.pull-suborb-btn \{[^}]*width:\s*24px;[^}]*height:\s*24px/s);
+  assert.match(css, /\.pull-suborb-list \{[^}]*position:\s*absolute/s);
+});

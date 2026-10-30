@@ -145,6 +145,21 @@ export function eligibleSuborb(row, mainId = "") {
   return true;
 }
 
+/** R-SO-10 picker label (icon only; tooltip and aria-label). */
+export const PULL_SUBORB_LABEL = "拎出做子光球";
+
+/**
+ * R-SO-10: rows the main panel can pull out as a sub-orb. Same rules as
+ * eligibleSuborb: no Bot Chat, not the row the main orb is bound to, no
+ * archived row, no renew archive title. Newest activity first.
+ */
+export function pullOutCandidates(sessions = [], mainId = "") {
+  return (sessions || [])
+    .filter((row) => eligibleSuborb(row, mainId))
+    .map((row) => ({ id: row.id, title: suborbLabel(row), last_active: Number(row.last_active) || 0 }))
+    .sort((a, b) => b.last_active - a.last_active);
+}
+
 export function suborbChannels({ running = false, waiting = false, failed = false, plan = false, unread = false } = {}) {
   let badge = "";
   if (waiting) badge = "waiting";
