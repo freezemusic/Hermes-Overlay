@@ -148,7 +148,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClip, /const duration = PLAN_GROW_MS/);
   assert.match(seamClip, /alignSeamClock\(anim/);
   assert.match(seamClip, /warmPresented/);
-  assert.match(seamClip, /pumpSeamPresent\(shell, duration\)/);
+  // R-PL-04: the pump must outlive a reveal that ends late.
+  assert.match(seamClip, /pumpSeamPresent\(shell, duration \* SEAM_PUMP_SPAN\)/);
+  assert.match(mainSrc, /const SEAM_PUMP_SPAN = 3;/);
   assert.match(seamClip, /shell\.style\.clipPath = from/);
   assert.doesNotMatch(seamClip, /drivePresentedSeam|__hermesSeamFrame|transition = "none"/);
   assert.doesNotMatch(seamClip, /\.pause\(\)|startTime|setKeyframes|updateTiming|PLAN_GROW_MS - 12/);

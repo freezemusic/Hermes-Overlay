@@ -2407,6 +2407,12 @@ function watchPresent(shell, anim, tag) {
 
 /** A 1px tick outside the viewport keeps a composited transform beside the
  *  shell clip. It is not a child of the shell, so the orb tile is not retiled. */
+/** R-PL-04: WebKitGTK stops presenting clip-path writes promptly once the
+ *  seam-pump has finished (box frames: 75-113ms holds, always after +280ms).
+ *  The reveal clock can end past 280ms (stall frames, flat tail), so the
+ *  open pump outlives the curve. The clip itself stays 280ms. */
+const SEAM_PUMP_SPAN = 3;
+
 function pumpSeamPresent(shell, duration) {
   if (!(duration > 0)) return null;
   shell?.querySelectorAll(":scope > .seam-tick").forEach((node) => node.remove());
@@ -2761,7 +2767,7 @@ function beginSeamClip(shell) {
   alignSeamClock(anim, () => {
     shell.style.clipPath = to;
   }, warm, shell);
-  pumpSeamPresent(shell, duration);
+  pumpSeamPresent(shell, duration * SEAM_PUMP_SPAN);
   watchPresent(shell, anim, "plan");
   seamLog("clip-open", `prev=${previous?.playState || "none"} dur=${duration}`);
   return anim;
