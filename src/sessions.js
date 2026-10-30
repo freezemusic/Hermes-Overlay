@@ -1288,6 +1288,19 @@ function attachOpenCards(previous, next) {
 }
 
 /**
+ * S20: the watcher can read our own user line after the run ended but before
+ * the reply row is stored. Hold that tail like a live one, so the reply that
+ * follows replaces the turn instead of both rows being appended.
+ */
+export function holdsOwnTurnUser(incoming, ownTurn) {
+  const userText = String(ownTurn?.userText || "").trim();
+  if (!ownTurn?.awaitTail || !userText) return false;
+  const rows = (incoming || []).filter((message) => message && message.role);
+  if (!rows.length || rows.some((message) => message.role !== "user" || isSideMessage(message))) return false;
+  return rows.some((message) => String(message.text || "").trim() === userText);
+}
+
+/**
  * Rows from the bot-chat watcher while this run is still streaming.
  * `server` is a full transcript (a reset). `tails` are suffixes in arrival order.
  */

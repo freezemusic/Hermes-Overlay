@@ -1837,3 +1837,33 @@ test("an in-flight typed line survives a re-render", () => {
   const failedNote = main.slice(main.indexOf("function noteSendFailed"), main.indexOf("function noteReadOnly"));
   assert.ok(failedNote.indexOf("retainOutgoing") >= 0 && failedNote.indexOf("retainOutgoing") < failedNote.indexOf("markUnsentDraft"));
 });
+
+test("S20: our user line read after the run ended is held until the reply, not shown twice", async () => {
+  const sessions = await import("./sessions.js");
+  const user = "v141 B17 clsingle 181707 CLSINGLE";
+  const reply = 'Thinking about CLSINGLE. mock: clarify answer="Rust"';
+  const local = [
+    { role: "bot", text: "older" },
+    { role: "user", text: user },
+    { role: "bot", text: "Thinking about CLSINGLE." },
+    { role: "bot", text: 'mock: clarify answer="Rust"' },
+  ];
+  const ownTurn = { runId: "run_1", userText: user, sentAt: 1, awaitTail: true };
+  // The watcher saw message_count +1: only our user row was stored when it looked.
+  const userTail = [{ role: "user", text: user }];
+  assert.equal(typeof sessions.holdsOwnTurnUser, "function");
+  assert.equal(sessions.holdsOwnTurnUser(userTail, ownTurn), true);
+  let held = sessions.holdWatchedTail(null, userTail);
+  held = sessions.holdWatchedTail(held, [{ role: "bot", text: reply }]);
+  const shown = sessions.releaseHeldWatch(local, held);
+  assert.deepEqual(shown.map((message) => `${message.role}:${message.text}`), ["bot:older", `user:${user}`, `bot:${reply}`]);
+  // Only our own just-finished turn, and only a user-only tail.
+  assert.equal(sessions.holdsOwnTurnUser(userTail, { ...ownTurn, awaitTail: false }), false);
+  assert.equal(sessions.holdsOwnTurnUser([{ role: "user", text: "someone else" }], ownTurn), false);
+  assert.equal(sessions.holdsOwnTurnUser([...userTail, { role: "bot", text: reply }], ownTurn), false);
+  assert.equal(sessions.holdsOwnTurnUser([], ownTurn), false);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const cron = main.slice(main.indexOf("function deliverCron"), main.indexOf("function bannerSticky"));
+  assert.match(cron, /holdsOwnTurnUser\(incoming, thread\.ownTurnTail\)/);
+  assert.ok(cron.indexOf("holdsOwnTurnUser") < cron.indexOf("finishWatchedRows"));
+});
