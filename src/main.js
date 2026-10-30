@@ -89,7 +89,7 @@ import {
   chatTailAction,
   pinnedScrollTop,
 } from "./morph.js";
-import { isProfileEnabled, keyBannerSlot, panelErrorSlot, profilesNeedingKeys, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
+import { isProfileEnabled, keyBannerSlot, panelErrorSlot, profilesNeedingKeys, ROSTER_CONFIRM_MS, rosterPresence, rosterSyncDelayMs, rosterTickAllowed } from "./roster.js";
 import {
   approvalFailure,
   approvalPending,
@@ -3911,6 +3911,8 @@ const state = {
     doneOpen: false,
   },
   rosterTimer: 0,
+  /** R-SY-09 removal: profiles missing from recent remote lists. Memory only. */
+  rosterGone: { misses: {}, gone: [] },
   keyPromptBots: [],
   prefetchDeferred: false,
   kanbanPaintDue: null,
@@ -6144,19 +6146,38 @@ async function recoverGateway() {
   return true;
 }
 
+/** A bot that still has its panel, a sub-orb panel, or a run going keeps its orb for now. */
+function rosterBotBusy(id) {
+  if (state.busy.has(id) || state.openIds.includes(id)) return true;
+  if (shellFor(id)?.dataset.state === "panel") return true;
+  const prefix = `suborb:${id}:`;
+  if (state.openIds.some((open) => String(open).startsWith(prefix))) return true;
+  return [...document.querySelectorAll('.morph[data-kind="suborb"]')]
+    .some((shell) => shell.dataset.botId?.startsWith(prefix) && shell.dataset.state === "panel");
+}
+
+/** Track profiles that left the remote list. True when a confirm read is due. */
+function noteRosterPresence(synced) {
+  const next = rosterPresence(state.rosterGone, synced?.bots || [], synced?.listed_profiles ?? null, rosterBotBusy);
+  if (next.changed) debugLog("roster-gone", `gone=${next.gone.join(",") || "-"}`);
+  state.rosterGone = { misses: next.misses, gone: next.gone };
+  return next.confirm;
+}
+
 function applyRoster(synced) {
+  const confirm = noteRosterPresence(synced);
+  if (confirm && state.mode === "hermes") armRosterSync(ROSTER_CONFIRM_MS);
   const next = botsFromSettings(synced);
   state.settings = synced;
   const prev = state.bots.map((bot) => bot.id).join("\n");
   const ids = next.map((bot) => bot.id).join("\n");
-  if (prev === ids) {
-    state.bots = next.map((bot) => {
-      const old = state.bots.find((item) => item.id === bot.id);
-      return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, hasKey: bot.hasKey, composeMode: bot.composeMode } : bot;
-    });
-  } else {
-    state.bots = next;
-  }
+  // Keep each remaining bot's own object fields (float spot and the like) when
+  // a profile joins or leaves, so open panels and the other orbs stay put.
+  state.bots = next.map((bot) => {
+    const old = state.bots.find((item) => item.id === bot.id);
+    return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, hasKey: bot.hasKey, composeMode: bot.composeMode } : bot;
+  });
+  if (prev !== ids) debugLog("roster-ids", `ids=${ids.split("\n").join(",")}`);
   renderBots();
 }
 
@@ -6165,13 +6186,14 @@ function stopRosterSync() {
   state.rosterTimer = 0;
 }
 
-function armRosterSync() {
+function armRosterSync(soon = 0) {
   stopRosterSync();
-  const wait = rosterSyncDelayMs(Math.random);
+  const wait = soon > 0 ? soon : rosterSyncDelayMs(Math.random);
   state.rosterTimer = window.setTimeout(() => {
     state.rosterTimer = 0;
     void tickRoster().finally(() => {
-      if (state.mode === "hermes") armRosterSync();
+      // A confirm read armed during the tick wins over the minute wait.
+      if (state.mode === "hermes" && !state.rosterTimer) armRosterSync();
     });
   }, wait);
 }
@@ -7894,7 +7916,8 @@ async function continueApiSession(id) {
 }
 
 function botsFromSettings(settings) {
-  return (settings.bots || []).filter(isProfileEnabled).map((bot) => ({
+  const gone = new Set(state.rosterGone?.gone || []);
+  return (settings.bots || []).filter((bot) => isProfileEnabled(bot) && !gone.has(bot.profile)).map((bot) => ({
     id: bot.profile,
     name: bot.display_name || bot.profile,
     short: shortLabel(bot.display_name || bot.profile),
@@ -8040,7 +8063,9 @@ async function connectHermes(settings) {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const synced = await invoke("sync_profiles");
+    const confirm = noteRosterPresence(synced);
     useHermes(synced);
+    if (confirm) armRosterSync(ROSTER_CONFIRM_MS);
     announceNewKeys(before, synced);
   } catch (err) {
     useHermes(settings);

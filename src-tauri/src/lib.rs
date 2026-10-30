@@ -210,6 +210,10 @@ struct PublicSettings {
     show_bot_names: bool,
     show_tool_detail: bool,
     suborb_pins: std::collections::BTreeMap<String, Vec<String>>,
+    /// Profiles a remote list really returned on this sync (R-SY-09 removal).
+    /// None when no remote list answered, so nobody is hidden on a failed read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    listed_profiles: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -1058,6 +1062,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         show_bot_names: cfg.show_bot_names,
         show_tool_detail: cfg.show_tool_detail,
         suborb_pins: cfg.suborb_pins.clone(),
+        listed_profiles: None,
     })
 }
 
@@ -1427,7 +1432,12 @@ async fn sync_profiles(
     // Discover outside the write lock. std::sync::MutexGuard is not Send,
     // so holding it across these awaits makes the command future unsendable.
     let mut hints = Vec::new();
-    for item in hermes::profiles_from_gateway_health(&state.http, &gateway).await {
+    // A remote list that answered. Local ~/.hermes alone never counts, so a
+    // stale local folder cannot hide gateway bots (R-SY-09 removal).
+    let mut listed_remote = false;
+    let health = hermes::profiles_from_gateway_health(&state.http, &gateway).await;
+    listed_remote |= !health.is_empty();
+    for item in health {
         hints.push(config::ProfileHint {
             profile: item.profile,
             display_name: item.display_name,
@@ -1450,6 +1460,7 @@ async fn sync_profiles(
         .await
         {
             saw_dashboard = true;
+            listed_remote = true;
             push_discovered(&mut hints, found);
         }
     }
@@ -1466,6 +1477,7 @@ async fn sync_profiles(
         if read.changed {
             let _ = store_kanban_secrets(&read.secrets);
         }
+        listed_remote |= read.listed;
         push_discovered(&mut hints, read.profiles);
     }
     hints.extend(config::local_hermes_profiles(&hermes_home_dir()));
@@ -1488,7 +1500,20 @@ async fn sync_profiles(
         }
     }
     drop(guard);
-    load_public_settings(app)
+    let mut public = load_public_settings(app)?;
+    public.listed_profiles = listed_profiles(listed_remote, &hints);
+    Ok(public)
+}
+
+/// Names seen on this sync, or None when no remote list answered.
+fn listed_profiles(listed_remote: bool, hints: &[config::ProfileHint]) -> Option<Vec<String>> {
+    if !listed_remote {
+        return None;
+    }
+    let mut names: Vec<String> = hints.iter().map(|hint| hint.profile.clone()).collect();
+    names.sort();
+    names.dedup();
+    Some(names)
 }
 
 #[tauri::command]
@@ -4082,6 +4107,27 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{SETTINGS_SHORTCUT, SETTINGS_TRAY_LABEL};
+
+    #[test]
+    fn listed_profiles_need_a_remote_list_and_include_local_names() {
+        let hint = |name: &str| crate::config::ProfileHint {
+            profile: name.into(),
+            display_name: String::new(),
+            detail: String::new(),
+            color: String::new(),
+        };
+        let hints = vec![hint("writer"), hint("default"), hint("writer")];
+        assert_eq!(crate::listed_profiles(false, &hints), None);
+        assert_eq!(
+            crate::listed_profiles(true, &hints),
+            Some(vec!["default".to_string(), "writer".to_string()])
+        );
+        let src = include_str!("lib.rs");
+        let start = src.find("async fn sync_profiles").expect("sync");
+        let body = &src[start..start + 4000];
+        assert!(body.contains("listed_remote |= read.listed"));
+        assert!(!body.contains("listed_remote |= !local"));
+    }
 
     #[test]
     fn quiet_sync_appends_profiles_and_does_not_write_keys_or_sessions() {

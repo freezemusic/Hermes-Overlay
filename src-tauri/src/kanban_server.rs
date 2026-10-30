@@ -548,6 +548,8 @@ pub struct NativeProfileRead {
     pub profiles: Vec<DiscoveredProfile>,
     pub secrets: KanbanSecrets,
     pub changed: bool,
+    /// True only when `GET /api/profiles` answered 2xx with a list (R-SY-09 removal).
+    pub listed: bool,
 }
 
 /// `GET {origin}/api/profiles` with the Kanban native access token.
@@ -563,6 +565,7 @@ pub async fn read_native_profiles(
             profiles: Vec::new(),
             secrets,
             changed: false,
+            listed: false,
         };
     }
     let timeout = Duration::from_secs(4);
@@ -590,18 +593,20 @@ pub async fn read_native_profiles(
                     profiles: Vec::new(),
                     secrets,
                     changed,
+                    listed: false,
                 };
             }
         }
     }
-    let profiles = match listed {
-        ProfileBearer::Listed(rows) => rows,
-        ProfileBearer::Expired | ProfileBearer::Missed => Vec::new(),
+    let (profiles, listed) = match listed {
+        ProfileBearer::Listed(rows) => (rows, true),
+        ProfileBearer::Expired | ProfileBearer::Missed => (Vec::new(), false),
     };
     NativeProfileRead {
         profiles,
         secrets,
         changed,
+        listed,
     }
 }
 

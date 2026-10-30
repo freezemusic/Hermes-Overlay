@@ -13,6 +13,58 @@ export function rosterSyncDelayMs(random = Math.random) {
   return Math.round(ROSTER_SYNC_MS * (0.8 + unit * 0.4));
 }
 
+/** A missing profile needs this many listed reads in a row before its orb hides. */
+export const ROSTER_GONE_AFTER = 2;
+/** The second read comes soon after the first miss instead of a full minute. */
+export const ROSTER_CONFIRM_MS = 5_000;
+
+/**
+ * Removal side of the quiet roster (R-SY-09). Pure bookkeeping, no config writes.
+ * `listed` is the remote profile list from this sync, or null when no remote
+ * list answered: then nothing changes. A list that misses every profile is
+ * treated as a bad read, so one failure can never hide everybody. A row with
+ * its own base_url is not a gateway profile and never hides. `busy(profile)`
+ * holds the hide while that bot still has a panel open or a run going.
+ */
+export function rosterPresence(prev, bots, listed, busy = () => false) {
+  const misses = { ...(prev?.misses || {}) };
+  const gone = new Set(prev?.gone || []);
+  const same = { misses, gone: [...gone].sort(), confirm: false, changed: false };
+  if (!Array.isArray(listed)) return same;
+  const seen = new Set(listed.map((name) => String(name)));
+  const rows = (bots || []).filter((bot) => bot?.profile && !String(bot.base_url || "").trim());
+  if (!rows.length || rows.every((bot) => !seen.has(bot.profile))) return same;
+  let confirm = false;
+  let changed = false;
+  const known = new Set(rows.map((bot) => bot.profile));
+  for (const name of Object.keys(misses)) if (!known.has(name)) delete misses[name];
+  for (const name of [...gone]) {
+    if (!known.has(name)) {
+      gone.delete(name);
+      changed = true;
+    }
+  }
+  for (const bot of rows) {
+    const name = bot.profile;
+    if (seen.has(name)) {
+      delete misses[name];
+      if (gone.delete(name)) changed = true;
+      continue;
+    }
+    const count = (misses[name] || 0) + 1;
+    misses[name] = count;
+    if (count < ROSTER_GONE_AFTER) {
+      confirm = true;
+      continue;
+    }
+    if (!gone.has(name) && !busy(name)) {
+      gone.add(name);
+      changed = true;
+    }
+  }
+  return { misses, gone: [...gone].sort(), confirm, changed };
+}
+
 /** Skip the quiet tick while the gateway is down or any probe is already running. */
 export function rosterTickAllowed(flags) {
   const row = flags || {};
