@@ -1536,7 +1536,7 @@ test("the session menu separates desktop, archived, and api Bot Chats", () => {
   assert.equal(sendErrorDraft(closedErrors, "mt-orch", "e969").includes("個 bot 仲忙"), false);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
-  const endedAt = send.indexOf("sessionEnded");
+  const endedAt = send.indexOf("sessionSendClosed");
   const invokeAt = send.indexOf('await invoke("send_chat"');
   assert.ok(endedAt >= 0 && invokeAt > endedAt);
   const failed = main.slice(main.indexOf('if (payload.type === "session.moved")'), main.indexOf("async function sendActive"));

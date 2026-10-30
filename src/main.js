@@ -119,7 +119,7 @@ import {
   mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, holdsOwnTurnUser, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, sessionReadOnlyIn, sessionSendClosed, BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE, botChatRefusalLine, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, holdsOwnTurnUser, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -5601,7 +5601,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   const keptError = sendErrorDraft(state.sendErrors, id, thread.sessionId);
   const closedError = sendErrorKind(state.sendErrors, id, thread.sessionId) === "closed";
   const pickedRow = (thread.sessions || []).find((row) => row.id === thread.sessionId);
-  const closedHere = sessionEnded(pickedRow);
+  const closedHere = sessionSendClosed(pickedRow, thread.sessions);
   if (closedHere || closedError) {
     thread.closedOffer = true;
     const storedSwitch = sendErrorSwitch(state.sendErrors, id, thread.sessionId);
@@ -5802,14 +5802,14 @@ async function pickSession(id, sessionId) {
     showSession(thread, sessionId, (stored || [{ role: "bot", text: "（舊對話）" }]).map((message) => ({ ...message })));
     thread.sessionExplicit = true;
     thread.sessionAnchor = anchor;
-    const locked = readOnlyLocked(state.deniedSessions, id, sessionId, sessionReadOnly(picked?.source));
+    const locked = readOnlyLocked(state.deniedSessions, id, sessionId, sessionReadOnlyIn(picked, thread.sessions));
     thread.sessionReadOnly = locked;
     thread.sessionReadOnlyReason = locked ? SESSION_READ_ONLY_REASON : "";
     thread.loaded = true;
     if (select) delete select.dataset.key;
     renderChat(id);
     renderBots();
-    if (sessionEnded(picked)) showClosedWarning(id);
+    if (sessionSendClosed(picked, thread.sessions)) showClosedWarning(id);
     return;
   }
   try {
@@ -7024,7 +7024,7 @@ function currentSessionRow(thread) {
 
 function closedSwitchIdFor(id) {
   const thread = threadFor(id);
-  if (!thread?.closedOffer && sendErrorKind(state.sendErrors, id, thread?.sessionId) !== "closed" && !sessionEnded(currentSessionRow(thread))) {
+  if (!thread?.closedOffer && sendErrorKind(state.sendErrors, id, thread?.sessionId) !== "closed" && !sessionSendClosed(currentSessionRow(thread), thread?.sessions)) {
     return "";
   }
   return thread?.closedSwitchId || closedSwitchTarget(thread?.sessions, thread?.sessionId)?.id || "";
@@ -7104,6 +7104,50 @@ function noteSendFailed(id, raw, meta = {}) {
   }
   setBotStatus(id, "連線錯誤", "error");
   setBanner(text, "error");
+}
+
+const WHOLE_REPLY_CATCH_UP_MS = 1200;
+
+/** One quiet transcript read after a turn that finished with no streamed text. */
+function armWholeReplyCatchUp(id) {
+  const thread = threadFor(id);
+  const sessionId = thread.sessionId;
+  window.setTimeout(() => {
+    if (state.mode !== "hermes" || !inTauri()) return;
+    const now = threadFor(id);
+    if (now.sessionId !== sessionId || state.busy.has(id)) return;
+    const last = [...(now.messages || [])].reverse().find((item) => item.role === "user" || item.role === "bot");
+    if (last?.role === "bot") return;
+    debugLog("whole-reply-catch-up", `id=${id}`);
+    void claimProfiles([id], () => refreshBotQuiet(id));
+  }, WHOLE_REPLY_CATCH_UP_MS);
+}
+
+/** R-SS-08: Hermes' Bot Chat door refused (`bot_chat_unbound`/`bot_chat_not_local`). Rust may already have sent the plain line. */
+function botChatRefusal(raw) {
+  const text = String(raw || "");
+  return botChatRefusalLine(text) || [BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE].find((line) => text.includes(line)) || "";
+}
+
+/** Show the plain line, keep the typed text as 未送出, stay connected, and do not retry. */
+function noteBotChatRefused(id, line) {
+  const thread = threadFor(id);
+  retainOutgoing(id);
+  rememberUnsent(state.unsentDrafts, id, thread.sessionId, markUnsentDraft(thread.messages));
+  releaseOutgoing(id);
+  repaintUnsent(id);
+  thread.queued = false;
+  thread.watchReply = false;
+  clearRunSession(thread);
+  const messages = runMessages(id);
+  if (!messages.some((item) => item.text === line && (item.role === "commentary" || item.role === "failure"))) {
+    appendOnce(id, { role: "commentary", text: line });
+  }
+  noteActivity(id, { type: "failed", text: line });
+  thread.statusState = "idle";
+  state.busy.delete(id);
+  setBotStatus(id, "閒置", "idle");
+  if (panelFor(id)) renderChat(id);
 }
 
 function noteReadOnly(id) {
@@ -7587,6 +7631,10 @@ function handleHermes(payload) {
     const outcome = payload.outcome === "failed" ? "failed" : payload.outcome === "cancelled" ? "cancelled" : "completed";
     const detail = payload.detail || "";
     const blocked = textIsExecuteCodeBlocked(detail) || detail === EXECUTE_CODE_BLOCKED_LINE;
+    if (payload.outcome === "failed" && botChatRefusal(detail)) {
+      noteBotChatRefused(id, botChatRefusal(detail));
+      return;
+    }
     if (payload.outcome === "failed" && isPermissionDeniedText(detail)) {
       lockIfPermissionDenied(id, detail);
       return;
@@ -7605,6 +7653,9 @@ function handleHermes(payload) {
       thread.messages = dropRetiredTurn(thread.messages);
       thread.dropKeptOnSettle = false;
     }
+    // F5: a Bot Chat door turn may end with no live text at all. Read the
+    // transcript once so the reply shows instead of an empty finished turn.
+    if (payload.outcome === "completed" && !String(live?.text || "").trim()) armWholeReplyCatchUp(id);
     if (payload.outcome === "completed") {
       thread.queued = false;
       thread.watchReply = false;
@@ -7667,6 +7718,10 @@ function handleHermes(payload) {
   }
   if (payload.type === "error") {
     const raw = payload.message || "未知錯誤";
+    if (botChatRefusal(raw)) {
+      noteBotChatRefused(id, botChatRefusal(raw));
+      return;
+    }
     if (isPermissionDeniedText(raw)) {
       lockIfPermissionDenied(id, raw);
       return;
@@ -7833,7 +7888,7 @@ async function sendActive(id = state.activeId) {
     await sendClientCommand(id, text, action);
     return;
   }
-  if (sessionEnded(currentSessionRow(thread))) {
+  if (sessionSendClosed(currentSessionRow(thread), thread.sessions)) {
     showClosedWarning(id);
     return;
   }
@@ -7894,6 +7949,10 @@ async function sendActive(id = state.activeId) {
     await invoke("send_chat", { profile: sentId, text });
   } catch (err) {
     const raw = String(err);
+    if (botChatRefusal(raw)) {
+      noteBotChatRefused(sentId, botChatRefusal(raw));
+      return;
+    }
     if (isPermissionDeniedText(raw)) {
       lockIfPermissionDenied(sentId, raw);
       return;
@@ -8809,6 +8868,10 @@ async function sendWhileBusy(id, text) {
   } catch (err) {
     thread.queued = false;
     const raw = String(err);
+    if (botChatRefusal(raw)) {
+      noteBotChatRefused(id, botChatRefusal(raw));
+      return;
+    }
     if (isPermissionDeniedText(raw)) {
       lockIfPermissionDenied(id, raw);
       return;

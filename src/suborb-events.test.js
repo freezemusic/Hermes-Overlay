@@ -400,7 +400,7 @@ test("a new session with five discs stays on the rail and opens a shifted panel"
   assert.match(escape, /isSuborbId\(id\)\) closeSuborbPanel\(id\)/);
   const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
   const actionAt = send.indexOf("if (action)");
-  const endedAt = send.indexOf("sessionEnded");
+  const endedAt = send.indexOf("sessionSendClosed");
   assert.ok(actionAt >= 0 && actionAt < endedAt);
   const keys = main.slice(main.indexOf("function wireBotPanel"), main.indexOf("function mountBotPanel", main.indexOf("function wireBotPanel")));
   assert.match(keys, /bareNewSubmits\(picked, input\?\.value/);

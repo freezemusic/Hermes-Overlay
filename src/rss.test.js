@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   BOT_CHAT_UNBOUND_LINE,
@@ -48,6 +49,33 @@ test("R-SS: an api_server Bot Chat is flagged as displaced by a send", () => {
 
 test("R-SS: Bot Chat door refusals get a plain line", () => {
   assert.equal(botChatRefusalLine("Bot Chat admission refused: bot_chat_unbound (…)"), BOT_CHAT_UNBOUND_LINE);
+  assert.equal(botChatRefusalLine("bot_chat_not_local"), BOT_CHAT_NOT_LOCAL_LINE);
+  assert.equal(botChatRefusalLine("permission_denied"), "");
+});
+
+test("R-SS main.js wiring: picker, closed checks, Bot Chat refusal, whole reply", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  assert.doesNotMatch(main, /sessionReadOnly\(picked\?\.source\)/);
+  assert.match(main, /readOnlyLocked\(state\.deniedSessions, id, sessionId, sessionReadOnlyIn\(picked, thread\.sessions\)\)/);
+  assert.doesNotMatch(main, /sessionEnded\(/);
+  assert.equal((main.match(/sessionSendClosed\(/g) || []).length, 4);
+  const refused = main.slice(main.indexOf("function botChatRefusal"), main.indexOf("function noteReadOnly"));
+  assert.match(refused, /BOT_CHAT_UNBOUND_LINE/);
+  assert.match(refused, /markUnsentDraft/);
+  assert.match(refused, /repaintUnsent/);
+  assert.doesNotMatch(refused, /invoke\(|send_chat|rememberDenied|sessionReadOnly = true/);
+  assert.ok((main.match(/noteBotChatRefused\(/g) || []).length >= 5);
+  const catchUp = main.slice(main.indexOf("function armWholeReplyCatchUp"), main.indexOf("/** R-SS-08: Hermes' Bot Chat door refused"));
+  assert.match(catchUp, /refreshBotQuiet\(id\)/);
+  assert.match(catchUp, /claimProfiles\(\[id\]/);
+  assert.doesNotMatch(catchUp, /send_chat|create_session|select_session/);
+  assert.match(main, /payload\.outcome === "completed" && !String\(live\?\.text \|\| ""\)\.trim\(\)\) armWholeReplyCatchUp\(id\)/);
+  assert.doesNotMatch(main, /botChatSendDisplaces/);
+});
+
+test("botChatRefusalLine maps both refusal codes to plain lines", async () => {
+  const { botChatRefusalLine, BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE } = await import("./sessions.js");
+  assert.equal(botChatRefusalLine("run failed: bot_chat_unbound open it once"), BOT_CHAT_UNBOUND_LINE);
   assert.equal(botChatRefusalLine("bot_chat_not_local"), BOT_CHAT_NOT_LOCAL_LINE);
   assert.equal(botChatRefusalLine("permission_denied"), "");
 });
