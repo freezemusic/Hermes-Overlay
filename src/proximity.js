@@ -395,10 +395,36 @@ export function orbNearOpacity(minOpacity = 0.25) {
  * the orb is opaque. Inside the radius with the modifier up it is the near floor.
  * An unknown distance stays opaque so a missing cursor sample does not flash.
  */
-export function orbProximityOpacity(distance, { held = false, minOpacity = 0.25 } = {}) {
-  if (!(distance >= 0) || distance > ORB_PROXIMITY_PX) return 1;
+export function orbProximityOpacity(distance, { held = false, minOpacity = 0.25, rest = 1 } = {}) {
+  const resting = Number.isFinite(rest) ? Math.min(1, Math.max(REST_OPACITY_FLOOR, rest)) : 1;
+  if (!(distance >= 0) || distance > ORB_PROXIMITY_PX) return resting;
   if (held) return 1;
-  return orbNearOpacity(minOpacity);
+  return Math.min(orbNearOpacity(minOpacity), resting);
+}
+
+/** Most see-through a resting orb or panel may be (R-OB-07, R-CT-11). */
+export const REST_TRANSPARENCY_MAX = 0.8;
+/** 1 - REST_TRANSPARENCY_MAX, rounded so frames compare exactly. */
+export const REST_OPACITY_FLOOR = 0.2;
+
+/** Settings see-through (0 = solid) to a clamped fraction. Unknown is solid. */
+export function normalizeRestTransparency(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(REST_TRANSPARENCY_MAX, Math.max(0, n));
+}
+
+/** Opacity of an orb or panel at rest for a see-through fraction. */
+export function restOpacity(transparency) {
+  return Math.round((1 - normalizeRestTransparency(transparency)) * 100) / 100;
+}
+
+/** Panel opacity: rest when the modifier is up, the Ctrl value (never less see-through) when held. */
+export function panelOpacity(held, { minOpacity = 0.25, rest = 1 } = {}) {
+  const resting = Number.isFinite(rest) ? rest : 1;
+  if (!held) return resting;
+  const floor = Number.isFinite(minOpacity) ? minOpacity : 0.25;
+  return Math.min(floor, resting);
 }
 
 /** Orb DOM writes and the plan rehearsal wait this long after pointerdown. */
@@ -646,6 +672,8 @@ export function elementStates({
   rects = [],
   margin = HIT_MARGIN_PX,
   minOpacity = 0.18,
+  orbRest = 1,
+  panelRest = 1,
 } = {}) {
   const under = (held && orbOrPillUnder(cursor, rects))
     || elementUnderCursor(cursor, rects, margin, latchedIds);
@@ -663,14 +691,14 @@ export function elementStates({
       const awake = here && held;
       return {
         id: rect.id,
-        opacity: orbProximityOpacity(distance, { held, minOpacity: floor }),
+        opacity: orbProximityOpacity(distance, { held, minOpacity: floor, rest: orbRest }),
         capture: awake,
       };
     }
     if (isPanelHit(rect)) {
       return {
         id: rect.id,
-        opacity: cursor && held ? floor : 1,
+        opacity: panelOpacity(!!cursor && held, { minOpacity: floor, rest: panelRest }),
         capture: here && !held,
       };
     }

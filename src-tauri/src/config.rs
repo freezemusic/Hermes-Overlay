@@ -55,6 +55,25 @@ pub struct InteractionConfig {
     pub fade_distance: f64,
     #[serde(default = "default_min_opacity")]
     pub min_opacity: f64,
+    /// Resting see-through of every orb and sub-orb, 0 = solid (R-OB-07).
+    /// Omitted from the file while it is 0, so old files never gain it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub orb_rest_transparency: f64,
+    /// Resting see-through of every open panel, 0 = solid (R-CT-11).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub panel_rest_transparency: f64,
+}
+
+impl InteractionConfig {
+    /// Orb opacity with the cursor away and the modifier up (R-OB-07).
+    pub fn orb_rest_opacity(&self) -> f64 {
+        1.0 - normalize_rest_transparency(self.orb_rest_transparency)
+    }
+
+    /// Panel opacity with the modifier up (R-CT-11).
+    pub fn panel_rest_opacity(&self) -> f64 {
+        1.0 - normalize_rest_transparency(self.panel_rest_transparency)
+    }
 }
 
 impl Default for InteractionConfig {
@@ -64,6 +83,8 @@ impl Default for InteractionConfig {
             fade_enabled: default_true(),
             fade_distance: default_fade_distance(),
             min_opacity: default_min_opacity(),
+            orb_rest_transparency: 0.0,
+            panel_rest_transparency: 0.0,
         }
     }
 }
@@ -147,6 +168,22 @@ pub fn normalize_fade_distance(value: f64) -> f64 {
         return default_fade_distance();
     }
     value.clamp(24.0, 480.0)
+}
+
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
+}
+
+/// Most see-through a resting orb or panel may be. 80% keeps panel text
+/// readable and leaves a 20% disc to find (R-OB-07, R-CT-11).
+pub const REST_TRANSPARENCY_MAX: f64 = 0.8;
+
+/// 0 = solid. Unknown values fall back to solid, never to see-through.
+pub fn normalize_rest_transparency(value: f64) -> f64 {
+    if !value.is_finite() {
+        return 0.0;
+    }
+    value.clamp(0.0, REST_TRANSPARENCY_MAX)
 }
 
 pub fn normalize_min_opacity(value: f64) -> f64 {
@@ -1399,6 +1436,34 @@ mod tests {
         assert_eq!(normalize_modifier("ALT"), "alt");
         assert_eq!(normalize_fade_distance(8.0), 24.0);
         assert_eq!(normalize_min_opacity(0.9), 0.6);
+        assert_eq!(cfg.interaction.orb_rest_transparency, 0.0);
+        assert_eq!(cfg.interaction.panel_rest_transparency, 0.0);
+        assert_eq!(cfg.interaction.orb_rest_opacity(), 1.0);
+        assert_eq!(cfg.interaction.panel_rest_opacity(), 1.0);
+    }
+
+    #[test]
+    fn rest_transparency_is_bounded_and_omitted_while_solid() {
+        assert_eq!(normalize_rest_transparency(-0.2), 0.0);
+        assert_eq!(normalize_rest_transparency(0.4), 0.4);
+        assert_eq!(normalize_rest_transparency(0.95), REST_TRANSPARENCY_MAX);
+        assert_eq!(normalize_rest_transparency(f64::NAN), 0.0);
+        let old = r#"{"interaction":{"modifier":"ctrl","fade_enabled":true,"fade_distance":120.0,"min_opacity":0.6}}"#;
+        let cfg: AppConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(cfg.interaction.min_opacity, 0.6);
+        assert_eq!(cfg.interaction.orb_rest_opacity(), 1.0);
+        assert_eq!(cfg.interaction.panel_rest_opacity(), 1.0);
+        let text = serde_json::to_string(&cfg.interaction).unwrap();
+        assert!(!text.contains("rest_transparency"));
+        let mut seen = cfg.interaction.clone();
+        seen.orb_rest_transparency = 0.4;
+        seen.panel_rest_transparency = 2.0;
+        assert!((seen.orb_rest_opacity() - 0.6).abs() < 1e-9);
+        assert!((seen.panel_rest_opacity() - 0.2).abs() < 1e-9);
+        let text = serde_json::to_string(&seen).unwrap();
+        assert!(text.contains("\"orb_rest_transparency\":0.4"));
+        let back: InteractionConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.orb_rest_transparency, 0.4);
     }
 
     #[test]

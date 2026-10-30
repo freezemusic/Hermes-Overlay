@@ -188,6 +188,8 @@ struct PublicInteraction {
     fade_enabled: bool,
     fade_distance: f64,
     min_opacity: f64,
+    orb_rest_transparency: f64,
+    panel_rest_transparency: f64,
     supported: bool,
 }
 
@@ -270,6 +272,8 @@ struct SaveInteraction {
     fade_enabled: Option<bool>,
     fade_distance: Option<f64>,
     min_opacity: Option<f64>,
+    orb_rest_transparency: Option<f64>,
+    panel_rest_transparency: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -1041,6 +1045,12 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
             fade_enabled: cfg.interaction.fade_enabled,
             fade_distance: cfg.interaction.fade_distance,
             min_opacity: cfg.interaction.min_opacity,
+            orb_rest_transparency: config::normalize_rest_transparency(
+                cfg.interaction.orb_rest_transparency,
+            ),
+            panel_rest_transparency: config::normalize_rest_transparency(
+                cfg.interaction.panel_rest_transparency,
+            ),
             supported,
         },
         bots,
@@ -1238,6 +1248,15 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
             fade_enabled: raw.fade_enabled.unwrap_or(true),
             fade_distance: config::normalize_fade_distance(raw.fade_distance.unwrap_or(120.0)),
             min_opacity: config::normalize_min_opacity(raw.min_opacity.unwrap_or(0.25)),
+            // A form without the field keeps what the file already has.
+            orb_rest_transparency: config::normalize_rest_transparency(
+                raw.orb_rest_transparency
+                    .unwrap_or(previous.interaction.orb_rest_transparency),
+            ),
+            panel_rest_transparency: config::normalize_rest_transparency(
+                raw.panel_rest_transparency
+                    .unwrap_or(previous.interaction.panel_rest_transparency),
+            ),
         },
         None => previous.interaction.clone(),
     };

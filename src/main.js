@@ -177,6 +177,9 @@ import {
   applyDropdownDismiss,
   colorForIndex,
   elementStates,
+  normalizeRestTransparency,
+  panelOpacity,
+  restOpacity,
   focusLossAction,
   latchedElementIds,
   osFocusAction,
@@ -1228,9 +1231,20 @@ function restingTransform(value) {
 
 function idleOrbOpacity(shell) {
   void shell;
-  // Resting orbs are opaque (R-OB-05). The near fade is the proximity poll,
-  // not this collapse floor. A missing cursor must not leave the disc dim.
-  return 1;
+  // Resting orbs are opaque by default (R-OB-05); the resting see-through
+  // setting is the only thing that dims them (R-OB-07). The near fade is
+  // the proximity poll, not this collapse floor.
+  return orbRestOpacity();
+}
+
+/** Resting orb opacity from settings. 1 unless the user picked see-through. */
+function orbRestOpacity() {
+  return restOpacity(state.interaction?.orbRestTransparency);
+}
+
+/** Resting panel opacity from settings. 1 unless the user picked see-through. */
+function panelRestOpacity() {
+  return restOpacity(state.interaction?.panelRestTransparency);
 }
 
 function planWidthPx() {
@@ -3848,6 +3862,8 @@ const state = {
     fadeEnabled: true,
     fadeDistance: 120,
     minOpacity: 0.25,
+    orbRestTransparency: 0,
+    panelRestTransparency: 0,
     supported: true,
   },
   pointerHitId: "",
@@ -8236,8 +8252,16 @@ function applyInteraction(raw) {
     fadeEnabled: interaction.fade_enabled !== false && interaction.fadeEnabled !== false,
     fadeDistance: Number(interaction.fade_distance ?? interaction.fadeDistance ?? 120),
     minOpacity: Number(interaction.min_opacity ?? interaction.minOpacity ?? 0.25),
+    orbRestTransparency: normalizeRestTransparency(
+      interaction.orb_rest_transparency ?? interaction.orbRestTransparency ?? 0,
+    ),
+    panelRestTransparency: normalizeRestTransparency(
+      interaction.panel_rest_transparency ?? interaction.panelRestTransparency ?? 0,
+    ),
     supported: interaction.supported !== false,
   };
+  // A saved change repaints open panels now. Orbs follow the next frame.
+  paintHeldPanels(state.modifierHeld === true);
   document.querySelectorAll(".interact-hint").forEach((hint) => {
     hint.textContent = hintText();
   });
@@ -8249,8 +8273,25 @@ function readInteractionForm() {
     modifier: $("#interaction-modifier").value,
     fade_enabled: state.interaction?.fadeEnabled !== false && state.settings?.interaction?.fade_enabled !== false,
     fade_distance: Number.isFinite(fadeDistance) ? fadeDistance : 120,
-    min_opacity: Number($("#interaction-min-opacity").value) / 100,
+    // The form shows see-through (higher = more see-through); the file keeps opacity.
+    min_opacity: percentToOpacity($("#interaction-min-opacity").value, 0.25),
+    orb_rest_transparency: percentToTransparency($("#interaction-orb-rest").value),
+    panel_rest_transparency: percentToTransparency($("#interaction-panel-rest").value),
   };
+}
+
+/** Ctrl field: see-through % to the stored opacity, inside 0.05–0.60. */
+function percentToOpacity(raw, fallback) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || String(raw).trim() === "") return fallback;
+  return Math.min(0.6, Math.max(0.05, Math.round(100 - n) / 100));
+}
+
+/** Rest fields: see-through % to a 0–0.80 fraction. Empty is solid. */
+function percentToTransparency(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return normalizeRestTransparency(Math.round(n) / 100);
 }
 
 function fillSettings(settings) {
@@ -8280,7 +8321,11 @@ function fillSettings(settings) {
   const interaction = settings?.interaction || state.interaction;
   $("#interaction-modifier").value = interaction.modifier || "ctrl";
   const min = interaction.min_opacity ?? interaction.minOpacity ?? 0.25;
-  $("#interaction-min-opacity").value = String(Math.round(Number(min) * 100));
+  $("#interaction-min-opacity").value = String(100 - Math.round(Number(min) * 100));
+  const orbRest = interaction.orb_rest_transparency ?? interaction.orbRestTransparency ?? 0;
+  const panelRest = interaction.panel_rest_transparency ?? interaction.panelRestTransparency ?? 0;
+  $("#interaction-orb-rest").value = String(Math.round(normalizeRestTransparency(orbRest) * 100));
+  $("#interaction-panel-rest").value = String(Math.round(normalizeRestTransparency(panelRest) * 100));
   const showNames = $("#show-bot-names");
   if (showNames) showNames.checked = !!settings?.show_bot_names;
   const showTools = $("#show-tool-detail");
@@ -10349,7 +10394,10 @@ function paintOpenedHeldLook() {
 
 function paintHeldPanels(down) {
   const floor = Number(state.interaction?.minOpacity);
-  const next = down ? String(Number.isFinite(floor) ? floor : 0.25) : "1";
+  const next = String(panelOpacity(down, {
+    minOpacity: Number.isFinite(floor) ? floor : 0.25,
+    rest: panelRestOpacity(),
+  }));
   const panels = document.querySelectorAll('.morph[data-state="panel"]');
   panels.forEach((shell) => {
     // Inline opacity on the shell. The plan stays at 1 so the two layers
@@ -10358,7 +10406,10 @@ function paintHeldPanels(down) {
     // costs the frame the key was supposed to paint in.
     paintLayerOpacity(shell, next);
     const plan = planNode(shell);
-    if (plan) paintLayerOpacity(plan, "1");
+    // A plan inside the shell already takes the shell's opacity. A hosted
+    // plan (outside the shell) keeps today's Ctrl look and takes the panel
+    // resting see-through, which is 1 by default (R-CT-11).
+    if (plan) paintLayerOpacity(plan, shell.contains(plan) ? "1" : String(panelRestOpacity()));
   });
   return panels.length;
 }
@@ -10432,13 +10483,16 @@ function applyFrames(frames, interactiveAll = false) {
   document.querySelectorAll("[data-hit-id]").forEach((el) => {
     const known = map.get(el.dataset.hitId);
     const nested = !!el.parentElement?.closest?.("[data-hit-id]");
-    const value = known == null || nested ? 1 : known.opacity;
+    const orbRest = el.classList?.contains("morph") && el.dataset.state === "orb" && !nested
+      ? orbRestOpacity()
+      : 1;
+    const value = nested ? 1 : known == null ? orbRest : known.opacity;
     const nextOpacity = String(value);
     // A finished orb-idle fill is the dim already on screen. Cancelling it
     // when this frame does not know the orb would paint the lit fallback.
     el.getAnimations?.().forEach((anim) => {
       if (anim.id !== "orb-idle" || anim.playState === "running") return;
-      if (known == null && nextOpacity === "1") return;
+      if (known == null && nextOpacity === String(orbRest)) return;
       anim.cancel();
     });
     const panelShell = el.classList?.contains("morph") && el.dataset.state === "panel";
@@ -10555,7 +10609,7 @@ function syncOrbNameFade() {
       continue;
     }
     const covered = shell.dataset.orbCovered === "1";
-    const next = shell.style.opacity || (covered ? "0.00" : "1");
+    const next = shell.style.opacity || (covered ? "0.00" : String(orbRestOpacity()));
     if (label.style.opacity !== next) label.style.opacity = next;
     const settled = covered && Number.parseFloat(next) <= 0.01;
     if (settled) label.hidden = true;
@@ -10657,7 +10711,7 @@ function paintOrbNames() {
     const channels = shell?.style.getPropertyValue("--bot-rgb")?.trim();
     if (channels) node.style.setProperty("--bot-rgb", channels);
     const covered = shell?.dataset.orbCovered === "1";
-    const opacity = shell?.style.opacity || (covered ? "0.00" : "1");
+    const opacity = shell?.style.opacity || (covered ? "0.00" : String(orbRestOpacity()));
     if (node.style.opacity !== opacity) node.style.opacity = opacity;
     if (covered && Number.parseFloat(opacity) <= 0.01) node.hidden = true;
     if (state.modifierHeld === true && !covered) node.dataset.hitCapture = "1";
@@ -10905,6 +10959,8 @@ function paintLocalProximity(rects) {
     rects: list,
     fadeDistance: cfg.fadeDistance,
     minOpacity: cfg.minOpacity,
+    orbRest: orbRestOpacity(),
+    panelRest: panelRestOpacity(),
     fadeEnabled: cfg.fadeEnabled,
   });
   applyFrames(frames);
@@ -13214,7 +13270,12 @@ function restorePlanRehearsal(shell, saved, stand) {
   delete shell.dataset.rehearsal;
   delete shell._rehearsalHit;
   if (saved?.rail && shell.parentElement !== saved.rail) saved.rail.append(shell);
-  if (saved?.opacity) shell.style.opacity = saved.opacity;
+  // A fade sample written while the rehearsal pinned opacity 1 is the orb's
+  // real look. Restoring the pre-rehearsal value left a resting orb solid,
+  // because the settled fade does not write again (R-OB-05, R-OB-07).
+  const faded = shell.dataset.state === "orb" ? shell.dataset.orbFade || "" : "";
+  if (faded) shell.style.opacity = faded;
+  else if (saved?.opacity) shell.style.opacity = saved.opacity;
   else shell.style.removeProperty("opacity");
   if (saved?.pointer) shell.style.pointerEvents = saved.pointer;
   else shell.style.removeProperty("pointer-events");

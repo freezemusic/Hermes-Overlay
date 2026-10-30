@@ -178,9 +178,18 @@
               Linux 視窗管理員常用 Alt 拖移視窗（xfwm4 預設，GNOME／KDE 都常見）。揀 Alt 之後，Alt+click 可能去唔到呢個程式，設定就開唔返。可以用快捷鍵 Ctrl+Shift+Alt+H，或者系統匣選單「設定」。
             </p>
             <label class="field">
-              <span>按住修飾鍵時面板透明度（%），亦係光球平時嘅透明度</span>
-              <input id="interaction-min-opacity" type="number" min="5" max="60" step="1" value="25" />
+              <span>光球平時透明度（%），數字愈大愈透</span>
+              <input id="interaction-orb-rest" type="number" min="0" max="80" step="1" value="0" />
             </label>
+            <label class="field">
+              <span>面板平時透明度（%），數字愈大愈透</span>
+              <input id="interaction-panel-rest" type="number" min="0" max="80" step="1" value="0" />
+            </label>
+            <label class="field">
+              <span>揸住 Ctrl 時面板透明度（%），數字愈大愈透</span>
+              <input id="interaction-min-opacity" type="number" min="40" max="95" step="1" value="75" />
+            </label>
+            <p class="hint">0 係實色。平時最多 80%，等字仲睇得清、光球仲搵得到。游標行近光球時，光球會再淡（最少 70% 透），揸住 Ctrl 就返實色可以撳。</p>
             <p id="interaction-support" class="hint"></p>
             <label class="show-toggle" for="show-bot-names">
               <input id="show-bot-names" type="checkbox" />
