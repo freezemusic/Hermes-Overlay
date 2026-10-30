@@ -47,6 +47,7 @@ import {
   COLLAPSE_EASE,
   planEase,
   seamAdvanceMs,
+  seamCadenceMs,
   seamFrameStep,
   seamVisibleMs,
   seamClipStillClosed,
@@ -2513,6 +2514,16 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
   let shownMs = 0;
   let frameMs = 0;
   let pace = false;
+  // R-PL-04: cadence from the last three gaps (not the first one), and the
+  // wall clock since pacing started, so a slow or doubled frame cannot
+  // stretch the 280ms reveal.
+  const gaps = [];
+  let wallStamp = 0;
+  let wallBase = 0;
+  const startWall = (stamp) => {
+    wallStamp = stamp;
+    wallBase = shownMs;
+  };
   const sampleLate = (stamp) => {
     if (!anim || anim.playState === "idle") return;
     if (anim.playState === "finished") {
@@ -2524,7 +2535,11 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
     presented += 1;
     const gap = lastStamp ? Math.abs(lastStamp - stamp) : 0;
     lastStamp = stamp;
-    if (!frameMs && gap >= 8 && gap <= 40) frameMs = gap;
+    if (gap > 0) {
+      gaps.push(gap);
+      if (gaps.length > 3) gaps.shift();
+      frameMs = seamCadenceMs(gaps);
+    }
     const lie = current > 400;
     if ((anim.playState === "paused" || lie) && !pace) {
       try { anim.currentTime = 0; } catch { /* keep the pin */ }
@@ -2565,6 +2580,7 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
       }
       shownMs = shown > 0 ? shown : seamVisibleMs(current);
       pace = true;
+      startWall(stamp);
       requestAnimationFrame(sampleLate);
       return;
     }
@@ -2578,6 +2594,7 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
       heldOpen = true;
       confirm(presented);
       pace = true;
+      startWall(stamp);
       requestAnimationFrame(sampleLate);
       return;
     }
@@ -2593,6 +2610,7 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
       heldOpen = true;
       confirm(presented);
       pace = true;
+      startWall(stamp);
     } else if (pace) {
       const frame = frameMs || 16;
       let next = seamAdvanceMs(current, {
@@ -2600,6 +2618,7 @@ function alignSeamClock(anim, onPresented, warm = false, shell = null) {
         gapMs: gap,
         frameMs: frame,
         duration: PLAN_GROW_MS,
+        wallMs: wallStamp ? wallBase + (stamp - wallStamp) : null,
       });
       if (shownMs > 0 && next <= shownMs + 0.5 && next < PLAN_GROW_MS) {
         next = Math.min(PLAN_GROW_MS, shownMs + frame);

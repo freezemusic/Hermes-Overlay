@@ -413,6 +413,11 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClock, /seamFrameStep/);
   assert.match(seamClock, /seamVisibleMs/);
   assert.match(seamClock, /seamAdvanceMs/);
+  // R-PL-04: cadence is re-measured every frame and the wall clock is passed,
+  // not a frameMs learned once from the first (possibly doubled) gap.
+  assert.match(seamClock, /seamCadenceMs\(gaps\)/);
+  assert.match(seamClock, /wallMs: wallStamp/);
+  assert.doesNotMatch(seamClock, /!frameMs && gap >= 8/);
   assert.match(seamClock, /currentTime = 20/);
   assert.match(seamClock, /currentTime = 45/);
   assert.match(seamClock, /shownMs <= 20\.5/);
