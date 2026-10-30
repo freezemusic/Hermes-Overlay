@@ -11445,6 +11445,8 @@ function renderSuborbs() {
     state.openIds = closePanel(state.openIds, id);
     releaseSuborbNodes(shell);
   });
+  // R-OB-06: a sub-orb that just appeared or moved gets its plate now, not on the next paint.
+  if (state.showBotNames) paintOrbNames();
   scheduleHitSync();
 }
 
@@ -11571,6 +11573,8 @@ function paintSuborbDisc(id, row) {
   const label = live?.title || "任務";
   btn.setAttribute("aria-label", pinned ? `${label}，已釘住` : label);
   btn.title = label;
+  // R-OB-06 plate shows the task title only, not the 已釘住 suffix.
+  if (btn.dataset.orbName !== label) btn.dataset.orbName = label;
 }
 
 function releaseSuborbGlow(shell) {
