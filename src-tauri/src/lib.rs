@@ -2878,18 +2878,12 @@ fn remember_kanban_url(app: &AppHandle, url: &str) -> Result<(), String> {
     config::save(&path, &cfg)
 }
 
+/// Opens the PKCE authorize URL in the system browser.
+/// Not `cmd /C start`: Rust leaves a URL without spaces unquoted, so cmd.exe
+/// cuts it at the first `&` and the browser loses `code_challenge` (400).
+/// The opener hands the whole URL to the OS (PowerShell/Explorer, xdg-open, open), no cmd.exe.
 fn open_system_browser(url: &str) -> Result<(), String> {
-    let result = if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()
-    } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).spawn()
-    } else {
-        std::process::Command::new("xdg-open").arg(url).spawn()
-    };
-    result
-        .map(|_| ())
+    tauri_plugin_opener::open_url(url, None::<&str>)
         .map_err(|_| "開唔到系統瀏覽器。可以喺設定填帳號密碼。".into())
 }
 
