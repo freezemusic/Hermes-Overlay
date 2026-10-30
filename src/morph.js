@@ -861,27 +861,60 @@ export function seamVisibleMs(elapsedMs, index = 0) {
   return elapsed > cap ? cap : elapsed;
 }
 
+/** Shortest frame the seam clock trusts. A doubled callback (gap 1–12ms)
+ *  is not the display cadence; learning it made every normal 16ms gap look
+ *  like a stall and ran the 280ms reveal at about half speed (v132 L1-2:
+ *  frameMs 9, wall 400ms). */
+export const SEAM_FRAME_FLOOR_MS = 16;
+/** Longest frame the seam clock treats as cadence rather than a hole. */
+export const SEAM_FRAME_CEIL_MS = 50;
+
+/**
+ * Display cadence for the seam clock: the median of the last three callback
+ * gaps, clamped to [SEAM_FRAME_FLOOR_MS, SEAM_FRAME_CEIL_MS]. A box running
+ * at a steady ~30fps reports ~33ms, so its normal gaps are not "stalls".
+ * Gaps under 1ms or over 400ms are not frames and are ignored.
+ */
+export function seamCadenceMs(gaps = []) {
+  const recent = (Array.isArray(gaps) ? gaps : [])
+    .map(Number)
+    .filter((g) => Number.isFinite(g) && g >= 1 && g <= 400)
+    .slice(-3)
+    .sort((a, b) => a - b);
+  if (!recent.length) return SEAM_FRAME_FLOOR_MS;
+  const mid = recent[Math.floor(recent.length / 2)];
+  return Math.min(SEAM_FRAME_CEIL_MS, Math.max(SEAM_FRAME_FLOOR_MS, mid));
+}
+
 /**
  * Timeline position for one presented seam frame.
  * The first sample (`shownMs` 0) is capped at 20ms.
  * The second sample (the first pin, still ≤20ms) is capped at 45ms.
  * Every later sample is strictly ahead of the previous one by at least
  * half a frame, otherwise a full frame of the curve (the 20ms pin and a
- * 22ms follow-up are the same reveal). A callback gap longer than one
- * frame advances at most one frame, unless elapsed is already past twice
- * the duration.
+ * 22ms follow-up are the same reveal). A callback gap longer than one and
+ * a half frames advances at most one frame, unless elapsed is already past
+ * twice the duration. `frameMs` is never below SEAM_FRAME_FLOOR_MS.
+ *
+ * `wallMs` (optional) is where the curve would be on the wall clock since
+ * the first presented sample. After a hole the shown clock is behind it;
+ * normal frames then advance one extra frame per callback until they
+ * catch up, so the reveal still ends close to PLAN_GROW_MS of wall time
+ * instead of stretching by every hole (R-PL-04 stays 280ms).
  */
 export function seamAdvanceMs(elapsedMs, {
   shownMs = 0,
   gapMs = 0,
   frameMs = 16,
   duration = PLAN_GROW_MS,
+  wallMs = null,
 } = {}) {
   const elapsed = Math.max(0, Number(elapsedMs) || 0);
   const shown = Math.max(0, Number(shownMs) || 0);
   const gap = Math.max(0, Number(gapMs) || 0);
   const span = duration > 0 ? duration : PLAN_GROW_MS;
-  const frame = frameMs > 0 ? frameMs : 16;
+  const frame = Math.max(SEAM_FRAME_FLOOR_MS, frameMs > 0 ? frameMs : 16);
+  const wall = Number(wallMs);
   if (!(shown > 0)) return seamVisibleMs(elapsed, 0);
   // Past twice the duration the clock may jump, but only after the 45ms cap.
   if (elapsed > span * 2 && shown > 20.5) return Math.min(span, elapsed);
@@ -898,6 +931,10 @@ export function seamAdvanceMs(elapsedMs, {
     next = stalled && !flatTail
       ? Math.min(span, shown + frame)
       : Math.min(span, Math.max(shown, elapsed));
+    // Behind the wall clock after a hole: one extra frame per normal callback.
+    if (!stalled && Number.isFinite(wall) && wall > next) {
+      next = Math.min(span, wall, next + frame);
+    }
   }
   if (next < span && next < shown + frame * 0.5) {
     next = Math.min(span, shown + frame);
