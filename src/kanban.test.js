@@ -215,3 +215,14 @@ test("an omitted slug follows the current board and done starts collapsed", () =
   assert.doesNotMatch(paint, /set_kanban_board/);
   assert.doesNotMatch(main, /include_archived/);
 });
+
+test("a card move is sent for the board on screen (R-KB-07, 9119 ?board=)", () => {
+  const main = fs.readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const start = main.indexOf("async function dropKanban");
+  const drop = main.slice(start, main.indexOf("\n}\n", start));
+  assert.match(drop, /String\(previous\.board \|\| ""\)\.trim\(\) \|\| kanbanRequestSlug\(state\.kanban\.explicit\)/);
+  assert.match(drop, /invoke\("patch_kanban_task", \{ id: taskId, patch: \{ status \}, \.\.\.\(board \? \{ board \} : \{\}\) \}\)/);
+  // A refused move puts the card back and shows the reason.
+  assert.match(drop, /state\.kanban\.board = previous/);
+  assert.match(drop, /setKanbanError\(kanbanErrorText\(err\)\)/);
+});

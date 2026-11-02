@@ -13256,7 +13256,10 @@ async function dropKanban(taskId, status) {
   state.kanban.saving = true;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("patch_kanban_task", { id: taskId, patch: { status } });
+    // R-KB-07: the move goes to the board on screen (9119 `?board=`); empty
+    // follows the server's current board, same as the read.
+    const board = String(previous.board || "").trim() || kanbanRequestSlug(state.kanban.explicit);
+    await invoke("patch_kanban_task", { id: taskId, patch: { status }, ...(board ? { board } : {}) });
   } catch (err) {
     state.kanban.board = previous;
     state.kanban.fingerprint = boardFingerprint(previous);
