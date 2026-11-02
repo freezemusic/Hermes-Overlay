@@ -525,7 +525,7 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 - 驗收（盒）：子光球送出嘅 profile 同 session 係該任務；config 嘅 session id 不變；主光球 Bot Chat 嘅串流唔會因為子光球停止而被 abort。
 - 狀態：❓ / ❓（單元測試）。
 
-**R-SO-10** 拎舊 session 出嚟做子光球（Devon 2026-10-30）。主面板 session 揀選器隔籬（「＋」右邊）有一粒細 icon 掣，同「＋」一樣 24px，冇字，tooltip 同 aria-label 係「拎出做子光球」，唔令嗰行變高。原生揀選器唔放得入掣，所以撳 icon 喺面板入面出一張細清單（浮喺對話上面、唔出面板外，命中區跟面板），每行係一條 session 標題，tooltip／aria-label「拎出做子光球：標題」。清單跟 R-SO-06 嘅規則：唔列 Bot Chat、主光球而家綁住嗰條、已封存、同 `_YYYYMMDDHHMM`／`_YYYYMMDDHHMMSS` 結尾嘅 renew 封存列；冇得揀就寫「冇可以拎出嘅對話」。撳一行就用 R-SO-06「啱啱建立或者打開嘅 session 一定佔一粒可見光碟並打開面板」嗰條路，開一粒未釘嘅子光球同佢嘅面板。主面板留喺 Bot Chat：唔叫 `select_session`，config.json 嘅 `session_id`、explicit、anchor 位元組唔變；唔 POST `/api/sessions`；唔寫 config，除非之後 Devon 自己釘住（R-SO-07）。子光球面板唔顯示呢粒掣。Esc 或者焦點離開就收起清單。
+**R-SO-10** 拎舊 session 出嚟做子光球（Devon 2026-10-30；2026-11-02 改做一張合併清單）。主面板嘅 session 揀選器係一張自己畫嘅下拉清單（原生 `<select>` 嘅 option 放唔入掣，所以佢只係留喺背後做值），樣同高度同以前一樣，旁邊仍然有「＋」開新 session；冇另外嘅拎出掣。清單浮喺對話上面、唔出面板外，命中區跟面板；現時嗰條有標記（粗字加左邊藍線）。撳一行或者用 ↑／↓／Home／End 揀再撳 Enter，就同以前揀 session 一樣（`select_session`）；Esc、Tab 或者焦點離開就收起。合資格嘅行喺右邊有一粒細 icon 掣，冇字，tooltip「拎出做子光球」，aria-label「拎出做子光球：標題」（→ 鍵可以移去粒掣）。合資格跟 R-SO-06：唔係 Bot Chat、唔係主光球而家綁住嗰條、未封存、唔係 `_YYYYMMDDHHMM`／`_YYYYMMDDHHMMSS` 結尾嘅 renew 封存列。撳 icon 唔會同時揀嗰行：佢用 R-SO-06「啱啱建立或者打開嘅 session 一定佔一粒可見光碟並打開面板」嗰條路，開一粒未釘嘅子光球同佢嘅面板。主面板留喺 Bot Chat：唔叫 `select_session`，config.json 嘅 `session_id`、explicit、anchor 位元組唔變；唔 POST `/api/sessions`；唔寫 config，除非之後 Devon 自己釘住（R-SO-07）。清單太長就喺 240px 入面捲，每行保持一行高（26px），唔壓扁。子光球面板冇呢張清單。
 - 來源：Devon 2026-10-30 17:25（倫敦）：而家冇辦法將一條靜咗嘅舊 session 變子光球；揀選器只會切主面板，啟動時已有嘅 session 當基準，永遠唔出光球。
 - 驗收（單元＋盒）：清單唔包 Bot Chat／綁住列／封存／renew 名；撳一行之後出未釘子光球同面板，主面板 session 唔變，冇 `select_session`、冇 POST，config 位元組一樣；掣冇字、24px、唔令 header 變高。
 - 狀態：❓ / ❓。

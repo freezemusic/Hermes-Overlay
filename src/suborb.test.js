@@ -326,18 +326,71 @@ test("R-SO-10 pull-out list skips Bot Chat, the bound row, archived and renew na
   assert.deepEqual(pullOutCandidates([], ""), []);
 });
 
-test("R-SO-10 pull-out opens an unpinned sub-orb without select, POST, or config write", () => {
+test("R-SO-10 merged session menu rows mark the current row and carry the pull-out icon only where allowed", async () => {
+  const { sessionMenuEntries } = await import("./suborb.js");
+  const sessions = [
+    { id: "chat", title: "Bot Chat", last_active: 9 },
+    { id: "bound", title: "bound task", last_active: 8 },
+    { id: "arch", title: "gone", archived: true, last_active: 7 },
+    { id: "renew", title: "Bot Chat_202610291200", last_active: 6 },
+    { id: "new", title: "new task", last_active: 5 },
+    { id: "old", title: "old task", last_active: 1 },
+  ];
+  const options = [
+    { id: "chat", label: "Bot Chat" },
+    { id: "bound", label: "bound task" },
+    { id: "new", label: "new task" },
+    { id: "old", label: "old task" },
+    { id: "", label: "blank" },
+  ];
+  assert.deepEqual(sessionMenuEntries(options, sessions, "bound", "chat"), [
+    { id: "chat", label: "Bot Chat", current: true, pullable: false },
+    { id: "bound", label: "bound task", current: false, pullable: false },
+    { id: "new", label: "new task", current: false, pullable: true },
+    { id: "old", label: "old task", current: false, pullable: true },
+  ]);
+  assert.deepEqual(sessionMenuEntries([], sessions, "bound", ""), []);
+});
+
+test("R-SO-10 session menu keys move focus and clamp at the ends", async () => {
+  const { sessionMenuMove } = await import("./suborb.js");
+  assert.equal(sessionMenuMove(-1, 5, "ArrowDown"), 0);
+  assert.equal(sessionMenuMove(-1, 5, "ArrowUp"), 4);
+  assert.equal(sessionMenuMove(2, 5, "ArrowDown"), 3);
+  assert.equal(sessionMenuMove(4, 5, "ArrowDown"), 4);
+  assert.equal(sessionMenuMove(0, 5, "ArrowUp"), 0);
+  assert.equal(sessionMenuMove(2, 5, "Home"), 0);
+  assert.equal(sessionMenuMove(2, 5, "End"), 4);
+  assert.equal(sessionMenuMove(2, 5, "x"), 2);
+  assert.equal(sessionMenuMove(0, 0, "ArrowDown"), -1);
+});
+
+test("R-SO-10 pull-out icon sits in the session menu row and opens an unpinned sub-orb without select, POST, or config write", () => {
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
-  const body = main.slice(main.indexOf("/** R-SO-10: icon beside"), main.indexOf("function installNewSessionButton"));
-  assert.match(body, /PULL_SUBORB_LABEL/);
-  assert.match(body, /button\.title = PULL_SUBORB_LABEL/);
-  assert.match(body, /aria-label", PULL_SUBORB_LABEL/);
-  assert.doesNotMatch(body, /button\.textContent/);
-  assert.match(body, /isSuborbId\(id\)/);
-  assert.match(body, /forced\[sessionId\] = true/);
-  assert.match(body, /openSuborbPanel\(suborbPanelId\(profile, sessionId\)\)/);
-  assert.doesNotMatch(body, /invoke\(|select_session|pickSession|create_task_session|set_suborb_pin|sessionExplicit|sessionAnchor/);
+  assert.doesNotMatch(main, /installPullSuborbButton|togglePullSuborbList|closePullSuborbList|pull-suborb-list|pull-suborb-btn/);
+  const menu = main.slice(main.indexOf("function installSessionMenu"), main.indexOf("function pullOutSuborb"));
+  assert.match(menu, /isSuborbId\(id\)/);
+  assert.match(menu, /pull\.title = PULL_SUBORB_LABEL/);
+  assert.match(menu, /aria-label", `\$\{PULL_SUBORB_LABEL\}：/);
+  assert.doesNotMatch(menu, /pull\.textContent/);
+  const icon = menu.slice(menu.indexOf('pull.addEventListener("click"'), menu.indexOf("row.append(pull)"));
+  assert.match(icon, /event\.stopPropagation\(\)/);
+  assert.match(icon, /pullOutSuborb\(gatewayProfile\(id\), entry\.id\)/);
+  assert.doesNotMatch(icon, /chooseSessionMenuRow|dispatchEvent|select\.value/);
+  const rowClick = menu.slice(menu.indexOf('row.addEventListener("click"'), menu.indexOf("return row;"));
+  assert.match(rowClick, /closest\?\.\("\.session-pull-btn"\)\) return/);
+  const render = menu.slice(menu.indexOf("function renderSessionMenu"), menu.indexOf("function chooseSessionMenuRow"));
+  assert.match(render, /if \(menu\.dataset\.key === key && menu\.childElementCount\) return;/, "the refresh tick must not rebuild an unchanged open menu");
+  assert.match(render, /focus\(\{ preventScroll: true \}\)/);
+  const choose = menu.slice(menu.indexOf("function chooseSessionMenuRow"), menu.indexOf("function onSessionMenuKey"));
+  assert.match(choose, /select\.value = sessionId/);
+  assert.match(choose, /dispatchEvent\(new Event\("change"/);
+  const pull = main.slice(main.indexOf("function pullOutSuborb"), main.indexOf("function installNewSessionButton"));
+  assert.match(pull, /forced\[sessionId\] = true/);
+  assert.match(pull, /openSuborbPanel\(suborbPanelId\(profile, sessionId\)\)/);
+  assert.doesNotMatch(pull, /invoke\(|select_session|pickSession|create_task_session|set_suborb_pin|sessionExplicit|sessionAnchor/);
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-  assert.match(css, /\.icon-btn\.pull-suborb-btn \{[^}]*width:\s*24px;[^}]*height:\s*24px/s);
-  assert.match(css, /\.pull-suborb-list \{[^}]*position:\s*absolute/s);
+  assert.doesNotMatch(css, /\.pull-suborb/);
+  assert.match(css, /\.session-menu \{[^}]*position:\s*absolute/s);
+  assert.match(css, /\.icon-btn\.session-pull-btn \{[^}]*width:\s*20px;[^}]*height:\s*20px/s);
 });

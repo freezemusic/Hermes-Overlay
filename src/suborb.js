@@ -160,6 +160,33 @@ export function pullOutCandidates(sessions = [], mainId = "") {
     .sort((a, b) => b.last_active - a.last_active);
 }
 
+/**
+ * R-SO-10: rows of the merged session menu. `options` are the picker's own
+ * rows ({ id, label }) in picker order; `selectedId` is the row marked as the
+ * current session. A row gets the pull-out icon only when pullOutCandidates
+ * would list it (no Bot Chat, not the bound row, not archived, no renew copy).
+ */
+export function sessionMenuEntries(options = [], sessions = [], mainId = "", selectedId = "") {
+  const pullable = new Set(pullOutCandidates(sessions, mainId).map((row) => row.id));
+  return (options || [])
+    .filter((option) => option && String(option.id || ""))
+    .map((option) => {
+      const id = String(option.id);
+      return { id, label: String(option.label || ""), current: id === String(selectedId || ""), pullable: pullable.has(id) };
+    });
+}
+
+/** Keyboard focus move in the session menu. Returns the new row index. */
+export function sessionMenuMove(index, count, key) {
+  if (count <= 0) return -1;
+  const at = Number.isInteger(index) && index >= 0 && index < count ? index : -1;
+  if (key === "Home" || key === "PageUp") return 0;
+  if (key === "End" || key === "PageDown") return count - 1;
+  if (key === "ArrowDown") return at < 0 ? 0 : Math.min(count - 1, at + 1);
+  if (key === "ArrowUp") return at < 0 ? count - 1 : Math.max(0, at - 1);
+  return at;
+}
+
 export function suborbChannels({ running = false, waiting = false, failed = false, plan = false, unread = false } = {}) {
   let badge = "";
   if (waiting) badge = "waiting";

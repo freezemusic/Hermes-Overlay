@@ -12,7 +12,8 @@ import {
   gatewayProfile,
   isSuborbId,
   PULL_SUBORB_LABEL,
-  pullOutCandidates,
+  sessionMenuEntries,
+  sessionMenuMove,
   normalizeTaskTitle,
   sessionCreateError,
   uniqueTaskTitle,
@@ -5784,9 +5785,13 @@ function paintSessionSelect(id, options = {}) {
   const sessions = thread?.sessions || [];
   const key = sessionMenuKey(thread?.sessionId, sessions);
   const rebuild = options.rebuild === true || !state.dropdownOpen;
-  if (!options.rebuild && select.dataset.key === key) return;
+  if (!options.rebuild && select.dataset.key === key) {
+    syncSessionMenu(id);
+    return;
+  }
   writeSessionMenu(select, sessions, thread?.sessionId || "", { rebuild, menuOpen: !!state.dropdownOpen });
   select.dataset.key = key;
+  syncSessionMenu(id);
 }
 
 async function pickSession(id, sessionId) {
@@ -5819,6 +5824,7 @@ async function pickSession(id, sessionId) {
     applyOpened(id, opened);
   } catch (err) {
     if (select) select.value = thread.sessionId;
+    syncSessionMenu(id);
     showActionError(String(err));
   }
 }
@@ -6569,8 +6575,8 @@ function wireBotPanel(panel, id) {
       osModifierDown: state.osModifierDown,
     }) === "send") sendActive(id);
   });
+  installSessionMenu(panel, id);
   installNewSessionButton(panel, id);
-  installPullSuborbButton(panel, id);
 }
 
 async function loadSoul(id) {
@@ -9287,6 +9293,11 @@ function setupComposer() {
   }, true);
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || event.repeat) return;
+    if (closeOpenSessionMenu()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     const menu = $("#orb-menu");
     const action = escapeTarget({
       menuOpen: !!(menu && !menu.hidden),
@@ -12080,87 +12091,212 @@ async function createTaskSession(profile, rawTitle, fromId = "") {
   }
 }
 
-/** R-SO-10: icon beside ＋ that lists quiet sessions to pull out as an unpinned sub-orb. */
-function installPullSuborbButton(panel, id) {
-  if (!panel || isSuborbId(id) || role(panel, "pull-suborb")) return;
-  const session = role(panel, "session");
-  if (!session) return;
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "icon-btn pull-suborb-btn";
-  button.dataset.role = "pull-suborb";
-  button.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="5.5" cy="10.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8.5 7.5 13 3M9.5 3H13v3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  button.title = PULL_SUBORB_LABEL;
-  button.setAttribute("aria-label", PULL_SUBORB_LABEL);
-  button.setAttribute("aria-haspopup", "true");
-  button.setAttribute("aria-expanded", "false");
-  (role(panel, "new-session") || session).after(button);
-  button.addEventListener("click", (event) => {
+const PULL_SUBORB_SVG = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><circle cx="5.5" cy="10.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8.5 7.5 13 3M9.5 3H13v3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+/**
+ * R-SO-10: one merged session menu. The native <select> stays as the hidden
+ * value holder (writeSessionMenu, change -> pickSession), so selection works
+ * as before. A native option cannot hold a button, so the visible picker is a
+ * button plus an in-panel listbox; each eligible row has a 拎出做子光球 icon.
+ */
+function installSessionMenu(panel, id) {
+  if (!panel || isSuborbId(id) || role(panel, "session-trigger")) return;
+  const select = role(panel, "session");
+  if (!select) return;
+  select.classList.add("is-menu-backed");
+  select.tabIndex = -1;
+  select.setAttribute("aria-hidden", "true");
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "session-select session-trigger";
+  trigger.dataset.role = "session-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.setAttribute("aria-label", "揀一個對話");
+  select.after(trigger);
+  const menu = document.createElement("div");
+  menu.dataset.role = "session-menu";
+  menu.className = "session-menu";
+  menu.setAttribute("role", "listbox");
+  menu.setAttribute("aria-label", "揀一個對話");
+  menu.hidden = true;
+  select.closest(".chat-head")?.appendChild(menu);
+  trigger.addEventListener("click", (event) => {
     event.stopPropagation();
-    togglePullSuborbList(panel, id);
+    if (sessionMenuOpen(panel)) closeSessionMenu(panel);
+    else openSessionMenu(panel, id);
   });
+  trigger.addEventListener("keydown", (event) => {
+    if (sessionMenuOpen(panel) || !selectKeyOpensDropdown(event.key)) return;
+    event.preventDefault();
+    openSessionMenu(panel, id);
+  });
+  menu.addEventListener("keydown", (event) => onSessionMenuKey(panel, id, event));
+  menu.addEventListener("focusout", (event) => {
+    const next = event.relatedTarget;
+    if (next && (menu.contains(next) || next === trigger)) return;
+    closeSessionMenu(panel);
+  });
+  syncSessionMenu(id, panel);
 }
 
-function closePullSuborbList(panel) {
-  const list = role(panel, "pull-suborb-list");
-  if (list) list.hidden = true;
-  role(panel, "pull-suborb")?.setAttribute("aria-expanded", "false");
+function sessionMenuOpen(panel) {
+  const menu = role(panel, "session-menu");
+  return !!(menu && !menu.hidden);
 }
 
-function togglePullSuborbList(panel, id) {
-  let list = role(panel, "pull-suborb-list");
-  if (list && !list.hidden) {
-    closePullSuborbList(panel);
+function openSessionMenu(panel, id) {
+  const menu = role(panel, "session-menu");
+  const trigger = role(panel, "session-trigger");
+  if (!menu || !trigger || trigger.disabled) return;
+  paintSessionSelect(id, { rebuild: true });
+  delete menu.dataset.key;
+  renderSessionMenu(panel, id);
+  menu.hidden = false;
+  trigger.setAttribute("aria-expanded", "true");
+  const rows = [...menu.querySelectorAll(".session-menu-row")];
+  const start = rows.find((row) => row.getAttribute("aria-selected") === "true") || rows[0];
+  start?.focus();
+  start?.scrollIntoView?.({ block: "nearest" });
+}
+
+function closeSessionMenu(panel, { focusTrigger = false } = {}) {
+  const menu = role(panel, "session-menu");
+  if (menu) menu.hidden = true;
+  const trigger = role(panel, "session-trigger");
+  trigger?.setAttribute("aria-expanded", "false");
+  if (focusTrigger) trigger?.focus();
+}
+
+/** Escape closes an open session menu before it can close the panel. */
+function closeOpenSessionMenu() {
+  for (const menu of document.querySelectorAll(".session-menu:not([hidden])")) {
+    const panel = menu.closest(".bot-panel");
+    if (panel) {
+      closeSessionMenu(panel, { focusTrigger: menu.contains(document.activeElement) });
+      return true;
+    }
+  }
+  return false;
+}
+
+function renderSessionMenu(panel, id) {
+  const menu = role(panel, "session-menu");
+  const select = role(panel, "session");
+  if (!menu || !select) return;
+  const thread = threadFor(id);
+  const focusedId = menu.contains(document.activeElement)
+    ? document.activeElement.closest(".session-menu-row")?.dataset.sessionId || ""
+    : "";
+  const focusedPull = !!document.activeElement?.closest?.(".session-pull-btn") && menu.contains(document.activeElement);
+  const options = select.disabled ? [] : [...select.options].map((option) => ({ id: option.value, label: option.textContent }));
+  const entries = sessionMenuEntries(options, thread.sessions || [], thread.sessionId || "", select.value);
+  // The refresh tick repaints the picker every few seconds. Rebuilding the
+  // same rows would drop hover and jump the scroll under the pointer.
+  const key = JSON.stringify(entries);
+  if (menu.dataset.key === key && menu.childElementCount) return;
+  menu.dataset.key = key;
+  const scrollTop = menu.scrollTop;
+  const rows = entries.map((entry) => {
+    const row = document.createElement("div");
+    row.className = "session-menu-row";
+    row.setAttribute("role", "option");
+    row.tabIndex = -1;
+    row.dataset.sessionId = entry.id;
+    row.setAttribute("aria-selected", entry.current ? "true" : "false");
+    const label = document.createElement("span");
+    label.className = "session-menu-label";
+    label.textContent = entry.label;
+    row.title = entry.label;
+    row.append(label);
+    if (entry.pullable) {
+      const pull = document.createElement("button");
+      pull.type = "button";
+      pull.className = "icon-btn session-pull-btn";
+      pull.dataset.role = "pull-suborb";
+      pull.tabIndex = -1;
+      pull.innerHTML = PULL_SUBORB_SVG;
+      pull.title = PULL_SUBORB_LABEL;
+      pull.setAttribute("aria-label", `${PULL_SUBORB_LABEL}：${entry.label}`);
+      pull.addEventListener("click", (event) => {
+        // The icon must not also pick the row.
+        event.preventDefault();
+        event.stopPropagation();
+        closeSessionMenu(panel, { focusTrigger: true });
+        pullOutSuborb(gatewayProfile(id), entry.id);
+      });
+      row.append(pull);
+    }
+    row.addEventListener("click", (event) => {
+      if (event.target.closest?.(".session-pull-btn")) return;
+      chooseSessionMenuRow(panel, id, entry.id);
+    });
+    return row;
+  });
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "session-menu-empty";
+    empty.textContent = "未有對話";
+    rows.push(empty);
+  }
+  menu.replaceChildren(...rows);
+  menu.scrollTop = scrollTop;
+  if (focusedId) {
+    const again = [...menu.querySelectorAll(".session-menu-row")].find((row) => row.dataset.sessionId === focusedId);
+    (focusedPull ? again?.querySelector(".session-pull-btn") : again)?.focus({ preventScroll: true });
+  }
+}
+
+function chooseSessionMenuRow(panel, id, sessionId) {
+  const select = role(panel, "session");
+  closeSessionMenu(panel, { focusTrigger: true });
+  if (!select || !sessionId || select.value === sessionId) return;
+  select.value = sessionId;
+  syncSessionMenu(id, panel);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function onSessionMenuKey(panel, id, event) {
+  const menu = role(panel, "session-menu");
+  if (!menu) return;
+  const rows = [...menu.querySelectorAll(".session-menu-row")];
+  const row = event.target.closest?.(".session-menu-row");
+  const onPull = !!event.target.closest?.(".session-pull-btn");
+  if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End" || event.key === "PageUp" || event.key === "PageDown") {
+    event.preventDefault();
+    const next = rows[sessionMenuMove(rows.indexOf(row), rows.length, event.key)];
+    next?.focus();
+    next?.scrollIntoView?.({ block: "nearest" });
     return;
   }
-  if (!list) {
-    list = document.createElement("div");
-    list.dataset.role = "pull-suborb-list";
-    list.className = "pull-suborb-list";
-    list.setAttribute("role", "menu");
-    list.setAttribute("aria-label", PULL_SUBORB_LABEL);
-    list.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      closePullSuborbList(panel);
-      role(panel, "pull-suborb")?.focus();
-    });
-    list.addEventListener("focusout", (event) => {
-      const next = event.relatedTarget;
-      if (next && (list.contains(next) || next === role(panel, "pull-suborb"))) return;
-      closePullSuborbList(panel);
-    });
-    role(panel, "session")?.closest(".chat-head")?.appendChild(list);
+  if (event.key === "ArrowRight" && row && !onPull) {
+    const pull = row.querySelector(".session-pull-btn");
+    if (pull) { event.preventDefault(); pull.focus(); }
+    return;
   }
-  const thread = threadFor(id);
-  const rows = pullOutCandidates(thread.sessions || [], thread.sessionId || "");
-  const items = rows.map((row) => {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "pull-suborb-row";
-    item.setAttribute("role", "menuitem");
-    item.dataset.sessionId = row.id;
-    const label = `${PULL_SUBORB_LABEL}：${row.title}`;
-    item.title = label;
-    item.setAttribute("aria-label", label);
-    item.textContent = row.title;
-    item.addEventListener("click", (event) => {
-      event.stopPropagation();
-      closePullSuborbList(panel);
-      pullOutSuborb(gatewayProfile(id), row.id);
-    });
-    return item;
-  });
-  if (!items.length) {
-    const empty = document.createElement("p");
-    empty.className = "pull-suborb-empty";
-    empty.textContent = "冇可以拎出嘅對話";
-    items.push(empty);
+  if (event.key === "ArrowLeft" && onPull && row) {
+    event.preventDefault();
+    row.focus();
+    return;
   }
-  list.replaceChildren(...items);
-  list.hidden = false;
-  role(panel, "pull-suborb")?.setAttribute("aria-expanded", "true");
-  list.querySelector("button")?.focus();
+  if ((event.key === "Enter" || event.key === " ") && row && !onPull) {
+    event.preventDefault();
+    chooseSessionMenuRow(panel, id, row.dataset.sessionId || "");
+    return;
+  }
+  if (event.key === "Tab") closeSessionMenu(panel);
+}
+
+/** Trigger label follows the hidden select; an open menu re-renders in place. */
+function syncSessionMenu(id, panel = panelFor(id)) {
+  const select = role(panel, "session");
+  const trigger = role(panel, "session-trigger");
+  if (!select || !trigger) return;
+  const label = select.selectedOptions?.[0]?.textContent || select.options?.[0]?.textContent || "未有對話";
+  if (trigger.textContent !== label) trigger.textContent = label;
+  trigger.title = label;
+  trigger.disabled = !!select.disabled;
+  if (sessionMenuOpen(panel)) renderSessionMenu(panel, id);
 }
 
 /**
@@ -12193,7 +12329,7 @@ function installNewSessionButton(panel, id) {
   button.setAttribute("aria-expanded", "false");
   // Compact icon beside the session picker; a sub-orb has no picker, so it sits in the header actions.
   const session = role(panel, "session");
-  if (!isSuborbId(id) && session) session.after(button);
+  if (!isSuborbId(id) && session) (role(panel, "session-trigger") || session).after(button);
   else (role(panel, "pin") || role(panel, "close"))?.before(button);
   button.addEventListener("click", () => toggleNewSessionForm(panel, id));
 }
@@ -12274,6 +12410,11 @@ async function openParentSessionPicker(profile) {
   const select = role(panelFor(profile), "session");
   if (!select) return;
   paintSessionSelect(profile, { rebuild: true });
+  const panel = panelFor(profile);
+  if (role(panel, "session-trigger")) {
+    openSessionMenu(panel, profile);
+    return;
+  }
   select.focus();
   if (typeof select.showPicker === "function") {
     try { select.showPicker(); } catch { /* The focused menu is enough. */ }

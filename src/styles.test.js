@@ -1501,3 +1501,27 @@ test("plan rehearsal restore keeps the orb's latest fade sample (R-OB-07)", () =
   assert.match(body, /shell\.dataset\.state === "orb" \? shell\.dataset\.orbFade/);
   assert.ok(body.indexOf("if (faded) shell.style.opacity = faded") < body.indexOf("saved.opacity"));
 });
+
+test("session menu rows keep one line height when the list scrolls (R-SO-10)", () => {
+  // jsdom has no layout, so read the cascade: a column flex item with
+  // overflow:hidden has min-height 0 and shrinks to its padding unless
+  // flex-shrink is 0. Devon 2026-11-02: a long list painted as blank slivers.
+  const list = css.match(/\.session-menu\s*\{([^}]*)\}/);
+  assert.ok(list, ".session-menu rule");
+  assert.match(list[1], /display:\s*flex/);
+  assert.match(list[1], /flex-direction:\s*column/);
+  assert.match(list[1], /max-height:\s*240px/);
+  assert.match(list[1], /overflow-y:\s*auto/);
+  assert.match(css, /html\.platform-linux \.session-menu \{ padding-right: 22px; \}/, "rows stay clear of the GTK overlay scrollbar");
+  const dom = new JSDOM(`<style>${css}</style><div class="chat-head"><div class="session-menu" role="listbox"><div class="session-menu-row" role="option"><span class="session-menu-label">a</span></div><p class="session-menu-empty">b</p></div></div>`);
+  const { document, getComputedStyle } = dom.window;
+  for (const sel of [".session-menu-row", ".session-menu-empty"]) {
+    const style = getComputedStyle(document.querySelector(sel));
+    const shrink = style.flexShrink || (style.flex === "none" ? "0" : "");
+    assert.equal(shrink, "0", `${sel} must not shrink (flex ${style.flex} / shrink ${style.flexShrink})`);
+  }
+  assert.equal(getComputedStyle(document.querySelector(".session-menu-row")).height, "26px");
+  for (const rule of css.matchAll(/([^{}]*\.session-menu-(?:row|empty)[^{}]*)\{([^}]*)\}/g)) {
+    assert.doesNotMatch(rule[2], /flex(?:-shrink)?:\s*(?:1|auto|0 1)/, `${rule[1].trim()} brings shrinking back`);
+  }
+});

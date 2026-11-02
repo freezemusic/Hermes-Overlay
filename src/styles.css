@@ -3628,26 +3628,25 @@ html[data-pass="1"] .plan-hit-host * {
   font: 500 16px/1 var(--font-label);
 }
 .icon-btn.new-session-btn[aria-expanded="true"] { background: var(--bot-10); }
-/* R-SO-10: same 24px icon as ＋; the list floats inside the panel so the row height stays. */
+/* R-SO-10: one merged session menu. The native select is only the value
+   holder; the trigger keeps its look and the list floats inside the panel. */
 .chat-head { position: relative; }
-.icon-btn.pull-suborb-btn {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
+.session-select.is-menu-backed { display: none !important; }
+.session-trigger {
+  display: block;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.icon-btn.pull-suborb-btn[aria-expanded="true"] { background: var(--bot-10); }
-.icon-btn.pull-suborb-btn:focus-visible { outline: 2px solid #0000f2; outline-offset: 1px; }
-.pull-suborb-list {
+.session-trigger:disabled { cursor: default; opacity: 0.6; }
+.session-menu {
   position: absolute;
   top: calc(100% + 4px);
+  left: 0;
   right: 0;
   z-index: 5;
-  width: min(260px, 100%);
-  max-height: 220px;
+  max-height: 240px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -3655,24 +3654,49 @@ html[data-pass="1"] .plan-hit-host * {
   background: #f8f8fc;
   border: 1px solid rgb(var(--bot-rgb, 0 0 242) / .2);
   border-radius: 2px;
+  scrollbar-width: thin;
 }
-.pull-suborb-list[hidden] { display: none; }
-.pull-suborb-row {
-  display: block;
-  width: 100%;
-  padding: 4px 8px;
-  border: 0;
-  background: transparent;
-  text-align: left;
+.session-menu[hidden] { display: none; }
+/* WebKitGTK overlay scrollbars take clicks in the last ~20px of the box
+   (box smoke 2026-11-02: the icon there hit the scroller). Keep the rows
+   clear of it; a classic scrollbar already takes its own width. */
+html.platform-linux .session-menu { padding-right: 22px; }
+/* A column flex item with overflow:hidden has min-height 0; without flex:none
+   a long list squashes every row to its padding and the titles vanish
+   (Devon 2026-11-02). */
+.session-menu-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 0 4px 0 8px;
   font: 13px/18px "Noto Sans HK", sans-serif;
   color: #14142b;
+  cursor: pointer;
+  outline: none;
+}
+.session-menu-row[aria-selected="true"] { font-weight: 600; box-shadow: inset 2px 0 0 #0000f2; }
+.session-menu-row:hover, .session-menu-row:focus-visible, .session-menu-row:focus { background: var(--bot-10); }
+.session-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
 }
-.pull-suborb-row:hover, .pull-suborb-row:focus-visible { background: var(--bot-10); outline: none; }
-.pull-suborb-empty { margin: 0; padding: 4px 8px; font: 12px/18px "Noto Sans HK", sans-serif; color: #14142b; }
+.icon-btn.session-pull-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+}
+.icon-btn.session-pull-btn:focus-visible, .icon-btn.session-pull-btn:focus { outline: 2px solid #0000f2; outline-offset: 1px; }
+.session-menu-empty { flex: none; margin: 0; padding: 4px 8px; font: 12px/18px "Noto Sans HK", sans-serif; color: #14142b; }
 .icon-btn.new-session-btn:focus-visible { outline: 2px solid #0000f2; outline-offset: 1px; }
 .new-session-form {
   flex: 1 0 100%;
