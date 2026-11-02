@@ -6835,7 +6835,34 @@ function sessionRunIsLive(thread, sessionId) {
   const liveId = String(thread.liveSessionId || thread.sessionId || "");
   if (liveId && sessionId && liveId !== sessionId) return false;
   if (thread.runId || thread.queuedRunId) return true;
-  return (thread.messages || []).some((message) => message?.role === "bot" && message.live && !message.side);
+  return (thread.messages || []).some((message) => message?.role === "bot" && message.live && !message.side && !message.remote);
+}
+
+// R-CL-03: a turn sent from another device (phone, TUI) streams into a temporary
+// bubble. On remote.done it goes away and the next watch poll paints the saved rows.
+function deliverRemote(id, payload) {
+  const sessionId = String(payload?.session_id || "").trim();
+  const thread = threadFor(id);
+  if (!sessionId || thread.sessionId !== sessionId) return;
+  const at = thread.messages.findIndex((message) => message.remote);
+  if (payload.type === "remote.done") {
+    if (at < 0) return;
+    thread.messages.splice(at, 1);
+    if (panelFor(id)) renderChat(id);
+    return;
+  }
+  if (payload.type === "remote.start") {
+    if (at < 0) appendMessage(id, { role: "bot", text: "", live: true, remote: true });
+    return;
+  }
+  const text = String(payload.text || "");
+  if (!text) return;
+  if (at < 0) {
+    appendMessage(id, { role: "bot", text, live: true, remote: true });
+    return;
+  }
+  thread.messages[at].text += text;
+  if (panelFor(id)) renderChat(id);
 }
 
 function applyReleasedWatch(id, thread, sessionId, existing, next) {
@@ -7416,6 +7443,10 @@ function handleHermes(payload) {
   const id = payload.profile;
   if (payload.type === "cron") {
     deliverCron(id, payload);
+    return;
+  }
+  if (payload.type === "remote.start" || payload.type === "remote.delta" || payload.type === "remote.done") {
+    deliverRemote(id, payload);
     return;
   }
   if (payload.type === "sessions") {
