@@ -1464,8 +1464,9 @@ async fn sync_profiles(
     let gateway = initial.gateway_base_url.clone();
     let dashboard = initial.dashboard_base_url.clone();
     if quiet {
-        // A down gateway skips this tick. R-SY-08 owns the backoff.
-        hermes::require_gateway(&state.http, &gateway)
+        // A down dashboard skips this tick. R-SY-08 owns the backoff (R-CL-01).
+        chat_client(&state, &initial)
+            .probe()
             .await
             .map_err(|err| explain(&err))?;
     }
@@ -1475,7 +1476,7 @@ async fn sync_profiles(
     // A remote list that answered. Local ~/.hermes alone never counts, so a
     // stale local folder cannot hide gateway bots (R-SY-09 removal).
     let mut listed_remote = false;
-    let health = hermes::profiles_from_gateway_health(&state.http, &gateway).await;
+    let health = gateway_legacy::profiles_from_gateway_health(&state.http, &gateway).await;
     listed_remote |= !health.is_empty();
     for item in health {
         hints.push(config::ProfileHint {
@@ -4153,7 +4154,7 @@ mod tests {
         let end = rest.find("async fn set_profile_enabled").expect("next");
         let body = &rest[..end];
         assert!(body.contains("quiet"));
-        assert!(body.contains("require_gateway"));
+        assert!(body.contains(".probe()"));  // R-CL-01: the dashboard, not the gateway
         assert!(body.contains("apply_quiet_roster"));
         assert!(body.contains("read_native_profiles"));
         assert!(body.contains("kanban_server::origin"));

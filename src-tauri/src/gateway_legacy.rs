@@ -9,4 +9,4 @@
 //! - Profile hints from the gateway's /health, used only when the dashboard
 //!   profile list is unreachable during setup discovery.
 
-pub use crate::hermes::patch_kanban_task;
+pub use crate::hermes::{patch_kanban_task, profiles_from_gateway_health};
