@@ -35,6 +35,10 @@ pub mod rpc {
     pub const COMPLETE_SLASH: &str = "complete.slash";
     pub const MODEL_OPTIONS: &str = "model.options";
     pub const CONFIG_SET: &str = "config.set";
+    pub const PROMPT_BTW: &str = "prompt.btw";
+    pub const SESSION_STEER: &str = "session.steer";
+    pub const COMMAND_DISPATCH: &str = "command.dispatch";
+    pub const SLASH_EXEC: &str = "slash.exec";
 }
 
 /// Server-to-client request methods the overlay answers.
@@ -55,6 +59,7 @@ pub mod event {
     pub const ERROR: &str = "error";
     pub const REQUEST_CANCEL: &str = "request.cancel";
     pub const SESSIONS_CHANGED: &str = "sessions.changed";
+    pub const BTW_COMPLETE: &str = "btw.complete";
 }
 
 pub fn escape(raw: &str) -> String {

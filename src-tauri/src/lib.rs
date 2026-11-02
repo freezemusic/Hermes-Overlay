@@ -1217,7 +1217,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
     let dashboard_base_url = {
         let raw = input.dashboard_base_url.trim();
         if raw.is_empty() {
-            "http://127.0.0.1:9119".to_string()
+            config::default_dashboard_origin()
         } else {
             config::normalize_http_base(raw, false)?
         }
@@ -2871,7 +2871,8 @@ async fn sign_in_kanban(
         state.client.reload_login();
         kanban_server::clear_rejected_password();
         kanban_server::clear_rejected_refresh();
-        return Ok("已登入 Kanban".into());
+        emit(&app, serde_json::json!({ "type": "login.changed" }));
+        return Ok(SIGNED_IN_LINE.into());
     }
     let tokens = kanban_server::native_pkce_login(
         &state.http,
@@ -2888,8 +2889,12 @@ async fn sign_in_kanban(
     state.client.reload_login();
     kanban_server::clear_rejected_password();
     kanban_server::clear_rejected_refresh();
-    Ok("已登入 Kanban".into())
+    emit(&app, serde_json::json!({ "type": "login.changed" }));
+    Ok(SIGNED_IN_LINE.into())
 }
+
+/// Sign-in success. Chat and Kanban both run on this login (R-CL-01).
+const SIGNED_IN_LINE: &str = "已登入 Hermes Dashboard";
 
 fn remember_kanban_url(app: &AppHandle, url: &str) -> Result<(), String> {
     let state = app.try_state::<AppState>();

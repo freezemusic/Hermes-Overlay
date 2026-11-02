@@ -948,7 +948,7 @@ fn wait_loopback(listener: TcpListener, timeout: Duration) -> Result<(String, St
         let head = String::from_utf8_lossy(&buf[..len]).into_owned();
         match parse_callback(&head) {
             Callback::Code(code, state) => {
-                reply(&mut sock, "200 OK", "已登入 Kanban。可以關閉呢個分頁。");
+                reply(&mut sock, "200 OK", "已登入 Hermes Dashboard。可以關閉呢個分頁。");
                 return Ok((code, state));
             }
             Callback::Denied => {

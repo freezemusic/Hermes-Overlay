@@ -304,3 +304,81 @@ mod tests {
         assert!(matches!(m.on_event("error", "ab12", &json!({"message": "boom"})), Step::Done { failed: Some(ref t), .. } if t == "boom"));
     }
 }
+
+/// What a typed line starting with `/` becomes on the dashboard. Hermes 0.22.5
+/// `prompt.submit` does not read slash commands (box p10: `/plan …` and
+/// `/btw …` reached the model as plain text), so the client routes them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Slash {
+    /// Not a command: submit as typed.
+    Plain,
+    /// `/btw question` → `prompt.btw`, answer in `btw.complete`, not stored.
+    Btw(String),
+    /// Anything else → `command.dispatch {name, arg}` (falls back to `slash.exec`).
+    Command { name: String, arg: String },
+}
+
+pub fn classify_slash(text: &str) -> Slash {
+    let line = text.trim();
+    let Some(rest) = line.strip_prefix('/') else {
+        return Slash::Plain;
+    };
+    let mut parts = rest.splitn(2, char::is_whitespace);
+    let name = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
+    let arg = parts.next().unwrap_or_default().trim().to_string();
+    if name.is_empty() || name.contains('/') {
+        return Slash::Plain;
+    }
+    if name == "btw" {
+        return Slash::Btw(arg);
+    }
+    Slash::Command { name, arg }
+}
+
+/// `command.dispatch` / `slash.exec` result → a message to submit, or text to show.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Dispatched {
+    Send(String),
+    Show(String),
+}
+
+pub fn dispatched(result: &Value) -> Dispatched {
+    let kind = text_of(result.get("type"));
+    let message = text_of(result.get("message"));
+    if kind == "send" && !message.trim().is_empty() {
+        return Dispatched::Send(message);
+    }
+    let output = text_of(result.get("output"));
+    let notice = text_of(result.get("notice"));
+    let shown = [output, notice, if kind == "send" { String::new() } else { message }]
+        .into_iter()
+        .find(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| "（冇輸出）".into());
+    Dispatched::Show(shown)
+}
+
+fn text_of(value: Option<&Value>) -> String {
+    value.and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
+#[cfg(test)]
+mod slash_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn plan_and_btw_are_routed_not_sent_as_text() {
+        assert_eq!(classify_slash("hello"), Slash::Plain);
+        assert_eq!(classify_slash("/btw what is 2+2"), Slash::Btw("what is 2+2".into()));
+        assert_eq!(
+            classify_slash("/plan write a list"),
+            Slash::Command { name: "plan".into(), arg: "write a list".into() }
+        );
+        assert_eq!(classify_slash("/usr/bin is a path"), Slash::Plain);
+        assert_eq!(
+            dispatched(&json!({"type": "send", "message": "[/plan — plan mode] x"})),
+            Dispatched::Send("[/plan — plan mode] x".into())
+        );
+        assert_eq!(dispatched(&json!({"type": "exec", "output": "ok"})), Dispatched::Show("ok".into()));
+    }
+}

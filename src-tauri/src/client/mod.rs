@@ -502,6 +502,27 @@ impl HermesClient {
             ws::debug(format!("hc-turn attach-failed {err:?}"));
             err
         })?;
+        // Slash commands: prompt.submit would hand them to the model as text.
+        let mut text = text.to_string();
+        match turn::classify_slash(&text) {
+            turn::Slash::Plain => {}
+            turn::Slash::Btw(question) => {
+                return self.side_question(&mut rx, &live, &question, stop, &mut on_event).await.map(|_| session_id.to_string());
+            }
+            turn::Slash::Command { name, arg } => {
+                match self.dispatch_slash(&live, &name, &arg, &text).await? {
+                    turn::Dispatched::Send(message) => text = message,
+                    turn::Dispatched::Show(shown) => {
+                        let run_id = turn::run_id_for(&live, &format!("cmd{}", self.cmd_seq()));
+                        on_event(TurnEvent::Started { run_id: run_id.clone() });
+                        on_event(TurnEvent::Delta(shown));
+                        on_event(TurnEvent::Finished { outcome: "completed".into(), detail: String::new(), run_id });
+                        return Ok(session_id.to_string());
+                    }
+                }
+            }
+        }
+        let text = text.as_str();
         // `queued: true`: a send while another device's turn runs waits in line
         // instead of redirecting that turn (display.busy_input_mode = interrupt).
         let accepted = self
@@ -571,6 +592,75 @@ impl HermesClient {
         }
     }
 
+    fn cmd_seq(&self) -> u64 {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// `command.dispatch {name, arg}`; a "use slash.exec" refusal (4018) tries `slash.exec`.
+    async fn dispatch_slash(&self, live: &str, name: &str, arg: &str, line: &str) -> Result<turn::Dispatched, HermesError> {
+        match self.call(rpc::COMMAND_DISPATCH, json!({"session_id": live, "name": name, "arg": arg})).await {
+            Ok(value) => Ok(turn::dispatched(&value)),
+            Err(HermesError::Http { status: 4018, .. }) => {
+                let value = self.call(rpc::SLASH_EXEC, json!({"session_id": live, "command": line.trim()})).await?;
+                Ok(turn::dispatched(&value))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// 旁問 `/btw`: `prompt.btw` over a snapshot; the answer comes in `btw.complete`
+    /// and is not stored in the session, so the main turn and history stay alone.
+    async fn side_question<F>(
+        &self,
+        rx: &mut tokio::sync::broadcast::Receiver<WsEvent>,
+        live: &str,
+        question: &str,
+        stop: &AtomicBool,
+        on_event: &mut F,
+    ) -> Result<(), HermesError>
+    where
+        F: FnMut(TurnEvent),
+    {
+        let started = self.call(rpc::PROMPT_BTW, json!({"session_id": live, "text": question})).await?;
+        let task = json_text(started.get("task_id"));
+        let run_id = turn::run_id_for(live, &format!("btw{}", self.cmd_seq()));
+        on_event(TurnEvent::Started { run_id: run_id.clone() });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return Err(HermesError::Cancelled);
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(HermesError::Timeout("旁問冇回應".into()));
+            }
+            let item = match tokio::time::timeout(Duration::from_millis(250), rx.recv()).await {
+                Err(_) => continue,
+                Ok(Ok(item)) => item,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(_)) => return Err(HermesError::Transport("同 Hermes 嘅連線斷咗".into())),
+            };
+            match item {
+                WsEvent::Event { kind, payload, .. } if kind == event::BTW_COMPLETE => {
+                    if !task.is_empty() && json_text(payload.get("task_id")) != task {
+                        continue;
+                    }
+                    let error = json_text(payload.get("error"));
+                    if !error.is_empty() {
+                        return Err(HermesError::Protocol(error));
+                    }
+                    on_event(TurnEvent::Delta(json_text(payload.get("text"))));
+                    on_event(TurnEvent::Finished { outcome: "completed".into(), detail: String::new(), run_id });
+                    return Ok(());
+                }
+                WsEvent::Link { up: false } => {
+                    return Err(HermesError::Transport("同 Hermes 嘅連線斷咗，回覆中斷咗。".into()));
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn run(&self, run_id: &str) -> Option<RunInfo> {
         self.runs.lock().unwrap_or_else(|e| e.into_inner()).get(run_id).cloned()
     }
@@ -636,11 +726,16 @@ impl HermesClient {
         let Some(info) = self.run(run_id).filter(|info| !info.done) else {
             return Ok(SteerOutcome::Rejected);
         };
-        let value = self
-            .call(rpc::PROMPT_SUBMIT, json!({"session_id": info.live, "text": text}))
-            .await?;
+        // `session.steer` injects into the running turn (AIAgent.steer). A bare
+        // prompt.submit would interrupt it under the default busy_input_mode.
+        let value = match self.call(rpc::SESSION_STEER, json!({"session_id": info.live, "text": text})).await {
+            Ok(value) => value,
+            // 4010: agent cannot steer; the overlay then queues the line normally.
+            Err(HermesError::Http { .. }) => return Ok(SteerOutcome::Rejected),
+            Err(err) => return Err(err),
+        };
         Ok(match json_text(value.get("status")).as_str() {
-            "steered" | "redirected" => SteerOutcome::Joined,
+            "queued" | "steered" => SteerOutcome::Joined,
             _ => SteerOutcome::Rejected,
         })
     }
