@@ -81,6 +81,18 @@ pub enum Frame {
     Other,
 }
 
+pub const DOWN_LINE: &str = "連唔到 Hermes Dashboard，等陣自動再試";
+
+/// Opt-in debug sink (set only when the app's debug log is on). Never gets
+/// tickets, cookies or tokens: callers pass plain status words.
+pub static DEBUG: std::sync::OnceLock<fn(String)> = std::sync::OnceLock::new();
+
+pub fn debug(line: impl Into<String>) {
+    if let Some(sink) = DEBUG.get() {
+        sink(line.into());
+    }
+}
+
 pub const LOGIN_LINE: &str = "要登入 Hermes Dashboard（設定 → 登入）";
 
 pub fn classify(raw: &str) -> Frame {
@@ -213,7 +225,7 @@ impl WsHub {
             Ok(gen) if gen != 0 => Ok(gen),
             _ => {
                 let reason = self.down_reason();
-                Err(HermesError::Connect(if reason.is_empty() {
+                Err(HermesError::Protocol(if reason.is_empty() {
                     "連唔到 Hermes Dashboard".into()
                 } else {
                     reason
@@ -269,7 +281,7 @@ fn explain_down(err: &HermesError) -> String {
     match err {
         HermesError::Http { status: 401 | 403, .. } => LOGIN_LINE.into(),
         HermesError::Protocol(line) if line == LOGIN_LINE => LOGIN_LINE.into(),
-        HermesError::Connect(_) | HermesError::Timeout(_) => "連唔到 Hermes Dashboard，等陣自動再試".into(),
+        HermesError::Connect(_) | HermesError::Timeout(_) => DOWN_LINE.into(),
         _ => "同 Hermes Dashboard 斷咗線，等陣自動再試".into(),
     }
 }
@@ -286,6 +298,12 @@ fn fail_pending(inner: &Inner) {
     }
 }
 
+/// Errors may echo the URL; drop anything after `?` so a ticket never lands in a log.
+fn hermes_clip(text: &str) -> String {
+    let cut = text.split('?').next().unwrap_or_default();
+    cut.chars().take(160).collect()
+}
+
 async fn drive(inner: Arc<Inner>) {
     let mut attempt = 0usize;
     let mut generation = 0u64;
@@ -295,18 +313,26 @@ async fn drive(inner: Arc<Inner>) {
             Ok(url) => match tokio_tungstenite::connect_async(url.as_str()).await {
                 Ok((stream, _)) => {
                     generation += 1;
+                    debug(format!("hc-ws open gen={generation}"));
                     let was_up = run_socket(&inner, stream, generation).await;
+                    debug(format!("hc-ws closed gen={generation}"));
                     if was_up {
                         attempt = 0;
                     }
                     set_reason(&inner, "同 Hermes Dashboard 斷咗線，等陣自動再試");
                 }
-                Err(_) => set_reason(&inner, "連唔到 Hermes Dashboard，等陣自動再試"),
+                Err(err) => {
+                    debug(format!("hc-ws connect-failed {}", hermes_clip(&err.to_string())));
+                    set_reason(&inner, DOWN_LINE)
+                }
             },
-            Err(err) => set_reason(&inner, &explain_down(&err)),
+            Err(err) => {
+                debug(format!("hc-ws ticket-failed {}", hermes_clip(&format!("{err:?}"))));
+                set_reason(&inner, &explain_down(&err))
+            }
         }
         *inner.out.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        let _ = inner.up.send(0);
+        inner.up.send_replace(0);
         fail_pending(&inner);
         let _ = inner.events.send(WsEvent::Link { up: false });
         let wait = backoff(attempt);
@@ -365,11 +391,12 @@ where
                     Frame::Event { kind, session_id, payload } => {
                         if kind == event::READY && !ready {
                             ready = true;
+                            debug(format!("hc-ws ready gen={generation}"));
                             let caps = json!({"jsonrpc": "2.0", "id": format!("caps-{generation}"),
                                 "method": rpc::CAPABILITIES, "params": {"server_requests": true}});
                             let _ = tx.send(caps.to_string());
                             set_reason(inner, "");
-                            let _ = inner.up.send(generation);
+                            inner.up.send_replace(generation);
                             let _ = inner.events.send(WsEvent::Link { up: true });
                             continue;
                         }
@@ -403,6 +430,19 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn link_state_updates_even_with_nobody_waiting() {
+        // `watch::Sender::send` drops the value when no receiver exists, which
+        // left the link "up" after the dashboard went away (box smoke, R-CL-04).
+        let (tx, rx) = tokio::sync::watch::channel(3u64);
+        drop(rx);
+        tx.send_replace(0);
+        assert_eq!(*tx.borrow(), 0);
+        let src = include_str!("ws.rs");
+        let code = &src[..src.find("#[cfg(test)]").unwrap()];
+        assert!(!code.contains("up.send("));
+    }
+
     use super::*;
 
     #[test]

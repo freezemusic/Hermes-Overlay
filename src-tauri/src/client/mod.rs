@@ -184,7 +184,18 @@ impl HermesClient {
             if let Some(body) = &body {
                 builder = builder.json(body);
             }
-            let resp = self.authed(builder, &secrets).send().await.map_err(hermes::map_reqwest_pub)?;
+            let resp = match self.authed(builder, &secrets).send().await {
+                Ok(resp) => resp,
+                Err(err) => {
+                    let err = hermes::map_reqwest_pub(err);
+                    ws::debug(format!("hc-rest {path} send-failed"));
+                    // R-CL-04: say the dashboard, never the old gateway port.
+                    return Err(match err {
+                        HermesError::Connect(_) => HermesError::Protocol(ws::DOWN_LINE.into()),
+                        other => other,
+                    });
+                }
+            };
             let status = resp.status().as_u16();
             if (status == 401 || status == 403) && !renewed {
                 renewed = true;
@@ -487,13 +498,21 @@ impl HermesClient {
         F: FnMut(TurnEvent),
     {
         let mut rx = self.ws.subscribe();
-        let live = self.attach(profile, session_id).await?;
+        let live = self.attach(profile, session_id).await.map_err(|err| {
+            ws::debug(format!("hc-turn attach-failed {err:?}"));
+            err
+        })?;
         // `queued: true`: a send while another device's turn runs waits in line
         // instead of redirecting that turn (display.busy_input_mode = interrupt).
         let accepted = self
             .call(rpc::PROMPT_SUBMIT, json!({"session_id": live, "text": text, "queued": true}))
-            .await?;
+            .await
+            .map_err(|err| {
+                ws::debug(format!("hc-turn submit-failed {err:?}"));
+                err
+            })?;
         let status = json_text(accepted.get("status"));
+        ws::debug(format!("hc-turn submitted status={status}"));
         let row = accepted
             .get("user_row_id")
             .map(|v| v.to_string().trim_matches('"').to_string())

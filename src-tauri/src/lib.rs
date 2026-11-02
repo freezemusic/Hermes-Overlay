@@ -3997,6 +3997,11 @@ pub fn run() {
             interaction: Arc::new(interaction::InteractionHub::new()),
         }})
         .setup(|app| {
+            if debug_log_enabled() {
+                let _ = client::ws::DEBUG.set(|line| {
+                    let _ = debug_log(line);
+                });
+            }
             {
                 let handle = app.handle().clone();
                 let state = app.state::<AppState>();
