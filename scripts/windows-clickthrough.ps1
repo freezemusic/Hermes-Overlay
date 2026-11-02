@@ -470,6 +470,50 @@ function Assert-Through([string]$label, [int]$x, [int]$y) {
   Note-Ok $label "($x,$y) class=$cls"
 }
 
+# R-CT-05 / SPEC 1.7: while Ctrl is held every panel, its close button and the
+# docked plan pass through; only orbs (and a pill under the cursor) capture.
+# Ctrl is the "reach an orb under a panel" key, not a panel-click key.
+function Assert-ThroughHeld([string]$label, [int]$x, [int]$y) {
+  [ClickProbe]::SetCursorPos($x, $y) | Out-Null
+  [ClickProbe]::Ctrl($true)
+  try {
+    Start-Sleep -Milliseconds 300
+    $hit = [ClickProbe]::HitAt($x, $y)
+    $root = [ClickProbe]::GetAncestor($hit, 2)
+    $cls = [ClickProbe]::ClassName($hit)
+    if ($cls.StartsWith("Chrome_") -or ($root -ne $behindHwnd -and $hit -ne $behindHwnd)) {
+      Dump-Tree
+      Note-Fail $label "Ctrl held: WindowFromPoint ($x,$y) class=$cls hwnd=$hit root=$root expected Behind $behindHwnd"
+      return
+    }
+    $before = Click-Count
+    [ClickProbe]::Click()
+    $limit = (Get-Date).AddMilliseconds(500)
+    do {
+      if ((Click-Count) -gt $before) { break }
+      Start-Sleep -Milliseconds 20
+    } while ((Get-Date) -lt $limit)
+    if ((Click-Count) -le $before) {
+      Dump-Tree
+      Note-Fail $label "Ctrl+click at ($x,$y) did not reach Behind within 500ms class=$cls"
+      return
+    }
+    Note-Ok $label "($x,$y) class=$cls"
+  } finally {
+    [ClickProbe]::Ctrl($false)
+    Start-Sleep -Milliseconds 300
+  }
+}
+
+# A point inside the panel or plan that is clear of every orb's 12px hit pad
+# (R-CT-02: Ctrl over an orb must reach the orb, even under a panel).
+function Clear-OfOrbs($p, $orbs) {
+  foreach ($o in $orbs) {
+    if ($p.x -ge ($o.x - 24) -and $p.x -lt ($o.x + $o.w + 24) -and $p.y -ge ($o.y - 24) -and $p.y -lt ($o.y + $o.h + 24)) { return $false }
+  }
+  return $true
+}
+
 function Assert-OnScreen([string]$label, $rect) {
   if (-not $rect) {
     Note-Fail $label "rect missing"
@@ -719,6 +763,32 @@ try {
         Note-Fail "plan-close-on-screen" "close $($closer.x),$($closer.y) leaves ${w}x${h}"
       } else {
         Note-Ok "plan-close-on-screen" "$($closer.x),$($closer.y)"
+      }
+      # Laptop look-test 2 Nov: Ctrl+click on the session picker and 關閉 of a
+      # bot panel with its plan open went to the window behind. That is the
+      # spec (R-CT-05): plain clicks operate panels, Ctrl+click passes through.
+      # Pin both halves with the plan open: Ctrl passes through the panel body
+      # and the plan, and a plain click on the same point of the panel hit rect
+      # (panel:field covers the panel and its docked plan) is captured.
+      $orbs = @(Read-HitRects | Where-Object { $_.id -like "bot:*" })
+      $inPlan = @{ x = [int]($plan.x + $plan.w / 2); y = [int]($plan.y + $plan.h / 2) }
+      $heldPoints = @(@{ name = "plan"; pt = $inPlan })
+      $inPanel = $null
+      if ($fieldRect) {
+        $inPanel = @{ x = [int]($fieldRect.x + 48); y = [int]($fieldRect.y + [Math]::Min(240, [Math]::Max(24, $fieldRect.h - 80))) }
+        $heldPoints = @(@{ name = "panel"; pt = $inPanel }) + $heldPoints
+      }
+      $heldChecked = 0
+      foreach ($p in $heldPoints) {
+        if (-not (Clear-OfOrbs $p.pt $orbs)) { continue }
+        $heldChecked++
+        Assert-ThroughHeld "ctrl-through-$($p.name)" $p.pt.x $p.pt.y
+      }
+      if ($heldChecked -lt 1) {
+        Note-Fail "ctrl-through" "no panel or plan point clear of the orbs"
+      }
+      if ($inPanel -and (Clear-OfOrbs $inPanel $orbs)) {
+        Assert-Captured "plain-click-panel-with-plan" $inPanel.x $inPanel.y
       }
       # Kanban's orb sits under the field panel on a 1024px runner.
       # Ctrl+click must reach that orb (R-CT-02), not the window behind.
