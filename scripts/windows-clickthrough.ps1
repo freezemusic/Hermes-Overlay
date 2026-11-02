@@ -9,7 +9,9 @@ $tree = Join-Path $root "window-tree.txt"
 $clickLog = Join-Path $env:TEMP "hermes-behind-clicks.txt"
 $hwndFile = Join-Path $env:TEMP "hermes-behind-hwnd.txt"
 $gwLog = Join-Path $env:TEMP "hermes-fake-gateway.log"
-foreach ($path in @($log, $tree, $clickLog, $hwndFile, $gwLog)) {
+$dashLog = Join-Path $env:TEMP "hermes-fake-dashboard.log"
+$dashErr = Join-Path $env:TEMP "hermes-fake-dashboard.err"
+foreach ($path in @($log, $tree, $clickLog, $hwndFile, $gwLog, $dashLog, $dashErr)) {
   if (Test-Path $path) { Remove-Item $path -Force }
 }
 
@@ -30,6 +32,7 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
   "version": 1,
   "gateway_base_url": "http://127.0.0.1:8642",
   "dashboard_base_url": "http://127.0.0.1:9119",
+  "kanban_base_url": "http://127.0.0.1:9119",
   "bots": [{
     "profile": "field",
     "display_name": "Field",
@@ -91,6 +94,21 @@ $gwHandle = $gw.BeginInvoke()
 $deadline = (Get-Date).AddSeconds(10)
 while (-not (Test-Path $gwLog) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
 if (-not (Test-Path $gwLog)) { throw "fake gateway did not start" }
+
+# Chat runs on the Hermes Dashboard (9119) through HermesClient (R-CL-01):
+# REST for sessions and history, one WebSocket for RPC. The 8642 fake above
+# only answers the legacy paths. scripts/ci-fake-dashboard.mjs serves the same
+# Bot Chat with the /plan history, so the field panel hosts the plan window.
+$dashboard = Start-Process -FilePath "node" -ArgumentList @("scripts/ci-fake-dashboard.mjs", "9119", "`"$dashLog`"") `
+  -WorkingDirectory $root -RedirectStandardError $dashErr -WindowStyle Hidden -PassThru
+$deadline = (Get-Date).AddSeconds(15)
+while (-not ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern "^listening " -Quiet)) -and (Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 100
+}
+if (-not ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern "^listening " -Quiet))) {
+  if (Test-Path $dashErr) { Get-Content $dashErr | Write-Host }
+  throw "fake dashboard did not start"
+}
 
 $behindSrc = Join-Path $env:TEMP "HermesBehind.cs"
 $behindExe = Join-Path $env:TEMP "HermesBehind.exe"
@@ -813,6 +831,16 @@ try {
   if ((Test-Path $gwLog) -and (Select-String -Path $gwLog -Pattern "POST /api/sessions" -Quiet)) {
     Note-Fail "gateway" "startup created a session"
   }
+  # Same rule on 9119: opening a panel must not make a session (R-CL-07).
+  if ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern "^(POST /api/sessions|RPC session\.create)" -Quiet)) {
+    Note-Fail "dashboard" "startup created a session"
+  }
+  # The field history came from the dashboard, over REST and a live socket.
+  foreach ($want in @("^POST /api/auth/ws-ticket", "^WS open", "^GET /api/sessions/[^/]+/messages")) {
+    if (-not ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern $want -Quiet))) {
+      Note-Fail "dashboard" "fake dashboard log has no $want"
+    }
+  }
   Write-Host "---- click-through samples ----"
   foreach ($line in $script:sampleNotes) { Write-Host $line }
   [Console]::Out.Flush()
@@ -842,4 +870,6 @@ try {
     try { $gw.Stop() } catch {}
     $gw.Dispose()
   }
+  if ($dashboard -and -not $dashboard.HasExited) { Stop-Process -Id $dashboard.Id -Force -ErrorAction SilentlyContinue }
+  if (Test-Path $dashLog) { Copy-Item $dashLog (Join-Path $root "fake-dashboard.log") -Force }
 }

@@ -188,4 +188,5 @@ jobs:
           path: |
             clickthrough-debug.log
             window-tree.txt
+            fake-dashboard.log
           if-no-files-found: ignore
