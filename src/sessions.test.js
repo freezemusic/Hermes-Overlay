@@ -1956,3 +1956,12 @@ test("closedSwitchTarget picks this profile's live Bot Chat, tui Bot Chat includ
   assert.notEqual(closedSwitchTarget([...MT_ORCH_2NOV, twin], "api_1793018623_7aa638ec")?.title, "Bot Chat");
   assert.equal(closedSwitchTarget([], "x"), null);
 });
+
+test("the closed-session switch button reads 轉去 Bot Chat", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(main, /switchBtn\.textContent = "轉去 Bot Chat";/);
+  assert.match(html, /data-role="switch" hidden>轉去 Bot Chat<\/button>/);
+  assert.doesNotMatch(main, /轉去新對話/);
+  assert.doesNotMatch(html, /轉去新對話/);
+});

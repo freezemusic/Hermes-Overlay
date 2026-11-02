@@ -4866,7 +4866,7 @@ function renderChat(id = state.activeId, options = {}) {
   const switchId = closedSwitchIdFor(bot.id);
   if (switchBtn) {
     switchBtn.hidden = locked || !switchId;
-    switchBtn.textContent = "轉去新對話";
+    switchBtn.textContent = "轉去 Bot Chat";
   }
   if (input) {
     input.disabled = locked;
