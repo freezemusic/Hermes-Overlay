@@ -592,8 +592,8 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 - 驗收（盒）：APPROVE-ME → 卡 → 拒絕 → Hermes 記「denied by user」；CLARIFY-ME → 卡 → Banana → 工具結果 `user_response: Banana`。
 - 狀態：✅(盒)。
 
-**R-CL-08** 斜線指令唔可以當普通字送。`prompt.submit` 唔識讀斜線（盒 p10：`/plan …`、`/btw …` 原文入咗模型）。旁問 `/btw` 用 `prompt.btw`，答案喺 `btw.complete`，唔寫入對話；Plan `/plan` 同其他指令用 `command.dispatch`（4018 就改用 `slash.exec`），`send` 類就送出佢返嘅訊息，其他類顯示輸出。插話用 `session.steer`（唔用 `prompt.submit`，否則會打斷嗰輪）。分支用 `session.branch_stored`，參數 `parent_session_id`（0.22.5 `methods_session.py` `_create_session`）。
-- 驗收（盒）：見 RESULTS（Plan 模型收到 plan-mode 提示；旁問答案出現而且唔入歷史；插話「已加入呢一輪」）。
+**R-CL-08** 斜線指令唔可以當普通字送。`prompt.submit` 唔識讀斜線（盒 p10：`/plan …`、`/btw …` 原文入咗模型）。旁問 `/btw` 用 `prompt.btw`，答案喺 `btw.complete`，唔寫入對話；Plan `/plan` 同其他指令用 `command.dispatch`（4018 就改用 `slash.exec`），`send` 類就送出佢返嘅訊息，其他類顯示輸出。插話用 `session.steer`（唔用 `prompt.submit`，否則會打斷嗰輪）。分支用 `session.branch_stored`，參數 `parent_session_id`（0.22.5 `methods_session.py` `_create_session`）；佢唔收 `title`（`extra="forbid"`，送咗會 4000），標題之後用 `session.title`。`/title` 用 `session.title`（live session），封存用 `session.archive`；0.22.5 嘅 `PATCH /api/sessions/{id}` 要 revision fence，冇就 409 `client_upgrade_required`。`/new`、`/reset`、`/title`、`/branch`、`/fork`、`/model`、`/stop` 喺 `complete.slash` 目錄入面標 `kind: client`，由 overlay 自己做（R-SL）。斜線選單完全同名排先，然後係開頭相同、模糊、描述（9119 目錄長，`/model` 唔可以變 `/moa`）。Hermes 喺歷史插入嘅換模型提示（`display_kind: model_switch`，`[System: The active model …`）唔顯示做用戶訊息。
+- 驗收（盒）：見 RESULTS（Plan 模型收到 plan-mode 提示；旁問答案出現而且唔入歷史；插話「已加入呢一輪」而模型收到 out-of-band 訊息；`/branch 名` 開新 session 帶住個名；`/title` 改名喺選單見到；`/model scripted` 顯示「已切換模型」、冇 `[System:` 用戶行）。
 - 狀態：見 RESULTS.md。
 
 **R-CL-07** Dashboard 唔會自己開 Bot Chat。一個 profile 完全冇 `Bot Chat` 時，第一次送出開一條（`session.create`，標題 `Bot Chat`），之後一直用佢。啟動同打開都唔開。
