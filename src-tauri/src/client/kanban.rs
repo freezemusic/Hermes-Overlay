@@ -1,9 +1,18 @@
-//! Devon's kanban lives on `hermes serve` (port 9119), not the gateway.
-//! Reads are GET only. Tokens and the basic password stay in this app's keyring.
+//! Kanban and the dashboard login, part of [`super::HermesClient`] (R-AR-01).
+//!
+//! Devon's kanban lives on `hermes serve` (the dashboard), not the gateway.
+//! Board, boards and card reads are GET; a card move is `PATCH` on the same
+//! dashboard plugin (R-KB-07). Paths come from [`super::endpoints`] only
+//! (R-AR-02). The login (native PKCE tokens or the basic-login cookie) is the
+//! one chat uses too. Tokens and the basic password stay in this app's keyring.
+//! The free functions take an explicit `http` and origin so tests can point
+//! them at a socket; lib.rs calls the typed methods on `HermesClient`.
 
+use super::endpoints::{auth, rest};
+use super::HermesClient;
 use crate::hermes::{
-    parse_kanban_board, DiscoveredProfile, HermesError, KanbanBoard, KanbanTask, ProfileBearer,
-    KANBAN_LOGIN, KANBAN_UNAVAILABLE,
+    parse_dashboard_profiles, parse_kanban_board, DiscoveredProfile, HermesError, KanbanBoard,
+    KanbanTask, ProfileBearer, KANBAN_LOGIN, KANBAN_UNAVAILABLE,
 };
 use reqwest::header::{HeaderMap, AUTHORIZATION, COOKIE, SET_COOKIE};
 use reqwest::Client;
@@ -71,10 +80,7 @@ pub fn origin(gateway: &str, configured: &str) -> String {
 
 /// An empty slug omits `?board=` so hermes serve returns its current board.
 pub fn board_url(origin: &str, board: &str) -> String {
-    let mut url = format!(
-        "{}/api/plugins/kanban/board",
-        origin.trim_end_matches('/')
-    );
+    let mut url = format!("{}{}", origin.trim_end_matches('/'), rest::KANBAN_BOARD);
     if !board.trim().is_empty() {
         url.push_str("?board=");
         url.push_str(&query_escape(board.trim()));
@@ -83,18 +89,11 @@ pub fn board_url(origin: &str, board: &str) -> String {
 }
 
 pub fn boards_url(origin: &str) -> String {
-    format!(
-        "{}/api/plugins/kanban/boards",
-        origin.trim_end_matches('/')
-    )
+    format!("{}{}", origin.trim_end_matches('/'), rest::KANBAN_BOARDS)
 }
 
 pub fn task_url(origin: &str, id: &str) -> String {
-    format!(
-        "{}/api/plugins/kanban/tasks/{}",
-        origin.trim_end_matches('/'),
-        query_escape(id.trim())
-    )
+    format!("{}{}", origin.trim_end_matches('/'), rest::kanban_task(id))
 }
 
 pub fn pkce_challenge(verifier: &str) -> String {
@@ -103,8 +102,9 @@ pub fn pkce_challenge(verifier: &str) -> String {
 
 pub fn authorize_url(origin: &str, challenge: &str, redirect: &str, state: &str) -> String {
     format!(
-        "{}/auth/native/authorize?response_type=code&code_challenge={}&code_challenge_method=S256&redirect_uri={}&state={}",
+        "{}{}?response_type=code&code_challenge={}&code_challenge_method=S256&redirect_uri={}&state={}",
         origin.trim_end_matches('/'),
+        auth::NATIVE_AUTHORIZE,
         query_escape(challenge),
         query_escape(redirect),
         query_escape(state)
@@ -380,7 +380,7 @@ pub async fn password_login(
     username: &str,
     password: &str,
 ) -> Result<String, HermesError> {
-    let url = format!("{}/auth/password-login", origin.trim_end_matches('/'));
+    let url = format!("{}{}", origin.trim_end_matches('/'), auth::PASSWORD_LOGIN);
     let resp = http
         .post(url)
         .timeout(Duration::from_secs(15))
@@ -411,7 +411,7 @@ pub async fn refresh_tokens(
     origin: &str,
     refresh_token: &str,
 ) -> Result<NativeTokens, HermesError> {
-    let url = format!("{}/auth/native/refresh", origin.trim_end_matches('/'));
+    let url = format!("{}{}", origin.trim_end_matches('/'), auth::NATIVE_REFRESH);
     let resp = http
         .post(url)
         .timeout(Duration::from_secs(15))
@@ -439,7 +439,7 @@ pub async fn exchange_code(
     code: &str,
     verifier: &str,
 ) -> Result<NativeTokens, HermesError> {
-    let url = format!("{}/auth/native/token", origin.trim_end_matches('/'));
+    let url = format!("{}{}", origin.trim_end_matches('/'), auth::NATIVE_TOKEN);
     let resp = http
         .post(url)
         .timeout(Duration::from_secs(15))
@@ -561,6 +561,42 @@ pub struct NativeProfileRead {
     pub listed: bool,
 }
 
+/// `GET /api/profiles` with the Kanban native access token. 401 is `Expired`.
+pub async fn list_profiles_with_bearer(
+    http: &Client,
+    origin: &str,
+    access_token: &str,
+    timeout: Duration,
+) -> ProfileBearer {
+    let token = access_token.trim();
+    if token.is_empty() {
+        return ProfileBearer::Expired;
+    }
+    let url = format!("{}{}", origin.trim_end_matches('/'), rest::PROFILES);
+    let response = match http
+        .get(url)
+        .timeout(timeout)
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => return ProfileBearer::Missed,
+    };
+    let status = response.status().as_u16();
+    if status == 401 {
+        return ProfileBearer::Expired;
+    }
+    if !(200..300).contains(&status) {
+        return ProfileBearer::Missed;
+    }
+    let Ok(value) = response.json::<Value>().await else {
+        return ProfileBearer::Missed;
+    };
+    ProfileBearer::Listed(parse_dashboard_profiles(&value))
+}
+
 /// `GET {origin}/api/profiles` with the Kanban native access token.
 /// A 401 refreshes once via `POST /auth/native/refresh`, then retries that GET once.
 /// The profiles call itself stays GET. A miss returns no rows and does not fail the roster.
@@ -582,13 +618,13 @@ pub async fn read_native_profiles(
     let mut listed = if secrets.access_token.trim().is_empty() {
         ProfileBearer::Expired
     } else {
-        crate::hermes::list_profiles_with_bearer(http, origin, &secrets.access_token, timeout).await
+        list_profiles_with_bearer(http, origin, &secrets.access_token, timeout).await
     };
     if matches!(listed, ProfileBearer::Expired) {
         match refresh_access_once(http, origin, &mut secrets).await {
             Ok(true) => {
                 changed = true;
-                listed = crate::hermes::list_profiles_with_bearer(
+                listed = list_profiles_with_bearer(
                     http,
                     origin,
                     &secrets.access_token,
@@ -961,6 +997,138 @@ fn wait_loopback(listener: TcpListener, timeout: Duration) -> Result<(String, St
                 }
             }
         }
+    }
+}
+
+/// Hermes refuses `complete_task` without result or summary evidence (0.22.5
+/// plugin_api: "completion blocked: … has no result or summary evidence").
+/// A drag to done sends this line, the same one the old gateway proxy wrote.
+pub const DONE_EVIDENCE: &str = "Moved to done from overlay";
+
+/// Body for `PATCH /api/plugins/kanban/tasks/{id}`. Empty fields are left
+/// out. `priority` is an integer on the dashboard (pydantic `int`).
+pub fn patch_body(status: &str, assignee: &str, priority: &str, title: &str) -> Result<Value, HermesError> {
+    let mut body = serde_json::Map::new();
+    let status = status.trim();
+    if !status.is_empty() {
+        body.insert("status".into(), Value::String(status.to_string()));
+        if status == "done" {
+            body.insert("result".into(), Value::String(DONE_EVIDENCE.into()));
+            body.insert("summary".into(), Value::String(DONE_EVIDENCE.into()));
+        }
+    }
+    if !assignee.trim().is_empty() {
+        body.insert("assignee".into(), Value::String(assignee.trim().to_string()));
+    }
+    if !priority.trim().is_empty() {
+        let value: i64 = priority
+            .trim()
+            .parse()
+            .map_err(|_| HermesError::Protocol("優先次序要係整數".into()))?;
+        body.insert("priority".into(), Value::from(value));
+    }
+    if !title.trim().is_empty() {
+        body.insert("title".into(), Value::String(title.trim().to_string()));
+    }
+    Ok(Value::Object(body))
+}
+
+/// Kanban and login on the client: same origin, same keyring login, same
+/// renew-once rule as chat. A renewed login is written back to the keyring.
+impl HermesClient {
+    fn keep_if(&self, next: KanbanSecrets, changed: bool) {
+        if changed {
+            self.keep_secrets(next);
+        }
+    }
+
+    /// `GET` the board. Empty `board` follows the server's current board.
+    pub async fn kanban_board(&self, board: &str) -> Result<KanbanBoard, HermesError> {
+        let (found, next, changed) =
+            read_board(&self.http, &self.origin(), board, self.current_secrets()).await?;
+        self.keep_if(next, changed);
+        Ok(found)
+    }
+
+    pub async fn kanban_boards(&self) -> Result<KanbanBoardList, HermesError> {
+        let (list, next, changed) =
+            read_boards(&self.http, &self.origin(), self.current_secrets()).await?;
+        self.keep_if(next, changed);
+        Ok(list)
+    }
+
+    pub async fn kanban_task(&self, id: &str) -> Result<KanbanTaskDetail, HermesError> {
+        let (detail, next, changed) =
+            read_task(&self.http, &self.origin(), id, self.current_secrets()).await?;
+        self.keep_if(next, changed);
+        Ok(detail)
+    }
+
+    /// Profiles with the native bearer, for setup discovery (R-SY-09).
+    pub async fn native_profiles(&self) -> NativeProfileRead {
+        let read = read_native_profiles(&self.http, &self.origin(), self.current_secrets()).await;
+        if read.changed {
+            self.keep_secrets(read.secrets.clone());
+        }
+        read
+    }
+
+    /// Card move on the dashboard (R-KB-07): `PATCH /api/plugins/kanban/tasks/{id}`
+    /// with `?board=` for the board on screen. Replaces the gateway
+    /// overlay-slash kanban route on the gateway. 400/404/409 keep the server's `detail`.
+    pub async fn patch_kanban_task(&self, id: &str, board: &str, body: &Value) -> Result<KanbanTask, HermesError> {
+        let mut path = rest::kanban_task(id);
+        if !board.trim().is_empty() {
+            path.push_str(&super::endpoints::query("", &[("board", board.trim())]));
+        }
+        let value = self
+            .rest(reqwest::Method::PATCH, &path, Some(body.clone()), Duration::from_secs(8))
+            .await?;
+        let task_value = value.get("task").unwrap_or(&value);
+        crate::hermes::task_from(task_value, "")
+            .ok_or_else(|| HermesError::Protocol("kanban 更新回應冇 id".into()))
+    }
+
+    /// Basic login on `origin` (the typed address or the client's). Keeps
+    /// the username and password for renew, drops any native access token.
+    pub async fn sign_in_password(&self, origin: &str, username: &str, password: &str) -> Result<(), HermesError> {
+        let cookie = match password_login(&self.http, origin, username.trim(), password).await {
+            Ok(cookie) => cookie,
+            Err(err) => {
+                if matches!(err, HermesError::Http { status: 401 | 403, .. }) {
+                    note_rejected_password(username.trim(), password);
+                }
+                return Err(err);
+            }
+        };
+        let mut secrets = (self.load)();
+        secrets.username = username.trim().to_string();
+        secrets.password = password.to_string();
+        secrets.session_cookie = cookie;
+        secrets.access_token.clear();
+        self.signed_in(secrets);
+        Ok(())
+    }
+
+    /// System-browser PKCE on `origin`; the tokens replace the stored pair.
+    pub async fn sign_in_browser<F>(&self, origin: &str, timeout: Duration, open_url: F) -> Result<(), HermesError>
+    where
+        F: FnOnce(&str) -> Result<(), String> + Send + 'static,
+    {
+        let tokens = native_pkce_login(&self.http, origin, timeout, open_url).await?;
+        let mut secrets = (self.load)();
+        secrets.access_token = tokens.access_token;
+        secrets.refresh_token = tokens.refresh_token;
+        self.signed_in(secrets);
+        Ok(())
+    }
+
+    fn signed_in(&self, secrets: KanbanSecrets) {
+        self.keep_secrets(secrets);
+        // The socket ticket came from the old login.
+        self.ws.reset();
+        clear_rejected_password();
+        clear_rejected_refresh();
     }
 }
 
@@ -1603,25 +1771,145 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(*posts.lock().unwrap(), 0);
-        let src = include_str!("kanban_server.rs");
+        let src = include_str!("kanban.rs");
         let end = src.find("#[cfg(test)]").expect("tests");
         let production = &src[..end];
-        assert!(production.contains("/api/plugins/kanban/boards"));
+        assert!(production.contains("rest::KANBAN_BOARDS"));
+        assert!(!production.contains("\"/api/"), "paths live in endpoints.rs (R-AR-02)");
+        assert!(!production.contains("\"/auth/"), "paths live in endpoints.rs (R-AR-02)");
         assert!(!production.contains("include_archived"));
         assert!(!production.contains("println!"));
     }
 
     #[test]
     fn kanban_auth_source_does_not_log_tokens() {
-        let src = include_str!("kanban_server.rs");
+        let src = include_str!("kanban.rs");
         let end = src.find("#[cfg(test)]").expect("tests");
         let production = &src[..end];
         assert!(!production.contains("println!"));
         assert!(!production.contains("eprintln!"));
         assert!(!production.contains("debug!"));
         assert!(!production.contains("tracing::"));
-        assert!(production.contains("/auth/native/refresh"));
+        assert!(production.contains("auth::NATIVE_REFRESH"));
         assert!(production.contains("\"refresh_token\": refresh_token"));
+    }
+
+    #[test]
+    fn patch_body_sends_done_evidence_and_an_integer_priority() {
+        assert_eq!(patch_body("ready", "", "", "").unwrap(), json!({"status": "ready"}));
+        assert_eq!(
+            patch_body("done", "", "", "").unwrap(),
+            json!({"status": "done", "result": DONE_EVIDENCE, "summary": DONE_EVIDENCE})
+        );
+        assert_eq!(patch_body("", "", " 3 ", "").unwrap(), json!({"priority": 3}));
+        assert!(patch_body("", "", "high", "").is_err());
+        assert_eq!(patch_body("", "", "", "").unwrap(), json!({}));
+    }
+
+    /// One request per accept. Answers the next canned reply and records the head and body.
+    fn patch_server(replies: Vec<(&'static str, &'static str)>) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        thread::spawn(move || {
+            for (status, body) in replies {
+                let Ok((mut sock, _)) = listener.accept() else { break };
+                sock.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                let mut buf = vec![0u8; 16384];
+                let mut got = 0;
+                loop {
+                    let n = sock.read(&mut buf[got..]).unwrap_or(0);
+                    if n == 0 { break; }
+                    got += n;
+                    let text = String::from_utf8_lossy(&buf[..got]).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text
+                            .lines()
+                            .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                            .unwrap_or(0);
+                        if got >= end + 4 + len { break; }
+                    }
+                }
+                log.lock().unwrap().push(String::from_utf8_lossy(&buf[..got]).to_string());
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(reply.as_bytes());
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    fn test_client(origin: &str, secrets: KanbanSecrets) -> Arc<HermesClient> {
+        let stored = Arc::new(Mutex::new(secrets));
+        let read = stored.clone();
+        let client = HermesClient::new(
+            Client::new(),
+            Arc::new(move || read.lock().unwrap().clone()),
+            Arc::new(move |next: &KanbanSecrets| *stored.lock().unwrap() = next.clone()),
+        );
+        client.set_origin(origin);
+        client
+    }
+
+    #[tokio::test]
+    async fn a_card_move_patches_the_dashboard_plugin_on_the_board_shown() {
+        let (origin, seen) = patch_server(vec![
+            ("200 OK", r#"{"task":{"id":"t_1","title":"Ship","status":"done","priority":0}}"#),
+            ("409 Conflict", r#"{"detail":"status transition to 'review' not valid from current state"}"#),
+        ]);
+        let client = test_client(
+            &origin,
+            KanbanSecrets { access_token: "native-access".into(), ..KanbanSecrets::default() },
+        );
+        let body = patch_body("done", "", "", "").unwrap();
+        let task = client.patch_kanban_task("t_1", "mt4", &body).await.unwrap();
+        assert_eq!(task.id, "t_1");
+        assert_eq!(task.status, "done");
+        let refused = client
+            .patch_kanban_task("t_1", "", &patch_body("review", "", "", "").unwrap())
+            .await
+            .unwrap_err();
+        let text = crate::hermes::kanban_move_error(&refused);
+        assert!(text.contains("not valid from current state"), "{text}");
+        let lines = seen.lock().unwrap().clone();
+        assert!(lines[0].starts_with("PATCH /api/plugins/kanban/tasks/t_1?board=mt4 HTTP/1.1"), "{}", lines[0]);
+        let lower = lines[0].to_ascii_lowercase();
+        assert!(lower.contains("authorization: bearer native-access"));
+        assert!(lines[0].contains(r#""result":"Moved to done from overlay""#), "{}", lines[0]);
+        assert!(lines[1].starts_with("PATCH /api/plugins/kanban/tasks/t_1 HTTP/1.1"), "{}", lines[1]);
+        assert!(lines.iter().all(|line| !line.contains("/v1/overlay")));
+    }
+
+    #[tokio::test]
+    async fn the_client_reads_the_board_and_keeps_a_refreshed_login() {
+        let (origin, seen) = patch_server(vec![
+            ("401 Unauthorized", r#"{"detail":"expired"}"#),
+            ("200 OK", r#"{"access_token":"fresh-access","refresh_token":"fresh-refresh","expires_in":900}"#),
+            ("200 OK", r#"{"columns":[{"name":"ready","tasks":[{"id":"t_9","title":"Card","status":"ready"}]}]}"#),
+        ]);
+        let stored = Arc::new(Mutex::new(KanbanSecrets {
+            access_token: "old-access".into(),
+            refresh_token: "old-refresh".into(),
+            ..KanbanSecrets::default()
+        }));
+        let read = stored.clone();
+        let write = stored.clone();
+        let client = HermesClient::new(
+            Client::new(),
+            Arc::new(move || read.lock().unwrap().clone()),
+            Arc::new(move |next: &KanbanSecrets| *write.lock().unwrap() = next.clone()),
+        );
+        client.set_origin(&origin);
+        let board = client.kanban_board("").await.unwrap();
+        assert_eq!(board.columns.iter().flat_map(|c| &c.tasks).count(), 1);
+        assert_eq!(stored.lock().unwrap().access_token, "fresh-access");
+        let lines = seen.lock().unwrap().clone();
+        assert!(lines[0].starts_with("GET /api/plugins/kanban/board HTTP/1.1"), "{}", lines[0]);
+        assert!(lines[1].starts_with("POST /auth/native/refresh HTTP/1.1"), "{}", lines[1]);
+        assert!(lines[2].to_ascii_lowercase().contains("authorization: bearer fresh-access"));
     }
 
     #[test]
@@ -1702,7 +1990,7 @@ mod loopback_tests {
         let url = authorize_url("http://10.0.0.1:9119", "CH", "http://127.0.0.1:5/cb", "ST");
         // Every PKCE field rides after an `&`. cmd.exe /C start would cut them all off.
         assert!(url.contains("&code_challenge=CH&code_challenge_method=S256&redirect_uri="));
-        let lib = include_str!("lib.rs");
+        let lib = include_str!("../lib.rs");
         let start = lib.find("fn open_system_browser").expect("opener");
         let body = &lib[start..start + lib[start..].find("\n}\n").expect("end")];
         assert!(body.contains("tauri_plugin_opener::open_url"), "{body}");

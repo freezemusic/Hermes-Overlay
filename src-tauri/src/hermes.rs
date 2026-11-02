@@ -2693,29 +2693,6 @@ pub async fn fetch_cron_jobs(
     }
 }
 
-pub fn kanban_patch_body(status: &str, assignee: &str, priority: &str, title: &str) -> Value {
-    let mut body = serde_json::Map::new();
-    if !status.trim().is_empty() {
-        body.insert("status".into(), Value::String(status.trim().to_string()));
-    }
-    if !assignee.trim().is_empty() {
-        body.insert(
-            "assignee".into(),
-            Value::String(assignee.trim().to_string()),
-        );
-    }
-    if !priority.trim().is_empty() {
-        body.insert(
-            "priority".into(),
-            Value::String(priority.trim().to_string()),
-        );
-    }
-    if !title.trim().is_empty() {
-        body.insert("title".into(), Value::String(title.trim().to_string()));
-    }
-    Value::Object(body)
-}
-
 pub async fn fetch_kanban_board(
     http: &Client,
     root: &str,
@@ -2753,31 +2730,6 @@ pub async fn fetch_kanban_board(
         .await
         .map_err(|err| HermesError::Protocol(format!("kanban 回應唔係 JSON：{err}")))?;
     Ok(parse_kanban_board(&value, board))
-}
-
-pub async fn patch_kanban_task(
-    http: &Client,
-    root: &str,
-    key: &str,
-    id: &str,
-    body: &Value,
-) -> Result<KanbanTask, HermesError> {
-    let url = format!(
-        "{}/v1/overlay/kanban/tasks/{}",
-        root.trim_end_matches('/'),
-        query_escape(id)
-    );
-    let resp = send(
-        http.patch(url).timeout(Duration::from_secs(8)).json(body),
-        key,
-    )
-    .await?;
-    let value: Value = resp
-        .json()
-        .await
-        .map_err(|err| HermesError::Protocol(format!("kanban 更新唔係 JSON：{err}")))?;
-    let task_value = value.get("task").unwrap_or(&value);
-    task_from(task_value, "").ok_or_else(|| HermesError::Protocol("kanban 更新回應冇 id".into()))
 }
 
 pub async fn create_session(
@@ -3047,41 +2999,6 @@ pub enum ProfileBearer {
     Listed(Vec<DiscoveredProfile>),
     Expired,
     Missed,
-}
-
-pub async fn list_profiles_with_bearer(
-    http: &Client,
-    origin: &str,
-    access_token: &str,
-    timeout: Duration,
-) -> ProfileBearer {
-    let token = access_token.trim();
-    if token.is_empty() {
-        return ProfileBearer::Expired;
-    }
-    let url = format!("{}/api/profiles", origin.trim_end_matches('/'));
-    let response = match http
-        .get(url)
-        .timeout(timeout)
-        .header("Accept", "application/json")
-        .header("Authorization", format!("Bearer {token}"))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(_) => return ProfileBearer::Missed,
-    };
-    let status = response.status().as_u16();
-    if status == 401 {
-        return ProfileBearer::Expired;
-    }
-    if !(200..300).contains(&status) {
-        return ProfileBearer::Missed;
-    }
-    let Ok(value) = response.json::<Value>().await else {
-        return ProfileBearer::Missed;
-    };
-    ProfileBearer::Listed(parse_dashboard_profiles(&value))
 }
 
 pub fn parse_dashboard_profiles(value: &Value) -> Vec<DiscoveredProfile> {
@@ -6237,15 +6154,15 @@ mod tests {
         assert_eq!(colored[0].color, "hsl(326 68% 58%)");
         assert_eq!(colored[1].color, "#ABC");
         assert_eq!(colored[2].color, "rgb(10, 20, 30)");
-        let src = include_str!("hermes.rs");
+        let src = include_str!("client/kanban.rs");
         let start = src
             .find("pub async fn list_profiles_with_bearer")
             .expect("bearer");
         let end = src[start..]
-            .find("\npub fn parse_dashboard_profiles")
-            .expect("parse");
+            .find("\n/// `GET {origin}/api/profiles`")
+            .expect("next");
         let body = &src[start..start + end];
-        assert!(body.contains("/api/profiles"));
+        assert!(body.contains("rest::PROFILES"));
         assert!(body.contains("Authorization"));
         assert!(body.contains("Bearer"));
         assert!(!body.contains("X-Hermes-Session-Token"));
@@ -6274,7 +6191,7 @@ mod tests {
             let _ = sock.write_all(body.as_bytes());
         });
         let http = Client::new();
-        let listed = list_profiles_with_bearer(
+        let listed = crate::client::kanban::list_profiles_with_bearer(
             &http,
             &format!("http://{addr}"),
             "native-access",
@@ -6309,7 +6226,7 @@ mod tests {
             let _ = sock.write_all(header.as_bytes());
             let _ = sock.write_all(body.as_bytes());
         });
-        let expired = list_profiles_with_bearer(
+        let expired = crate::client::kanban::list_profiles_with_bearer(
             &http,
             &format!("http://{denied_addr}"),
             "stale-access",
@@ -7815,7 +7732,7 @@ data: {}\n\
                 .count(),
             2
         );
-        let body = kanban_patch_body("running", "", "", "");
+        let body = crate::client::kanban::patch_body("running", "", "", "").unwrap();
         assert_eq!(body, json!({"status": "running"}));
     }
 

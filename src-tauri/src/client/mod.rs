@@ -11,6 +11,7 @@
 //! - The old gateway API is not used for chat. See REQUIREMENTS R-CL-01.
 
 pub mod endpoints;
+pub mod kanban;
 pub mod turn;
 pub mod ws;
 
@@ -18,7 +19,7 @@ use crate::hermes::{
     self, CatalogFetch, ClarifyOutcome, CronList, HermesError, MessagePage, OverlayCommand,
     SessionSummary, StopOutcome, SteerOutcome, TurnEvent, UiMessage,
 };
-use crate::kanban_server::{self, KanbanSecrets};
+use kanban::KanbanSecrets;
 use endpoints::{event, query, rest, rpc};
 use reqwest::header::{AUTHORIZATION, COOKIE};
 use reqwest::{Client, Method};
@@ -206,7 +207,7 @@ impl HermesClient {
                     *self.secrets.lock().unwrap_or_else(|e| e.into_inner()) = Some(secrets.clone());
                     continue;
                 }
-                if kanban_server::renew_login(&self.http, &origin, &mut secrets).await.unwrap_or(false) {
+                if kanban::renew_login(&self.http, &origin, &mut secrets).await.unwrap_or(false) {
                     self.keep_secrets(secrets.clone());
                     continue;
                 }
@@ -899,11 +900,18 @@ mod tests {
 
     #[test]
     fn the_client_module_has_no_gateway_paths() {
-        for src in [include_str!("mod.rs"), include_str!("endpoints.rs"), include_str!("ws.rs"), include_str!("turn.rs")] {
+        for src in [include_str!("mod.rs"), include_str!("endpoints.rs"), include_str!("ws.rs"), include_str!("turn.rs"), include_str!("kanban.rs")] {
             let code = src.split("#[cfg(test)]").next().unwrap_or("");
             assert!(!code.contains("/v1/runs"), "no 8642 run paths");
             assert!(!code.contains("8642"), "no gateway port");
             assert!(!code.contains(":9119"), "port only in config defaults");
+            assert!(!code.contains("/v1/overlay"), "no gateway kanban proxy (R-AR-04)");
+        }
+        // R-AR-02: string paths only in endpoints.rs.
+        for src in [include_str!("mod.rs"), include_str!("kanban.rs")] {
+            let code = src.split("#[cfg(test)]").next().unwrap_or("");
+            assert!(!code.contains("\"/api/"), "paths live in endpoints.rs");
+            assert!(!code.contains("\"/auth/"), "paths live in endpoints.rs");
         }
     }
 }

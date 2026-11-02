@@ -19,6 +19,27 @@ pub mod rest {
     pub fn session_messages(id: &str) -> String {
         format!("{SESSIONS}/{}/messages", super::escape(id))
     }
+
+    /// Kanban dashboard plugin (`plugins/kanban/dashboard/plugin_api.py`).
+    /// `?board=<slug>` picks a board; without it the server uses its current one.
+    pub const KANBAN_BOARD: &str = "/api/plugins/kanban/board";
+    pub const KANBAN_BOARDS: &str = "/api/plugins/kanban/boards";
+    pub const KANBAN_TASKS: &str = "/api/plugins/kanban/tasks";
+
+    /// `GET` reads a card; `PATCH` moves it (`{"status": …}`, Hermes 0.22.5).
+    pub fn kanban_task(id: &str) -> String {
+        format!("{KANBAN_TASKS}/{}", super::escape(id))
+    }
+}
+
+/// Dashboard login (`hermes_cli/dashboard_auth`). Not under `/api/`.
+pub mod auth {
+    /// Basic login: `{"provider":"basic","username","password"}` → session cookie.
+    pub const PASSWORD_LOGIN: &str = "/auth/password-login";
+    /// Native PKCE: the system browser opens this; the code comes back on loopback.
+    pub const NATIVE_AUTHORIZE: &str = "/auth/native/authorize";
+    pub const NATIVE_TOKEN: &str = "/auth/native/token";
+    pub const NATIVE_REFRESH: &str = "/auth/native/refresh";
 }
 
 /// JSON-RPC methods on `/api/ws` (tui_gateway, Hermes 0.22.5).
@@ -113,6 +134,15 @@ mod tests {
         assert_eq!(rest::session_messages("a b/c"), "/api/sessions/a%20b%2Fc/messages");
         assert_eq!(query("mt-orch", &[("limit", "100")]), "?limit=100&profile=mt-orch");
         assert_eq!(query("", &[]), "");
+    }
+
+    #[test]
+    fn kanban_and_login_paths_live_here() {
+        assert_eq!(rest::kanban_task("t_1 x"), "/api/plugins/kanban/tasks/t_1%20x");
+        assert_eq!(rest::KANBAN_BOARD, "/api/plugins/kanban/board");
+        assert_eq!(rest::KANBAN_BOARDS, "/api/plugins/kanban/boards");
+        assert_eq!(auth::PASSWORD_LOGIN, "/auth/password-login");
+        assert_eq!(auth::NATIVE_REFRESH, "/auth/native/refresh");
     }
 
     #[test]

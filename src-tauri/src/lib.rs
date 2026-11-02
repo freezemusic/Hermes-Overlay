@@ -1,10 +1,10 @@
 mod config;
 mod hermes;
 mod interaction;
-mod kanban_server;
 mod secrets;
 mod sse;
 mod client;
+use client::kanban;
 mod gateway_legacy;
 
 use config::{AppConfig, BotConfig};
@@ -156,7 +156,7 @@ struct AppState {
 fn chat_client(state: &AppState, cfg: &AppConfig) -> Arc<client::HermesClient> {
     state
         .client
-        .set_origin(&kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url));
+        .set_origin(&kanban::origin(&cfg.gateway_base_url, &cfg.kanban_base_url));
     Arc::clone(&state.client)
 }
 
@@ -164,7 +164,7 @@ fn new_chat_client(http: reqwest::Client) -> Arc<client::HermesClient> {
     client::HermesClient::new(
         http,
         Arc::new(load_kanban_secrets),
-        Arc::new(|next: &kanban_server::KanbanSecrets| {
+        Arc::new(|next: &kanban::KanbanSecrets| {
             let _ = store_kanban_secrets(next);
         }),
     )
@@ -369,15 +369,6 @@ fn require_hermes(cfg: &AppConfig) -> Result<(), String> {
 fn bot_or_err<'a>(cfg: &'a AppConfig, profile: &str) -> Result<&'a BotConfig, String> {
     cfg.bot(profile)
         .ok_or_else(|| format!("名單冇 profile「{profile}」"))
-}
-
-/// Keyring reads time out off this thread. Sync commands must not call this:
-/// Tauri runs those on the GTK thread.
-fn profile_key(profile: &str) -> Result<String, String> {
-    match secrets::get_profile_key(profile)? {
-        Lookup::Value(key) if !key.trim().is_empty() => Ok(key),
-        Lookup::Value(_) | Lookup::Missing => Err(format!("profile「{profile}」未有 API 金鑰")),
-    }
 }
 
 struct WatchNote {
@@ -1080,7 +1071,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         .unwrap_or_else(interaction::platform_supports_global_input);
     Ok(PublicSettings {
         mode: cfg.mode().into(),
-        kanban_server_url: kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url),
+        kanban_server_url: kanban::origin(&cfg.gateway_base_url, &cfg.kanban_base_url),
         kanban_base_url: cfg.kanban_base_url,
         kanban_board: cfg.kanban_board,
         gateway_base_url: cfg.gateway_base_url,
@@ -1508,16 +1499,8 @@ async fn sync_profiles(
     // Laptop has the Kanban native token, not a dashboard session token.
     // Hermes 0.22.5 gated dashboard accepts that bearer on GET /api/profiles.
     if !saw_dashboard {
-        let origin = kanban_server::origin(&gateway, &initial.kanban_base_url);
-        let read = kanban_server::read_native_profiles(
-            &state.http,
-            &origin,
-            load_kanban_secrets(),
-        )
-        .await;
-        if read.changed {
-            let _ = store_kanban_secrets(&read.secrets);
-        }
+        // The client keeps a refreshed login (store_kanban_secrets via its store hook).
+        let read = chat_client(&state, &initial).native_profiles().await;
         listed_remote |= read.listed;
         push_discovered(&mut hints, read.profiles);
     }
@@ -2729,30 +2712,6 @@ async fn list_commands(
     Ok(CommandList { commands, hint })
 }
 
-fn kanban_auth(cfg: &AppConfig) -> Result<(String, String), String> {
-    require_hermes(cfg)?;
-    let root = cfg
-        .gateway_base_url
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    let mut profiles = Vec::new();
-    if cfg.bots.iter().any(|bot| bot.profile == "default") {
-        profiles.push("default".to_string());
-    }
-    for bot in &cfg.bots {
-        if bot.profile != "default" {
-            profiles.push(bot.profile.clone());
-        }
-    }
-    for profile in &profiles {
-        if let Ok(key) = profile_key(profile) {
-            return Ok((root, key));
-        }
-    }
-    Err("未有 API 金鑰，看板開唔到。".into())
-}
-
 /// Empty follows the server current board. A slug is sent only after a pick.
 fn kanban_slug(board: Option<String>) -> String {
     board.unwrap_or_default().trim().to_string()
@@ -2775,24 +2734,19 @@ async fn get_kanban_board(
             message: "未設定 gateway，而家係離線示範模式。".into(),
         });
     }
-    let origin = kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url);
-    let secrets = load_kanban_secrets();
-    let (board, next, changed) =
-        kanban_server::read_board(&state.http, &origin, &slug, secrets)
-            .await
-            .map_err(|err| kanban_server::explain_kanban(&err))?;
-    if changed {
-        let _ = store_kanban_secrets(&next);
-    }
-    Ok(board)
+    // R-AR-01: the client reads, renews once and stores a renewed login.
+    chat_client(&state, &cfg)
+        .kanban_board(&slug)
+        .await
+        .map_err(|err| kanban::explain_kanban(&err))
 }
 
-fn load_kanban_secrets() -> kanban_server::KanbanSecrets {
+fn load_kanban_secrets() -> kanban::KanbanSecrets {
     let read = |account| match secrets::get_kanban_secret(account) {
         Ok(Lookup::Value(value)) => value,
         _ => String::new(),
     };
-    kanban_server::KanbanSecrets {
+    kanban::KanbanSecrets {
         access_token: read(secrets::KANBAN_ACCESS_ACCOUNT),
         refresh_token: read(secrets::KANBAN_REFRESH_ACCOUNT),
         session_cookie: read(secrets::KANBAN_COOKIE_ACCOUNT),
@@ -2801,7 +2755,7 @@ fn load_kanban_secrets() -> kanban_server::KanbanSecrets {
     }
 }
 
-fn store_kanban_secrets(secrets: &kanban_server::KanbanSecrets) -> Result<(), String> {
+fn store_kanban_secrets(secrets: &kanban::KanbanSecrets) -> Result<(), String> {
     let write = |account: &str, value: &str| {
         if value.trim().is_empty() {
             secrets::delete_kanban_secret(account)
@@ -2837,58 +2791,37 @@ async fn sign_in_kanban(
     require_hermes(&cfg)?;
     let typed = config::normalize_http_base(&input.kanban_base_url, true)?;
     let origin = if typed.is_empty() {
-        kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url)
+        kanban::origin(&cfg.gateway_base_url, &cfg.kanban_base_url)
     } else {
         typed.clone()
     };
     if typed != cfg.kanban_base_url {
         remember_kanban_url(&app, &typed)?;
     }
+    // Chat and Kanban share this address and login (R-CL-01, R-AR-01).
+    state.client.set_origin(&origin);
     if !input.username.trim().is_empty() || !input.password.is_empty() {
         if input.username.trim().is_empty() || input.password.is_empty() {
             return Err("帳號同密碼要一齊填".into());
         }
-        let cookie = kanban_server::password_login(
-            &state.http,
-            &origin,
-            input.username.trim(),
-            &input.password,
-        )
-        .await
-        .map_err(|err| match err {
-            HermesError::Http { status: 401 | 403, .. } => {
-                kanban_server::note_rejected_password(input.username.trim(), &input.password);
-                "帳號或密碼唔啱".into()
-            }
-            other => kanban_server::explain_kanban(&other),
-        })?;
-        let mut secrets = load_kanban_secrets();
-        secrets.username = input.username.trim().to_string();
-        secrets.password = input.password;
-        secrets.session_cookie = cookie;
-        secrets.access_token.clear();
-        store_kanban_secrets(&secrets)?;
-        state.client.reload_login();
-        kanban_server::clear_rejected_password();
-        kanban_server::clear_rejected_refresh();
+        state
+            .client
+            .sign_in_password(&origin, input.username.trim(), &input.password)
+            .await
+            .map_err(|err| match err {
+                HermesError::Http { status: 401 | 403, .. } => "帳號或密碼唔啱".to_string(),
+                other => kanban::explain_kanban(&other),
+            })?;
         emit(&app, serde_json::json!({ "type": "login.changed" }));
         return Ok(SIGNED_IN_LINE.into());
     }
-    let tokens = kanban_server::native_pkce_login(
-        &state.http,
-        &origin,
-        std::time::Duration::from_secs(180),
-        |url| open_system_browser(url),
-    )
-    .await
-    .map_err(|err| kanban_server::explain_kanban(&err))?;
-    let mut secrets = load_kanban_secrets();
-    secrets.access_token = tokens.access_token;
-    secrets.refresh_token = tokens.refresh_token;
-    store_kanban_secrets(&secrets)?;
-    state.client.reload_login();
-    kanban_server::clear_rejected_password();
-    kanban_server::clear_rejected_refresh();
+    state
+        .client
+        .sign_in_browser(&origin, std::time::Duration::from_secs(180), |url| {
+            open_system_browser(url)
+        })
+        .await
+        .map_err(|err| kanban::explain_kanban(&err))?;
     emit(&app, serde_json::json!({ "type": "login.changed" }));
     Ok(SIGNED_IN_LINE.into())
 }
@@ -2927,42 +2860,32 @@ async fn get_kanban_task(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
-) -> Result<kanban_server::KanbanTaskDetail, String> {
+) -> Result<kanban::KanbanTaskDetail, String> {
     let id = id.trim().to_string();
     if id.is_empty() {
         return Err("未揀卡片".into());
     }
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
-    let origin = kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url);
-    let secrets = load_kanban_secrets();
-    let (detail, next, changed) = kanban_server::read_task(&state.http, &origin, &id, secrets)
+    chat_client(&state, &cfg)
+        .kanban_task(&id)
         .await
-        .map_err(|err| kanban_server::explain_kanban(&err))?;
-    if changed {
-        let _ = store_kanban_secrets(&next);
-    }
-    Ok(detail)
+        .map_err(|err| kanban::explain_kanban(&err))
 }
 
 #[tauri::command]
 async fn get_kanban_boards(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<kanban_server::KanbanBoardList, String> {
+) -> Result<kanban::KanbanBoardList, String> {
     let cfg = load_config(&app)?;
     if cfg.mode() == "mock" {
-        return Ok(kanban_server::KanbanBoardList::default());
+        return Ok(kanban::KanbanBoardList::default());
     }
-    let origin = kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url);
-    let secrets = load_kanban_secrets();
-    let (list, next, changed) = kanban_server::read_boards(&state.http, &origin, secrets)
+    chat_client(&state, &cfg)
+        .kanban_boards()
         .await
-        .map_err(|err| kanban_server::explain_kanban(&err))?;
-    if changed {
-        let _ = store_kanban_secrets(&next);
-    }
-    Ok(list)
+        .map_err(|err| kanban::explain_kanban(&err))
 }
 
 #[tauri::command]
@@ -3005,19 +2928,19 @@ async fn patch_kanban_task(
     state: State<'_, AppState>,
     id: String,
     patch: KanbanPatch,
+    board: Option<String>,
 ) -> Result<hermes::KanbanTask, String> {
     let cfg = load_config(&app)?;
-    let (root, key) = kanban_auth(&cfg)?;
-    let body = hermes::kanban_patch_body(
-        &patch.status,
-        &patch.assignee,
-        &patch.priority,
-        &patch.title,
-    );
+    require_hermes(&cfg)?;
+    let body = kanban::patch_body(&patch.status, &patch.assignee, &patch.priority, &patch.title)
+        .map_err(|err| hermes::kanban_move_error(&err))?;
     if body.as_object().is_some_and(|fields| fields.is_empty()) {
         return Err("看板更新係空".into());
     }
-    gateway_legacy::patch_kanban_task(&state.http, &root, &key, id.trim(), &body)
+    // R-KB-07 / R-AR-01: the move goes to the dashboard (9119) through the
+    // client, on the board on screen. No per-bot key, no 8642.
+    chat_client(&state, &cfg)
+        .patch_kanban_task(id.trim(), &kanban_slug(board), &body)
         .await
         .map_err(|err| hermes::kanban_move_error(&err))
 }
@@ -4161,9 +4084,8 @@ mod tests {
         assert!(body.contains("quiet"));
         assert!(body.contains(".probe()"));  // R-CL-01: the dashboard, not the gateway
         assert!(body.contains("apply_quiet_roster"));
-        assert!(body.contains("read_native_profiles"));
-        assert!(body.contains("kanban_server::origin"));
-        assert!(body.contains("store_kanban_secrets"));
+        assert!(body.contains(".native_profiles()"));
+        assert!(!body.contains("read_native_profiles"));
         assert!(!body.contains("password_login"));
         assert!(!body.contains("println"));
         assert!(!body.contains("eprintln"));
@@ -4333,15 +4255,25 @@ mod tests {
         let task_body = &src[task..task + after];
         assert!(task_body.contains("explain_kanban"));
         assert!(!task_body.contains("explain("));
-        assert!(board_body.contains("if changed"));
-        assert!(board_body.contains("store_kanban_secrets"));
+        // R-AR-01: reads go through the client, which stores a renewed login.
+        assert!(board_body.contains(".kanban_board(&slug)"));
+        assert!(!board_body.contains("state.http"));
         let slug_end = src[board..].find("fn load_kanban_secrets").expect("secrets");
         let slug_body = &src[board..board + slug_end];
         assert!(slug_body.contains("kanban_slug"));
         assert!(!slug_body.contains("\"default\""));
         assert!(!slug_body.contains("store_kanban_board"));
         assert!(!slug_body.contains("config::save"));
-        assert!(task_body.contains("store_kanban_secrets"));
+        assert!(task_body.contains(".kanban_task(&id)"));
+        assert!(!task_body.contains("state.http"));
+        let patch = src.find("async fn patch_kanban_task").expect("patch");
+        let patch_end = src[patch..].find("#[derive(Serialize)]").expect("next");
+        let patch_body = &src[patch..patch + patch_end];
+        // R-KB-07: the move is on the dashboard through the client, on the board shown.
+        assert!(patch_body.contains(".patch_kanban_task(id.trim(), &kanban_slug(board), &body)"));
+        assert!(!patch_body.contains("gateway_legacy"));
+        assert!(!patch_body.contains("profile_key"));
+        assert!(!patch_body.contains("state.http"));
         let store = src.find("fn store_kanban_secrets").expect("store");
         let store_body = &src[store..store + 700];
         assert!(store_body.contains("KANBAN_ACCESS_ACCOUNT"));
@@ -4365,7 +4297,7 @@ mod tests {
         let boards = src.find("async fn get_kanban_boards").expect("boards");
         let set = src.find("async fn set_kanban_board").expect("set");
         let boards_body = &src[boards..set];
-        assert!(boards_body.contains("read_boards"));
+        assert!(boards_body.contains(".kanban_boards()"));
         assert!(!boards_body.contains("store_kanban_board"));
         assert!(!boards_body.contains("config::save"));
         let set_end = src[set..].find("struct KanbanPatch").expect("patch");
