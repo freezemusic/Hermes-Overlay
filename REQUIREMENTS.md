@@ -306,7 +306,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：Devon（2026-10-22 手提：看板 endpoint 404）。驗收（單元＋盒）：404 回應之後看板停留喺上面嗰句，`gatewayDown` 係 false；真正連唔到或者逾時仍然行 R-SY-08。
 - 狀態：❓ / ❓。
 
-**R-KB-05** 看板讀 Devon 部機嘅 `hermes serve`（埠 9119，`/api/plugins/kanban`），唔係 gateway 8642。8642 嘅 `/api/jobs` 係排程；看板路徑 404 係預期。讀只用 GET：`/api/plugins/kanban/board`、`/api/plugins/kanban/boards` 同 `/api/plugins/kanban/tasks/{id}`。冇傳 `board` 就係伺服器嘅 current board，唔好寫死 `default`（見 R-KB-06）。欄序 triage、todo、scheduled、ready、running、blocked、review、done。撳卡片開詳情（標題、內文、負責人、狀態、優先、latest_summary、留言）。拖卡仍然走原來嘅 overlay PATCH（R-KB-01），唔好對 9119 嘅看板路徑發 POST。
+**R-KB-05** 看板讀 Devon 部機嘅 `hermes serve`（埠 9119，`/api/plugins/kanban`），唔係 gateway 8642。8642 嘅 `/api/jobs` 係排程；看板路徑 404 係預期。讀只用 GET：`/api/plugins/kanban/board`、`/api/plugins/kanban/boards` 同 `/api/plugins/kanban/tasks/{id}`。冇傳 `board` 就係伺服器嘅 current board，唔好寫死 `default`（見 R-KB-06）。欄序 triage、todo、scheduled、ready、running、blocked、review、done。撳卡片開詳情（標題、內文、負責人、狀態、優先、latest_summary、留言）。拖卡見 R-KB-07：而家都係打 9119（`PATCH`）。「拖卡仍然走原來嘅 overlay PATCH（R-KB-01）」**已取代**（todo 37，2026-11-02）。唔好對 9119 嘅看板路徑發 POST。
 
 設定有 Kanban server 位址。留空就用 gateway 嘅 host 加埠 9119。登入由 Devon 自己填：優先系統瀏覽器 PKCE（`GET /auth/native/authorize`、`POST /auth/native/token`、`POST /auth/native/refresh`）；帳號密碼一齊填就用 `POST /auth/password-login`（`provider: basic`）攞 session cookie。鑰匙圈已經有 `kanban-access-token` 同 `kanban-refresh-token`（Windows 目標名係 `kanban-access-token.com.freezemusic.hermes-overlay` 同 `kanban-refresh-token.com.freezemusic.hermes-overlay`）時，access 過期或者看板 GET 回任何 401，都用該 refresh token POST `/auth/native/refresh`（JSON 只得 `refresh_token`）。成功就把新 access 同新 refresh 寫返同一對鑰匙圈帳戶，然後同一個 GET 再試一次。Refresh 回 401 或 403 先顯示「要登入 Kanban」；同一條已拒嘅 refresh token 唔好每個輪詢再 POST。Refresh 連唔到或者逾時保持「連唔到 Kanban。」，token 留喺鑰匙圈。帳號、密碼、cookie、access、refresh 只放呢個程式自己嘅鑰匙圈（`com.freezemusic.hermes-overlay` 嘅 kanban 帳戶），唔寫 log、唔寫 config.json、唔讀寫 `dashboard-session-token`、`profile:*`，亦唔用其他程式嘅鑰匙圈。系統瀏覽器登入唔可以經 `cmd /C start` 開網址：cmd.exe 會喺第一個 `&` 切斷 authorize 網址，瀏覽器收唔到 `code_challenge`，伺服器回 400，登入等到逾時。要用 opener 將成條網址交俾系統。loopback 回呼要等到 `/cb` 帶住 `code`（或者 `error`）先完；瀏覽器嘅 preconnect 空連線同 `/favicon.ico` 唔可以令登入失敗。
 
@@ -321,6 +321,11 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：Devon（2026-10-26，Hermes 0.22.5，`http://10.10.24.33:9119`，85 張卡全部喺 current board `mt4`：72 done、4 todo、3 triage、6 archived；`default` 同 `deskrpg` 係空）。
 - 驗收（單元，假 9119）：空 slug 嘅 board URL 冇 `?board=`，亦唔含 `default`；唔帶 query 回 `mt4` 嘅卡，`?board=default` 同 `?board=deskrpg` 係空板；`/boards` 嘅 `current` 係 `mt4`；archived 唔出現；done 欄在；`columnCollapsed("done", false)` 係收起，收起欄頭有 `▸` 同張數。`boardOptionLabel("mt4", "mt4")` 係 `mt4（目前）`。`.kanban-board-pick` 有 `appearance: none`。`store_kanban_board` 未呼叫、或者 slug 係空，config.json 位元組不變；揀咗 `mt4` 先多 `kanban_board`。`get_kanban_board` 唔寫呢個鍵。
 - 狀態：❓ / ❓。
+
+**R-KB-07** 拖卡改狀態打 Hermes Dashboard（9119）嘅看板 plugin：`PATCH /api/plugins/kanban/tasks/{id}`，帶 `?board=<畫面上嗰塊板>`（未揀過、伺服器回 `board: null` 就唔帶，跟 current board），body `{"status": …}`。拖去 done 要加 `result` 同 `summary`「Moved to done from overlay」，因為 0.22.5 冇證據會 400「completion blocked: … has no result or summary evidence」（舊 gateway proxy 用同一句）。`running` 由伺服器拒（400）。經 `HermesClient::patch_kanban_task`，用同對話一樣嘅 Dashboard 登入（401 續期一次），唔用每個 bot 嘅 API 金鑰，唔再打 8642 嘅 `/v1/overlay/kanban/tasks/{id}`。伺服器拒絕（400／404／409）就將張卡放返原位，顯示伺服器嘅 `detail`（例如「看板拒絕呢次移動：status transition to 'review' not valid from current state」）。看板讀取（board、boards、卡片）同登入（PKCE、密碼、refresh）亦都喺 `HermesClient`（`client/kanban.rs`），路徑喺 `client/endpoints.rs`（R-AR-01／02）。
+- 來源：todo 37（Devon 2026-11-02 准通宵做）。盒（0.22.5 `serve --isolated`，19119，basic 登入）：`PATCH` ready→blocked→ready→todo→triage 200；done 冇 result 400、有 result 200；`running` 400；壞 board 404；冇呢張卡 404；todo→review 409。見 kanban-9119/RESULTS.md。
+- 驗收（單元）：`a_card_move_patches_the_dashboard_plugin_on_the_board_shown`（`PATCH /api/plugins/kanban/tasks/t_1?board=mt4`、Bearer、done 帶 result；409 嘅 detail 原文顯示；冇 `/v1/overlay`）；`the_client_reads_the_board_and_keeps_a_refreshed_login`；`patch_body_sends_done_evidence_and_an_integer_priority`。CI：`kanban-on-dashboard`（假 dashboard log 有 `GET /api/plugins/kanban/board`，8642 冇 `/v1/overlay/kanban`）。盒：overlay 拖卡之後 `GET /api/plugins/kanban/tasks/{id}` 見到新狀態。
+- 狀態：見 kanban-9119/RESULTS.md；Win 未驗。
 
 ---
 
@@ -559,11 +564,12 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 **R-AR-01** 所有 Hermes 網絡（REST、WebSocket、登入續期、重連）只可以經 `HermesClient`（`src-tauri/src/client/mod.rs`）。`lib.rs` 同 Tauri 指令只叫 client 嘅有型別方法，唔自己砌 URL、唔直接用 `reqwest` 打 Hermes、唔自己開 WebSocket。
 **R-AR-02** 每條路徑、RPC 方法名、伺服器請求名同事件名只寫喺 `client/endpoints.rs` 一個地方。
 **R-AR-03** 埠號只喺 config 預設（`config::DEFAULT_DASHBOARD_PORT` = 9119，同 config 預設地址）出現；client 同指令唔可以 hard-code 埠或主機。
-**R-AR-04** 仲要用舊 gateway（8642）嘅嘢只可以放喺 `gateway_legacy.rs`，每樣寫明點解仲要；對話唔可以用佢。
+**R-AR-04** 仲要用舊 gateway（8642）嘅嘢只可以放喺 `gateway_legacy.rs`，每樣寫明點解仲要；對話同看板都唔可以用佢。2026-11-02 起拖卡已經離開 8642（R-KB-07），剩低只有 setup 搵 profile 嘅 `/health` 提示。
 - 來源：Devon（2026-11-02，「你地冇寫 class for network handling 嗎? 你地 hardcode 的嗎?」「點解可以冇 system architect」）。
 - 驗收：單元測試 `the_client_module_has_no_gateway_paths`（client 代碼冇 `/v1/runs`、`8642`、`:9119`）；`grep` lib.rs 冇 `/api/`、`/v1/` 字面路徑用嚟打 Hermes 對話；review 時新增 Hermes 呼叫要經 client。
-- 已知未搬：看板讀取、登入、Dashboard profile 清單仍經 `kanban_server`／`hermes` 用同一個登入打 9119（見 RESULTS）；下一步搬入 client。
-- 狀態：✅(對話部分)；看板／登入待搬。
+- 看板讀取、拖卡、登入（PKCE、密碼、refresh）同用 Kanban 登入讀 profile 清單已經搬入 client（`client/kanban.rs`，todo 37，R-KB-07）。舊句「已知未搬：看板讀取、登入、Dashboard profile 清單仍經 `kanban_server`／`hermes`」**已取代**。
+- 仲未搬：設定「Dashboard session token」嗰條 profile 清單（`hermes::list_dashboard_profiles`，`dashboard_base_url`）仍喺 `hermes.rs`；`gateway_legacy.rs` 只剩 gateway `/health` 嘅 profile 提示（R-AR-04）。
+- 狀態：✅(對話、看板、登入)；Dashboard token 清單待搬。
 
 ## 12b. 連線（R-CL，只行 9119）
 

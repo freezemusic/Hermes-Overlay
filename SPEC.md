@@ -101,7 +101,7 @@
 2. 看板資料來自 Hermes 上的 overlay-slash plugin。未安裝時必須顯示「未裝 overlay-slash kanban，看板唔會出現。」不得顯示假任務。瀏覽器預覽可以顯示示範任務。
 3. 欄位順序為 triage、todo、ready、running、blocked、done。`archived` 不得出現。
 4. 無論面板開或收，都必須每 5 秒輪詢。第一次快照只作基準，不得彈出預覽。之後卡片新增、移動或狀態改變，而且看板面板未打開時，必須用第 7 節的膠囊預覽（約 5 秒，未按住修飾鍵時穿透）。一張新增寫「新增：標題」；多張寫「新增 N 張卡片」。一張改狀態寫「標題 → 狀態」；多張寫「N 張卡片改咗狀態」。其他指紋變化寫「看板有更新」。看板面板已經打開時不得再彈膠囊。拖卡片只發生在面板打開時，因此不得因今次拖動再彈一粒。
-5. 拖卡片必須能改任務狀態並寫回。
+5. 拖卡片必須能改任務狀態並寫回。寫回打 Hermes Dashboard 嘅看板 plugin（`PATCH /api/plugins/kanban/tasks/{id}?board=…`，同讀取同一個登入），唔打 gateway；拖去 done 要帶 result／summary 證據；伺服器拒絕就放返張卡、顯示伺服器原因（REQUIREMENTS R-KB-07）。
 6. 看板光球遵守第 1 節的光球規則，看板面板遵守第 1 節的面板規則。菱形光球用第 2 節的同一套變形展開成看板，不得另外做一張飛出的面板。
 
 ## 9. Markdown 與斜線指令
@@ -149,7 +149,7 @@
 
 ## 13. 連線（只行 9119）同架構
 
-0. 架構（R-AR）：Hermes 網絡只經 `HermesClient`；路徑只喺 `client/endpoints.rs`；埠只喺 config 預設；舊 gateway 剩低嘅只喺 `gateway_legacy.rs`。
+0. 架構（R-AR）：Hermes 網絡只經 `HermesClient`（對話、看板讀取同拖卡、登入）；路徑只喺 `client/endpoints.rs`；埠只喺 config 預設；舊 gateway 剩低嘅只喺 `gateway_legacy.rs`（setup 嘅 `/health` profile 提示）。
 
 1. 對話全部經 Hermes Dashboard（預設 9119）嘅 REST 同 `/api/ws`，由一個 `HermesClient` 負責（R-CL-01）。設定只要 Dashboard 地址同 Dashboard 登入；每個 bot 嘅 API 金鑰唔再需要。
 2. 送出用 `queued: true`，唔打斷手機嗰輪；排隊時顯示「手機嗰邊行緊，排緊隊」（R-CL-02）。
