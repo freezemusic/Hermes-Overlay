@@ -505,6 +505,33 @@ function Assert-ThroughHeld([string]$label, [int]$x, [int]$y) {
   }
 }
 
+# R-CT-05 (Devon 2026-11-02): the docked plan is drawn at the panel's held
+# opacity while Ctrl is held, and back at rest after. The app writes a
+# debug-only plan-look line per open plan after each key edge with the drawn
+# (computed) opacity: the plan's own when it is hosted outside the shell,
+# the shell's when it is still inside it.
+# `held` is the armed look: the first key-down edge can still be held=0 (the
+# Ctrl→C lead, R-CT-06), so match the painted look, not only the key.
+function Assert-PlanLook([string]$label, [string]$bot, [int]$down, [int]$before, [double]$lo, [double]$hi) {
+  $pattern = "plan-look down=$down held=$down bot=$bot "
+  if (-not (Wait-Count $pattern $before 4)) {
+    Note-Fail $label "debug log has no new '$pattern' line"
+    return
+  }
+  $line = @(Select-String -Path $log -Pattern $pattern)[-1].Line
+  if ($line -notmatch "hosted=(\d) opacity=([0-9.]+)") {
+    Note-Fail $label "unreadable plan-look line: $line"
+    return
+  }
+  $hosted = $Matches[1]
+  $drawn = [double]::Parse($Matches[2], [System.Globalization.CultureInfo]::InvariantCulture)
+  if ($drawn -lt $lo -or $drawn -gt $hi) {
+    Note-Fail $label "plan drawn at opacity $drawn hosted=$hosted, expected $lo..$hi"
+    return
+  }
+  Note-Ok $label "opacity $drawn hosted=$hosted"
+}
+
 # A point inside the panel or plan that is clear of every orb's 12px hit pad
 # (R-CT-02: Ctrl over an orb must reach the orb, even under a panel).
 function Clear-OfOrbs($p, $orbs) {
@@ -782,7 +809,14 @@ try {
       foreach ($p in $heldPoints) {
         if (-not (Clear-OfOrbs $p.pt $orbs)) { continue }
         $heldChecked++
+        $downBefore = Count-Log "plan-look down=1 held=1 bot=field "
+        $upBefore = Count-Log "plan-look down=0 held=0 bot=field "
         Assert-ThroughHeld "ctrl-through-$($p.name)" $p.pt.x $p.pt.y
+        if ($p.name -eq "plan") {
+          # min_opacity 0.18 above, panel rest 1: held = min(0.18, 1).
+          Assert-PlanLook "ctrl-plan-faded" "field" 1 $downBefore 0.0 0.20
+          Assert-PlanLook "ctrl-plan-rest" "field" 0 $upBefore 0.98 1.0
+        }
       }
       if ($heldChecked -lt 1) {
         Note-Fail "ctrl-through" "no panel or plan point clear of the orbs"
