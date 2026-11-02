@@ -135,14 +135,27 @@ function namesOf(command) {
   return [command.name, ...(command.aliases || [])].map(bare).filter(Boolean);
 }
 
+/** 0 exact, 1 prefix, 2 fuzzy, 3 description, -1 no match. */
+function matchRank(command, q) {
+  const names = namesOf(command);
+  if (names.includes(q)) return 0;
+  if (names.some((name) => name.startsWith(q))) return 1;
+  if (names.some((name) => fuzzy(name, q))) return 2;
+  if (String(command.description || "").toLowerCase().includes(q)) return 3;
+  return -1;
+}
+
+/** Exact name first, then prefix, fuzzy, description; ties keep catalogue order.
+ *  The 9119 catalogue is long, so `/model` must not land on a fuzzy `/moa`. */
 export function filterCommands(commands, query) {
   const q = bare(query);
-  return (commands || []).filter((command) => {
-    if (!q) return true;
-    const names = namesOf(command);
-    if (names.some((name) => name.startsWith(q) || fuzzy(name, q))) return true;
-    return String(command.description || "").toLowerCase().includes(q);
-  });
+  const list = commands || [];
+  if (!q) return list.slice();
+  return list
+    .map((command, index) => ({ command, index, rank: matchRank(command, q) }))
+    .filter((row) => row.rank >= 0)
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((row) => row.command);
 }
 
 export function moveSlashIndex(items, index, key) {

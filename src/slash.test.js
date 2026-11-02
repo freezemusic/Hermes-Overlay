@@ -139,3 +139,15 @@ test("gateway retry backs off from 5 seconds and ignores a rejected key", () => 
   assert.equal(gatewayDown("hermes gateway timeout"), true);
   assert.equal(gatewayDown("Gateway 拒絕金鑰（401）。"), false);
 });
+
+test("exact and prefix matches rank before fuzzy ones in a long 9119 catalogue", () => {
+  const commands = [
+    { name: "moa", description: "Mixture of agents" },
+    { name: "memo", description: "note" },
+    { name: "model", description: "Switch model" },
+    { name: "models-list", description: "list" },
+  ];
+  assert.deepEqual(filterCommands(commands, "model").map((c) => c.name), ["model", "models-list"]);
+  assert.deepEqual(filterCommands(commands, "mo").map((c) => c.name), ["moa", "model", "models-list", "memo"]);
+  assert.equal(filterCommands(commands, "").length, 4);
+});
