@@ -201,6 +201,10 @@ impl HermesClient {
                 }
             }
             let text = resp.text().await.unwrap_or_default();
+            if status == 401 || status == 403 {
+                // R-CL-01: chat needs only the dashboard login, never a per-bot key.
+                return Err(HermesError::Protocol(ws::LOGIN_LINE.into()));
+            }
             if !(200..300).contains(&status) {
                 return Err(HermesError::Http { status, body: hermes::clip(&text, 300) });
             }
@@ -265,9 +269,18 @@ impl HermesClient {
 
     pub async fn ensure_bot_chat(&self, profile: &str) -> Result<hermes::BotChatPick, HermesError> {
         let sessions = self.list_sessions_for_bot_chat(profile).await?;
-        hermes::canonical_bot_chat(&sessions)
-            .map(hermes::BotChatPick::from_session)
-            .ok_or_else(|| HermesError::Protocol("未有 Bot Chat".into()))
+        if let Some(found) = hermes::canonical_bot_chat(&sessions) {
+            return Ok(hermes::BotChatPick::from_session(found));
+        }
+        // R-CL-07: the dashboard keeps no Bot Chat of its own, so the first
+        // send of a profile without one makes it (never on startup or open).
+        let id = self.create_session(profile, Some(crate::config::BOT_CHAT_TITLE)).await?;
+        Ok(hermes::BotChatPick {
+            id,
+            source: String::new(),
+            read_only: false,
+            read_only_reason: String::new(),
+        })
     }
 
     pub async fn fetch_message_page(&self, profile: &str, session_id: &str, offset: u64, limit: u64) -> Result<MessagePage, HermesError> {

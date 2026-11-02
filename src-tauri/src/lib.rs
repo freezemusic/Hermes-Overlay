@@ -1984,7 +1984,15 @@ async fn send_chat(
     let sessions = chat.list_sessions_for_bot_chat(&root)
         .await
         .map_err(|err| explain(&err))?;
-    let target = hermes::send_session_target(&sessions, &pin.id, pin.explicit, pin.anchor)?;
+    let target = match hermes::send_session_target(&sessions, &pin.id, pin.explicit, pin.anchor) {
+        Ok(target) => target,
+        // R-CL-07 first Bot Chat: only when the profile has none at all.
+        Err(_) if !sessions.iter().any(|row| row.title == config::BOT_CHAT_TITLE && !row.archived) => {
+            let pick = chat.ensure_bot_chat(&root).await.map_err(|err| explain(&err))?;
+            hermes::SendTarget { id: pick.id, rewrite: true, explicit: false, anchor: 0.0 }
+        }
+        Err(err) => return Err(err),
+    };
     if target.rewrite {
         persist_pin(
             &app,

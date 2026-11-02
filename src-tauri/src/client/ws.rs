@@ -81,6 +81,8 @@ pub enum Frame {
     Other,
 }
 
+pub const LOGIN_LINE: &str = "要登入 Hermes Dashboard（設定 → 登入）";
+
 pub fn classify(raw: &str) -> Frame {
     let Ok(value) = serde_json::from_str::<Value>(raw) else {
         return Frame::Other;
@@ -265,7 +267,8 @@ fn set_reason(inner: &Inner, text: &str) {
 
 fn explain_down(err: &HermesError) -> String {
     match err {
-        HermesError::Http { status: 401 | 403, .. } => "要登入 Hermes Dashboard（設定 → 登入）".into(),
+        HermesError::Http { status: 401 | 403, .. } => LOGIN_LINE.into(),
+        HermesError::Protocol(line) if line == LOGIN_LINE => LOGIN_LINE.into(),
         HermesError::Connect(_) | HermesError::Timeout(_) => "連唔到 Hermes Dashboard，等陣自動再試".into(),
         _ => "同 Hermes Dashboard 斷咗線，等陣自動再試".into(),
     }

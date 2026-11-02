@@ -6755,6 +6755,10 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
         let send = &lib[send_start..send_end];
         let head = &send[..send.find("status: 404").expect("404")];
         assert!(head.contains("turn_is_permission_denied"));
+        // R-CL-07: the first Bot Chat of a profile with none is the only creation.
+        let first_at = head.find("// R-CL-07 first Bot Chat").expect("R-CL-07");
+        let first_end = head[first_at..].find("Err(err) => return Err(err)").expect("end") + first_at;
+        let head = format!("{}{}", &head[..first_at], &head[first_end..]);
         assert!(!head.contains("ensure_bot_chat"));
         assert!(!head.contains("create_session"));
         assert!(!head.contains("create_bot_chat"));
