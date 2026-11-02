@@ -1348,6 +1348,14 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
             .get("display_kind")
             .and_then(Value::as_str)
             .unwrap_or("");
+        // 9119 splices model/personality pivots in as `role: user` lines; they are
+        // for the model, not the person (server.py `_is_pivot_marker`).
+        if display_kind == "model_switch"
+            || display_kind == "personality_switch"
+            || (role == "user" && text.starts_with("[System: The active model for this chat has changed to "))
+        {
+            continue;
+        }
         if display_kind == "failed_turn" && !text.trim().is_empty() {
             out.push(UiMessage {
                 role: "failure".into(),
@@ -4536,6 +4544,18 @@ pub fn explain(err: &HermesError) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_switch_pivots_are_not_shown_as_user_lines() {
+        let value = serde_json::json!({"messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "[System: The active model for this chat has changed to scripted via provider custom.]", "display_kind": "model_switch"},
+            {"role": "user", "content": "[System: The active model for this chat has changed to k3.]"},
+            {"role": "assistant", "content": "ok"}
+        ]});
+        let got: Vec<String> = normalize_messages(&value).into_iter().map(|m| format!("{}:{}", m.role, m.text)).collect();
+        assert_eq!(got, vec!["user:hi".to_string(), "bot:ok".to_string()]);
+    }
+
     use super::*;
     use serde_json::json;
     use std::io::{Read, Write};

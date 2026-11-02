@@ -352,31 +352,43 @@ impl HermesClient {
         Ok(stored)
     }
 
-    /// Branch a stored chat (`session.branch_stored`).
+    /// Branch a stored chat (`session.branch_stored`). Its params are
+    /// `extra="forbid"` with no `title` (0.22.5 contracts/sessions.py), so a
+    /// title goes on afterwards with `session.title` on the new live session.
     pub async fn fork_session(&self, profile: &str, session_id: &str, title: &str) -> Result<String, HermesError> {
-        let mut params = json!({"profile": profile, "parent_session_id": session_id});
-        if !title.trim().is_empty() {
-            params["title"] = json!(title.trim());
-        }
-        let value = self.call(rpc::SESSION_BRANCH, params).await?;
+        let params = json!({"profile": profile, "parent_session_id": session_id});
+        let value = self.call(rpc::SESSION_BRANCH, params).await.map_err(not_found)?;
         let stored = json_text(value.get("stored_session_id"));
         if stored.is_empty() {
             return Err(HermesError::Protocol("分支回應冇 id".into()));
         }
+        let live = json_text(value.get("session_id"));
+        if !live.is_empty() {
+            self.remember_live(profile, &stored, &live);
+        }
+        if !title.trim().is_empty() {
+            self.patch_session_title(profile, &stored, title.trim()).await?;
+        }
         Ok(stored)
     }
 
+    /// `/title` (`session.title` on the live session). REST `PATCH /api/sessions/{id}`
+    /// needs a revision fence on 0.22.5 (409 `client_upgrade_required` without one).
     pub async fn patch_session_title(&self, profile: &str, session_id: &str, title: &str) -> Result<(), HermesError> {
-        let body = json!({"title": title, "profile": profile});
-        self.rest(Method::PATCH, &rest::session(session_id), Some(body), REST_WAIT).await.map(|_| ())
+        let live = self.attach(profile, session_id).await.map_err(not_found)?;
+        self.call(rpc::SESSION_TITLE, json!({"session_id": live, "title": title, "profile": profile}))
+            .await
+            .map(|_| ())
+            .map_err(not_found)
     }
 
+    /// Archive (`session.archive`, takes the stored id; Desktop PATCH parity).
     pub async fn patch_session_archived(&self, profile: &str, session_id: &str) -> Result<(), HermesError> {
-        let body = json!({"archived": true, "profile": profile});
-        self.rest(Method::PATCH, &rest::session(session_id), Some(body), REST_WAIT).await.map(|_| ())
+        self.call(rpc::SESSION_ARCHIVE, json!({"session_id": session_id, "archived": true, "profile": profile}))
+            .await
+            .map(|_| ())
+            .map_err(not_found)
     }
-
-    // ---- live sessions -------------------------------------------------
 
     fn remember_live(&self, profile: &str, stored: &str, live: &str) {
         let gen = self.ws.generation();
@@ -778,6 +790,15 @@ impl HermesClient {
     }
 }
 
+/// JSON-RPC 4001 "session not found" reads as REST 404, so callers keep one
+/// missing-session path.
+fn not_found(err: HermesError) -> HermesError {
+    match err {
+        HermesError::Http { status: 4001, body } => HermesError::Http { status: 404, body },
+        other => other,
+    }
+}
+
 /// Clears the own-turn marks when a send ends, however it ends.
 struct OwnTurn<'a> {
     client: &'a HermesClient,
@@ -795,7 +816,20 @@ impl Drop for OwnTurn<'_> {
     }
 }
 
-/// `complete.slash` items → menu rows. `kind: command|skill`.
+/// Commands the overlay runs itself (R-SL): the frontend calls `client_command`
+/// for rows with `kind: "client"`, so these must not go to `command.dispatch`.
+const CLIENT_HANDLED: &[(&str, &str)] = &[
+    ("new", "session.create"),
+    ("reset", "session.create"),
+    ("title", "PATCH /api/sessions/{id}"),
+    ("branch", "session.branch_stored"),
+    ("fork", "session.branch_stored"),
+    ("model", "config.set model"),
+    ("stop", "session.interrupt"),
+];
+
+/// `complete.slash` items → menu rows. `kind: command|skill`, or `client` for
+/// the commands in [`CLIENT_HANDLED`].
 pub fn parse_slash_items(value: &Value) -> Vec<OverlayCommand> {
     let items = value.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut out: Vec<OverlayCommand> = Vec::new();
@@ -813,15 +847,22 @@ pub fn parse_slash_items(value: &Value) -> Vec<OverlayCommand> {
             ),
             None => (meta.clone(), String::new()),
         };
+        let client = CLIENT_HANDLED.iter().find(|(n, _)| *n == name).map(|(_, to)| to.to_string());
         out.push(OverlayCommand {
+            kind: if client.is_some() {
+                "client".into()
+            } else if kind.is_empty() {
+                "command".into()
+            } else {
+                kind.clone()
+            },
             name,
-            kind: if kind.is_empty() { "command".into() } else { kind.clone() },
             category: if kind == "skill" { "技能".into() } else { "指令".into() },
             description,
             args_hint,
             aliases: Vec::new(),
             enabled: true,
-            maps_to: None,
+            maps_to: client,
         });
     }
     out
@@ -830,6 +871,14 @@ pub fn parse_slash_items(value: &Value) -> Vec<OverlayCommand> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rpc_session_not_found_maps_to_404() {
+        let err = not_found(HermesError::Http { status: 4001, body: "session not found".into() });
+        assert!(matches!(err, HermesError::Http { status: 404, .. }));
+        let err = not_found(HermesError::Http { status: 4000, body: "bad".into() });
+        assert!(matches!(err, HermesError::Http { status: 4000, .. }));
+    }
 
     #[test]
     fn slash_items_become_menu_rows() {
@@ -844,6 +893,8 @@ mod tests {
         assert_eq!(rows[0].description, "Start a new session");
         assert_eq!(rows[0].args_hint, "[name]");
         assert_eq!(rows[1].category, "技能");
+        assert_eq!(rows[0].kind, "client", "/new is run by the overlay, not command.dispatch");
+        assert_eq!(rows[1].kind, "skill");
     }
 
     #[test]

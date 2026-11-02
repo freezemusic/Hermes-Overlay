@@ -28,6 +28,8 @@ pub mod rpc {
     pub const SESSION_CREATE: &str = "session.create";
     pub const SESSION_BRANCH: &str = "session.branch_stored";
     pub const SESSION_RESUME: &str = "session.resume";
+    pub const SESSION_TITLE: &str = "session.title";
+    pub const SESSION_ARCHIVE: &str = "session.archive";
     pub const SESSION_LIST: &str = "session.list";
     pub const SESSION_INTERRUPT: &str = "session.interrupt";
     pub const PROMPT_SUBMIT: &str = "prompt.submit";
