@@ -836,6 +836,19 @@ try {
       } else {
         Note-Ok "ctrl-orb-under-panel-opened" ""
         [ClickProbe]::Ctrl($false)
+        # R-KB-07 / R-AR-04 (todo 37): the kanban panel reads the dashboard
+        # Kanban plugin (9119) through HermesClient, never the gateway proxy.
+        $deadline = (Get-Date).AddSeconds(8)
+        while (-not (Select-String -Path $dashLog -Pattern "^GET /api/plugins/kanban/board$" -Quiet) -and (Get-Date) -lt $deadline) {
+          Start-Sleep -Milliseconds 200
+        }
+        if (-not (Select-String -Path $dashLog -Pattern "^GET /api/plugins/kanban/board$" -Quiet)) {
+          Note-Fail "kanban-on-dashboard" "fake dashboard log has no GET /api/plugins/kanban/board"
+        } elseif (Select-String -Path $gwLog -Pattern "/v1/overlay/kanban" -Quiet) {
+          Note-Fail "kanban-on-dashboard" "the app called the gateway kanban proxy on 8642"
+        } else {
+          Note-Ok "kanban-on-dashboard" "board read on 9119, none on 8642"
+        }
         $kanbanClose = Wait-PanelCloseBox "kanban" 8
         if (-not $kanbanClose) {
           Note-Fail "ctrl-orb-under-panel-closed" "kanban close button was not measured"

@@ -2,6 +2,8 @@
 // Serves only what HermesClient calls at startup and when the field panel opens:
 //   REST  GET /api/health, /api/profiles, /api/sessions, /api/sessions/{id}/messages,
 //         /api/cron/jobs; POST /api/auth/ws-ticket
+//         Kanban plugin: GET /api/plugins/kanban/boards, /board, /tasks/{id};
+//         PATCH /api/plugins/kanban/tasks/{id} (the card move, R-KB-07)
 //   WS    /api/ws?ticket=… (JSON-RPC 2.0): gateway.ready, then client.capabilities,
 //         ping, session.list, session.resume, complete.slash.
 // No login (an open loopback dashboard). Everything else answers 404 / RPC 4004.
@@ -37,17 +39,70 @@ const SESSIONS = [
   { id: "newest", title: "System Architect", source: "api_server", last_active: 900, started_at: 1 },
 ];
 
+// Kanban board the kanban orb opens. Columns are the 0.22.5 order; the board
+// has no cards, so the kanban panel keeps the layout the click-through checks
+// measure (its close button). A PATCH still answers like plugin_api.py.
+const KANBAN_COLUMNS = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"];
+const KANBAN_TASKS = new Map();
+
+function kanbanBoard() {
+  return {
+    board: null,
+    columns: KANBAN_COLUMNS.map((name) => ({ name, tasks: [...KANBAN_TASKS.values()].filter((t) => t.status === name) })),
+  };
+}
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    let text = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => (text += chunk));
+    req.on("end", () => {
+      try {
+        resolve(text ? JSON.parse(text) : {});
+      } catch {
+        resolve({});
+      }
+    });
+  });
+}
+
 function send(res, status, body) {
   const text = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text) });
   res.end(text);
 }
 
-const server = createServer((req, res) => {
+const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   const path = url.pathname;
   log(`${req.method} ${path}`);
+  const kanbanTask = path.match(/^\/api\/plugins\/kanban\/tasks\/([^/]+)$/);
+  if (req.method === "PATCH" && kanbanTask) {
+    const body = await readBody(req);
+    const task = KANBAN_TASKS.get(decodeURIComponent(kanbanTask[1]));
+    if (!task) return send(res, 404, { detail: `task ${decodeURIComponent(kanbanTask[1])} not found` });
+    if (body.status === "running") {
+      return send(res, 400, { detail: "Cannot set status to 'running' directly; use the dispatcher/claim path" });
+    }
+    if (body.status === "done" && !body.result && !body.summary) {
+      return send(res, 400, { detail: `completion blocked: ${task.id} has no result or summary evidence` });
+    }
+    if (body.status) task.status = body.status;
+    return send(res, 200, { task });
+  }
   req.resume();
+  if (req.method === "GET" && path === "/api/plugins/kanban/boards") {
+    return send(res, 200, { boards: [{ slug: "default", name: "Default", is_current: true }], current: "default" });
+  }
+  if (req.method === "GET" && path === "/api/plugins/kanban/board") {
+    return send(res, 200, kanbanBoard());
+  }
+  if (req.method === "GET" && kanbanTask) {
+    const task = KANBAN_TASKS.get(decodeURIComponent(kanbanTask[1]));
+    if (!task) return send(res, 404, { detail: "task not found" });
+    return send(res, 200, { task, comments: [], events: [], runs: [] });
+  }
   if (req.method === "GET" && path === "/api/health") {
     return send(res, 200, { status: "ok", version: "0.22.5", displayVersion: "0.22.5 (ci fake)" });
   }
