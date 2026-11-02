@@ -10583,11 +10583,27 @@ function paintHeldPanels(down) {
     paintLayerOpacity(shell, next);
     const plan = planNode(shell);
     // A plan inside the shell already takes the shell's opacity. A hosted
-    // plan (outside the shell) keeps today's Ctrl look and takes the panel
-    // resting see-through, which is 1 by default (R-CT-11).
-    if (plan) paintLayerOpacity(plan, shell.contains(plan) ? "1" : String(panelRestOpacity()));
+    // plan (outside the shell) gets the same value, so it fades with the
+    // panel while Ctrl is held and is back to rest on release (R-CT-05,
+    // Devon 2026-11-02 21:21: a solid plan that passes clicks reads as a bug).
+    if (plan) paintLayerOpacity(plan, shell.contains(plan) ? "1" : next);
   });
   return panels.length;
+}
+
+/** Debug only: the drawn opacity of each open plan after a key edge, so the
+ *  CI clickthrough check can see a hosted plan fade with Ctrl (R-CT-05). A
+ *  plan inside the shell is drawn at the shell's opacity. `down` is the
+ *  physical key; `held` is the armed look that is painted (the Ctrl→C lead
+ *  keeps it 0 for the first edge, R-CT-06). */
+function logPlanLook(down, held) {
+  document.querySelectorAll('.morph[data-state="panel"]').forEach((shell) => {
+    const plan = planNode(shell);
+    if (!plan || plan.hidden) return;
+    const hosted = !shell.contains(plan);
+    const drawn = Number(getComputedStyle(hosted ? plan : shell).opacity);
+    debugLog("plan-look", `down=${down} held=${held} bot=${shell.dataset.botId || ""} hosted=${hosted ? 1 : 0} opacity=${Number.isFinite(drawn) ? drawn.toFixed(2) : "?"}`);
+  });
 }
 
 function applyOpacityEdge(payload) {
@@ -10605,6 +10621,7 @@ function applyOpacityEdge(payload) {
   debugLog("opacity-stage", `stage=write unix=${unix} panels=${panels}`);
   debugLog("opacity-write", `unix=${unix} down=${state.osModifierDown ? 1 : 0} panels=${panels}`);
   debugLog("key-edge", `down=${state.osModifierDown ? 1 : 0} panels=${panels}`);
+  if (debugFile.enabled) logPlanLook(state.osModifierDown ? 1 : 0, state.modifierHeld === true ? 1 : 0);
   if (inTauri()) {
     const gen = Number(payload?.shape_gen) || 0;
     import("@tauri-apps/api/core")

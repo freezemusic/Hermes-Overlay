@@ -764,8 +764,13 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(heldPaint, /data-state="panel"/);
   assert.match(heldPaint, /style\.opacity/);
   assert.match(heldPaint, /planNode\(shell\)/);
-  // In-shell plan stays 1; a hosted plan keeps its resting look (1 by default) through Ctrl.
-  assert.match(heldPaint, /paintLayerOpacity\(plan, shell\.contains\(plan\) \? "1" : String\(panelRestOpacity\(\)\)\)/);
+  // In-shell plan stays 1 (it takes the shell's opacity); a hosted plan gets the
+  // same value as the shell, so it fades with the panel while Ctrl is held (R-CT-05).
+  assert.match(heldPaint, /paintLayerOpacity\(plan, shell\.contains\(plan\) \? "1" : next\)/);
+  assert.doesNotMatch(heldPaint, /String\(panelRestOpacity\(\)\)\)/);
+  // CI reads the drawn plan opacity from the opt-in debug log only.
+  assert.match(edge, /if \(debugFile\.enabled\) logPlanLook\(/);
+  assert.match(mainSrc, /function logPlanLook[\s\S]*?debugLog\("plan-look", `down=\$\{down\} held=\$\{held\}[^`]*hosted=[^`]*opacity=/);
   assert.match(mainSrc, /function planNode\(shell\)[\s\S]*?\.plan-window/);
   assert.doesNotMatch(heldPaint, /requestAnimationFrame/);
   assert.doesNotMatch(heldPaint, /setProperty\("--hit-opacity"/);

@@ -1086,14 +1086,23 @@ test("open plan controls are the hit target outside the shell clip", () => {
     assert.equal(document.elementFromPoint(center(control).x, center(control).y), control, control.dataset.role);
     assert.equal(control.closest(".morph"), null, control.dataset.role);
   }
+  // R-CT-05: a plan hosted while Ctrl is held carries the shell's fade, and
+  // gets 1 back inside the shell so the two layers do not multiply.
+  shell.style.opacity = "0.25";
+  assert.equal(hostOpenPlan(shell), true);
+  assert.equal(plan.style.opacity, "0.25");
+  shell.style.opacity = "1";
   shell.style.left = "140px";
   assert.equal(hostOpenPlan(shell), true);
+  assert.equal(plan.style.opacity, "1");
   assert.equal(shell.style.width, "420px");
   assert.equal(shell.style.clipPath, openClip);
   assert.equal(boxOf(plan).x, 140 + 420);
   assert.equal(document.elementFromPoint(center(close).x, center(close).y), close);
+  plan.style.opacity = "0.25";
   assert.equal(restoreHostedPlan(shell), true);
   assert.equal(plan.parentElement, shell);
+  assert.equal(plan.style.opacity, "1");
   assert.equal(plan.style.left, "");
   assert.equal(plan.style.right, "");
   shell.dataset.intent = "close";

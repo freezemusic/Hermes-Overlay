@@ -1299,6 +1299,11 @@ export function hostOpenPlan(shell) {
     shell._planHost = host;
   }
   if (plan.parentElement !== host) host.append(plan);
+  // Outside the shell the plan no longer inherits the shell's inline
+  // opacity (the Ctrl fade or the resting see-through). Carry it over so a
+  // plan hosted while Ctrl is held is faded too (R-CT-05).
+  const look = shell.style?.opacity || "";
+  if (look && plan.style.opacity !== look) plan.style.opacity = look;
   plan._planShell = shell;
   host._planShell = shell;
   shell.dataset.planHost = "1";
@@ -1346,6 +1351,8 @@ export function restoreHostedPlan(shell) {
   const plan = host?.querySelector?.(".plan-window") || null;
   if (plan) {
     shell.append(plan);
+    // Back inside, the shell's opacity applies; a carried fade would multiply.
+    if (plan.style.opacity && plan.style.opacity !== "1") plan.style.opacity = "1";
     releasePlanDock(plan);
     delete plan._planShell;
   }
