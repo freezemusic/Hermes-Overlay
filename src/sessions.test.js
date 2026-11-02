@@ -548,7 +548,10 @@ test("foreign session sources stay readable and permission_denied stays plain", 
   const rustSend = lib.slice(lib.indexOf("async fn send_chat"), lib.indexOf("fn dispatch_turn"));
   const head = rustSend.slice(0, rustSend.indexOf("status: 404"));
   assert.match(head, /turn_is_permission_denied/);
-  assert.doesNotMatch(head, /ensure_bot_chat|create_session|create_bot_chat/);
+  // R-CL-07: the one allowed creation is the first Bot Chat of a profile that has none.
+  const first = head.slice(head.indexOf("// R-CL-07 first Bot Chat"), head.indexOf("Err(err) => return Err(err)"));
+  assert.match(first, /BOT_CHAT_TITLE && !row\.archived/);
+  assert.doesNotMatch(head.replace(first, ""), /ensure_bot_chat|create_session|create_bot_chat/);
   const rewriteAt = head.indexOf("if target.rewrite");
   assert.ok(rewriteAt > 0);
   assert.doesNotMatch(head.slice(0, rewriteAt), /persist_pin/);

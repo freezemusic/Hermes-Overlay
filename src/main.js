@@ -6100,7 +6100,12 @@ async function claimProfiles(ids, fn) {
   }
 }
 
+// R-CL-01: chat runs on the dashboard login, so a profile without an API key is
+// not a problem any more and gets no banner.
+const CHAT_NEEDS_PROFILE_KEYS = false;
+
 function announceNewKeys(before, synced) {
+  if (!CHAT_NEEDS_PROFILE_KEYS) return;
   const added = profilesNeedingKeys(before, synced?.bots || []);
   if (!added.length || synced?.keyring_error) return;
   const seen = new Set((state.keyPromptBots || []).map((bot) => bot.profile));
@@ -8366,7 +8371,7 @@ function rowFromBot(bot = {}) {
   const key = row.querySelector('[data-field="key"]');
   key.placeholder = bot.has_key ? "已儲存，留空代表保留" : "API 金鑰";
   key.dataset.hasKey = bot.has_key ? "1" : "0";
-  if (bot.profile && !bot.has_key) {
+  if (CHAT_NEEDS_PROFILE_KEYS && bot.profile && !bot.has_key) {
     const missing = document.createElement("p");
     missing.className = "key-missing";
     missing.textContent = "未有 API 金鑰";
