@@ -7443,7 +7443,20 @@ function noteTool(id, payload) {
   if (thread.followTail !== false) pinChat(id);
 }
 
+// A sign-in (from settings or anywhere) reloads every open panel at once, so a
+// panel that showed 「要登入 Hermes Dashboard」 gets its history without a reopen.
+function reloadOpenPanelsAfterLogin() {
+  for (const bot of state.settings?.bots || []) {
+    const shell = shellFor(bot.profile);
+    if (shell?.dataset.state === "panel") refreshBotQuiet(bot.profile);
+  }
+}
+
 function handleHermes(payload) {
+  if (payload?.type === "login.changed") {
+    reloadOpenPanelsAfterLogin();
+    return;
+  }
   if (!payload || !payload.profile) return;
   const id = payload.profile;
   if (payload.type === "cron") {
@@ -8051,7 +8064,7 @@ function botsFromSettings(settings) {
     name: bot.display_name || bot.profile,
     short: shortLabel(bot.display_name || bot.profile),
     color: bot.color || PALETTE[0],
-    status: bot.has_key ? "閒置" : "未有金鑰",
+    status: bot.has_key || !CHAT_NEEDS_PROFILE_KEYS ? "閒置" : "未有金鑰",
     detail: bot.detail || `profile ${bot.profile}`,
     float: null,
     hasKey: bot.has_key,
@@ -13200,7 +13213,7 @@ async function signInKanban() {
       },
     });
     if ($("#kanban-password")) $("#kanban-password").value = "";
-    $("#settings-status").textContent = String(message || "已登入 Kanban");
+    $("#settings-status").textContent = String(message || "已登入 Hermes Dashboard");
     if (state.kanban.board?.needsLogin) {
       state.kanban.board = null;
       state.kanban.fingerprint = "";
