@@ -5,6 +5,13 @@ use std::path::Path;
 
 pub const BOT_CHAT_TITLE: &str = "Bot Chat";
 
+/// `hermes serve` (the dashboard server). All chat and Kanban go here (R-CL-01).
+pub const DEFAULT_DASHBOARD_PORT: u16 = 9119;
+
+pub fn default_dashboard_origin() -> String {
+    format!("http://127.0.0.1:{DEFAULT_DASHBOARD_PORT}")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BotConfig {
     pub profile: String,
@@ -136,7 +143,7 @@ fn one() -> u32 {
 }
 
 fn default_dashboard() -> String {
-    "http://127.0.0.1:9119".into()
+    default_dashboard_origin()
 }
 
 fn default_modifier() -> String {

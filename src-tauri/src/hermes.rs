@@ -293,8 +293,11 @@ pub fn session_accepts_send(source: &str) -> bool {
     )
 }
 
-pub fn session_read_only(source: &str) -> bool {
-    !session_accepts_send(source)
+/// R-CL-05: on the Hermes Dashboard every session takes a turn (CLI, TUI,
+/// phone, Desktop all resume the same way), so nothing is read-only any more.
+/// `session_accepts_send` stays as the old gateway's rule for reference.
+pub fn session_read_only(_source: &str) -> bool {
+    false
 }
 
 /// Sources Hermes 0.22.5 keeps as a local chat. Its Bot Chat door
@@ -322,10 +325,7 @@ pub fn is_main_bot_chat(session: &SessionSummary, sessions: &[SessionSummary]) -
 /// Read-only with the list in hand. The Desktop Bot Chat with a local source
 /// takes a send through Hermes' Bot Chat door, so it is not read-only.
 /// Every other row keeps `session_read_only` (R-SS-08).
-pub fn session_read_only_in(session: &SessionSummary, sessions: &[SessionSummary]) -> bool {
-    if is_main_bot_chat(session, sessions) && is_local_chat_source(&session.source) {
-        return false;
-    }
+pub fn session_read_only_in(session: &SessionSummary, _sessions: &[SessionSummary]) -> bool {
     session_read_only(&session.source)
 }
 
@@ -1768,6 +1768,10 @@ pub fn clip(text: &str, max_chars: usize) -> String {
     out
 }
 
+pub fn map_reqwest_pub(err: reqwest::Error) -> HermesError {
+    map_reqwest(err)
+}
+
 fn map_reqwest(err: reqwest::Error) -> HermesError {
     let msg = err.to_string();
     if err.is_connect() {
@@ -1940,6 +1944,11 @@ pub async fn fetch_message_page(
         .json()
         .await
         .map_err(|e| HermesError::Protocol(format!("訊息紀錄唔係 JSON：{e}")))?;
+    Ok(message_page_from(&value))
+}
+
+/// One `/messages` page body (gateway `data` or dashboard `messages`).
+pub fn message_page_from(value: &Value) -> MessagePage {
     let returned = value
         .pointer("/pagination/returned")
         .and_then(Value::as_u64)
@@ -1951,10 +1960,10 @@ pub async fn fetch_message_page(
                 .map(|rows| rows.len() as u64)
         })
         .unwrap_or(0);
-    Ok(MessagePage {
-        messages: normalize_messages(&value),
+    MessagePage {
+        messages: normalize_messages(value),
         returned,
-    })
+    }
 }
 
 pub async fn fetch_messages(
@@ -4767,7 +4776,7 @@ mod tests {
                 summary_source("other", "Plan", 90.0, source),
             ];
             assert!(!session_read_only_in(&rows[0], &rows), "{source}");
-            assert!(session_read_only_in(&rows[1], &rows), "{source} non-Bot-Chat stays R-SS-08");
+            assert!(!session_read_only_in(&rows[1], &rows), "{source} non-Bot-Chat stays R-SS-08");  // R-CL-05
             let resolved = session_for_startup(&rows, "", false, 0.0).expect("chat");
             assert_eq!(resolved.id, "chat");
             assert!(!resolved.read_only, "{source}");
@@ -4783,16 +4792,16 @@ mod tests {
             summary_source("20261015_011713_2242f9", "Continue previous plan work #3", 90.0, "desktop"),
         ];
         let resolved = session_for_startup(&rows, "20261015_011713_2242f9", true, 7.0).expect("pin");
-        assert!(resolved.read_only);
-        assert!(send_session_target(&rows, "20261015_011713_2242f9", true, 7.0).is_err());
+        assert!(!resolved.read_only);  // R-CL-05
+        assert!(send_session_target(&rows, "20261015_011713_2242f9", true, 7.0).is_ok());  // R-CL-05
     }
 
     #[test]
     fn rss_unknown_or_empty_source_bot_chat_stays_read_only() {
         let rows = vec![rss_chat("chat", "", true)];
-        assert!(session_read_only_in(&rows[0], &rows));
+        assert!(!session_read_only_in(&rows[0], &rows));  // R-CL-05
         let rows = vec![rss_chat("chat", "telegram", true)];
-        assert!(session_read_only_in(&rows[0], &rows));
+        assert!(!session_read_only_in(&rows[0], &rows));
     }
 
     #[test]
@@ -5126,8 +5135,8 @@ mod tests {
         assert_eq!(most_recent_bot_chat(&mixed).unwrap().id, "desk-chat");
         let desk_open = resolve_session(&mixed, "", false, 0.0).unwrap();
         assert_eq!(desk_open.id, "desk-chat");
-        assert!(desk_open.read_only);
-        assert_eq!(desk_open.read_only_reason, session_read_only_reason());
+        assert!(!desk_open.read_only);  // R-CL-05
+        assert!(desk_open.read_only_reason.is_empty());  // R-CL-05
         let picked_tui = resolve_session(&mixed, "tui-chat", true, 1.0).unwrap();
         assert_eq!(picked_tui.id, "tui-chat");
         assert!(picked_tui.explicit);
@@ -5357,7 +5366,7 @@ mod tests {
         assert!(is_tui_source("tui"));
         assert!(!is_tui_source("api_server"));
         assert!(!is_tui_source("desktop"));
-        assert!(session_read_only("desktop"));
+        assert!(!session_read_only("desktop"));  // R-CL-05
         assert!(!session_read_only("api_server"));
 
         for (profile, empty_id) in [
@@ -5598,8 +5607,8 @@ mod tests {
             session_for_startup(&orch, "20261015_011713_2242f9", true, 1791910000.0).unwrap();
         assert_eq!(orch_open.id, "20261015_011713_2242f9");
         assert!(orch_open.explicit);
-        assert!(orch_open.read_only);
-        assert_eq!(orch_open.read_only_reason, session_read_only_reason());
+        assert!(!orch_open.read_only);  // R-CL-05
+        assert!(orch_open.read_only_reason.is_empty());  // R-CL-05
         assert_eq!(orch_open.anchor, 1791910000.0);
         assert!(stored_pin_after_resolve(
             "20261015_011713_2242f9",
@@ -6648,10 +6657,10 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
     }
 
     #[test]
-    fn oneshot_and_other_foreign_sources_are_read_only() {
+    fn r_cl_05_every_source_takes_a_send_on_the_dashboard() {
         let reason = session_read_only_reason();
         for source in ["oneshot", "desktop", "tui", "cli", "", "CLI", "Desktop"] {
-            assert!(session_read_only(source), "{source}");
+            assert!(!session_read_only(source), "{source}");  // R-CL-05
             assert!(!session_accepts_send(source), "{source}");
         }
         for source in ["api_server", "API_Server", "bot_room", "Bot_Room"] {
@@ -6715,8 +6724,8 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
             session_for_startup(&[api.clone(), pick], "20261015_011713_2242f9", true, 1.0)
                 .unwrap();
         assert_eq!(opened.id, "20261015_011713_2242f9");
-        assert!(opened.read_only);
-        assert_eq!(opened.read_only_reason, reason);
+        assert!(!opened.read_only);  // R-CL-05
+        assert!(opened.read_only_reason.is_empty());  // R-CL-05
         let writable = session_for_startup(&[api], "", false, 0.0).unwrap();
         assert!(!writable.read_only);
         assert!(writable.read_only_reason.is_empty());
@@ -6728,8 +6737,8 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
         )
         .unwrap();
         assert_eq!(shot.id, "shot");
-        assert!(shot.read_only);
-        assert_eq!(shot.read_only_reason, reason);
+        assert!(!shot.read_only);  // R-CL-05
+        assert!(shot.read_only_reason.is_empty());
         let room = session_for_startup(
             &[summary_source("room", "Bot Chat", 4.0, "bot_room")],
             "",

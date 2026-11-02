@@ -4,9 +4,11 @@ mod interaction;
 mod kanban_server;
 mod secrets;
 mod sse;
+mod client;
+mod gateway_legacy;
 
 use config::{AppConfig, BotConfig};
-use hermes::{explain, route_root, HermesError, TurnEvent};
+use hermes::{explain, HermesError, TurnEvent};
 use secrets::Lookup;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -146,6 +148,26 @@ struct AppState {
     config_write: Arc<Mutex<()>>,
     command_cache: Mutex<HashMap<String, CommandCacheEntry>>,
     interaction: Arc<interaction::InteractionHub>,
+    /// All chat goes through this (R-CL-01).
+    client: Arc<client::HermesClient>,
+}
+
+/// The chat client, pointed at the dashboard address in `cfg`.
+fn chat_client(state: &AppState, cfg: &AppConfig) -> Arc<client::HermesClient> {
+    state
+        .client
+        .set_origin(&kanban_server::origin(&cfg.gateway_base_url, &cfg.kanban_base_url));
+    Arc::clone(&state.client)
+}
+
+fn new_chat_client(http: reqwest::Client) -> Arc<client::HermesClient> {
+    client::HermesClient::new(
+        http,
+        Arc::new(load_kanban_secrets),
+        Arc::new(|next: &kanban_server::KanbanSecrets| {
+            let _ = store_kanban_secrets(next);
+        }),
+    )
 }
 
 fn http_client() -> reqwest::Client {
@@ -400,6 +422,27 @@ fn spawn_bot_chat_watch(app: AppHandle) {
         .ok();
 }
 
+/// R-CL-04: one plain line on every bot when the dashboard link is down, and
+/// back to idle once it reconnects. Only sent when the state changes.
+fn note_link_hint(app: &AppHandle, chat: &client::HermesClient, targets: &[(String, String, SessionPin)]) {
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let hint = chat.link_hint();
+    let mut last = LAST.lock().unwrap_or_else(|err| err.into_inner());
+    if *last == hint {
+        return;
+    }
+    let was_down = !last.is_empty();
+    *last = hint.clone();
+    drop(last);
+    for (profile, _, _) in targets {
+        if !hint.is_empty() {
+            emit_status(app, profile, "error", &hint);
+        } else if was_down {
+            emit_status(app, profile, "idle", "閒置");
+        }
+    }
+}
+
 async fn poll_bot_chats(app: &AppHandle) {
     let cfg = match load_config(app) {
         Ok(cfg) if cfg.mode() == "hermes" => cfg,
@@ -408,24 +451,26 @@ async fn poll_bot_chats(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    let http = state.http.clone();
+    let chat = chat_client(&state, &cfg);
     let watched = Arc::clone(&state.bot_chats);
-    let targets: Vec<(String, String, String, SessionPin)> = cfg
+    let targets: Vec<(String, String, SessionPin)> = cfg
         .bots
         .iter()
         .filter(|bot| bot.enabled)
         .filter_map(|bot| {
-            let key = profile_key(&bot.profile).ok()?;
-            let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
             let pin = load_pin(app, &state, &bot.profile);
-            Some((bot.profile.clone(), root, key, pin))
+            Some((bot.profile.clone(), bot.profile.clone(), pin))
         })
         .collect();
     drop(state);
-    for (profile, root, key, pin) in targets {
-        let Ok(report) = watch_profile(&http, &watched, &profile, &root, &key, &pin).await else {
+    note_link_hint(app, &chat, &targets);
+    for (profile, root, pin) in targets {
+        let Ok(report) = watch_profile(&chat, &watched, &profile, &root, &pin).await else {
             continue;
         };
+        if !report.resolved_id.is_empty() {
+            let _ = chat.watch(&root, &report.resolved_id).await;
+        }
         if let Some(sessions) = report.sessions {
             emit(
                 app,
@@ -482,14 +527,13 @@ fn remember_watched(
 }
 
 async fn watch_profile(
-    http: &reqwest::Client,
+    chat: &client::HermesClient,
     watched: &Arc<Mutex<HashMap<String, WatchedChat>>>,
     profile: &str,
     root: &str,
-    key: &str,
     pin: &SessionPin,
 ) -> Result<WatchReport, HermesError> {
-    let sessions = hermes::list_sessions_for_bot_chat(http, root, key).await?;
+    let sessions = chat.list_sessions_for_bot_chat(root).await?;
     let fingerprint = hermes::session_list_fingerprint(&sessions);
     let canonical = hermes::canonical_bot_chat(&sessions).map(|session| session.id.clone());
     let resolved = hermes::session_for_startup(&sessions, &pin.id, pin.explicit, pin.anchor)
@@ -533,9 +577,9 @@ async fn watch_profile(
                 let mut at = from;
                 let mut replaced = false;
                 for (offset, limit) in hermes::tail_windows(from, to) {
-                    let page = hermes::fetch_message_page(http, root, key, &id, offset, limit).await?;
+                    let page = chat.fetch_message_page(root, &id, offset, limit).await?;
                     if page.returned == 0 {
-                        fetched = hermes::fetch_counted_messages(http, root, key, &id, Some(to)).await?;
+                        fetched = chat.fetch_counted_messages(root, &id, Some(to)).await?;
                         replaced = true;
                         at = to;
                         break;
@@ -551,7 +595,7 @@ async fn watch_profile(
                 prepared.push((id, stamp, planned, Some((messages, emit, reset))));
             }
             hermes::MessageFetch::Full => {
-                let fetched = hermes::fetch_counted_messages(http, root, key, &id, next.message_count).await?;
+                let fetched = chat.fetch_counted_messages(root, &id, next.message_count).await?;
                 let (messages, emit, reset) = hermes::apply_watch_fetch(&stored, &fetched, true);
                 prepared.push((id, next, planned, Some((messages, emit, reset))));
             }
@@ -1310,23 +1354,19 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
 async fn probe_gateway(app: AppHandle, state: State<'_, AppState>) -> Result<ProbeReport, String> {
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
-    let health = hermes::probe_health(&state.http, &cfg.gateway_base_url).await;
+    let chat = chat_client(&state, &cfg);
+    let health = chat.probe().await;
     let (health_ok, health_detail) = match health {
         Ok(body) => (true, if body.is_empty() { "ok".into() } else { body }),
         Err(err) => (false, explain(&err)),
     };
     let mut bots = Vec::new();
     for bot in &cfg.bots {
-        let detail = match profile_key(&bot.profile) {
-            Err(err) => Err(err),
-            Ok(key) => {
-                let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-                hermes::probe_sessions(&state.http, &root, &key)
-                    .await
-                    .map(|_| "sessions API 可讀".to_string())
-                    .map_err(|err| explain(&err))
-            }
-        };
+        let detail = chat
+            .list_sessions(&bot.profile)
+            .await
+            .map(|_| "sessions API 可讀".to_string())
+            .map_err(|err| explain(&err));
         bots.push(match detail {
             Ok(detail) => ProbeBot {
                 profile: bot.profile.clone(),
@@ -1562,14 +1602,14 @@ async fn open_bot(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?;
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
     if !quiet {
         emit_status(&app, &profile, "busy", "載入對話…");
     }
     let pin = load_pin(&app, &state, &profile);
     let result = async {
-        let sessions = hermes::list_sessions_for_bot_chat(&state.http, &root, &key).await?;
+        let sessions = chat.list_sessions_for_bot_chat(&root).await?;
         let resolved = hermes::session_for_startup(&sessions, &pin.id, pin.explicit, pin.anchor);
         let (session_id, explicit, anchor, source, read_only, read_only_reason, messages) =
             if let Some(resolved) = resolved {
@@ -1577,11 +1617,7 @@ async fn open_bot(
                     .iter()
                     .find(|session| session.id == resolved.id)
                     .and_then(|session| session.message_count);
-                let messages = hermes::fetch_counted_messages(
-                    &state.http,
-                    &root,
-                    &key,
-                    &resolved.id,
+                let messages = chat.fetch_counted_messages(&root, &resolved.id,
                     count,
                 )
                 .await?;
@@ -1679,20 +1715,19 @@ async fn open_bot(
 /// the existing anchor are stored. Other config keys stay as they were.
 async fn open_explicit_session(
     app: &AppHandle,
-    http: &reqwest::Client,
+    chat: &client::HermesClient,
     sessions: &std::sync::Mutex<HashMap<String, SessionPin>>,
     config_write: &std::sync::Mutex<()>,
     watched: &Arc<Mutex<HashMap<String, WatchedChat>>>,
     profile: &str,
     root: &str,
-    key: &str,
     session_id: &str,
 ) -> Result<OpenedChat, String> {
     let session_id = session_id.trim().to_string();
     if session_id.is_empty() {
         return Err("未揀對話".into());
     }
-    let listed = hermes::list_sessions_for_bot_chat(http, root, key)
+    let listed = chat.list_sessions_for_bot_chat(root)
         .await
         .map_err(|err| explain(&err))?;
     let Some(chosen) = listed.iter().find(|session| session.id == session_id) else {
@@ -1708,7 +1743,7 @@ async fn open_explicit_session(
     let anchor = hermes::most_recent_session(&listed)
         .map(|session| session.last_active)
         .unwrap_or(0.0);
-    let messages = hermes::fetch_counted_messages(http, root, key, &session_id, chosen.message_count)
+    let messages = chat.fetch_counted_messages(root, &session_id, chosen.message_count)
         .await
         .map_err(|err| explain(&err))?;
     remember_watched(watched, profile, &session_id, &messages, &listed);
@@ -1747,17 +1782,16 @@ async fn select_session(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?;
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
     open_explicit_session(
         &app,
-        &state.http,
+        &chat,
         &state.sessions,
         &state.config_write,
         &state.bot_chats,
         &profile,
         &root,
-        &key,
         &session_id,
     )
     .await
@@ -1793,9 +1827,8 @@ fn remember_replacement_title(rows: &mut [SessionChoice], session_id: &str, kept
 /// puts the old title back and does not archive. `false` means the picker label
 /// still has to show the old name.
 async fn hand_title_to_replacement(
-    http: &reqwest::Client,
+    chat: &client::HermesClient,
     root: &str,
-    key: &str,
     old_id: &str,
     new_id: &str,
     old_title: &str,
@@ -1813,11 +1846,11 @@ async fn hand_title_to_replacement(
     let primary = format!("{title}_{ymdhm}");
     let with_seconds = format!("{primary}{seconds}");
     let mut retired = hermes::retired_session_title(&title, &ymdhm, &seconds, &existing);
-    match hermes::patch_session_title(http, root, key, old_id, &retired).await {
+    match chat.patch_session_title(root, old_id, &retired).await {
         Ok(()) => {}
         Err(err) if hermes::is_title_conflict(&err) && retired != with_seconds => {
             retired = with_seconds;
-            if hermes::patch_session_title(http, root, key, old_id, &retired)
+            if chat.patch_session_title(root, old_id, &retired)
                 .await
                 .is_err()
             {
@@ -1826,14 +1859,14 @@ async fn hand_title_to_replacement(
         }
         Err(_) => return false,
     }
-    if hermes::patch_session_title(http, root, key, new_id, &title)
+    if chat.patch_session_title(root, new_id, &title)
         .await
         .is_err()
     {
-        let _ = hermes::patch_session_title(http, root, key, old_id, &title).await;
+        let _ = chat.patch_session_title(root, old_id, &title).await;
         return false;
     }
-    let _ = hermes::patch_session_archived(http, root, key, old_id).await;
+    let _ = chat.patch_session_archived(root, old_id).await;
     true
 }
 
@@ -1841,17 +1874,16 @@ async fn hand_title_to_replacement(
 /// The write is the explicit picker path (`persist_pin`), and only that profile's session fields.
 async fn note_landed_session(
     app: &AppHandle,
-    http: &reqwest::Client,
+    chat: &client::HermesClient,
     sessions: &Mutex<HashMap<String, SessionPin>>,
     config_write: &Mutex<()>,
     profile: &str,
     root: &str,
-    key: &str,
     posted: &str,
     reported: &str,
     known_ids: &[String],
 ) {
-    let after = hermes::list_sessions_for_bot_chat(http, root, key)
+    let after = chat.list_sessions_for_bot_chat(root)
         .await
         .unwrap_or_default();
     let Some(next) = hermes::landed_session_id(posted, reported, known_ids, &after) else {
@@ -1875,7 +1907,7 @@ async fn note_landed_session(
         .unwrap_or_default();
     let kept = hermes::kept_replacement_title(&old_title, &new_title);
     hand_title_to_replacement(
-        http, root, key, posted, &next, &old_title, &new_title, &after,
+        chat, root, posted, &next, &old_title, &new_title, &after,
     )
     .await;
     let watched = app.try_state::<AppState>().map(|state| Arc::clone(&state.bot_chats));
@@ -1884,7 +1916,7 @@ async fn note_landed_session(
         return;
     };
     match open_explicit_session(
-        app, http, sessions, config_write, &watched, profile, root, key, &next,
+        app, chat, sessions, config_write, &watched, profile, root, &next,
     )
     .await
     {
@@ -1924,8 +1956,8 @@ async fn send_chat(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?.clone();
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
     // A /btw while a turn is live must not abort that stream. begin_stream
     // with replace posts /stop from the old reader. The side flags stay false.
     let (stop, stop_requested, generation) = if side_turn {
@@ -1945,11 +1977,11 @@ async fn send_chat(
     let streams = Arc::clone(&state.streams);
     let run_ids = Arc::clone(&state.run_ids);
     let queued_run_ids = Arc::clone(&state.queued_run_ids);
-    let http = state.http.clone();
+
     let session_cache = Arc::clone(&state.sessions);
     let config_write = Arc::clone(&state.config_write);
     let pin = load_pin(&app, &state, &profile);
-    let sessions = hermes::list_sessions_for_bot_chat(&http, &root, &key)
+    let sessions = chat.list_sessions_for_bot_chat(&root)
         .await
         .map_err(|err| explain(&err))?;
     let target = hermes::send_session_target(&sessions, &pin.id, pin.explicit, pin.anchor)?;
@@ -2030,11 +2062,7 @@ async fn send_chat(
             dispatch_turn(&app, &profile, event, keep_busy, side_turn, queued);
         };
         let run = async {
-            let first = hermes::stream_turn_watched(
-                &http,
-                &root,
-                &key,
-                &session_id,
+            let first = chat.stream_turn_watched(&root, &session_id,
                 &text,
                 &stop,
                 &stop_requested,
@@ -2059,7 +2087,7 @@ async fn send_chat(
                         anchor: 0.0,
                     },
                 );
-                let pick = hermes::ensure_bot_chat(&http, &root, &key).await?;
+                let pick = chat.ensure_bot_chat(&root).await?;
                 if pick.read_only {
                     return Err(HermesError::Protocol(pick.read_only_reason));
                 }
@@ -2074,11 +2102,7 @@ async fn send_chat(
                         anchor: 0.0,
                     },
                 );
-                hermes::stream_turn_watched(
-                    &http,
-                    &root,
-                    &key,
-                    &pick.id,
+                chat.stream_turn_watched(&root, &pick.id,
                     &text,
                     &stop,
                     &stop_requested,
@@ -2096,12 +2120,11 @@ async fn send_chat(
             Ok(landed) => {
                 note_landed_session(
                     &app,
-                    &http,
+                    &chat,
                     &session_cache,
                     &config_write,
                     &profile,
                     &root,
-                    &key,
                     &session_id,
                     &landed,
                     &before_ids,
@@ -2202,17 +2225,10 @@ async fn respond_approval(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?;
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-    hermes::submit_approval(
-        &state.http,
-        &root,
-        &key,
-        run_id,
-        request_id,
-        choice,
-        execution_generation,
-    )
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
+    let _ = execution_generation;
+    chat.submit_approval(&root, run_id, request_id, choice)
         .await
         .map_err(|err| match err {
             HermesError::Http { status: 409, .. } => "呢個批准已經過時".into(),
@@ -2375,17 +2391,11 @@ async fn respond_clarify(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?;
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-    let outcome = hermes::submit_clarify(
-        &state.http,
-        &root,
-        &key,
-        run_id,
-        request_id,
-        execution_generation,
-        &answer,
-    )
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
+    let _ = execution_generation;
+    let outcome = chat
+        .submit_clarify(&root, run_id, request_id, &answer)
     .await
     .map_err(|err| match err {
         HermesError::Http { status: 409, .. } => "答案未送出。".into(),
@@ -2420,9 +2430,9 @@ async fn load_run_controls(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?;
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-    hermes::fetch_run(&state.http, &root, &key, run_id)
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
+    chat.fetch_run(&root, run_id)
         .await
         .map_err(|_| "讀唔到未答嘅卡。".to_string())
 }
@@ -2664,16 +2674,16 @@ async fn list_commands(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?;
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
     let cached = state
         .command_cache
         .lock()
         .unwrap_or_else(|err| err.into_inner())
         .get(&profile)
         .cloned();
-    let etag = cached.as_ref().map(|entry| entry.etag.clone());
-    let fetched = hermes::fetch_overlay_commands(&state.http, &root, &key, etag.as_deref()).await;
+    let _etag = cached.as_ref().map(|entry| entry.etag.clone());
+    let fetched = chat.fetch_overlay_commands(&root).await;
     let mut cache = state
         .command_cache
         .lock()
@@ -2849,6 +2859,7 @@ async fn sign_in_kanban(
         secrets.session_cookie = cookie;
         secrets.access_token.clear();
         store_kanban_secrets(&secrets)?;
+        state.client.reload_login();
         kanban_server::clear_rejected_password();
         kanban_server::clear_rejected_refresh();
         return Ok("已登入 Kanban".into());
@@ -2865,6 +2876,7 @@ async fn sign_in_kanban(
     secrets.access_token = tokens.access_token;
     secrets.refresh_token = tokens.refresh_token;
     store_kanban_secrets(&secrets)?;
+    state.client.reload_login();
     kanban_server::clear_rejected_password();
     kanban_server::clear_rejected_refresh();
     Ok("已登入 Kanban".into())
@@ -2991,7 +3003,7 @@ async fn patch_kanban_task(
     if body.as_object().is_some_and(|fields| fields.is_empty()) {
         return Err("看板更新係空".into());
     }
-    hermes::patch_kanban_task(&state.http, &root, &key, id.trim(), &body)
+    gateway_legacy::patch_kanban_task(&state.http, &root, &key, id.trim(), &body)
         .await
         .map_err(|err| hermes::kanban_move_error(&err))
 }
@@ -3014,7 +3026,7 @@ async fn list_cron_jobs(
     if cfg.mode() != "hermes" {
         return Ok(Vec::new());
     }
-    let gateway = cfg.gateway_base_url.clone();
+    let chat = chat_client(&state, &cfg);
     let bots: Vec<BotConfig> = cfg.bots.iter().filter(|bot| bot.enabled).cloned().collect();
     let mut out = Vec::new();
     for bot in bots {
@@ -3023,21 +3035,8 @@ async fn list_cron_jobs(
         } else {
             bot.display_name.clone()
         };
-        let key = match profile_key(&bot.profile) {
-            Ok(key) => key,
-            Err(err) => {
-                out.push(CronProfileOut {
-                    profile: bot.profile,
-                    name,
-                    jobs: Vec::new(),
-                    unavailable: true,
-                    message: err,
-                });
-                continue;
-            }
-        };
-        let root = hermes::route_root(&gateway, &bot.profile, &bot.base_url);
-        match hermes::fetch_cron_jobs(&state.http, &root, &key).await {
+        let root = bot.profile.clone();
+        match chat.fetch_cron_jobs(&root).await {
             Ok(list) => out.push(CronProfileOut {
                 profile: bot.profile,
                 name,
@@ -3088,8 +3087,8 @@ async fn client_command(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &input.profile)?.clone();
-    let key = profile_key(&input.profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
     let command = input.command.trim().to_string();
     let args = input.args.trim().to_string();
     match command.as_str() {
@@ -3108,12 +3107,12 @@ async fn client_command(
             })
         }
         "continue" => {
-            let sessions = hermes::list_sessions_for_bot_chat(&state.http, &root, &key)
+            let sessions = chat.list_sessions_for_bot_chat(&root)
                 .await
                 .map_err(|err| hermes::explain(&err))?;
             let refused_ids: Vec<&str> = input.refused.iter().map(String::as_str).collect();
             if let Some(found) = hermes::writable_continuation(&sessions, &args, &refused_ids) {
-                pin_explicit(&app, &state, &input.profile, &root, &key, &found.id).await;
+                pin_explicit(&app, &state, &input.profile, &root, &found.id).await;
                 return Ok(ClientCommandOut {
                     command,
                     notice: "已轉去可以傳嘢嘅對話".into(),
@@ -3121,18 +3120,14 @@ async fn client_command(
                     options: Vec::new(),
                 });
             }
-            let session_id = hermes::create_session(
-                &state.http,
-                &root,
-                &key,
-                Some(hermes::OVERLAY_CONTINUE_TITLE),
+            let session_id = chat.create_session(&root, Some(hermes::OVERLAY_CONTINUE_TITLE),
             )
             .await
             .map_err(|err| match &err {
                 HermesError::Http { status: 400, .. } => "開唔到新對話。".into(),
                 _ => hermes::explain(&err),
             })?;
-            pin_explicit(&app, &state, &input.profile, &root, &key, &session_id).await;
+            pin_explicit(&app, &state, &input.profile, &root, &session_id).await;
             Ok(ClientCommandOut {
                 command,
                 notice: "已開新對話".into(),
@@ -3146,7 +3141,7 @@ async fn client_command(
             } else {
                 Some(args.as_str())
             };
-            let session_id = hermes::create_session(&state.http, &root, &key, title)
+            let session_id = chat.create_session(&root, title)
                 .await
                 .map_err(|err| explain(&err))?;
             Ok(ClientCommandOut {
@@ -3160,16 +3155,16 @@ async fn client_command(
             if args.is_empty() {
                 return Err("要有標題。".into());
             }
-            let session_id = session_for_client(&app, &state, &input.profile, &root, &key).await?;
+            let session_id = session_for_client(&app, &state, &input.profile, &root).await?;
             if let Err(err) =
-                hermes::patch_session_title(&state.http, &root, &key, &session_id, &args).await
+                chat.patch_session_title(&root, &session_id, &args).await
             {
                 if !matches!(err, HermesError::Http { status: 404, .. }) {
                     return Err(explain(&err));
                 }
                 let session_id =
-                    replace_missing_session(&app, &state, &input.profile, &root, &key).await?;
-                hermes::patch_session_title(&state.http, &root, &key, &session_id, &args)
+                    replace_missing_session(&app, &state, &input.profile, &root).await?;
+                chat.patch_session_title(&root, &session_id, &args)
                     .await
                     .map_err(|err| explain(&err))?;
                 return Ok(ClientCommandOut {
@@ -3187,21 +3182,21 @@ async fn client_command(
             })
         }
         "branch" => {
-            let session_id = session_for_client(&app, &state, &input.profile, &root, &key).await?;
-            let forked = match hermes::fork_session(&state.http, &root, &key, &session_id, &args)
+            let session_id = session_for_client(&app, &state, &input.profile, &root).await?;
+            let forked = match chat.fork_session(&root, &session_id, &args)
                 .await
             {
                 Ok(id) => id,
                 Err(HermesError::Http { status: 404, .. }) => {
                     let session_id =
-                        replace_missing_session(&app, &state, &input.profile, &root, &key).await?;
-                    hermes::fork_session(&state.http, &root, &key, &session_id, &args)
+                        replace_missing_session(&app, &state, &input.profile, &root).await?;
+                    chat.fork_session(&root, &session_id, &args)
                         .await
                         .map_err(|err| explain(&err))?
                 }
                 Err(err) => return Err(explain(&err)),
             };
-            pin_explicit(&app, &state, &input.profile, &root, &key, &forked).await;
+            pin_explicit(&app, &state, &input.profile, &root, &forked).await;
             Ok(ClientCommandOut {
                 command,
                 notice: format!("已分支做 {forked}"),
@@ -3211,7 +3206,7 @@ async fn client_command(
         }
         "model" => {
             if input.model.trim().is_empty() && args.is_empty() {
-                let options = hermes::list_model_options(&state.http, &root, &key)
+                let options = chat.list_model_options(&root)
                     .await
                     .map_err(|err| explain(&err))?;
                 return Ok(ClientCommandOut {
@@ -3230,12 +3225,8 @@ async fn client_command(
             } else {
                 input.model.trim().to_string()
             };
-            let session_id = session_for_client(&app, &state, &input.profile, &root, &key).await?;
-            if let Err(err) = hermes::lock_session_model(
-                &state.http,
-                &root,
-                &key,
-                &session_id,
+            let session_id = session_for_client(&app, &state, &input.profile, &root).await?;
+            if let Err(err) = chat.lock_session_model(&root, &session_id,
                 &model,
                 input.provider.trim(),
             )
@@ -3245,12 +3236,8 @@ async fn client_command(
                     return Err(explain(&err));
                 }
                 let session_id =
-                    replace_missing_session(&app, &state, &input.profile, &root, &key).await?;
-                hermes::lock_session_model(
-                    &state.http,
-                    &root,
-                    &key,
-                    &session_id,
+                    replace_missing_session(&app, &state, &input.profile, &root).await?;
+                chat.lock_session_model(&root, &session_id,
                     &model,
                     input.provider.trim(),
                 )
@@ -3279,10 +3266,10 @@ async fn session_for_client(
     state: &AppState,
     profile: &str,
     root: &str,
-    key: &str,
 ) -> Result<String, String> {
+    let chat = Arc::clone(&state.client);
     let pin = load_pin(app, state, profile);
-    let sessions = hermes::list_sessions_for_bot_chat(&state.http, root, key)
+    let sessions = chat.list_sessions_for_bot_chat(root)
         .await
         .map_err(|err| explain(&err))?;
     let resolved = hermes::session_for_startup(&sessions, &pin.id, pin.explicit, pin.anchor)
@@ -3310,10 +3297,10 @@ async fn pin_explicit(
     state: &AppState,
     profile: &str,
     root: &str,
-    key: &str,
     id: &str,
 ) {
-    let anchor = hermes::list_sessions(&state.http, root, key)
+    let chat = Arc::clone(&state.client);
+    let anchor = chat.list_sessions(root)
         .await
         .ok()
         .and_then(|sessions| {
@@ -3337,8 +3324,8 @@ async fn replace_missing_session(
     state: &AppState,
     profile: &str,
     root: &str,
-    key: &str,
 ) -> Result<String, String> {
+    let chat = Arc::clone(&state.client);
     persist_pin(
         app,
         &state.sessions,
@@ -3350,7 +3337,7 @@ async fn replace_missing_session(
             anchor: 0.0,
         },
     );
-    let pick = hermes::ensure_bot_chat(&state.http, root, key)
+    let pick = chat.ensure_bot_chat(root)
         .await
         .map_err(|err| explain(&err))?;
     if pick.read_only {
@@ -3489,9 +3476,9 @@ async fn create_task_session(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?.clone();
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-    let session_id = hermes::create_session(&state.http, &root, &key, Some(title.as_str()))
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
+    let session_id = chat.create_session(&root, Some(title.as_str()))
         .await
         .map_err(|err| match &err {
             HermesError::Http { status: 400, .. } => "開唔到新對話。".into(),
@@ -3515,9 +3502,9 @@ async fn open_suborb(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?.clone();
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-    let listed = hermes::list_sessions_for_bot_chat(&state.http, &root, &key)
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
+    let listed = chat.list_sessions_for_bot_chat(&root)
         .await
         .map_err(|err| explain(&err))?;
     let Some(chosen) = listed.iter().find(|session| session.id == session_id) else {
@@ -3529,11 +3516,7 @@ async fn open_suborb(
     } else {
         String::new()
     };
-    let messages = hermes::fetch_counted_messages(
-        &state.http,
-        &root,
-        &key,
-        &session_id,
+    let messages = chat.fetch_counted_messages(&root, &session_id,
         chosen.message_count,
     )
     .await
@@ -3586,11 +3569,11 @@ async fn peek_session_tail(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?.clone();
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
     let from = count.saturating_sub(40);
     let limit = (count - from).max(1);
-    let page = hermes::fetch_message_page(&state.http, &root, &key, &session_id, from, limit)
+    let page = chat.fetch_message_page(&root, &session_id, from, limit)
         .await
         .map_err(|err| explain(&err))?;
     let settled = page
@@ -3627,8 +3610,8 @@ async fn send_suborb(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, &profile)?.clone();
-    let key = profile_key(&profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
     let panel = suborb_panel_id(&profile, &session_id);
     let (stop, stop_requested, generation) = if side_turn {
         (
@@ -3647,7 +3630,7 @@ async fn send_suborb(
     let streams = Arc::clone(&state.streams);
     let run_ids = Arc::clone(&state.run_ids);
     let queued_run_ids = Arc::clone(&state.queued_run_ids);
-    let http = state.http.clone();
+
     if !side_turn {
         let busy_label = if queued {
             "排隊中，等佢講完就會行"
@@ -3702,11 +3685,7 @@ async fn send_suborb(
                     && !stream_is_current(&streams, &panel, generation));
             dispatch_turn(&app, &panel, event, keep_busy, side_turn, queued);
         };
-        let result = hermes::stream_turn_watched(
-            &http,
-            &root,
-            &key,
-            &session_id,
+        let result = chat.stream_turn_watched(&root, &session_id,
             &text,
             &stop,
             &stop_requested,
@@ -3783,10 +3762,10 @@ async fn stop_suborb(
     let cfg = load_config(&app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, profile.trim())?;
-    let key = profile_key(profile.trim())?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
     for run_id in targets {
-        match hermes::stop_run(&state.http, &root, &key, &run_id)
+        match chat.stop_run(&root, &run_id)
             .await
             .map_err(|_| "停止未送到。".to_string())?
         {
@@ -3828,11 +3807,8 @@ async fn seed_session_lists(app: AppHandle, state: State<'_, AppState>) -> Resul
         }
     }
     for bot in cfg.bots.iter().filter(|bot| bot.enabled) {
-        let Ok(key) = profile_key(&bot.profile) else {
-            continue;
-        };
-        let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-        let Ok(sessions) = hermes::list_sessions_for_bot_chat(&state.http, &root, &key).await else {
+        let root = bot.profile.clone();
+        let Ok(sessions) = state.client.list_sessions_for_bot_chat(&root).await else {
             continue;
         };
         let pin = load_pin(&app, &state, &bot.profile);
@@ -3915,17 +3891,17 @@ async fn request_stop(
     let cfg = load_config(app)?;
     require_hermes(&cfg)?;
     let bot = bot_or_err(&cfg, profile)?;
-    let key = profile_key(profile)?;
-    let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
     let mut ended = String::new();
     let mut still_open = false;
     for run_id in targets {
-        match hermes::stop_run(&state.http, &root, &key, &run_id)
+        match chat.stop_run(&root, &run_id)
             .await
             .map_err(|_| "停止未送到。".to_string())?
         {
             hermes::StopOutcome::Stopping => return Ok("stopping".into()),
-            hermes::StopOutcome::NotActive => match hermes::fetch_run(&state.http, &root, &key, &run_id).await {
+            hermes::StopOutcome::NotActive => match chat.fetch_run(&root, &run_id).await {
                 Ok(value) => {
                     let status = value.get("status").and_then(|item| item.as_str()).unwrap_or("");
                     let pending = value
@@ -3970,9 +3946,9 @@ async fn steer_run(
         let cfg = load_config(&app)?;
         require_hermes(&cfg)?;
         let bot = bot_or_err(&cfg, &profile)?;
-        let key = profile_key(&profile)?;
-        let root = route_root(&cfg.gateway_base_url, &bot.profile, &bot.base_url);
-        hermes::steer_run(&state.http, &root, &key, &run_id, &text)
+        let chat = chat_client(&state, &cfg);
+        let root = bot.profile.clone();
+        chat.steer_run(&root, &run_id, &text)
             .await
             .map_err(|_| "rejected".to_string())
     }
@@ -3998,8 +3974,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .manage(AppState {
-            http: http_client(),
+        .manage({
+            let http = http_client();
+            AppState {
+            client: new_chat_client(http.clone()),
+            http,
             streams: Arc::new(Mutex::new(HashMap::new())),
             run_ids: Arc::new(Mutex::new(HashMap::new())),
             queued_run_ids: Arc::new(Mutex::new(HashMap::new())),
@@ -4008,8 +3987,28 @@ pub fn run() {
             config_write: Arc::new(Mutex::new(())),
             command_cache: Mutex::new(HashMap::new()),
             interaction: Arc::new(interaction::InteractionHub::new()),
-        })
+        }})
         .setup(|app| {
+            {
+                let handle = app.handle().clone();
+                let state = app.state::<AppState>();
+                state.client.set_remote_sink(Arc::new(move |profile: &str, session_id: &str, turn: client::RemoteTurn| {
+                    let (kind, text) = match turn {
+                        client::RemoteTurn::Start => ("remote.start", String::new()),
+                        client::RemoteTurn::Delta(text) => ("remote.delta", text),
+                        client::RemoteTurn::Done => ("remote.done", String::new()),
+                    };
+                    emit(
+                        &handle,
+                        serde_json::json!({
+                            "type": kind,
+                            "profile": profile,
+                            "session_id": session_id,
+                            "text": text,
+                        }),
+                    );
+                }));
+            }
             secrets::set_service(&app.config().identifier);
             if let Ok(cfg) = load_config(app.handle()) {
                 let state = app.state::<AppState>();
@@ -4198,12 +4197,12 @@ mod tests {
         let send = src.find("async fn send_chat").expect("send");
         let send_end = src.find("async fn respond_approval").expect("approval");
         let body = &src[send..send_end];
-        assert_eq!(body.matches("hermes::stream_turn_watched(").count(), 2);
+        assert_eq!(body.matches("chat.stream_turn_watched(").count(), 2);
         assert_eq!(body.matches("!side_turn && !queued,").count(), 2);
         assert!(!body.contains("hermes::stream_turn("));
         let sub = src.find("async fn send_suborb").expect("suborb");
         let sub_body = &src[sub..sub + 9000];
-        assert!(sub_body.contains("hermes::stream_turn_watched("));
+        assert!(sub_body.contains("chat.stream_turn_watched("));
         assert!(sub_body.contains("!side_turn && !queued,"));
         let dispatch = src.find("fn dispatch_turn").expect("dispatch");
         let arm = src[dispatch..].find("TurnEvent::QueueElsewhere(waiting)").expect("arm") + dispatch;
@@ -4275,7 +4274,7 @@ mod tests {
         assert!(!request.contains("eprintln"));
         assert!(!request.contains("config::save"));
         let steer_body = &src[steer..stop_chat];
-        assert!(steer_body.contains("hermes::steer_run"));
+        assert!(steer_body.contains("chat.steer_run"));
         assert!(steer_body.contains("\"joined\""));
         assert!(steer_body.contains("\"rejected\""));
         assert!(!steer_body.contains("println"));

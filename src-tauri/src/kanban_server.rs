@@ -61,12 +61,12 @@ pub fn origin(gateway: &str, configured: &str) -> String {
         return configured.to_string();
     }
     let Ok(url) = reqwest::Url::parse(gateway.trim()) else {
-        return "http://127.0.0.1:9119".into();
+        return crate::config::default_dashboard_origin();
     };
     let Some(host) = url.host_str() else {
-        return "http://127.0.0.1:9119".into();
+        return crate::config::default_dashboard_origin();
     };
-    format!("{}://{host}:9119", url.scheme())
+    format!("{}://{host}:{}", url.scheme(), crate::config::DEFAULT_DASHBOARD_PORT)
 }
 
 /// An empty slug omits `?board=` so hermes serve returns its current board.
@@ -512,6 +512,15 @@ pub async fn refresh_access_once(
         }
         Err(err) => Err(err),
     }
+}
+
+/// Refresh the native token, else the basic password login. Used by the chat client too.
+pub async fn renew_login(
+    http: &Client,
+    origin: &str,
+    secrets: &mut KanbanSecrets,
+) -> Result<bool, HermesError> {
+    renew(http, origin, secrets).await
 }
 
 async fn renew(
