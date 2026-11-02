@@ -57,9 +57,10 @@ pub struct SessionSummary {
     pub parent_session_id: String,
     /// Archived rows stay out of the titled Bot Chat pick.
     pub archived: bool,
-    /// `ended_at` is set, or `end_reason` is non-empty. The server has closed this row.
+    /// `ended_at` is set, or `end_reason` is non-empty, and the reason is not
+    /// one Hermes reopens (`RECOVERABLE_END_REASONS`). The server has closed this row.
     pub ended: bool,
-    /// Hermes `end_reason` (`tui_shutdown`, …). Empty when the row is still open.
+    /// Hermes `end_reason` (`tui_shutdown`, `ws_orphan_reap`, …). Empty when none.
     pub end_reason: String,
     /// Gateway routing key. Empty when the list did not include one.
     pub session_key: String,
@@ -948,7 +949,26 @@ fn envelope_delivery_id(value: &Value) -> Option<String> {
         .find_map(|key| value.get(*key).and_then(id_value))
 }
 
-/// A row is closed when Hermes set `ended_at` or `end_reason` (for example `tui_shutdown`).
+/// End reasons Hermes 0.22.5 reopens on the next turn in the same session id
+/// (`_RECOVERABLE_END_REASONS`, `hermes_state_common.py:190`; reopened by
+/// `gateway/session.py` and `hermes_state_gateway.py`). A row stamped with one
+/// of these is still open for the overlay (R-SS-09.3).
+pub const RECOVERABLE_END_REASONS: &[&str] = &[
+    "agent_close",
+    "ws_orphan_reap",
+    "superseded_by_resume",
+    "startup_orphan_reap",
+];
+
+pub fn end_reason_recoverable(reason: &str) -> bool {
+    let reason = reason.trim();
+    RECOVERABLE_END_REASONS.iter().any(|known| known.eq_ignore_ascii_case(reason))
+}
+
+/// A row is closed when Hermes set `ended_at` or `end_reason` (for example
+/// `tui_shutdown`). A recoverable `end_reason` (for example `ws_orphan_reap`)
+/// is not closed: Hermes reopens that row on the next send. The reason text
+/// is still returned.
 fn session_closed(item: &Value) -> (bool, String) {
     let reason = item
         .get("end_reason")
@@ -967,6 +987,9 @@ fn session_closed(item: &Value) -> (bool, String) {
         }
         _ => false,
     };
+    if end_reason_recoverable(&reason) {
+        return (false, reason);
+    }
     (!reason.is_empty() || stamped, reason)
 }
 
@@ -5779,6 +5802,35 @@ mod tests {
                 .as_deref(),
             Some("s1")
         );
+    }
+
+    #[test]
+    fn a_recoverable_end_reason_is_not_closed() {
+        let parsed = parse_session_list(&json!({
+            "data": [
+                {"id": "api_1793297254_e36fa90f", "title": "MT5 wrapper", "source": "api_server",
+                 "ended_at": 1793589320.9, "end_reason": "ws_orphan_reap"},
+                {"id": "a2", "title": "a2", "source": "api_server", "ended_at": 1.0, "end_reason": "agent_close"},
+                {"id": "a3", "title": "a3", "source": "api_server", "ended_at": 1.0, "end_reason": "superseded_by_resume"},
+                {"id": "a4", "title": "a4", "source": "api_server", "ended_at": 1.0, "end_reason": "STARTUP_ORPHAN_REAP"},
+                {"id": "shut", "title": "shut", "source": "api_server", "ended_at": 1.0, "end_reason": "tui_shutdown"},
+                {"id": "cli", "title": "cli", "source": "api_server", "ended_at": 1.0, "end_reason": "cli_close"},
+                {"id": "cron", "title": "cron", "source": "api_server", "end_reason": "cron_complete"},
+                {"id": "bare", "title": "bare", "source": "api_server", "ended_at": 1.0}
+            ]
+        }));
+        for row in &parsed[0..4] {
+            assert!(!row.ended, "{} should stay open", row.id);
+        }
+        assert_eq!(parsed[0].end_reason, "ws_orphan_reap");
+        for row in &parsed[4..] {
+            assert!(row.ended, "{} should be closed", row.id);
+        }
+        assert!(!session_send_closed(&parsed[0], &parsed));
+        assert!(session_send_closed(&parsed[4], &parsed));
+        assert!(end_reason_recoverable(" ws_orphan_reap "));
+        assert!(!end_reason_recoverable(""));
+        assert!(!end_reason_recoverable("tui_shutdown"));
     }
 
     #[test]

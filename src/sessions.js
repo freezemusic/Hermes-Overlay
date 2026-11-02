@@ -264,11 +264,28 @@ export function sessionRouteMatches(session) {
   return last === id;
 }
 
-/** The server closed this row (`ended_at` or `end_reason`, including `tui_shutdown`). */
+/**
+ * End reasons Hermes 0.22.5 reopens on the next turn in the same session id
+ * (`_RECOVERABLE_END_REASONS`, hermes_state_common.py:190). Mirrors
+ * `RECOVERABLE_END_REASONS` in hermes.rs.
+ */
+export const RECOVERABLE_END_REASONS = Object.freeze(["agent_close", "ws_orphan_reap", "superseded_by_resume", "startup_orphan_reap"]);
+
+export function endReasonRecoverable(reason) {
+  const value = String(reason || "").trim().toLowerCase();
+  return !!value && RECOVERABLE_END_REASONS.includes(value);
+}
+
+/**
+ * The server closed this row (`ended_at` or `end_reason`, including `tui_shutdown`).
+ * A recoverable end (for example `ws_orphan_reap`, a Desktop window that went
+ * away) is not closed: Hermes reopens the same row on the next send (R-SS-09.3).
+ */
 export function sessionEnded(session) {
   if (!session) return false;
-  if (session.ended === true) return true;
   const reason = String(session.end_reason || session.endReason || "").trim();
+  if (endReasonRecoverable(reason)) return false;
+  if (session.ended === true) return true;
   if (reason) return true;
   const at = session.ended_at ?? session.endedAt;
   if (typeof at === "number") return at > 0;
@@ -312,24 +329,36 @@ export function isClosedSendText(text) {
   return String(text || "").includes("已經喺伺服器關閉");
 }
 
-/** A live writable chat to open after a closed one. Bot Chat wins. */
+/**
+ * A live writable chat to open after a closed one. This profile's main Bot
+ * Chat wins, with the same send rules the panel uses (`sessionSendClosed`,
+ * `sessionReadOnlyIn`), so a local or `tui_shutdown` Bot Chat still counts.
+ */
 export function closedSwitchTarget(sessions, currentId) {
+  const list = sessions || [];
   const current = String(currentId || "");
-  const rows = (sessions || []).filter((session) => (
+  const rows = list.filter((session) => (
     session
     && session.id
     && sessionRouteMatches(session)
     && session.id !== current
-    && !sessionEnded(session)
+    && !sessionSendClosed(session, list)
     && session.archived !== true
-    && !sessionReadOnly(session.source)
+    && !sessionReadOnlyIn(session, list)
   ));
-  return rows.find(isBotChat) || rows.slice().sort(byRecent)[0] || null;
+  return rows.find((session) => isMainBotChat(session, list))
+    || rows.find(isBotChat)
+    || rows.slice().sort(byRecent)[0]
+    || null;
 }
 
-/** Hidden wins, then archived, then a source the gateway will not accept. */
-export function sessionLabel(session) {
-  return `${sessionTitleText(session)}${sessionSuffix(session)}`;
+/**
+ * Hidden wins, then archived, then a source the gateway will not accept.
+ * With the list, the main Bot Chat gets no 隱藏／已結束 suffix: Desktop hides
+ * it and Hermes reopens it, and the panel sends to it (R-SS-08, R-SS-09).
+ */
+export function sessionLabel(session, sessions) {
+  return `${sessionTitleText(session)}${sessionSuffix(session, sessions)}`;
 }
 
 /** Same visible label twice becomes `title · id`, so two rows named notes stay distinct. */
@@ -381,7 +410,7 @@ export function sessionMenuKey(activeId, sessions) {
 export function writeSessionMenu(select, sessions, activeId, { rebuild = false, menuOpen = false } = {}) {
   const labels = disambiguateSessionLabels(sessionMenuRows(sessions, activeId).map((session) => ({
     id: String(session.id || ""),
-    label: sessionLabel(session),
+    label: sessionLabel(session, sessions),
   })));
   const previous = String(select.value || "");
   const active = String(activeId || "");
@@ -449,10 +478,17 @@ function titleEndsWithSource(title, name) {
   return folded.endsWith(`(${name.toLowerCase()})`) || folded.endsWith(`（${name.toLowerCase()}）`);
 }
 
-function sessionSuffix(session) {
+function sessionSuffix(session, sessions) {
+  if (sessions && isMainBotChat(session, sessions) && session?.archived !== true) {
+    return sessionReadOnlyIn(session, sessions) ? sourceSuffix(session, "") : "";
+  }
   const closed = sessionEnded(session) ? "（已結束）" : "";
   if (session?.hidden) return closed ? "（隱藏／已結束）" : "（隱藏）";
   if (session?.archived === true) return `（已封存）${closed}`;
+  return sourceSuffix(session, closed);
+}
+
+function sourceSuffix(session, closed) {
   const source = String(session?.source || "").trim().toLowerCase();
   if (!source || sessionAcceptsSend(source)) return closed;
   const name = sourceWord(source);
