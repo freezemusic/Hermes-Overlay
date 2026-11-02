@@ -153,6 +153,9 @@ pub enum TurnEvent {
         detail: String,
         run_id: String,
     },
+    /// R-ST-05. `true`: this send waits behind a turn another client (phone, Desktop
+    /// via 9119) is running on the same session. `false`: that wait is over.
+    QueueElsewhere(bool),
 }
 
 /// The run 「停止」 should post. A queued admission must not replace the id
@@ -3670,6 +3673,7 @@ where
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn stream_turn<F>(
     http: &Client,
     root: &str,
@@ -3678,6 +3682,104 @@ pub async fn stream_turn<F>(
     text: &str,
     stop: &AtomicBool,
     stop_requested: &AtomicBool,
+    on_event: F,
+) -> Result<String, HermesError>
+where
+    F: FnMut(TurnEvent),
+{
+    stream_turn_watched(
+        http,
+        root,
+        key,
+        session_id,
+        text,
+        stop,
+        stop_requested,
+        false,
+        on_event,
+    )
+    .await
+}
+
+/// R-ST-05 line while a send waits behind another client's turn.
+pub const QUEUE_ELSEWHERE_LINE: &str = "手機嗰邊行緊，排緊隊";
+/// First look after the 202. A normal turn has stored its user row and
+/// usually streamed by then.
+const QUEUE_PROBE_FIRST: Duration = Duration::from_millis(2500);
+const QUEUE_PROBE_EVERY: Duration = Duration::from_secs(3);
+
+/// Is this accepted run waiting behind a turn from another client?
+///
+/// Hermes 0.22.5 (box test fix-queue-hint/exp/x7): a `/v1/runs` send into a
+/// session whose turn lease another process holds (a 9119 `hermes serve`
+/// client: phone, Desktop) is `running` on `GET /v1/runs/{id}` with no events
+/// but keepalives, and its user row is not stored until the lease frees. The
+/// newest stored user row is the other client's prompt. A send behind our own
+/// earlier `/v1/runs` turn is `queued` instead (gateway FIFO) and is not this.
+///
+/// `Some(true)`: waiting elsewhere. `Some(false)`: our row is stored, the turn
+/// started. `None`: cannot tell (queued, terminal, no user row).
+pub fn waiting_elsewhere(run_status: &str, rows: &[Value], own_text: &str) -> Option<bool> {
+    let status = run_status.trim();
+    if !matches!(status, "running" | "started") {
+        return None;
+    }
+    let mut newest: Option<(f64, usize, String)> = None;
+    for (index, row) in rows.iter().enumerate() {
+        if row.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let at = row.get("timestamp").and_then(Value::as_f64).unwrap_or(0.0);
+        let text = content_to_text(row.get("content").unwrap_or(&Value::Null));
+        let later = match &newest {
+            None => true,
+            Some((best, best_index, _)) => at > *best || (at == *best && index > *best_index),
+        };
+        if later {
+            newest = Some((at, index, text));
+        }
+    }
+    let (_, _, text) = newest?;
+    Some(text.trim() != own_text.trim())
+}
+
+async fn probe_queue_elsewhere(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+    session_id: &str,
+    text: &str,
+) -> Option<bool> {
+    let run = fetch_run(http, root, key, run_id).await.ok()?;
+    let status = json_text(run.get("status"));
+    if !matches!(status.as_str(), "running" | "started") {
+        return None;
+    }
+    let url = format!(
+        "{root}/api/sessions/{session_id}/messages?order=latest&limit=6&inline_images=false"
+    );
+    let resp = send(http.get(url).timeout(Duration::from_secs(10)), key).await.ok()?;
+    let value: Value = resp.json().await.ok()?;
+    let rows = value
+        .get("data")
+        .or_else(|| value.get("messages"))
+        .and_then(Value::as_array)?;
+    waiting_elsewhere(&status, rows, text)
+}
+
+/// `stream_turn` that, with `probe`, also says when the send waits behind
+/// another client's turn (R-ST-05). The send itself, stop and the stream are
+/// unchanged; the probe only reads and ends at the first stream event.
+pub async fn stream_turn_watched<F>(
+    http: &Client,
+    root: &str,
+    key: &str,
+    session_id: &str,
+    text: &str,
+    stop: &AtomicBool,
+    stop_requested: &AtomicBool,
+    probe: bool,
     mut on_event: F,
 ) -> Result<String, HermesError>
 where
@@ -3739,7 +3841,24 @@ where
     on_event(TurnEvent::Started {
         run_id: run_id.clone(),
     });
-    follow_run_events(
+    if !probe {
+        follow_run_events(
+            http,
+            root,
+            key,
+            &run_id,
+            stop,
+            stop_requested,
+            &mut landed,
+            on_event,
+        )
+        .await?;
+        return Ok(landed);
+    }
+    let sink = std::sync::Mutex::new(on_event);
+    let active = AtomicBool::new(false);
+    let shown = AtomicBool::new(false);
+    let follow = follow_run_events(
         http,
         root,
         key,
@@ -3747,9 +3866,50 @@ where
         stop,
         stop_requested,
         &mut landed,
-        on_event,
-    )
-    .await?;
+        |event| {
+            if !matches!(event, TurnEvent::Started { .. } | TurnEvent::Command(_)) {
+                active.store(true, Ordering::Relaxed);
+                if shown.swap(false, Ordering::Relaxed) {
+                    (sink.lock().unwrap_or_else(|err| err.into_inner()))(TurnEvent::QueueElsewhere(false));
+                }
+            }
+            (sink.lock().unwrap_or_else(|err| err.into_inner()))(event);
+        },
+    );
+    let watch = async {
+        tokio::time::sleep(QUEUE_PROBE_FIRST).await;
+        loop {
+            if active.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) || stop_requested.load(Ordering::Relaxed) {
+                break;
+            }
+            let seen = probe_queue_elsewhere(http, root, key, &run_id, session_id, text).await;
+            if active.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) || stop_requested.load(Ordering::Relaxed) {
+                break;
+            }
+            match seen {
+                Some(true) if !shown.load(Ordering::Relaxed) => {
+                    shown.store(true, Ordering::Relaxed);
+                    (sink.lock().unwrap_or_else(|err| err.into_inner()))(TurnEvent::QueueElsewhere(true));
+                }
+                Some(false) => {
+                    if shown.swap(false, Ordering::Relaxed) {
+                        (sink.lock().unwrap_or_else(|err| err.into_inner()))(TurnEvent::QueueElsewhere(false));
+                    }
+                    break;
+                }
+                _ => {}
+            }
+            tokio::time::sleep(QUEUE_PROBE_EVERY).await;
+        }
+        std::future::pending::<()>().await
+    };
+    tokio::select! {
+        result = follow => result?,
+        _ = watch => {}
+    }
+    if shown.load(Ordering::Relaxed) {
+        (sink.lock().unwrap_or_else(|err| err.into_inner()))(TurnEvent::QueueElsewhere(false));
+    }
     Ok(landed)
 }
 
@@ -7726,6 +7886,119 @@ data: {\"delta\":\"未講完\"}\n\
         assert!(matches!(err, HermesError::Cancelled));
         let seen = seen.lock().unwrap();
         assert!(matches!(seen.last(), Some(TurnEvent::Delta(text)) if text == "未講完"));
+    }
+
+    #[test]
+    fn waiting_elsewhere_reads_the_newest_user_row() {
+        let phone = json!({"role": "user", "content": "Write a long story", "timestamp": 10.0});
+        let mine = json!({"role": "user", "content": "OVERLAY ping", "timestamp": 12.0});
+        let tool = json!({"role": "assistant", "content": "partial", "timestamp": 11.0});
+        assert_eq!(waiting_elsewhere("running", &[phone.clone()], "OVERLAY ping"), Some(true));
+        assert_eq!(waiting_elsewhere("running", &[phone.clone(), tool.clone()], "OVERLAY ping"), Some(true));
+        assert_eq!(waiting_elsewhere("running", &[phone.clone(), tool, mine.clone()], " OVERLAY ping "), Some(false));
+        // Newest by timestamp, not by position (order=latest pages may come either way).
+        assert_eq!(waiting_elsewhere("running", &[mine.clone(), phone.clone()], "OVERLAY ping"), Some(false));
+        // Our own earlier /v1/runs turn: the gateway FIFO says `queued`. Not this line.
+        assert_eq!(waiting_elsewhere("queued", &[phone.clone()], "OVERLAY ping"), None);
+        assert_eq!(waiting_elsewhere("completed", &[phone], "OVERLAY ping"), None);
+        assert_eq!(waiting_elsewhere("running", &[], "OVERLAY ping"), None);
+        let parts = json!({"role": "user", "content": [{"type": "text", "text": "OVERLAY ping"}], "timestamp": 3.0});
+        assert_eq!(waiting_elsewhere("running", &[parts], "OVERLAY ping"), Some(false));
+        assert_eq!(QUEUE_ELSEWHERE_LINE, "手機嗰邊行緊，排緊隊");
+    }
+
+    /// Hermes 0.22.5 shape from fix-queue-hint/exp/x7: 202, `running`, keepalives only,
+    /// the phone's prompt is the newest user row; then our row lands and the reply streams.
+    fn serve_phone_wait(phone_first: bool, release_ms: u64) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let start = Instant::now();
+        thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { break };
+                thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    let n = sock.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let line = req.lines().next().unwrap_or("").to_string();
+                    let released = start.elapsed() >= Duration::from_millis(release_ms);
+                    let json_reply = |sock: &mut std::net::TcpStream, code: &str, body: String| {
+                        let head = format!(
+                            "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = sock.write_all(head.as_bytes());
+                        let _ = sock.write_all(body.as_bytes());
+                    };
+                    if line.starts_with("POST /v1/runs ") {
+                        json_reply(&mut sock, "202 Accepted", r#"{"run_id":"run_w","status":"started"}"#.into());
+                    } else if line.starts_with("GET /v1/runs/run_w/events") {
+                        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n: open\n\n");
+                        while start.elapsed() < Duration::from_millis(release_ms + 300) {
+                            let _ = sock.write_all(b": keepalive\n\n");
+                            thread::sleep(Duration::from_millis(400));
+                        }
+                        let _ = sock.write_all(b"id: 0\nevent: message.delta\ndata: {\"delta\":\"OVERLAY\"}\n\nid: 1\nevent: run.completed\ndata: {\"output\":\"OVERLAY\"}\n\n");
+                    } else if line.starts_with("GET /v1/runs/run_w") {
+                        json_reply(&mut sock, "200 OK", r#"{"run_id":"run_w","status":"running","pending_controls":[]}"#.into());
+                    } else if line.starts_with("GET /api/sessions/sid/messages") {
+                        let mut rows = vec![json!({"role": "user", "content": "hello", "timestamp": 1.0}), json!({"role": "assistant", "content": "hi", "timestamp": 2.0})];
+                        if phone_first {
+                            rows.push(json!({"role": "user", "content": "phone: write a long story", "timestamp": 3.0}));
+                            if released {
+                                rows.push(json!({"role": "assistant", "content": "story", "timestamp": 4.0}));
+                                rows.push(json!({"role": "user", "content": "hello", "timestamp": 5.0}));
+                            }
+                        }
+                        json_reply(&mut sock, "200 OK", json!({"object": "list", "data": rows}).to_string());
+                    } else {
+                        json_reply(&mut sock, "404 Not Found", "{}".into());
+                    }
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_send_behind_another_clients_turn_says_so_until_it_streams() {
+        let base = serve_phone_wait(true, 4800);
+        let http = Client::new();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        let mut seen = Vec::new();
+        stream_turn_watched(&http, &base, "k", "sid", "hello", &stop, &stop_requested, true, |ev| seen.push(ev))
+            .await
+            .unwrap();
+        let on = seen.iter().position(|e| e == &TurnEvent::QueueElsewhere(true)).expect("waiting line");
+        let off = seen.iter().position(|e| e == &TurnEvent::QueueElsewhere(false)).expect("cleared");
+        let delta = seen.iter().position(|e| matches!(e, TurnEvent::Delta(_))).expect("reply");
+        assert!(matches!(seen[0], TurnEvent::Started { .. }));
+        assert!(on < off && off <= delta, "{seen:?}");
+        assert_eq!(seen.iter().filter(|e| matches!(e, TurnEvent::QueueElsewhere(_))).count(), 2);
+        assert!(matches!(seen.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
+    }
+
+    #[tokio::test]
+    async fn a_slow_own_turn_and_an_unprobed_send_show_no_waiting_line() {
+        // Our row is the newest user row: the turn has started, the model is just slow.
+        let base = serve_phone_wait(false, 3600);
+        let http = Client::new();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        let mut seen = Vec::new();
+        stream_turn_watched(&http, &base, "k", "sid", "hello", &stop, &stop_requested, true, |ev| seen.push(ev))
+            .await
+            .unwrap();
+        assert!(!seen.iter().any(|e| matches!(e, TurnEvent::QueueElsewhere(_))), "{seen:?}");
+        // probe off (side question, or our own earlier send still running): never asks.
+        let base = serve_phone_wait(true, 3600);
+        let mut seen = Vec::new();
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, &stop_requested, |ev| seen.push(ev))
+            .await
+            .unwrap();
+        assert!(!seen.iter().any(|e| matches!(e, TurnEvent::QueueElsewhere(_))), "{seen:?}");
+        assert!(matches!(seen.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
     }
 
     #[tokio::test]

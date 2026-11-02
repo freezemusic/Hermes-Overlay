@@ -1965,3 +1965,18 @@ test("the closed-session switch button reads 轉去 Bot Chat", () => {
   assert.doesNotMatch(main, /轉去新對話/);
   assert.doesNotMatch(html, /轉去新對話/);
 });
+
+test("R-ST-05: a busy status line from Rust is shown as sent and run.started resets it", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const status = main.slice(main.indexOf('if (payload.type === "status") {'), main.indexOf('if (payload.type === "done") {'));
+  // The waiting line rides the existing status event: its detail is the label, busy stays busy.
+  assert.match(status, /let label = payload\.detail \|\|/);
+  assert.match(status, /payload\.state === "busy" \? "busy"/);
+  assert.match(status, /payload\.run_id && !finishApplies\(thread, payload\.run_id\) && payload\.state !== "busy"/);
+  // Our label is not a 思考中 label, so the own-queue 排隊中 rewrite never swallows it.
+  assert.doesNotMatch("手機嗰邊行緊，排緊隊", /思考中/);
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.match(lib, /TurnEvent::QueueElsewhere\(waiting\)/);
+  const hermes = readFileSync(new URL("../src-tauri/src/hermes.rs", import.meta.url), "utf8");
+  assert.match(hermes, /pub const QUEUE_ELSEWHERE_LINE: &str = "手機嗰邊行緊，排緊隊";/);
+});

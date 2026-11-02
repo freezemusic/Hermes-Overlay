@@ -78,6 +78,13 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：已載入嘅面板再開會補讀；`watchReply` 喺忙碌時仍會合併未見訊息；補讀唔把忙碌中嘅狀態強制改做閒置，除非補到一條完成嘅回覆而且冇直播氣泡。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
+**R-ST-05** 送出之後，如果呢句排緊隊等另一部機（手機、Desktop，經 9119 `hermes serve`）喺同一個對話行緊嘅一輪，面板狀態行顯示「手機嗰邊行緊，排緊隊」，一開始串流（第一個事件：字、工具、批准、澄清，或者結束）就清走，變返「思考中…」。唔好擋住、取消或者重送呢句；停止掣同 R-ST-01 一樣。唔加對話行，唔寫 config.json。
+1. 點樣知：Hermes 0.22.5 `POST /v1/runs` 照樣 202；另一個 process 揸住 turn lease 時（`agent/turn_facade_lease.py` `_on_wait`，嗰句「Another Hermes process is using this session」只印喺 gateway console，唔入 `/v1/runs` 串流），`GET /v1/runs/{id}` 係 `running`、事件串流只有 keepalive，而且我哋嗰句未寫入對話；最新一條 user 訊息係另一部機嘅。Overlay 喺 202 之後約 2.5 秒、之後每 3 秒，未有任何串流事件就讀 `GET /v1/runs/{id}` 同 `GET /api/sessions/{id}/messages?order=latest&limit=6`：狀態係 `running`／`started` 而且最新 user 訊息唔係我哋送嘅字，就顯示；最新 user 訊息變返我哋嗰句（已開始），或者有串流事件，就清走並停止讀。
+2. 唔係呢種情況就唔顯示：我哋自己上一句仲行緊（overlay 自己排隊，R-ST-02，送出時 `queue`），或者 gateway 話 `queued`（同一條 8642 FIFO，例如另一個 API client），或者讀唔到。旁問（`/btw`）唔讀。主面板同子光球都適用。
+- 來源：Devon（2026-11-02，揀 plan-9119 §6 A）。盒 x7（0.22.5 tag，gateway 18642 + `serve --isolated` 19119）：9119 長回覆行緊時 8642 送出，等咗約 170 秒先開始，期間 `running`、只有 keepalive、尾行係 9119 嗰句；8642 自己排隊時 `GET` 係 `queued`。
+- 驗收（盒）：mock 同真 0.22.5 嘅次序一樣：另一部機嘅一輪行緊時送出，約 3 秒內狀態行變「手機嗰邊行緊，排緊隊」，冇關閉橫額、輸入同停止掣照常；佢講完、我哋嗰句開始串流，狀態變返「思考中…」，回覆喺同一個氣泡，最後「閒置」。自己上一句未講完再送：仲係「排隊中」，唔出手機句。普通送出（冇其他人）：唔出手機句。
+- 狀態：❓ / ✅(盒，單元測試)；Win 未驗。
+
 ---
 
 ## 1. 穿透同 Ctrl 規則（R-CT）

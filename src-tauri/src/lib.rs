@@ -2030,7 +2030,7 @@ async fn send_chat(
             dispatch_turn(&app, &profile, event, keep_busy, side_turn, queued);
         };
         let run = async {
-            let first = hermes::stream_turn(
+            let first = hermes::stream_turn_watched(
                 &http,
                 &root,
                 &key,
@@ -2038,6 +2038,7 @@ async fn send_chat(
                 &text,
                 &stop,
                 &stop_requested,
+                !side_turn && !queued,
                 &mut emit_turn,
             )
             .await;
@@ -2073,7 +2074,7 @@ async fn send_chat(
                         anchor: 0.0,
                     },
                 );
-                hermes::stream_turn(
+                hermes::stream_turn_watched(
                     &http,
                     &root,
                     &key,
@@ -2081,6 +2082,7 @@ async fn send_chat(
                     &text,
                     &stop,
                     &stop_requested,
+                    !side_turn && !queued,
                     &mut emit_turn,
                 )
                 .await
@@ -2283,6 +2285,13 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
         TurnEvent::Delta(text) => stamp(serde_json::json!({"type": "delta", "profile": profile, "text": text})),
         TurnEvent::Command(command) => stamp(serde_json::json!({"type": "command", "profile": profile, "command": command})),
         TurnEvent::Commentary(text) => stamp(serde_json::json!({"type": "commentary", "profile": profile, "text": text})),
+        // R-ST-05: the status line, no chat row. Back to the plain busy line when the wait ends.
+        TurnEvent::QueueElsewhere(waiting) => stamp(serde_json::json!({
+                "type": "status",
+                "profile": profile,
+                "state": "busy",
+                "detail": if waiting { hermes::QUEUE_ELSEWHERE_LINE } else { "思考中…" },
+            })),
         TurnEvent::Tool {
             phase,
             name,
@@ -3693,7 +3702,7 @@ async fn send_suborb(
                     && !stream_is_current(&streams, &panel, generation));
             dispatch_turn(&app, &panel, event, keep_busy, side_turn, queued);
         };
-        let result = hermes::stream_turn(
+        let result = hermes::stream_turn_watched(
             &http,
             &root,
             &key,
@@ -3701,6 +3710,7 @@ async fn send_suborb(
             &text,
             &stop,
             &stop_requested,
+            !side_turn && !queued,
             &mut emit_turn,
         )
         .await;
@@ -4180,6 +4190,28 @@ mod tests {
         assert!(!open_body.contains("store_show_tool_detail"));
         assert!(!open_body.contains("store_compose_mode"));
         assert!(!open_body.contains("config::save"));
+    }
+
+    #[test]
+    fn r_st_04_main_and_sub_orb_sends_probe_and_show_the_line_on_the_status() {
+        let src = include_str!("lib.rs");
+        let send = src.find("async fn send_chat").expect("send");
+        let send_end = src.find("async fn respond_approval").expect("approval");
+        let body = &src[send..send_end];
+        assert_eq!(body.matches("hermes::stream_turn_watched(").count(), 2);
+        assert_eq!(body.matches("!side_turn && !queued,").count(), 2);
+        assert!(!body.contains("hermes::stream_turn("));
+        let sub = src.find("async fn send_suborb").expect("suborb");
+        let sub_body = &src[sub..sub + 9000];
+        assert!(sub_body.contains("hermes::stream_turn_watched("));
+        assert!(sub_body.contains("!side_turn && !queued,"));
+        let dispatch = src.find("fn dispatch_turn").expect("dispatch");
+        let arm = src[dispatch..].find("TurnEvent::QueueElsewhere(waiting)").expect("arm") + dispatch;
+        let arm_body = &src[arm..arm + 420];
+        assert!(arm_body.contains("\"type\": \"status\""));
+        assert!(arm_body.contains("\"state\": \"busy\""));
+        assert!(arm_body.contains("hermes::QUEUE_ELSEWHERE_LINE"));
+        assert!(arm_body.contains("思考中…"));
     }
 
     #[test]
