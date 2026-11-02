@@ -147,10 +147,13 @@
 7. 完全沒有 profile 時顯示「未有排程工作。」某個已顯示 profile 的工作列表是空的時，該組仍要出現，並顯示「未有排程」，不得整組省略。該 profile 沒有排程 API（HTTP 404 或 `cron_unavailable`）時顯示「呢個 Bot 未有排程。」連線失敗不得虛構工作。瀏覽器預覽可以顯示示範工作；已連接的 Hermes 不得。
 8. 面板遵守第 1 節的面板規則。關閉按鈕有第 1.7 條的例外。
 
-## 13. 連線（只行 9119）
+## 13. 連線（只行 9119）同架構
+
+0. 架構（R-AR）：Hermes 網絡只經 `HermesClient`；路徑只喺 `client/endpoints.rs`；埠只喺 config 預設；舊 gateway 剩低嘅只喺 `gateway_legacy.rs`。
 
 1. 對話全部經 Hermes Dashboard（預設 9119）嘅 REST 同 `/api/ws`，由一個 `HermesClient` 負責（R-CL-01）。設定只要 Dashboard 地址同 Dashboard 登入；每個 bot 嘅 API 金鑰唔再需要。
 2. 送出用 `queued: true`，唔打斷手機嗰輪；排隊時顯示「手機嗰邊行緊，排緊隊」（R-CL-02）。
 3. 另一部機嘅一輪即時流入面板，完咗畫返存咗嘅行（R-CL-03）。
 4. 斷線時狀態行寫「連唔到 Hermes Dashboard，等陣自動再試」，自動重連（R-CL-04）。
 5. 每個 session 都可以送（R-CL-05）；批准同澄清經 WebSocket（R-CL-06）；冇 Bot Chat 時第一次送出開一條（R-CL-07）。
+6. 斜線：旁問用 `prompt.btw`（唔入歷史），Plan 同其他指令用 `command.dispatch`，插話用 `session.steer`（R-CL-08）。登入成功即刻重讀開住嘅面板，句子寫「已登入 Hermes Dashboard」。

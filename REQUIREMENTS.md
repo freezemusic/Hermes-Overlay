@@ -554,6 +554,17 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 
 ---
 
+## 12a. 架構（R-AR）
+
+**R-AR-01** 所有 Hermes 網絡（REST、WebSocket、登入續期、重連）只可以經 `HermesClient`（`src-tauri/src/client/mod.rs`）。`lib.rs` 同 Tauri 指令只叫 client 嘅有型別方法，唔自己砌 URL、唔直接用 `reqwest` 打 Hermes、唔自己開 WebSocket。
+**R-AR-02** 每條路徑、RPC 方法名、伺服器請求名同事件名只寫喺 `client/endpoints.rs` 一個地方。
+**R-AR-03** 埠號只喺 config 預設（`config::DEFAULT_DASHBOARD_PORT` = 9119，同 config 預設地址）出現；client 同指令唔可以 hard-code 埠或主機。
+**R-AR-04** 仲要用舊 gateway（8642）嘅嘢只可以放喺 `gateway_legacy.rs`，每樣寫明點解仲要；對話唔可以用佢。
+- 來源：Devon（2026-11-02，「你地冇寫 class for network handling 嗎? 你地 hardcode 的嗎?」「點解可以冇 system architect」）。
+- 驗收：單元測試 `the_client_module_has_no_gateway_paths`（client 代碼冇 `/v1/runs`、`8642`、`:9119`）；`grep` lib.rs 冇 `/api/`、`/v1/` 字面路徑用嚟打 Hermes 對話；review 時新增 Hermes 呼叫要經 client。
+- 已知未搬：看板讀取、登入、Dashboard profile 清單仍經 `kanban_server`／`hermes` 用同一個登入打 9119（見 RESULTS）；下一步搬入 client。
+- 狀態：✅(對話部分)；看板／登入待搬。
+
 ## 12b. 連線（R-CL，只行 9119）
 
 **R-CL-01** 所有對話只經 Hermes Dashboard（`hermes serve`，預設埠 9119）：送出、串流、停止、批准、澄清、session 清單同歷史、Bot Chat 監察、新對話、子光球、斜線選單、模型、排程清單。用 REST（`/api/sessions…`、`/api/cron/jobs`、`/api/health`）同 `/api/ws` JSON-RPC。所有網絡經一個 `HermesClient`（`src-tauri/src/client/`）：一個共用 HTTP client、一條 WebSocket、地址、登入續期、斷線重連、按 profile 路由。路徑只寫喺 `client/endpoints.rs`；埠號只喺 config 預設（`config::DEFAULT_DASHBOARD_PORT`）。對話唔再要每個 bot 嘅 API 金鑰，只要 Dashboard 登入；冇金鑰唔出橫額。冇 8642 後備。舊 gateway 剩低嘅只放 `gateway_legacy.rs`（見 RESULTS）。
@@ -581,9 +592,13 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 - 驗收（盒）：APPROVE-ME → 卡 → 拒絕 → Hermes 記「denied by user」；CLARIFY-ME → 卡 → Banana → 工具結果 `user_response: Banana`。
 - 狀態：✅(盒)。
 
+**R-CL-08** 斜線指令唔可以當普通字送。`prompt.submit` 唔識讀斜線（盒 p10：`/plan …`、`/btw …` 原文入咗模型）。旁問 `/btw` 用 `prompt.btw`，答案喺 `btw.complete`，唔寫入對話；Plan `/plan` 同其他指令用 `command.dispatch`（4018 就改用 `slash.exec`），`send` 類就送出佢返嘅訊息，其他類顯示輸出。插話用 `session.steer`（唔用 `prompt.submit`，否則會打斷嗰輪）。分支用 `session.branch_stored`，參數 `parent_session_id`（0.22.5 `methods_session.py` `_create_session`）。
+- 驗收（盒）：見 RESULTS（Plan 模型收到 plan-mode 提示；旁問答案出現而且唔入歷史；插話「已加入呢一輪」）。
+- 狀態：見 RESULTS.md。
+
 **R-CL-07** Dashboard 唔會自己開 Bot Chat。一個 profile 完全冇 `Bot Chat` 時，第一次送出開一條（`session.create`，標題 `Bot Chat`），之後一直用佢。啟動同打開都唔開。
 - 驗收（盒）：scripted profile 冇 Bot Chat，第一次送出開 `Bot Chat`，面板轉去嗰條。
-- 狀態：✅(盒)。未決：面板當時顯示緊另一條對話，送出去咗新 Bot Chat（見 RESULTS 未決）。
+- 狀態：✅(盒)。Devon（2026-11-02 18:24）：保持，面板跳去新 Bot Chat。
 
 ## 13. 回歸規則（Regression rules）
 
