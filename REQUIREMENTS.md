@@ -554,6 +554,37 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 
 ---
 
+## 12b. 連線（R-CL，只行 9119）
+
+**R-CL-01** 所有對話只經 Hermes Dashboard（`hermes serve`，預設埠 9119）：送出、串流、停止、批准、澄清、session 清單同歷史、Bot Chat 監察、新對話、子光球、斜線選單、模型、排程清單。用 REST（`/api/sessions…`、`/api/cron/jobs`、`/api/health`）同 `/api/ws` JSON-RPC。所有網絡經一個 `HermesClient`（`src-tauri/src/client/`）：一個共用 HTTP client、一條 WebSocket、地址、登入續期、斷線重連、按 profile 路由。路徑只寫喺 `client/endpoints.rs`；埠號只喺 config 預設（`config::DEFAULT_DASHBOARD_PORT`）。對話唔再要每個 bot 嘅 API 金鑰，只要 Dashboard 登入；冇金鑰唔出橫額。冇 8642 後備。舊 gateway 剩低嘅只放 `gateway_legacy.rs`（見 RESULTS）。
+- 來源：Devon（2026-11-02，「不對, 只行9119」「你地冇寫 class for network handling 嗎」）。
+- 驗收（盒）：單元測試 `the_client_module_has_no_gateway_paths`；盒上真 0.22.5 serve（19119，有登入閘）、冇 8642 金鑰：送出、串流、停止、批准、澄清、手機同 overlay 同一對話都行。未登入時狀態行同氣泡寫「要登入 Hermes Dashboard（設定 → 登入）」。
+- 狀態：✅(盒)；Win 未驗。
+
+**R-CL-02** 普通送出用 `prompt.submit` 加 `queued: true`，另一部機行緊嗰輪唔會被打斷（Hermes 預設 `busy_input_mode` 係 interrupt）。回應 `queued` 時狀態行顯示「手機嗰邊行緊，排緊隊」（R-ST-05），我哋嗰輪 `message.start` 一到就變返「思考中…」。插話（steer）先至唔加 `queued`。
+- 驗收（盒）：手機（第二個 WS client）行緊 40 字慢回覆時 overlay 送出：出排隊句，手機回覆完整（w1…w40），之後我哋嗰句有回覆，最後「閒置」。
+- 狀態：✅(盒)。
+
+**R-CL-03** 面板開住嘅對話，如果另一部機開始一輪，回覆即時流入一個臨時氣泡；嗰輪完咗就收走，下一次監察（≤3 秒）畫返伺服器存嘅行。唔加通知、唔寫 config.json。
+- 驗收（盒）：手機送出後 15 秒內 overlay 面板見到 w1…；完咗冇重複氣泡。
+- 狀態：✅(盒)。
+
+**R-CL-04** 9119 斷咗：狀態行用平常話講「連唔到 Hermes Dashboard，等陣自動再試」，唔提 8642、唔出原始錯誤；自動重連，間隔 1、5、10、20、60 秒；有人要送嘢就即刻再試（最少隔 1 秒）。回覆中途斷線：「同 Hermes 嘅連線斷咗，回覆中斷咗。」。返嚟之後狀態變返「閒置」，可以再送。
+- 驗收（盒）：停 serve → 狀態行出上面句；再開 → 閒置，送出有回覆。
+- 狀態：見 RESULTS.md。
+
+**R-CL-05** Dashboard 上每個 session（CLI、TUI、手機、Desktop）都可以送，冇「只可以睇」。取代 R-SS-08 嘅只讀同「喺 API 對話繼續」。
+- 驗收：單元測試 `r_cl_05_every_source_takes_a_send_on_the_dashboard`；盒上 `tui` 來源嘅對話送出有回覆。
+- 狀態：✅(盒，單元測試)。
+
+**R-CL-06** 批准同澄清經同一條 WebSocket：伺服器發 `approval`／`clarify` 請求，overlay 出卡（批准（一次）／拒絕；選項），答案經 WS 返（`clarify.lock`）。`client.capabilities` 要喺 `gateway.ready` 之後先發，否則 0.22.5 唔記錄，請求會被收回。永遠唔自動批准。
+- 驗收（盒）：APPROVE-ME → 卡 → 拒絕 → Hermes 記「denied by user」；CLARIFY-ME → 卡 → Banana → 工具結果 `user_response: Banana`。
+- 狀態：✅(盒)。
+
+**R-CL-07** Dashboard 唔會自己開 Bot Chat。一個 profile 完全冇 `Bot Chat` 時，第一次送出開一條（`session.create`，標題 `Bot Chat`），之後一直用佢。啟動同打開都唔開。
+- 驗收（盒）：scripted profile 冇 Bot Chat，第一次送出開 `Bot Chat`，面板轉去嗰條。
+- 狀態：✅(盒)。未決：面板當時顯示緊另一條對話，送出去咗新 Bot Chat（見 RESULTS 未決）。
+
 ## 13. 回歸規則（Regression rules）
 
 1. **每一個 build**，交美術監督審**之前**、裝 Devon 手提**之前**，都要將本檔 §1–§11 每一項重新驗一次，寫低結果（✅／❌／❓同原因）。有任何 ❌ 就唔交審、唔裝。❓ 要寫明點解驗唔到。
