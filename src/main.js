@@ -130,8 +130,16 @@ import {
   boardFingerprint,
   boardOptionLabel,
   columnCollapsed,
+  kanbanBadgeText,
   kanbanChangeLine,
   kanbanErrorText,
+  kanbanEventChange,
+  kanbanEvents,
+  kanbanEventTime,
+  KANBAN_BELL_EMPTY,
+  markKanbanEventsRead,
+  pushKanbanEvents,
+  unreadKanbanCount,
   kanbanFetchAborted,
   kanbanFetchApplies,
   kanbanRequestSlug,
@@ -3930,6 +3938,9 @@ const state = {
     board: null,
     fingerprint: "",
     unread: false,
+    // R-KB-09: bell events, newest first, memory only (never config.json).
+    events: [],
+    bellOpen: false,
     saving: false,
     dragging: false,
     detailOpen: false,
@@ -4467,7 +4478,16 @@ function renderKanbanOrb() {
   const shell = shellFor("kanban");
   const btn = shell?.querySelector(".orb--kanban");
   if (!btn) return;
-  const next = ["bot-btn", "morph-orb", "orb--kanban", state.kanbanOpen ? "active" : "", state.kanban.unread ? "has-unread" : ""]
+  const count = kanbanBadgeText(unreadKanbanCount(state.kanban.events));
+  let countEl = btn.querySelector(".kanban-count");
+  if (!countEl) {
+    countEl = document.createElement("span");
+    countEl.className = "kanban-count";
+    countEl.setAttribute("aria-hidden", "true");
+    btn.append(countEl);
+  }
+  if (countEl.textContent !== count) countEl.textContent = count;
+  const next = ["bot-btn", "morph-orb", "orb--kanban", state.kanbanOpen ? "active" : "", state.kanban.unread || count ? "has-unread" : "", count ? "has-count" : ""]
     .filter(Boolean)
     .join(" ");
   const waiting = gateway.isDown("gateway");
@@ -9314,6 +9334,11 @@ function setupComposer() {
   }, true);
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || event.repeat) return;
+    if (closeKanbanBell()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (closeOpenSessionMenu()) {
       event.preventDefault();
       event.stopPropagation();
@@ -12612,6 +12637,7 @@ function openKanban() {
 function closeKanban() {
   state.kanbanOpen = false;
   state.kanban.detailOpen = false;
+  closeKanbanBell();
   const detail = $("#kanban-detail");
   if (detail) {
     detail.hidden = true;
@@ -12773,6 +12799,12 @@ function commitKanban(board) {
   const print = boardFingerprint(board);
   if (state.kanban.board && print === state.kanban.fingerprint) return;
   const line = kanbanChangeLine(state.kanban.board, board);
+  const events = kanbanEvents(state.kanban.board, board, Date.now());
+  if (events.length) {
+    state.kanban.events = pushKanbanEvents(state.kanban.events, events);
+    paintKanbanBell();
+    renderKanbanOrb();
+  }
   state.kanban.fingerprint = print;
   state.kanban.board = board;
   if (line) {
@@ -13096,6 +13128,95 @@ function endKanbanPointer(event) {
   } else {
     resyncKanbanHover(point);
   }
+}
+
+/** R-KB-09: the bell button count and the event list. */
+function paintKanbanBell() {
+  const bell = $("#btn-kanban-bell");
+  const badge = $("#kanban-bell-count");
+  const count = kanbanBadgeText(unreadKanbanCount(state.kanban.events));
+  if (badge) {
+    badge.textContent = count;
+    badge.hidden = !count;
+  }
+  if (bell) {
+    bell.setAttribute("aria-expanded", String(!!state.kanban.bellOpen));
+    const tip = count ? `看板通知（${count} 個未讀）` : "看板通知";
+    bell.title = tip;
+    bell.setAttribute("aria-label", tip);
+  }
+  const list = $("#kanban-bell-list");
+  if (!list) return;
+  list.hidden = !state.kanban.bellOpen;
+  if (!state.kanban.bellOpen) return;
+  list.replaceChildren();
+  const events = state.kanban.events || [];
+  if (!events.length) {
+    const empty = document.createElement("p");
+    empty.className = "kanban-bell-empty";
+    empty.textContent = KANBAN_BELL_EMPTY;
+    list.append(empty);
+    return;
+  }
+  const now = Date.now();
+  for (const entry of events) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `kanban-bell-row${entry.read ? "" : " is-unread"}`;
+    row.dataset.eventId = entry.id;
+    if (entry.taskId) row.dataset.taskId = entry.taskId;
+    else row.disabled = true;
+    const title = document.createElement("span");
+    title.className = "kanban-bell-title";
+    title.textContent = entry.title || entry.taskId || "卡片";
+    title.title = entry.title || "";
+    const time = document.createElement("time");
+    time.className = "kanban-bell-time";
+    time.dateTime = new Date(entry.at).toISOString();
+    time.textContent = kanbanEventTime(entry.at, now);
+    row.append(title, time);
+    const change = kanbanEventChange(entry);
+    if (change) {
+      const line = document.createElement("span");
+      line.className = "kanban-bell-change";
+      line.lang = "en";
+      line.textContent = change;
+      row.append(line);
+    }
+    if (entry.taskId) {
+      row.addEventListener("click", () => {
+        closeKanbanBell();
+        void openKanbanDetail(entry.taskId);
+      });
+    }
+    list.append(row);
+  }
+}
+
+function openKanbanBell() {
+  // What the list shows keeps its unread weight this time; the count clears now.
+  const shown = state.kanban.events || [];
+  state.kanban.bellOpen = true;
+  paintKanbanBell();
+  state.kanban.events = markKanbanEventsRead(shown);
+  state.kanban.unread = false;
+  const badge = $("#kanban-bell-count");
+  if (badge) badge.hidden = true;
+  const bell = $("#btn-kanban-bell");
+  if (bell) {
+    bell.title = "看板通知";
+    bell.setAttribute("aria-label", "看板通知");
+  }
+  renderKanbanOrb();
+  scheduleHitSync();
+}
+
+function closeKanbanBell() {
+  if (!state.kanban.bellOpen) return false;
+  state.kanban.bellOpen = false;
+  paintKanbanBell();
+  scheduleHitSync();
+  return true;
 }
 
 async function openKanbanDetail(taskId) {
@@ -14037,6 +14158,11 @@ async function boot() {
   window.addEventListener("pointermove", moveKanbanPointer);
   window.addEventListener("pointerup", endKanbanPointer);
   window.addEventListener("pointercancel", endKanbanPointer);
+  $("#btn-kanban-bell")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (state.kanban.bellOpen) closeKanbanBell();
+    else openKanbanBell();
+  });
   const cronClose = $("#btn-cron-close");
   if (cronClose) {
     cronClose.dataset.hitId = "close:cron";

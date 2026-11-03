@@ -332,6 +332,15 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（單元）：`styles.test.js`「all eight kanban columns fit the 960px panel」：8 × `--kanban-col-min` ≤ 960 − 2 × 16；`.kanban` 仲有 `overflow: auto`；冇 `minmax(140px`。盒（1920×1080）：`scrollWidth == clientWidth`（928），八個欄頭全部喺面板入面。
 - 狀態：✅ 盒 / ❓ Win。
 
+**R-KB-09** 看板通知鈴（Devon 2026-11-03，YouTube 式）。之前每次輪詢只得一句 `kanbanChangeLine`，膠囊會蓋走上一句，未讀只係一個 `state.kanban.unread` 布林值，所以事件會被蓋或者唔見。而家：
+1. 每次真正有變就記事件：每張新增卡一條、每張改咗狀態嘅卡一條（時間、卡 id、標題、由邊個狀態去邊個狀態）；冇新增或移動但板有變，就一條「看板有更新」。只放記憶體，最多 50 條，最新排頭，**唔寫 config.json**。第一次快照、登入／未有看板狀態、轉去另一塊板都唔記。
+2. 看板光球用細數字章（`.kanban-count`，1–9，之後「9+」）取代淨係一粒點。數字章 `position: absolute`、`pointer-events: none`，命中區仍然係 `.morph-orb` 嘅 44px 光碟（R-CT），唔會因為數字章變大。開面板唔清數字，要開鈴先清。
+3. 看板面板標題列「關閉」左邊有一粒 24px 鈴圖示掣（`#btn-kanban-bell`），tooltip／`aria-label`「看板通知」（有未讀時「看板通知（N 個未讀）」，掣角有同款細數字）。撳開一張清單（相對時間「啱啱」／「N 分鐘前」，一個鐘以上用 HH:MM；標題；狀態變化「todo → ready」／「新增 → triage」）。打開清單即刻全部當已讀，清走光球同鈴嘅數字；今次打開仍然用粗體顯示啱啱未讀嗰啲。撳一條就開嗰張卡嘅詳情（同撳卡一樣）；「看板有更新」冇卡，唔撳得。冇事件顯示「未有看板通知」。再撳鈴、Esc（最先收）或者關看板都會收起清單。
+4. 5 秒膠囊（R-KB-02）照舊，用返同一句 `kanbanChangeLine`。
+- 來源：Devon t227u（2026-11-03）。
+- 驗收（單元）：`kanban-bell.test.js`（每卡一條、generic 一條、首快照／登入／未有看板／轉板唔記、50 上限最新排頭、已讀、9+、時間格式、唔寫 config、鈴掣 24px 有 tooltip、數字章唔影響命中、Esc 先收清單）。盒：真 Hermes 0.22.5 看板加卡同拖卡之後，光球數字、鈴清單、撳一條開詳情、清單打開後數字清走、空清單。
+- 狀態：❓ / ✅(盒，next-637a7a1)。
+
 ---
 
 ## 7. Session（R-SS）

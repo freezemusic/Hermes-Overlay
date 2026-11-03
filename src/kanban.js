@@ -207,3 +207,75 @@ export function ownerColor(assignee, bots, fallback = "#616191") {
   });
   return bot?.color || fallback;
 }
+
+/* R-KB-09: notification bell. Events live in memory only (never config.json). */
+
+export const KANBAN_EVENT_CAP = 50;
+export const KANBAN_UPDATED = "看板有更新";
+export const KANBAN_BELL_EMPTY = "未有看板通知";
+export const KANBAN_BELL_TIP = "看板通知";
+
+let eventSeq = 0;
+
+/**
+ * One entry per added card and per moved card, else one generic
+ * 「看板有更新」 when the board changed some other way. The first snapshot,
+ * login / unavailable states and a switch to another board stay quiet.
+ */
+export function kanbanEvents(previous, next, at = Date.now()) {
+  if (!previous || !next) return [];
+  if (previous.unavailable || next.unavailable || previous.needsLogin || next.needsLogin) return [];
+  if (kanbanRequestSlug(previous.board) !== kanbanRequestSlug(next.board)) return [];
+  const before = new Map(tasksOf(previous).map((task) => [task.id, task]));
+  const out = [];
+  for (const task of tasksOf(next)) {
+    const old = before.get(task.id);
+    if (!old) {
+      out.push({ kind: "added", taskId: task.id, title: task.title, from: "", to: task.status });
+    } else if (old.status !== task.status) {
+      out.push({ kind: "moved", taskId: task.id, title: task.title, from: old.status, to: task.status });
+    }
+  }
+  if (!out.length && boardFingerprint(previous) !== boardFingerprint(next)) {
+    out.push({ kind: "updated", taskId: "", title: KANBAN_UPDATED, from: "", to: "" });
+  }
+  return out.map((entry) => ({ ...entry, at, id: `kb-${at}-${(eventSeq += 1)}`, read: false }));
+}
+
+/** Newest first, capped. `fresh` is in board order; it lands on top. */
+export function pushKanbanEvents(list, fresh, cap = KANBAN_EVENT_CAP) {
+  const added = [...(fresh || [])].reverse();
+  return [...added, ...(list || [])].slice(0, Math.max(0, cap));
+}
+
+export function unreadKanbanCount(list) {
+  return (list || []).filter((entry) => !entry.read).length;
+}
+
+/** Opening the list reads everything. */
+export function markKanbanEventsRead(list) {
+  return (list || []).map((entry) => (entry.read ? entry : { ...entry, read: true }));
+}
+
+/** Orb / bell badge text: "" for none, 1–9, then "9+". */
+export function kanbanBadgeText(count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (!n) return "";
+  return n > 9 ? "9+" : String(n);
+}
+
+/** 「啱啱」 under a minute, 「N 分鐘前」 under an hour, else HH:MM (local). */
+export function kanbanEventTime(at, now = Date.now()) {
+  const age = Math.max(0, Number(now) - Number(at));
+  if (age < 60_000) return "啱啱";
+  if (age < 3_600_000) return `${Math.floor(age / 60_000)} 分鐘前`;
+  const d = new Date(Number(at));
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** The status part of a row: 「新增 → todo」, 「todo → ready」, or "". */
+export function kanbanEventChange(entry) {
+  if (entry?.kind === "added") return `新增 → ${entry.to || "?"}`;
+  if (entry?.kind === "moved") return `${entry.from || "?"} → ${entry.to || "?"}`;
+  return "";
+}

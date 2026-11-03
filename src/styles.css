@@ -2179,6 +2179,103 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   transition: transform var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-out);
 }
 
+/* R-KB-09: notification bell. Orb badge sits on the disc and never grows the hit area. */
+.orb--kanban .kanban-count {
+  display: none;
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  z-index: 4;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: #0000f2;
+  color: #fff;
+  font: 600 10px/16px var(--font-label);
+  text-align: center;
+  pointer-events: none;
+}
+.orb--kanban.has-count .kanban-count { display: block; }
+.orb--kanban.has-count .unread-dot { display: none; }
+
+.icon-btn.kanban-bell {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+.icon-btn.kanban-bell[aria-expanded="true"] { background: var(--bot-10); }
+.kanban-bell-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  background: #0000f2;
+  color: #fff;
+  font: 600 9px/14px var(--font-label);
+  pointer-events: none;
+}
+.kanban-bell-count[hidden] { display: none; }
+
+.kanban-bell-list {
+  position: absolute;
+  top: 64px;
+  right: var(--sp-4);
+  z-index: 6;
+  width: min(320px, calc(100% - 32px));
+  max-height: min(420px, calc(100% - 80px));
+  overflow: auto;
+  margin: 0;
+  padding: 4px;
+  background: rgb(255 255 255 / .97);
+  border: 1px solid var(--nous-blue);
+  border-radius: var(--r-sm);
+  box-shadow: var(--glow-sm);
+}
+.kanban-bell-list[hidden] { display: none; }
+.kanban-bell-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: #14142b;
+  text-align: left;
+  font: 400 var(--fs-ui)/1.35 var(--font-body);
+  cursor: pointer;
+}
+.kanban-bell-row:hover,
+.kanban-bell-row:focus-visible { background: var(--bot-10); outline: none; }
+.kanban-bell-row.is-unread .kanban-bell-title { font-weight: 600; }
+.kanban-bell-row[disabled] { cursor: default; }
+.kanban-bell-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kanban-bell-time,
+.kanban-bell-change {
+  font: 400 var(--fs-meta)/1.4 var(--font-mono);
+  color: #616191;
+}
+.kanban-bell-change { grid-column: 1 / -1; }
+.kanban-bell-empty {
+  margin: 0;
+  padding: 12px 8px;
+  font: 400 var(--fs-ui)/1.4 var(--font-body);
+  color: #14142b;
+  text-align: center;
+}
+
 .kanban-card.is-dragging {
   transform: translateY(-2px);
   opacity: 0.92;
