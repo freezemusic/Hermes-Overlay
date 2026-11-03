@@ -479,6 +479,16 @@ config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細�
 
 ---
 
+## 10a. 文字大小同介面語言（R-LK）
+
+**R-LK-01** 文字大小（todo 31，Devon 2026-10-28）。設定入面「外觀」有一行「文字大小」，四粒 24px 見方嘅圖示掣（「A」由細到大），tooltip 同 `aria-label`：「細字」0.9×、「標準字」1×（預設）、「大字」1.15×、「特大字」1.3×。撳即刻試睇；撳「儲存」先經正常設定儲存（`save_settings`）寫入 config.json 嘅 `text_size`（`s`／`l`／`xl`）；揀返標準就唔寫呢個鍵（舊檔逐個位元組不變）；唔儲存就關設定，返返已儲存嗰個。冇呢個鍵、空值或者唔認得嘅值都當標準。舊前端唔送呢個欄（`None`）就保留檔案原本嘅值。範圍：面板入面嘅字（對話、計劃、看板、排程、設定、批准／澄清卡、session 選單、橫額），經 `<html data-text-size>` 同 `--text-scale`。光球、光球字、光球名、預覽膠囊同面板尺寸唔變，所以命中區同變形唔郁（R-OB-01、R-CT）。標準大小冇 `data-text-size`，所有 px 同今日一樣。
+- 驗收（單元）：`look.test.js`（四級、預設、只存非預設、`applyTextSize`、CSS 只喺 `html[data-text-size]` 生效、光球唔跟）；`config.rs` `text_size_and_language_keep_only_non_default_values`、`an_old_file_gains_no_look_keys_and_a_picked_look_round_trips`；`lib.rs` `settings_save_keeps_the_file_look_when_an_older_form_sends_none`。盒：四級截圖，揀咗唔儲存關設定會返原本，儲存之後 config.json 只多 `text_size`。
+- 狀態：❓ / ✅(盒，next-637a7a1)。
+
+**R-LK-02** 介面語言（todo 31，Devon 2026-10-28 想要英文、繁中、簡中、日文，之後可能更多）。設定「外觀」有一行「介面語言」，兩粒 24px 圖示掣：「繁」（繁體中文（香港），預設）同「EN」（English），tooltip 係語言全名。同 R-LK-01 一樣：即刻試睇，「儲存」先寫 `ui_language`（`en`；zh-HK 唔寫鍵），唔儲存就關會返原本。程式嘅原文仍然係 zh-HK；英文係 `src/look.js` 一張逐句對照表，只換成句完全一樣嘅介面字（掣、標籤、tooltip、placeholder、狀態），唔會改一句入面嘅一部分。對話、計劃、看板卡片同詳情、session 標題、Bot 名、橫額、`code`／`pre` 永遠唔譯。只有揀咗英文先開 MutationObserver，zh-HK 嘅行為同今日完全一樣。`<html lang>` 跟住語言，所以英文用返現成嘅 `:lang(en)` 字距。今次只做 zh-HK 同 English；簡中、日文之後加入同一張表。對照表冇嘅字（長說明、少見錯誤訊息）暫時保持 zh-HK。
+- 驗收（單元）：`look.test.js`（換字、data 唔譯、新加嘅字即時換、返 zh-HK 全部還原、app 改過嘅字唔會被蓋、zh-HK 唔開 observer、表入面冇中文值、掣有 tooltip）。盒：英文設定同對話面板截圖，切返繁中還原。
+- 狀態：❓ / ✅(盒，next-637a7a1)。
+
 ## 11. 系統、安全、部署（R-SY）
 
 **R-SY-01** API key 同 token 永遠唔寫入 log、唔印出嚟、唔放 `config.json`（只放系統 keyring）。
