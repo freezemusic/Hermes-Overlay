@@ -264,7 +264,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-AD-06** 金鑰橫額同連線膠囊。預設仍然 top 96px。呢個 home 都要避開每粒光球同佢 34px 光暈，再加 12px；冇面板開住、光暈擋到 home，就改放喺光暈外（頂邊看板光暈會將橫額同膠囊放到 y ≥ 132）。只係底邊面板開住、又冇碰到 home，唔好因為個面板搬走。撞到打開嘅面板就放喺面板外 12px、畫面中心嗰一側；放唔落先試其餘邊，再退到 header 行。唔好疊住光球或者佢 34px 光暈。金鑰橫額圓角 2px。膠囊仍然係唯一 999px 圓角。底係 `rgba(248,248,252,.92)`，字 `#14142b` 12px/1.4 Noto Sans HK，唔好用文字透明度。連結部分 `#0000f2` 加底線，其餘句子保持 `#14142b`。邊 1px `rgb(0 0 242 / .35)`。padding `6px 12px`。字同連結對住橫額底 `#f8f8fc` 至少 7:1。
 - 驗收：`keyBannerSlot` 預設 gap 12；光暈擋住中心側時改去另一邊。閒置橫額同膠囊唔疊住看板光暈。`#conn-banner[data-sticky="keys"]` 圓角 2px。`.conn-banner.ok, .conn-banner.info` 圓角 999px。`.conn-banner` 用上面嘅底、字、邊、padding。底線只喺包住「設定」嘅 `.banner-link`（`#0000f2`）。`.banner-action` 同 `.banner-copy` 都係 `text-decoration: none`。
 
-**R-AD-07** 設定。Kanban server 只得欄位標籤，唔好再加一個 legend。說明放喺個標籤下面，12px/1.5 `#616191`。「Bot 名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，上面 24px。設定開住時金鑰橫額保持收起，`keyPromptBots` 唔清空。未有金鑰嘅 profile 喺金鑰欄下面顯示 12px `#e5484d` 提示「未有 API 金鑰」。Bot 列同 token 欄嘅提示（「詳情（可留空）」、「專用位址（可留空）」、「可留空」）係 `placeholder`，`::placeholder` 色 `#616191`，唔好寫入 value。實驗 legend「實驗：由 dashboard 匯入名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，fieldset 上面 24px。
+**R-AD-07** （2026-11-03：Bot 列冇「專用位址」同「API 金鑰」格，冇 `.key-missing`，見 R-AR-06。）設定。Kanban server 只得欄位標籤，唔好再加一個 legend。說明放喺個標籤下面，12px/1.5 `#616191`。「Bot 名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，上面 24px。設定開住時金鑰橫額保持收起，`keyPromptBots` 唔清空。未有金鑰嘅 profile 喺金鑰欄下面顯示 12px `#e5484d` 提示「未有 API 金鑰」。Bot 列同 token 欄嘅提示（「詳情（可留空）」、「專用位址（可留空）」、「可留空」）係 `placeholder`，`::placeholder` 色 `#616191`，唔好寫入 value。實驗 legend「實驗：由 dashboard 匯入名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，fieldset 上面 24px。
 - 驗收：設定 HTML 冇 `<legend>Kanban server</legend>`。`.kanban-server-hint` 係 12px/1.5 `#616191`。`.settings-panel .roster-head` margin-top 24px，`.roster-head h3::before` 係 `content: none`。`rowFromBot` 喺有 profile 而 `has_key` 係 false 時加 `.key-missing`。`.settings-panel .bot-row input::placeholder` 同 `.settings-panel .field input::placeholder` 係 `#616191`。token 欄標籤冇「可留空」，input 嘅 placeholder 係「可留空」。`.settings-panel .experimental legend::before` 係 `content: none`。`.settings-panel legend` 係 12px Barlow Condensed `#0000f2`，`.settings-panel fieldset` margin-top 24px。
 
 ---
@@ -491,7 +491,7 @@ config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細�
 - 驗收：停掉假 gateway，面板出重試狀態；再開 gateway，喺退避窗口加 1 秒內看板同 Bot 自己出現；全程 0 次建立 session。CI／單元測試覆蓋假 gateway 由落到起。重試膠囊經 `placeKeyBanner` 放喺面板外 12px、畫面中心嗰一側，而且唔好疊住光球或者佢 34px 光暈。
 - 狀態：❓ / ❓。
 
-**R-SY-09** 連住 Hermes 時，大約每 60 秒（上下 20%）靜靜對一次 profile 名單，唔使重開程式。用 `claimProfiles(["roster"])`，同看板、排程、其他 Bot 嘅探測唔重疊。Gateway 落咗就跳過呢一輪，交給 R-SY-08。
+**R-SY-09** （2026-11-03：唔再讀 gateway `GET /health` 嘅 `profiles`；Kanban origin 留空係 config 預設 `http://127.0.0.1:9119`，唔再用 gateway host；冇金鑰提示。見 R-AR-06。下面提到嘅 gateway `/health`、「gateway host 埠 9119」同金鑰提示**已取代**。）連住 Hermes 時，大約每 60 秒（上下 20%）靜靜對一次 profile 名單，唔使重開程式。用 `claimProfiles(["roster"])`，同看板、排程、其他 Bot 嘅探測唔重疊。Gateway 落咗就跳過呢一輪，交給 R-SY-08。
 
 遠端機冇本機 `~/.hermes`、gateway `GET /health` 又冇 `profiles` 陣列、亦冇 dashboard session token 時，用 Kanban 同一個 origin（設咗嘅 Kanban 位址，否則 gateway host 埠 9119）打 `GET /api/profiles`。認證係鑰匙圈入面嘅 Kanban native access token，`Authorization: Bearer`（Hermes 0.22.5 gated dashboard middleware 收呢種 bearer；唔係 `X-Hermes-Session-Token`）。GET 回 401 就用同一條 refresh token `POST /auth/native/refresh` 一次，寫返新 access 同新 refresh，然後同一個 GET 再試一次。已拒嘅 refresh 唔好每個輪詢再 POST。呢下對 `/api/profiles` 只可以 GET。已經喺名單入面嘅 `enabled` 唔改。`description`（冇就用 `detail`）抄入名單嘅詳情：新列直接寫，已有列只喺詳情仍然空白時先填，已寫嘅詳情唔改。
 
@@ -564,16 +564,23 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 **R-AR-01** 所有 Hermes 網絡（REST、WebSocket、登入續期、重連）只可以經 `HermesClient`（`src-tauri/src/client/mod.rs`）。`lib.rs` 同 Tauri 指令只叫 client 嘅有型別方法，唔自己砌 URL、唔直接用 `reqwest` 打 Hermes、唔自己開 WebSocket。
 **R-AR-02** 每條路徑、RPC 方法名、伺服器請求名同事件名只寫喺 `client/endpoints.rs` 一個地方。
 **R-AR-03** 埠號只喺 config 預設（`config::DEFAULT_DASHBOARD_PORT` = 9119，同 config 預設地址）出現；client 同指令唔可以 hard-code 埠或主機。
-**R-AR-04** 仲要用舊 gateway（8642）嘅嘢只可以放喺 `gateway_legacy.rs`，每樣寫明點解仲要；對話同看板都唔可以用佢。2026-11-02 起拖卡已經離開 8642（R-KB-07），剩低只有 setup 搵 profile 嘅 `/health` 提示。
+**R-AR-04** Overlay 完全唔再打舊 gateway（8642）：對話、看板、拖卡、profile 名單、setup 都唔打，連 `GET /health` 都冇（2026-11-03）。`gateway_legacy.rs` 已刪。`hermes.rs` 剩低嘅舊 8642 HTTP 函數（`/v1/runs`、`/p/<profile>/api/…`、`/health`）全部係 `#[cfg(test)]`，唔會入 build 出嚟嘅程式，只係俾共用 parser 做測試。`client/` 以外嘅程式碼唔發任何網絡請求。舊句「仲要用舊 gateway 嘅嘢只可以放喺 `gateway_legacy.rs`……剩低只有 setup 搵 profile 嘅 `/health` 提示」**已取代**。
+**R-AR-05** 示範模式（假 Bot、唔連伺服器）只可以用啟動參數開：`hermes-overlay --demo`，或者環境變數 `HERMES_OVERLAY_DEMO=1`（`true`／`yes`／`on` 都得）。設定冇示範開關，config.json 冇任何值會開示範；舊規則「Gateway 位址留空（或者填 demo）就係示範」**已取代**。冇 config.json 嘅第一次啟動唔再跌入示範：照連 Dashboard，再打開設定出 setup 橫額。
+- 來源：Devon（2026-11-03，「示範模式冇得用 CLI 搞掂咩? 點解要放界面?」「岩」）。
+- 驗收：單元 `demo_mode_is_only_the_launch_flag`；盒：`--demo` 開到示範（橫額「示範模式（--demo）」，假 Bot），唔帶參數就係正常 9119。
+**R-AR-06** 設定冇「Gateway 位址」、每個 Bot 嘅「專用位址」同「API 金鑰」格。「Kanban server」（`kanban_base_url`）就係對話、看板同名單嘅 Dashboard 地址；留空就用 config 預設 `http://127.0.0.1:9119`（`config::default_dashboard_origin`），唔再由 gateway host 加 9119 推（舊句「預設用 gateway 嘅 host 加埠 9119」**已取代**）。Profile 名只由 9119 經 `HermesClient` 讀：用 Dashboard 登入嘅 `GET /api/profiles`（`native_profiles`），或者已存 dashboard session token（`session_token_profiles`，即係以前嘅 `hermes::list_dashboard_profiles`，已搬入 `client/kanban.rs`），加本機 `~/.hermes`。每個 bot 嘅 API 金鑰唔再讀亦唔再寫；移除 Bot 仍然刪佢舊嘅鑰匙圈項目。舊 config.json 嘅 `gateway_base_url` 同每個 bot 嘅 `base_url` 照讀、唔用、唔報錯，儲存時原樣寫返（冇改嘅儲存位元組一樣）；新檔唔會有呢兩個鍵。R-PF-01 嘅「未有 API 金鑰」提示、R-PF-02／SPEC §4.4–4.6 嘅「隱藏唔刪 key」、R-AD-07 嘅 `.key-missing` 同 R-SY-09 嘅金鑰提示都**已取代**（冇金鑰格）。
+- 來源：Devon（2026-11-03，「乜野格???」之後揀拎走兩格同 `/health`）。
+- 驗收：單元 `the_app_makes_no_gateway_calls`、`old_gateway_and_bot_address_keys_load_and_save_unchanged`、`origin_is_the_field_or_the_config_default_never_the_gateway`、setup.test.js「settings have no gateway address, per-bot address or API key, and no demo switch」；CI `no-gateway-calls`（windows-clickthrough 嘅 8642 假伺服器一個請求都冇收到）；盒：設定頁冇兩格，正常 9119 登入同對話照行，8642 stand-in 0 請求。
+- 注意：舊 config 冇 `kanban_base_url`、以前靠 gateway host 推 9119 嘅機（例如 Devon 部手提），升級之後要喺「Kanban server」填一次 9119 地址，否則會連 `127.0.0.1:9119`。
 - 來源：Devon（2026-11-02，「你地冇寫 class for network handling 嗎? 你地 hardcode 的嗎?」「點解可以冇 system architect」）。
-- 驗收：單元測試 `the_client_module_has_no_gateway_paths`（client 代碼冇 `/v1/runs`、`8642`、`:9119`）；`grep` lib.rs 冇 `/api/`、`/v1/` 字面路徑用嚟打 Hermes 對話；review 時新增 Hermes 呼叫要經 client。
+- 驗收：單元測試 `the_client_module_has_no_gateway_paths`（client 代碼冇 `/v1/runs`、`8642`、`:9119`）同 `the_app_makes_no_gateway_calls`（`client/` 以外冇 `.send()`、`8642`、`/v1/`、`"/health"`，冇 `gateway_legacy.rs`，舊鍵只喺儲存原樣帶過）；review 時新增 Hermes 呼叫要經 client。
 - 看板讀取、拖卡、登入（PKCE、密碼、refresh）同用 Kanban 登入讀 profile 清單已經搬入 client（`client/kanban.rs`，todo 37，R-KB-07）。舊句「已知未搬：看板讀取、登入、Dashboard profile 清單仍經 `kanban_server`／`hermes`」**已取代**。
-- 仲未搬：設定「Dashboard session token」嗰條 profile 清單（`hermes::list_dashboard_profiles`，`dashboard_base_url`）仍喺 `hermes.rs`；`gateway_legacy.rs` 只剩 gateway `/health` 嘅 profile 提示（R-AR-04）。
-- 狀態：✅(對話、看板、登入)；Dashboard token 清單待搬。
+- 2026-11-03：Dashboard session token 嗰條 profile 清單已搬入 client（`HermesClient::session_token_profiles`）；gateway `/health` 提示已刪，`gateway_legacy.rs` 已刪（R-AR-04、R-AR-06）。舊句「仲未搬：……`hermes::list_dashboard_profiles`……仍喺 `hermes.rs`」**已取代**。
+- 狀態：✅(盒)；Win 未驗。
 
 ## 12b. 連線（R-CL，只行 9119）
 
-**R-CL-01** 所有對話只經 Hermes Dashboard（`hermes serve`，預設埠 9119）：送出、串流、停止、批准、澄清、session 清單同歷史、Bot Chat 監察、新對話、子光球、斜線選單、模型、排程清單。用 REST（`/api/sessions…`、`/api/cron/jobs`、`/api/health`）同 `/api/ws` JSON-RPC。所有網絡經一個 `HermesClient`（`src-tauri/src/client/`）：一個共用 HTTP client、一條 WebSocket、地址、登入續期、斷線重連、按 profile 路由。路徑只寫喺 `client/endpoints.rs`；埠號只喺 config 預設（`config::DEFAULT_DASHBOARD_PORT`）。對話唔再要每個 bot 嘅 API 金鑰，只要 Dashboard 登入；冇金鑰唔出橫額。冇 8642 後備。舊 gateway 剩低嘅只放 `gateway_legacy.rs`（見 RESULTS）。
+**R-CL-01** 所有對話只經 Hermes Dashboard（`hermes serve`，預設埠 9119）：送出、串流、停止、批准、澄清、session 清單同歷史、Bot Chat 監察、新對話、子光球、斜線選單、模型、排程清單。用 REST（`/api/sessions…`、`/api/cron/jobs`、`/api/health`）同 `/api/ws` JSON-RPC。所有網絡經一個 `HermesClient`（`src-tauri/src/client/`）：一個共用 HTTP client、一條 WebSocket、地址、登入續期、斷線重連、按 profile 路由。路徑只寫喺 `client/endpoints.rs`；埠號只喺 config 預設（`config::DEFAULT_DASHBOARD_PORT`）。對話唔再要每個 bot 嘅 API 金鑰，只要 Dashboard 登入；冇金鑰唔出橫額。冇 8642 後備，亦冇任何 8642 呼叫（R-AR-04）。
 - 來源：Devon（2026-11-02，「不對, 只行9119」「你地冇寫 class for network handling 嗎」）。
 - 驗收（盒）：單元測試 `the_client_module_has_no_gateway_paths`；盒上真 0.22.5 serve（19119，有登入閘）、冇 8642 金鑰：送出、串流、停止、批准、澄清、手機同 overlay 同一對話都行。未登入時狀態行同氣泡寫「要登入 Hermes Dashboard（設定 → 登入）」。
 - 狀態：✅(盒)；Win 未驗。

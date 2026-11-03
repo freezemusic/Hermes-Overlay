@@ -41,22 +41,22 @@
 
 ## 3. 設定光球與 Bot 面板
 
-1. 必須有一粒獨立的設定光球。它開啟的面板才放 Hermes gateway、dashboard、名單、API 金鑰、修飾鍵、置頂與結束程式。
+1. 必須有一粒獨立的設定光球。它開啟的面板才放 Kanban server（Hermes Dashboard 地址）與登入、dashboard 匯入、名單、修飾鍵、置頂與結束程式。設定沒有 Gateway 位址、每個 Bot 的專用位址或 API 金鑰欄，也沒有示範開關（R-AR-05、R-AR-06）。示範模式只用啟動參數 `--demo`（或 `HERMES_OVERLAY_DEMO=1`）。
 2. Bot 面板只編輯該 Bot 的顯示名稱、詳情與 `SOUL.md`。Bot 面板不得出現 gateway 位址或 API 金鑰欄。
 3. Bot 面板的主畫面必須是標題列、session 選擇器、可捲動的訊息列表，以及釘在底部、永遠可見的輸入列。訊息列表必須是 `flex: 1` 且有 `min-height`，滾輪必須能捲動它，高度不得變成 0。顯示名稱、詳情與 `SOUL.md` 放在另一個分頁，不得佔滿 420×560 而把對話或輸入列推出畫面。送出訊息、重新打開面板，以及串流進行中，列表必須留在最新訊息。使用者向上捲離底部後必須停在該處，直到再捲回接近底部才恢復跟隨。另一塊面板打開，或者幾秒後嘅重新排版，不得把仍跟隨底部嘅列表跳去最舊訊息。只有使用者自己嘅捲動先可以離開底部。
 4. `SOUL.md` 路徑：環境變數 `HERMES_HOME` 有非空值就用它，否則用 `$HOME/.hermes`。profile `default` 寫在該目錄根上的 `SOUL.md`；其他 profile 寫在 `profiles/<profile>/SOUL.md`。
 5. profile 名稱只允許 1–64 字元的 ASCII 英數與 `.`、`_`、`-`。不得含 `/`、`\`、`.` 或 `..`。
-6. API 金鑰只放系統鑰匙圈，不得寫入 `config.json`。讀取必須離開 GTK 主線程，大約 3 秒未回應就當鎖定：顯示鑰匙圈錯誤，光球繼續畫，程式仍然可以結束。沒有金鑰唔係錯誤。
+6. 登入資料只放系統鑰匙圈，不得寫入 `config.json`。讀取必須離開 GTK 主線程，大約 3 秒未回應就當鎖定：顯示鑰匙圈錯誤，光球繼續畫，程式仍然可以結束。每個 Bot 的 API 金鑰已不再讀寫（2026-11-03）。舊 `config.json` 的 `gateway_base_url` 與每個 bot 的 `base_url` 照讀、不使用、儲存時原樣寫回。
 
 ## 4. 發現 profile 與隱藏
 
-1. 連上 Hermes（`mode == hermes`）時必須自動發現 profile，並寫入設定。發現來源只有：本機 Hermes home（根目錄有 `config.yaml` 或 `SOUL.md` 則為 `default`；`profiles/` 下合法子目錄為其他 profile）、已儲存 dashboard session token 時的 `GET /api/profiles`（逾時 4 秒，失敗則略過）、以及 gateway `/health` JSON 裡真正帶有 `profiles` 陣列的情況。
+1. 連上 Hermes（`mode == hermes`）時必須自動發現 profile，並寫入設定。發現來源只有：本機 Hermes home（根目錄有 `config.yaml` 或 `SOUL.md` 則為 `default`；`profiles/` 下合法子目錄為其他 profile）、已儲存 dashboard session token 時的 `GET /api/profiles`（逾時 4 秒，失敗則略過）、以及用 Dashboard 登入的 `GET /api/profiles`。全部經 `HermesClient`，只打 9119。不再讀 gateway `/health`（2026-11-03，R-AR-04）。
 2. 不得靠猜測 `GET /p/<id>/health` 來枚舉 profile。本機已發現的 profile 不得因為 gateway health 失敗而被刪掉。
-3. 新發現的 profile 預設顯示為光球。不得自動產生 API 金鑰。只有這次新加入且沒有金鑰的 profile 才提示「未有 API 金鑰，請喺設定填寫。金鑰唔會自動產生。」
-4. 設定名單必須列出已停用的 profile，並有「顯示」勾選。取消顯示後光球消失，列與金鑰都保留。
-5. 右鍵隱藏（見第 1.4 條）等同取消顯示，而且不得從儲存名單刪掉該列，否則鑰匙圈金鑰會被刪掉。
-6. 「移除」才刪除該 profile 的金鑰。之後再次發現會重新出現，但必須重新填金鑰。
-7. 再次發現不得覆蓋使用者已改的顯示名稱、詳情、專用位址或 session。顯示名稱只在空白或仍等於 profile id 時更新；詳情只在空白時更新。Hermes 若提供可解析的顏色，該顏色必須覆蓋既有顏色。
+3. 新發現的 profile 預設顯示為光球。不再有 API 金鑰提示（R-AR-06）。
+4. 設定名單必須列出已停用的 profile，並有「顯示」勾選。取消顯示後光球消失，列保留。
+5. 右鍵隱藏（見第 1.4 條）等同取消顯示，而且不得從儲存名單刪掉該列。
+6. 「移除」刪除該列（以及該 profile 舊有的鑰匙圈金鑰項目，如有）。之後再次發現會重新出現。
+7. 再次發現不得覆蓋使用者已改的顯示名稱、詳情或 session。顯示名稱只在空白或仍等於 profile id 時更新；詳情只在空白時更新。Hermes 若提供可解析的顏色，該顏色必須覆蓋既有顏色。
 
 ## 5. 對話
 
@@ -149,7 +149,7 @@
 
 ## 13. 連線（只行 9119）同架構
 
-0. 架構（R-AR）：Hermes 網絡只經 `HermesClient`（對話、看板讀取同拖卡、登入）；路徑只喺 `client/endpoints.rs`；埠只喺 config 預設；舊 gateway 剩低嘅只喺 `gateway_legacy.rs`（setup 嘅 `/health` profile 提示）。
+0. 架構（R-AR）：Hermes 網絡只經 `HermesClient`（對話、看板讀取同拖卡、登入、profile 名單）；路徑只喺 `client/endpoints.rs`；埠只喺 config 預設；完全冇 8642 呼叫，`gateway_legacy.rs` 已刪（2026-11-03，R-AR-04）。Dashboard 地址係設定「Kanban server」，留空就係 config 預設 `http://127.0.0.1:9119`，唔再由 gateway host 推（R-AR-06）。示範模式只用 `--demo`（R-AR-05）。
 
 1. 對話全部經 Hermes Dashboard（預設 9119）嘅 REST 同 `/api/ws`，由一個 `HermesClient` 負責（R-CL-01）。設定只要 Dashboard 地址同 Dashboard 登入；每個 bot 嘅 API 金鑰唔再需要。
 2. 送出用 `queued: true`，唔打斷手機嗰輪；排隊時顯示「手機嗰邊行緊，排緊隊」（R-CL-02）。

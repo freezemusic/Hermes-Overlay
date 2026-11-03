@@ -4,7 +4,9 @@
 
 技術棧：**Tauri 2 + Vite + Vanilla HTML/CSS/JS**，HTTP 喺 Rust（reqwest）。介面文案用 **繁體中文（香港）zh-HK**。
 
-未填 gateway 位址時，畫面用內置 mock Bot，可以離線睇版面。填咗位址就改由名單上嘅 profile 排邊框頭像；連唔到會顯示錯誤，唔會靜靜雞退返去 mock。
+所有對話、看板同 Bot 名單都經 Hermes Dashboard（`hermes serve`，預設埠 9119）。Overlay 唔再用舊 gateway API server（8642）。想離線睇版面（假 Bot、唔連伺服器），用啟動參數開示範模式：`hermes-overlay --demo`（或者 `HERMES_OVERLAY_DEMO=1`）。設定入面冇示範開關。
+
+> 下面講 8642 API server、API 金鑰、`/p/<profile>/`、「專用位址」嘅段落係舊做法，留作參考；而家嘅 Overlay 唔用佢哋（REQUIREMENTS R-AR-04..06）。
 
 需求以根目錄 [SPEC.md](SPEC.md) 為準。改程式之前先讀，並逐條核對受影響嘅條文。見 [AGENTS.md](AGENTS.md)。
 
@@ -51,11 +53,11 @@ sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1
 
 **Linux:** `chmod +x` the AppImage, then install `libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `libayatana-appindicator3-1` (the `.deb` depends on these). The `.deb` also recommends `gnome-keyring` (API keys need a Secret Service; without it, saving a key reports 鑰匙圈不可用) and `xdg-utils` (opens links). KWallet can provide Secret Service too. On pure Wayland the overlay stays clickable because the global cursor and modifier cannot be read; click-through needs X11 or XWayland with `DISPLAY` set. The desktop file is named `Hermes Overlay.desktop` from `productName`; Tauri has no separate filename setting. `Exec` and `Icon` are `hermes-overlay`.
 
-### 設定 gateway
+### 設定 Hermes Dashboard
 
-打開設定（系統匣「設定」或 **Ctrl+Shift+Alt+H**）。Gateway 位址填 `http://127.0.0.1:8642`，每個 Bot 填 profile 同 API 金鑰，然後儲存。
+打開設定（系統匣「設定」或 **Ctrl+Shift+Alt+H**）。「Kanban server」填 `hermes serve` 嘅位址（留空就係 `http://127.0.0.1:9119`），填帳號密碼（或者留空用系統瀏覽器）登入，然後儲存。Bot 名單會自動由 Dashboard 讀。冇 API 金鑰要填。
 
-Open Settings from the tray or **Ctrl+Shift+Alt+H**. Set the gateway URL to `http://127.0.0.1:8642`, then add each bot's profile and API key.
+Open Settings from the tray or **Ctrl+Shift+Alt+H**. Put the `hermes serve` address in "Kanban server" (blank means `http://127.0.0.1:9119`), sign in, and save. Profiles come from the dashboard; there are no per-bot API keys. Demo mode is the `--demo` launch flag only.
 
 ### overlay-slash（可選）
 
@@ -167,6 +169,13 @@ npm run tauri dev
 
 `npm run tauri dev` 會合併 `src-tauri/tauri.dev.conf.json`，identifier 係 `com.freezemusic.hermes-overlay.dev`。設定目錄同鑰匙圈 service 都跟呢個 id，唔會覆蓋已安裝版（`com.freezemusic.hermes-overlay`）嘅設定同金鑰。`npm run tauri build` 唔會用呢個檔。
 
+桌面版示範模式（假 Bot、唔連伺服器）：
+
+```bash
+hermes-overlay --demo
+# 或者唔改指令：HERMES_OVERLAY_DEMO=1 hermes-overlay
+```
+
 只起前端（無透明窗、無鑰匙圈，強制示範模式）：
 
 ```bash
@@ -191,12 +200,12 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ## 點用
 
 1. 開中間面板嘅「設定」。
-2. Gateway 位址填 `http://127.0.0.1:8642`（留空 = 示範模式）。
-3. 每個 Bot：profile 名稱、顯示名稱、顏色、API 金鑰。金鑰留空代表保留鑰匙圈入面已有嗰條。
+2. 「Kanban server」填 Dashboard 位址（留空 = `http://127.0.0.1:9119`），然後登入。示範模式唔喺設定，用 `--demo` 啟動。
+3. 每個 Bot：profile 名稱、顯示名稱、顏色、詳情（名單通常會自動由 Dashboard 讀）。
 4. 儲存。邊框會按名單數量排頭像。
 5. 點一個頭像：主光球開該 profile 同 Hermes Desktop 一樣的 Bot Chat（標題剛好係 `Bot Chat`，通常 hidden；標題查已經係最新 child，客戶端唔沿 `parent_session_id`；`source` 同訊息數都不計，空的都有效）。人手 explicit 先可以蓋過。非 explicit 的已存 id 讓給這條，而且不寫回 config。啟動同打開都唔建立 session，亦唔改跟最新 session；未有 Bot Chat 就保持未有對話。選擇器仍可手動改揀，`Bot Chat` 釘在最頂，手動先寫 explicit。收合再打開：有 explicit 就留喺嗰條，否則回到 Desktop 的 Bot Chat。
 6. 傳送會 `POST /api/sessions/{id}/chat/stream`，即時顯示文字、工具開始／完成／失敗，同埋忙碌或閒置。助手同歷史訊息會渲染 Markdown（標題、粗斜體、清單、程式碼、引用、表格、分隔線）；串流期間約 50ms 更新一次，未閉合嘅程式碼圍欄都會保持成塊程式碼。連結用系統瀏覽器打開，唔會喺 overlay 裡面跳頁。你自己打嘅字維持純文字。每次打開 `/` 選單都會再攞 overlay-slash 目錄（`GET /v1/overlay/commands`，有 ETag，未變就 304）。分類按首次出現次序合併。↑↓ 移動，Tab 補全；有參數提示嘅指令會喺游標後面顯示淡色提示。`args_hint` 空嘅指令按 Enter 會補全並送出。回合進行中仍然可以打 `/stop`。`/new`、`/title`、`/branch`、`/model`、`/stop` 由 overlay 自己處理；其他指令原文送出，由 plugin 改寫。串流回應嘅 `X-Hermes-Command` 會變成氣泡上嘅小標籤（例如 `plan`、`skill:arxiv`）。歷史入面第一行 `<!-- overlay-slash: {"display":"/plan add dark mode","command":"plan"} -->` 會顯示 `display` 同 chip；`command` 係指令名或 skill slug（疊加係 `arxiv+pdf`），唔帶 `skill:`。如果 gateway 連唔到或者逾時，看板、排程、Bot 名單同對話會以 5 秒、10 秒、20 秒退避到 60 秒（上下 20%）自動再試；網路恢復、休眠醒來、或者打開相關面板會即刻再試。重試期間顯示「連唔到 Hermes，自動重試中…」同下次時間，恢復之後載入一次並清走錯誤。重試唔會建立 session。
-7. 「測試已儲存連線」打 `GET /health`，再對每個已存金鑰打 `GET /api/sessions?limit=1`。
+7. 「測試已儲存連線」打 Dashboard 嘅 `GET /api/health`，再對每個 Bot 讀一次 session 清單。
 
 ## 外觀
 
