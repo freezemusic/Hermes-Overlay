@@ -363,6 +363,15 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（單元）：`kanban-bell.test.js`「R-KB-10 …」三項（欄名、今次未讀、全部已讀；DOM 標題行同已讀／未讀行；CSS 32px、12px、色條、字重、360px、12px 底、16px 漸隱、6px）；`look.test.js`「R-KB-10 bell strings …」。盒：清單有未讀同已讀混合、捲動時底部漸隱、全部已讀之後全部變 400，截圖（繁、EN）。
 - 狀態：❓ / ✅(盒，ad-72cba45)。
 
+**R-KB-11** 卡片上嘅細格（美術監督 72cba45 審查第 4 點，2026-11-03）。嗰格係 Hermes 卡嘅優先度（`priority`，Hermes 0.22.5 `kanban_db` 係 `INTEGER DEFAULT 0`，數字愈大 dispatcher 愈早攞；Hermes dashboard 自己都係大過 0 先顯示 `P{n}`）。0 或者空就唔顯示。有數就顯示 12px 線條圖示（旗）加數字，tooltip／`aria-label`「優先度 N：數字愈大，Hermes 愈早派」（EN：Priority N. Higher numbers are picked up first.）。舊式文字優先度（low／high）照顯示文字。詳情頁嘅「負責人 · 狀態 · 優先度」行都唔再顯示 0。卡片唔自動翻譯（`NO_TRANSLATE`），所以 tooltip 喺 main.js 按而家語言翻譯，轉語言時重畫一次板（拖緊或者開住詳情就唔重畫）。唔係留言數：`comment_count` 冇顯示喺卡上。
+- 根因：Hermes 回傳 `"priority": 0`（數字），Rust `json_string` 將數字變成字串 `"0"`，`kanbanCard` 見到非空字串就出格，所以每張卡都有個「0」。呢格原本係為咗 `low`／`high` 呢類文字優先度設計（測試同示範資料都係文字）。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-11 …」（0／空唔出、2 有圖示、數字、tooltip、EN tooltip、詳情唔出 0）。盒：有優先度同冇優先度嘅卡截圖。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
+**R-KB-13** 卡詳情（美術監督 72cba45 審查第 7 點，次要）。標題左邊有同板上張卡一樣嘅 2px 色條（`--owner`，負責人顏色；冇對應 bot 就 `#616191`）。「返回」掣同標題之間 12px（掣 `display: block`，唔受行高影響）。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-13 …」。盒：量度「返回」底同標題頂相距 12px，截圖。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
 ---
 
 ## 7. Session（R-SS）

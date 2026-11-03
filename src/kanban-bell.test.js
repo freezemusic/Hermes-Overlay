@@ -407,3 +407,57 @@ test("R-KB-10 bell list CSS: head 32px, 12px Barlow #0000f2, bars and weights, 3
   assert.match(readAll, /clearKanbanUnread\("read-all"\)/);
   assert.doesNotMatch(readAll, /closeKanbanBell|bellOpen = false/);
 });
+
+test("R-KB-11 the card chip is the Hermes priority: hidden at 0 / blank, else a 12px icon, the number and a tooltip", async () => {
+  const { kanbanPriority } = await import("./kanban.js");
+  assert.equal(kanbanPriority(0), null);
+  assert.equal(kanbanPriority("0"), null);
+  assert.equal(kanbanPriority(""), null);
+  assert.equal(kanbanPriority(undefined), null);
+  assert.deepEqual(kanbanPriority("3"), { text: "3", tip: "優先度 3：數字愈大，Hermes 愈早派" });
+  assert.equal(kanbanPriority("high").text, "high");
+  const { translate } = await import("./look.js");
+  assert.equal(translate(kanbanPriority("3").tip, "en"), "Priority 3. Higher numbers are picked up first.");
+  const dom = new JSDOM("<div></div>");
+  const doc = dom.window.document;
+  const chipOf = lift("kanbanPriorityChip", { document: doc, translate, look: { lang: "zh-HK" } });
+  const card = lift("kanbanCard", {
+    document: doc,
+    state: { bots: [] },
+    ownerColor: () => "#0000f2",
+    kanbanPriority,
+    kanbanPriorityChip: chipOf,
+    startKanbanPointer: () => {},
+  });
+  const without = card({ id: "a", title: "A", assignee: "default", priority: "0" });
+  assert.equal(without.querySelector(".kanban-priority"), null, "0 is hidden");
+  assert.equal(without.querySelector(".kanban-meta").textContent, "default");
+  const withChip = card({ id: "b", title: "B", assignee: "default", priority: "2" });
+  const chip = withChip.querySelector(".kanban-priority");
+  assert.ok(chip);
+  assert.equal(chip.title, "優先度 2：數字愈大，Hermes 愈早派");
+  assert.equal(chip.getAttribute("aria-label"), chip.title);
+  const icon = chip.querySelector("svg.kanban-priority-icon");
+  assert.equal(icon.getAttribute("width"), "12");
+  assert.equal(icon.getAttribute("height"), "12");
+  assert.equal(chip.querySelector(".kanban-priority-value").textContent, "2");
+  const en = lift("kanbanPriorityChip", { document: doc, translate, look: { lang: "en" } })(kanbanPriority("2"));
+  assert.equal(en.title, "Priority 2. Higher numbers are picked up first.");
+  assert.match(css, /\.kanban-priority-icon \{[^}]*width:\s*12px;[^}]*height:\s*12px/s);
+  // Detail meta drops priority 0 too.
+  const detail = main.slice(main.indexOf("function paintKanbanDetail("), main.indexOf("async function signInKanban("));
+  assert.match(detail, /kanbanPriority\(task\.priority\)\?\.text/);
+});
+
+test("R-KB-13 card detail: the card's 2px bar left of the title, 12px under 返回", () => {
+  const detail = main.slice(main.indexOf("function paintKanbanDetail("), main.indexOf("async function signInKanban("));
+  assert.match(detail, /back\.className = "icon-btn kanban-detail-back"/);
+  assert.match(detail, /title\.className = "kanban-detail-title"/);
+  assert.match(detail, /title\.style\.setProperty\("--owner", ownerColor\(task\.assignee, state\.bots\)\)/);
+  const title = css.slice(css.indexOf(".kanban-detail .kanban-detail-title {"), css.indexOf("}", css.indexOf(".kanban-detail .kanban-detail-title {")));
+  assert.match(title, /margin-top:\s*12px/);
+  assert.match(title, /border-left:\s*2px solid var\(--owner, var\(--bot\)\)/);
+  // The card on the board uses the same bar.
+  assert.match(css, /\.kanban-card \{[^}]*border-left:\s*2px solid var\(--owner, var\(--bot\)\)/s);
+  assert.match(css, /\.kanban-detail \.kanban-detail-back \{ display: block;/);
+});

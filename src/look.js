@@ -212,6 +212,7 @@ export const EN = Object.freeze({
 export const EN_PATTERNS = Object.freeze([
   Object.freeze([/^(\d+) 分鐘前$/, (n) => `${n} min ago`]),
   Object.freeze([/^看板通知（(\d+\+?) 個未讀）$/, (n) => `Kanban notifications (${n} unread)`]),
+  Object.freeze([/^優先度 (-?\d+(?:\.\d+)?)：數字愈大，Hermes 愈早派$/, (n) => `Priority ${n}. Higher numbers are picked up first.`]),
 ]);
 
 const DICTS = Object.freeze({ en: EN });

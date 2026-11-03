@@ -1408,12 +1408,23 @@ html, body {
 .bubble.bot code,
 .cmd-chip,
 .kanban-priority {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font: 400 var(--fs-meta)/1.4 var(--font-mono);
   padding: 0 4px;
   background: var(--bot-5);
   border: 1px solid var(--bot-20);
   border-radius: var(--r-xs);
   color: #14142b;
+  cursor: help;
+}
+/* R-KB-11: 12px line icon in front of the number. */
+.kanban-priority-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: #0000f2;
 }
 
 .bubble.bot pre {
@@ -2506,6 +2517,14 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 .kanban-detail h2 {
   margin: 8px 0;
   font: 500 var(--fs-hero)/1.15 var(--font-display);
+}
+/* R-KB-13: 12px under 返回, and the card's 2px bar on the left. The button is a
+   block so the gap is not padded by the line box. */
+.kanban-detail .kanban-detail-back { display: block; margin-top: 0; }
+.kanban-detail .kanban-detail-title {
+  margin-top: 12px;
+  padding-left: 10px;
+  border-left: 2px solid var(--owner, var(--bot));
 }
 
 .kanban-detail p,

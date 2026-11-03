@@ -137,6 +137,7 @@ import {
   kanbanEvents,
   kanbanEventTime,
   kanbanEventUnread,
+  kanbanPriority,
   kanbanSeen,
   KANBAN_BELL_EMPTY,
   KANBAN_BELL_READ_ALL,
@@ -167,7 +168,7 @@ import {
 } from "./cron.js";
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 import { DEMO_BANNER, SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
-import { applyTextSize, createTranslator, storedLanguage, storedTextSize } from "./look.js";
+import { applyTextSize, createTranslator, storedLanguage, storedTextSize, translate } from "./look.js";
 import {
   RECONNECT_STATUS,
   createProbeGate,
@@ -8531,8 +8532,13 @@ const look = { size: "m", lang: "zh-HK" };
 
 function showLook(size, lang) {
   look.size = applyTextSize(document, size);
+  const before = look.lang;
   look.lang = translator.setLanguage(lang);
   paintLookControls();
+  // R-KB-11: card chips carry their own translated tooltip; repaint the board once.
+  if (before !== look.lang && state.kanban.board && !state.kanban.dragging && !state.kanban.detailOpen) {
+    paintKanban(state.kanban.board);
+  }
 }
 
 function applySavedLook(settings) {
@@ -13090,16 +13096,28 @@ function kanbanCard(task) {
     who.textContent = task.assignee;
     meta.appendChild(who);
   }
-  if (task.priority) {
-    const chip = document.createElement("span");
-    chip.className = "kanban-priority";
-    chip.textContent = task.priority;
-    chip.lang = "en";
-    meta.appendChild(chip);
-  }
+  const priority = kanbanPriority(task.priority);
+  if (priority) meta.appendChild(kanbanPriorityChip(priority));
   card.append(title, meta);
   card.addEventListener("pointerdown", (event) => startKanbanPointer(event, card, task.id));
   return card;
+}
+
+/** R-KB-11: 12px line icon + number, with a tooltip. Cards are Hermes data
+ *  (never auto-translated), so the tooltip is translated here. */
+function kanbanPriorityChip(priority) {
+  const chip = document.createElement("span");
+  chip.className = "kanban-priority";
+  chip.lang = "en";
+  const tip = translate(priority.tip, look.lang);
+  chip.title = tip;
+  chip.setAttribute("aria-label", tip);
+  chip.innerHTML = '<svg class="kanban-priority-icon" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M3 10.5V1.5M3 2h5.5L7 4l1.5 2H3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+  const value = document.createElement("span");
+  value.className = "kanban-priority-value";
+  value.textContent = priority.text;
+  chip.append(value);
+  return chip;
 }
 
 function setKanbanError(text) {
@@ -13400,7 +13418,7 @@ function paintKanbanDetail(detail) {
   const task = detail?.task || {};
   const back = document.createElement("button");
   back.type = "button";
-  back.className = "icon-btn";
+  back.className = "icon-btn kanban-detail-back";
   back.textContent = "返回";
   back.addEventListener("click", () => {
     state.kanban.detailOpen = false;
@@ -13410,9 +13428,13 @@ function paintKanbanDetail(detail) {
     if (state.kanban.board) paintKanban(state.kanban.board);
   });
   const title = document.createElement("h2");
+  // R-KB-13: the same 2px bar the card has on the board, left of the title.
+  title.className = "kanban-detail-title";
+  title.style.setProperty("--owner", ownerColor(task.assignee, state.bots));
   title.textContent = task.title || task.id || "";
   const meta = document.createElement("p");
-  const bits = [task.assignee, task.status, task.priority].filter(Boolean);
+  // R-KB-11: priority 0 is the default and is not shown.
+  const bits = [task.assignee, task.status, kanbanPriority(task.priority)?.text].filter(Boolean);
   meta.textContent = bits.join(" · ");
   root.append(back, title, meta);
   if (task.latest_summary) {

@@ -308,3 +308,21 @@ export function kanbanEventUnread(entry, fresh) {
 export function markKanbanEventsListed(list) {
   return (list || []).map((entry) => (entry.read && entry.listed ? entry : { ...entry, read: true, listed: true }));
 }
+
+/**
+ * R-KB-11: the small chip on a card is the Hermes task priority (kanban_db
+ * `priority INTEGER DEFAULT 0`; higher is claimed first by the dispatcher).
+ * 0 / blank is the default and shows nothing, the same as the Hermes dashboard
+ * (which only shows `P{n}` when n > 0). A number shows as itself; an old text
+ * priority (low / high) shows as its text.
+ */
+export function kanbanPriority(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  if (/^-?\d+(\.\d+)?$/.test(text)) {
+    const n = Number(text);
+    if (!n) return null;
+    return { text: String(n), tip: `優先度 ${n}：數字愈大，Hermes 愈早派` };
+  }
+  return { text, tip: `優先度：${text}` };
+}
