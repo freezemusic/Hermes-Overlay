@@ -1,7 +1,7 @@
 /**
  * Hermes Overlay — perimeter bots + center chat.
  * UI labels: Traditional Chinese (zh-HK).
- * Gateway keys stay in the Rust process; this file only sees has_key.
+ * Logins stay in the Rust process. Demo mode is the `--demo` launch flag only.
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
@@ -153,7 +153,7 @@ import {
   pruneRunMarks,
 } from "./cron.js";
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
-import { SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
+import { DEMO_BANNER, SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
 import {
   RECONNECT_STATUS,
   createProbeGate,
@@ -5682,7 +5682,6 @@ function prefetchBotChats() {
     return;
   }
   for (const bot of state.bots) {
-    if (bot.hasKey === false) continue;
     beginBotHistory(bot.id)?.catch((err) => {
       if (gatewayDown(String(err))) noteGatewayDown();
     });
@@ -5722,7 +5721,6 @@ function refreshBotChats() {
     return;
   }
   for (const bot of state.bots) {
-    if (bot.hasKey === false) continue;
     const shell = shellFor(bot.id);
     const thread = threadFor(bot.id);
     if (visualQuiet(shell)) {
@@ -6177,7 +6175,6 @@ async function recoverGateway() {
   });
   if (cron === false || cron === "busy") return cron;
   for (const bot of state.bots) {
-    if (bot.hasKey === false) continue;
     const step = await claimProfiles([bot.id], () => refreshBotQuiet(bot.id));
     if (step === false || step === "busy") return step;
   }
@@ -6213,7 +6210,7 @@ function applyRoster(synced) {
   // a profile joins or leaves, so open panels and the other orbs stay put.
   state.bots = next.map((bot) => {
     const old = state.bots.find((item) => item.id === bot.id);
-    return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, hasKey: bot.hasKey, composeMode: bot.composeMode } : bot;
+    return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, composeMode: bot.composeMode } : bot;
   });
   if (prev !== ids) debugLog("roster-ids", `ids=${ids.split("\n").join(",")}`);
   renderBots();
@@ -7917,7 +7914,7 @@ function composeUserMessage(wire) {
 function demoReply(shown) {
   if (shown.command === "plan") return planDemoMarkdown(shown.text);
   if (shown.command === "btw") return `（示範旁問）${shown.text}`;
-  return `（示範回覆）收到：「${shown.text}」。未設定 Hermes gateway。`;
+  return `（示範回覆）收到：「${shown.text}」。示範模式冇連 Hermes。`;
 }
 
 async function sendActive(id = state.activeId) {
@@ -8064,10 +8061,9 @@ function botsFromSettings(settings) {
     name: bot.display_name || bot.profile,
     short: shortLabel(bot.display_name || bot.profile),
     color: bot.color || PALETTE[0],
-    status: bot.has_key || !CHAT_NEEDS_PROFILE_KEYS ? "閒置" : "未有金鑰",
+    status: "閒置",
     detail: bot.detail || `profile ${bot.profile}`,
     float: null,
-    hasKey: bot.has_key,
     composeMode: normalizeComposeMode(bot.compose_mode),
   }));
 }
@@ -8184,7 +8180,7 @@ function useHermes(settings) {
   if (settings.keyring_error) {
     setBanner(`鑰匙圈：${settings.keyring_error}`, "error", "keyring");
   } else if (state.bots.length === 0) {
-    setBanner("Gateway 已設定，但未有 Bot。打開設定加入 profile 同金鑰。", "info");
+    setBanner("未有 Bot。打開設定登入 Hermes Dashboard，或者加入 profile。", "info");
   } else {
     setBanner("已連接設定。點頭像載入該 Bot 嘅 Bot Chat。", "ok");
   }
@@ -8235,8 +8231,6 @@ function rosterForSettings() {
       display_name: bot.name || bot.id,
       color: bot.color || "",
       detail: bot.detail || "",
-      base_url: "",
-      has_key: false,
       enabled: true,
     });
   }
@@ -8260,8 +8254,6 @@ function settingsRowFromLive(id) {
     display_name: live.name || id,
     color: live.color || "",
     detail: live.detail || "",
-    base_url: "",
-    has_key: !!live.hasKey,
     enabled: true,
   };
 }
@@ -8362,8 +8354,6 @@ function rowFromBot(bot = {}) {
     <input type="color" data-field="color" aria-label="顏色" />
     <button type="button" class="icon-btn" data-action="remove">移除</button>
     <input class="span-2" type="text" data-field="detail" placeholder="詳情（可留空）" autocomplete="off" />
-    <input class="span-2" type="url" data-field="base_url" placeholder="專用位址（可留空）" autocomplete="off" />
-    <input class="span-2" type="password" data-field="key" placeholder="API 金鑰" autocomplete="off" />
   `;
   row.querySelector('[data-field="profile"]').value = bot.profile || "";
   const enabled = row.querySelector('[data-field="enabled"]');
@@ -8380,16 +8370,6 @@ function rowFromBot(bot = {}) {
   const existingRows = $("#bot-editor") ? $("#bot-editor").querySelectorAll(".bot-row").length : 0;
   row.querySelector('[data-field="color"]').value = bot.color || colorForIndex(existingRows);
   row.querySelector('[data-field="detail"]').value = bot.detail || "";
-  row.querySelector('[data-field="base_url"]').value = bot.base_url || "";
-  const key = row.querySelector('[data-field="key"]');
-  key.placeholder = bot.has_key ? "已儲存，留空代表保留" : "API 金鑰";
-  key.dataset.hasKey = bot.has_key ? "1" : "0";
-  if (CHAT_NEEDS_PROFILE_KEYS && bot.profile && !bot.has_key) {
-    const missing = document.createElement("p");
-    missing.className = "key-missing";
-    missing.textContent = "未有 API 金鑰";
-    row.appendChild(missing);
-  }
   row.querySelector('[data-action="remove"]').addEventListener("click", () => row.remove());
   return row;
 }
@@ -8397,16 +8377,11 @@ function rowFromBot(bot = {}) {
 function readRows() {
   return [...$("#bot-editor").querySelectorAll(".bot-row")].map((row) => {
     const value = (field) => row.querySelector(`[data-field="${field}"]`).value.trim();
-    const keyInput = row.querySelector('[data-field="key"]');
     return {
       profile: value("profile"),
       display_name: value("display_name"),
       color: row.querySelector('[data-field="color"]').value,
       detail: value("detail"),
-      base_url: value("base_url"),
-      key: keyInput.value,
-      clear_key: false,
-      has_key: keyInput.dataset.hasKey === "1",
       enabled: row.querySelector('[data-field="enabled"]').checked,
     };
   });
@@ -8462,7 +8437,6 @@ function percentToTransparency(raw) {
 }
 
 function fillSettings(settings) {
-  $("#gateway-url").value = settings?.gateway_base_url || "";
   const kanbanUrl = $("#kanban-url");
   if (kanbanUrl) {
     kanbanUrl.value = settings?.kanban_base_url || "";
@@ -8508,7 +8482,7 @@ function fillSettings(settings) {
     altWarning.hidden = !linuxAltWarning(platform);
   }
   const setupHint = $("#setup-hint");
-  if (setupHint) setupHint.hidden = !setupHintVisible($("#gateway-url").value);
+  if (setupHint) setupHint.hidden = !setupHintVisible(settings);
 }
 
 function focusSettings() {
@@ -8544,11 +8518,11 @@ function openSettings() {
   scheduleHitSync();
   const firstRun = shouldAutoOpenSettings(state.settings);
   $("#settings-status").textContent = firstRun
-    ? "填上面嘅 Gateway 位址同 API 金鑰，然後儲存。"
+    ? "填 Kanban server 同登入，然後儲存。"
     : inTauri()
-      ? "儲存之後先會用新設定。測試連線讀已儲存嘅金鑰。"
+      ? "儲存之後先會用新設定。"
       : "瀏覽器預覽改唔到鑰匙圈。請用 npm run tauri dev。";
-  if (setupHintVisible($("#gateway-url").value)) $("#gateway-url").focus();
+  if (setupHintVisible(state.settings)) $("#kanban-url")?.focus();
   if (!inTauri()) return;
   import("@tauri-apps/api/window")
     .then(({ getCurrentWindow }) => getCurrentWindow().setFocus())
@@ -8578,12 +8552,11 @@ async function saveSettings(event) {
     $("#settings-status").textContent = "瀏覽器預覽唔可以儲存。";
     return;
   }
-  const bots = readRows().filter((bot) => bot.profile || bot.display_name || bot.key);
+  const bots = readRows().filter((bot) => bot.profile || bot.display_name);
   const { invoke } = await import("@tauri-apps/api/core");
   try {
     const settings = await invoke("save_settings", {
       input: {
-        gateway_base_url: $("#gateway-url").value.trim(),
         kanban_base_url: $("#kanban-url")?.value.trim() || "",
         dashboard_base_url: $("#dashboard-url").value.trim(),
         dashboard_token: $("#dashboard-token").value,
@@ -8598,7 +8571,7 @@ async function saveSettings(event) {
     state.settings = settings;
     $("#settings-status").textContent = "已儲存。";
     $("#dashboard-token").value = "";
-    if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。", "settings");
+    if (settings.mode === "mock") useMock(DEMO_BANNER);
     else await connectHermes(settings);
     reconcileKeyPrompt(settings.bots || []);
     closeSettings();
@@ -8619,8 +8592,8 @@ async function probeSaved() {
     ];
     $("#settings-status").textContent = lines.join("\n");
     if (!report.health_ok) setBanner(report.health_detail, "error");
-    else if ((report.bots || []).every((bot) => bot.ok)) setBanner("Gateway 同名單金鑰可用。", "ok");
-    else setBanner("Gateway 有回應，但部分 Bot 金鑰或路徑失敗。睇設定入面嘅結果。", "error");
+    else if ((report.bots || []).every((bot) => bot.ok)) setBanner("Hermes Dashboard 同名單可用。", "ok");
+    else setBanner("Hermes Dashboard 有回應，但部分 Bot 讀唔到。睇設定入面嘅結果。", "error");
   } catch (err) {
     $("#settings-status").textContent = String(err);
   }
@@ -8644,8 +8617,6 @@ async function discoverProfiles() {
           display_name: bot.display_name,
           color: bot.color,
           detail: bot.detail,
-          base_url: "",
-          has_key: false,
           enabled: true,
         });
       }
@@ -8654,7 +8625,7 @@ async function discoverProfiles() {
     editor.innerHTML = "";
     for (const bot of existing.values()) editor.appendChild(rowFromBot(bot));
     $("#settings-status").textContent = found.length
-      ? `匯入 ${found.length} 個 profile。金鑰要自己填，然後儲存。`
+      ? `匯入 ${found.length} 個 profile，然後儲存。`
       : "Dashboard 冇返回 profile。";
   } catch (err) {
     $("#settings-status").textContent = String(err);
@@ -12127,7 +12098,7 @@ async function createTaskSession(profile, rawTitle, fromId = "") {
   let title = normalizeTaskTitle(rawTitle, bot?.name || profile);
   if (!String(rawTitle || "").trim()) title = uniqueTaskTitle(title, known);
   if (state.mode !== "hermes" || !inTauri()) {
-    noteSessionCreateFailed(fromId, "未設定 Hermes gateway。");
+    noteSessionCreateFailed(fromId, "示範模式冇連 Hermes，開唔到新 session。");
     return;
   }
   try {
@@ -14099,10 +14070,10 @@ async function boot() {
     window.__handleHermes = handleHermes;
     window.__setBanner = setBanner;
     window.__applyKanbanBoard = (payload) => commitKanban(normalizeBoard(payload));
-    useMock("瀏覽器預覽：離線示範。Gateway 同金鑰只喺桌面版可用。", "settings");
+    useMock("瀏覽器預覽：離線示範。登入同連線只喺桌面版可用。", "settings");
     startWatchers();
     if (new URLSearchParams(location.search).has("setup")) {
-      state.settings = { needs_setup: true, mode: "mock", gateway_base_url: "" };
+      state.settings = { needs_setup: true, mode: "mock" };
       openSettings();
     }
     return;
@@ -14121,11 +14092,12 @@ async function boot() {
     state.showToolDetail = !!settings?.show_tool_detail;
     state.suborbPins = settings?.suborb_pins || {};
     applyInteraction(settings.interaction);
-    if (settings.needs_setup) {
-      useMock(SETUP_BANNER, "settings");
-      openSettings();
-    } else if (settings.mode === "mock") useMock("未設定 gateway，而家係離線示範模式。", "settings");
+    if (settings.mode === "mock") useMock(DEMO_BANNER);
     else await connectHermes(settings);
+    if (shouldAutoOpenSettings(settings)) {
+      if (settings.mode !== "mock") setBanner(SETUP_BANNER, "info", "", "settings");
+      openSettings();
+    }
     if (settings.keyring_error) {
       setBanner(`鑰匙圈：${settings.keyring_error}`, "error", "keyring");
     }

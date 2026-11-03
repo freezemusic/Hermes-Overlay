@@ -882,7 +882,7 @@ test("chat is the primary panel and the hover label does not stick", () => {
   assert.match(html, /<span>Dashboard session token<\/span>/);
   assert.doesNotMatch(html, /Dashboard session token（可留空）/);
   assert.match(main, /placeholder="詳情（可留空）"/);
-  assert.match(main, /placeholder="專用位址（可留空）"/);
+  assert.doesNotMatch(main, /placeholder="專用位址（可留空）"/);
   assert.match(css, /\.settings-panel \.bot-row \.key-missing \{[^}]*#e5484d/s);
   assert.match(css, /\.settings-panel \.bot-row \.key-missing \{[^}]*12px\/1\.5/s);
 });
@@ -906,13 +906,14 @@ test("bot panels own SOUL and the settings orb owns the gateway", () => {
   const settings = html.slice(html.indexOf('id="settings"'), html.indexOf('id="kanban-panel"'));
   assert.doesNotMatch(settings, /data-role="plan"/);
   assert.doesNotMatch(template, /Gateway/);
-  assert.match(html, /Gateway 位址/);
+  assert.doesNotMatch(html, /Gateway 位址/);
+  assert.match(html, /<span>Kanban server<\/span>/);
   assert.match(html, /id="settings"/);
   assert.doesNotMatch(html, /data-tauri-drag-region/);
   assert.doesNotMatch(html, /游標靠近時淡出/);
   assert.match(html, /id="orb-menu"/);
   assert.match(html, /隱藏呢個 Bot/);
-  assert.match(html, /隱藏保留金鑰/);
+  assert.doesNotMatch(html, /隱藏保留金鑰/);
   assert.match(css, /\.orb-menu-btn \{[^}]*text-transform:\s*none/s);
 });
 
