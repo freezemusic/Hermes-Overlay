@@ -223,3 +223,18 @@ test("R-KB-10 bell strings have English, numbered whole strings use anchored pat
   assert.match(NO_TRANSLATE, /\.kanban-bell-title/);
   assert.match(NO_TRANSLATE, /\.kanban-bell-change/);
 });
+
+test("R-LK-03 text-size buttons: 細／標準／大／特大 tooltips = aria-labels, English names, 12/14/16/18px glyphs, solid #0000f2 selected", () => {
+  const doc = new JSDOM(html).window.document;
+  const sizes = [...doc.querySelectorAll("#text-size-group [data-look-size]")];
+  assert.deepEqual(sizes.map((b) => b.title), ["細", "標準", "大", "特大"]);
+  assert.deepEqual(sizes.map((b) => b.getAttribute("aria-label")), ["細", "標準", "大", "特大"]);
+  assert.deepEqual(TEXT_SIZES.map((s) => s.tip), ["細", "標準", "大", "特大"]);
+  assert.deepEqual(sizes.map((b) => translate(b.title, "en")), ["Small", "Default", "Large", "Extra large"]);
+  const px = ["s", "m", "l", "xl"].map((id) => Number(new RegExp(`\\.look-size-${id} span \\{ font-size: (\\d+)px; \\}`).exec(css)?.[1]));
+  assert.deepEqual(px, [12, 14, 16, 18]);
+  for (let i = 1; i < px.length; i += 1) assert.ok(px[i] > px[i - 1], "still grows");
+  assert.ok(px[0] >= 12, "smallest A readable");
+  assert.ok(px[3] <= 24 - 4, "largest fits the 24px button");
+  assert.match(css, /\.look-btn\[aria-checked="true"\] \{[^}]*background:\s*#0000f2/s);
+});

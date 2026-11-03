@@ -4002,9 +4002,10 @@ html.platform-linux .session-menu { padding-right: 22px; }
   border-color: #0000f2;
   color: #fff;
 }
-.look-size-s span { font-size: 10px; }
-.look-size-m span { font-size: 12px; }
-.look-size-l span { font-size: 15px; }
+/* R-LK-03: even 2px steps; the smallest is 12px so it still reads at 24px. */
+.look-size-s span { font-size: 12px; }
+.look-size-m span { font-size: 14px; }
+.look-size-l span { font-size: 16px; }
 .look-size-xl span { font-size: 18px; }
 
 /*

@@ -12,10 +12,10 @@
  */
 
 export const TEXT_SIZES = Object.freeze([
-  Object.freeze({ id: "s", scale: 0.9, glyph: "A", tip: "細字" }),
-  Object.freeze({ id: "m", scale: 1, glyph: "A", tip: "標準字" }),
-  Object.freeze({ id: "l", scale: 1.15, glyph: "A", tip: "大字" }),
-  Object.freeze({ id: "xl", scale: 1.3, glyph: "A", tip: "特大字" }),
+  Object.freeze({ id: "s", scale: 0.9, glyph: "A", tip: "細" }),
+  Object.freeze({ id: "m", scale: 1, glyph: "A", tip: "標準" }),
+  Object.freeze({ id: "l", scale: 1.15, glyph: "A", tip: "大" }),
+  Object.freeze({ id: "xl", scale: 1.3, glyph: "A", tip: "特大" }),
 ]);
 
 export const DEFAULT_TEXT_SIZE = "m";
@@ -200,10 +200,10 @@ export const EN = Object.freeze({
   "外觀": "Look",
   "文字大小": "Text size",
   "介面語言": "Interface language",
-  "細字": "Small text",
-  "標準字": "Standard text",
-  "大字": "Large text",
-  "特大字": "Extra large text",
+  "細": "Small",
+  "標準": "Default",
+  "大": "Large",
+  "特大": "Extra large",
   "文字大小同介面語言即時試睇，撳「儲存」先記住；唔儲存就關，會返原本。": "Text size and language preview at once. Press Save to keep them; closing without saving puts them back.",
 });
 
