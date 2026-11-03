@@ -136,6 +136,7 @@ import {
   kanbanEventChange,
   kanbanEvents,
   kanbanEventTime,
+  kanbanSeen,
   KANBAN_BELL_EMPTY,
   markKanbanEventsRead,
   pushKanbanEvents,
@@ -10391,8 +10392,10 @@ function releaseDeferredTicks() {
   }
   if (state.kanbanPending) {
     const board = state.kanbanPending;
+    const seen = state.kanbanPendingSeen;
     state.kanbanPending = null;
-    commitKanban(board);
+    state.kanbanPendingSeen = false;
+    commitKanban(board, { seen });
   } else if (state.kanbanDeferred) {
     state.kanbanDeferred = false;
     refreshKanban();
@@ -12558,6 +12561,7 @@ function pingOrb(id) {
   btn.querySelector(".orb-ping")?.remove();
   const ping = document.createElement("span");
   ping.className = "orb-ping";
+  ping.addEventListener("animationend", () => ping.remove(), { once: true });
   btn.appendChild(ping);
 }
 
@@ -12596,6 +12600,8 @@ function toggleKanban() {
     collapsing: !!shell?.classList.contains("is-collapsing"),
   });
   if (action === "raise" && shell) {
+    // Raising an open panel is still Devon looking at the board.
+    clearKanbanUnread("raise");
     raisePanel(shell);
     return;
   }
@@ -12608,7 +12614,7 @@ function openKanban() {
   const shell = shellFor("kanban");
   if (!panel || !shell) return;
   state.kanbanOpen = true;
-  state.kanban.unread = false;
+  clearKanbanUnread("open");
   const opening = shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing");
   panel.hidden = false;
   applyBotColor(shell, NOUS.neutral);
@@ -12789,9 +12795,44 @@ async function refreshKanban() {
   commitKanban(normalizeBoard(payload));
 }
 
-function commitKanban(board) {
+/** Is the board in front of Devon right now? See kanbanSeen. */
+function kanbanSeenNow() {
+  const shell = shellFor("kanban");
+  return kanbanSeen({
+    open: state.kanbanOpen,
+    bell: state.kanban.bellOpen,
+    opening: shell?.dataset.opening || "",
+    intent: shell?.dataset.intent || "",
+    collapsing: !!shell?.classList.contains("is-collapsing"),
+  });
+}
+
+/** Opening the panel or the bell list clears every unread mark at once:
+ *  the flag, the event count, the dot / count badge and any ping ring.
+ *  The class is dropped on the button now; renderKanbanOrb only runs through
+ *  renderBots, which waits out the open morph and could leave the old dot up
+ *  (R-KB-09). */
+function clearKanbanUnread(tag) {
+  const had = state.kanban.unread || unreadKanbanCount(state.kanban.events) > 0;
+  state.kanban.unread = false;
+  state.kanban.events = markKanbanEventsRead(state.kanban.events);
+  const shell = shellFor("kanban");
+  const btn = shell?.querySelector(".orb--kanban");
+  if (btn) {
+    btn.classList.remove("has-unread", "has-count");
+    const count = btn.querySelector(".kanban-count");
+    if (count && count.textContent) count.textContent = "";
+  }
+  shell?.querySelectorAll(".orb-ping").forEach((ping) => ping.remove());
+  paintKanbanBell();
+  if (had) debugLog("kanban-unread-clear", tag);
+}
+
+function commitKanban(board, { seen = false } = {}) {
   if (backgroundBlocked()) {
     state.kanbanPending = board;
+    // A board that arrived while the panel was up stays seen when it lands.
+    state.kanbanPendingSeen = !!state.kanbanPendingSeen || seen || kanbanSeenNow();
     debugLog("refresh-tick-defer", "kanban-commit");
     armPresentationFlush();
     return;
@@ -12800,8 +12841,9 @@ function commitKanban(board) {
   if (state.kanban.board && print === state.kanban.fingerprint) return;
   const line = kanbanChangeLine(state.kanban.board, board);
   const events = kanbanEvents(state.kanban.board, board, Date.now());
+  const shown = seen || kanbanSeenNow();
   if (events.length) {
-    state.kanban.events = pushKanbanEvents(state.kanban.events, events);
+    state.kanban.events = pushKanbanEvents(state.kanban.events, shown ? markKanbanEventsRead(events) : events);
     paintKanbanBell();
     renderKanbanOrb();
   }
@@ -12809,7 +12851,7 @@ function commitKanban(board) {
   state.kanban.board = board;
   if (line) {
     showToast("kanban", { kind: "message", text: line });
-    if (!state.kanbanOpen) {
+    if (!shown) {
       state.kanban.unread = true;
       pingOrb("kanban");
       renderKanbanOrb();
@@ -13162,7 +13204,9 @@ function paintKanbanBell() {
   for (const entry of events) {
     const row = document.createElement("button");
     row.type = "button";
-    row.className = `kanban-bell-row${entry.read ? "" : " is-unread"}`;
+    // Bold until the list itself has been opened once, even though opening
+    // the panel already cleared the count.
+    row.className = `kanban-bell-row${entry.listed ? "" : " is-unread"}`;
     row.dataset.eventId = entry.id;
     if (entry.taskId) row.dataset.taskId = entry.taskId;
     else row.disabled = true;
@@ -13195,11 +13239,10 @@ function paintKanbanBell() {
 
 function openKanbanBell() {
   // What the list shows keeps its unread weight this time; the count clears now.
-  const shown = state.kanban.events || [];
   state.kanban.bellOpen = true;
-  paintKanbanBell();
-  state.kanban.events = markKanbanEventsRead(shown);
-  state.kanban.unread = false;
+  // clearKanbanUnread paints the list; rows stay bold for this showing.
+  clearKanbanUnread("bell");
+  state.kanban.events = (state.kanban.events || []).map((entry) => (entry.listed ? entry : { ...entry, listed: true }));
   const badge = $("#kanban-bell-count");
   if (badge) badge.hidden = true;
   const bell = $("#btn-kanban-bell");

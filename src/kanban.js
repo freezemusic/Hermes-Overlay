@@ -257,6 +257,16 @@ export function markKanbanEventsRead(list) {
   return (list || []).map((entry) => (entry.read ? entry : { ...entry, read: true }));
 }
 
+/** True while Devon can see the board: the panel is open or on its way open
+ *  (a Ctrl+click on the capsule mid-morph), or the bell list is up. A panel
+ *  that is collapsing after 關閉 is not seen any more. A change that lands
+ *  while this is true never sets the orb's unread mark (R-KB-09). */
+export function kanbanSeen({ open = false, bell = false, opening = "", intent = "", collapsing = false } = {}) {
+  if (bell) return true;
+  if (collapsing) return false;
+  return !!open || opening === "panel" || intent === "open";
+}
+
 /** Orb / bell badge text: "" for none, 1–9, then "9+". */
 export function kanbanBadgeText(count) {
   const n = Math.max(0, Math.floor(Number(count) || 0));

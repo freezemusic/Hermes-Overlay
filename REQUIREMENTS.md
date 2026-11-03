@@ -334,11 +334,13 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 **R-KB-09** 看板通知鈴（Devon 2026-11-03，YouTube 式）。之前每次輪詢只得一句 `kanbanChangeLine`，膠囊會蓋走上一句，未讀只係一個 `state.kanban.unread` 布林值，所以事件會被蓋或者唔見。而家：
 1. 每次真正有變就記事件：每張新增卡一條、每張改咗狀態嘅卡一條（時間、卡 id、標題、由邊個狀態去邊個狀態）；冇新增或移動但板有變，就一條「看板有更新」。只放記憶體，最多 50 條，最新排頭，**唔寫 config.json**。第一次快照、登入／未有看板狀態、轉去另一塊板都唔記。
-2. 看板光球用細數字章（`.kanban-count`，1–9，之後「9+」）取代淨係一粒點。數字章 `position: absolute`、`pointer-events: none`，命中區仍然係 `.morph-orb` 嘅 44px 光碟（R-CT），唔會因為數字章變大。開面板唔清數字，要開鈴先清。
-3. 看板面板標題列「關閉」左邊有一粒 24px 鈴圖示掣（`#btn-kanban-bell`），tooltip／`aria-label`「看板通知」（有未讀時「看板通知（N 個未讀）」，掣角有同款細數字）。撳開一張清單（相對時間「啱啱」／「N 分鐘前」，一個鐘以上用 HH:MM；標題；狀態變化「todo → ready」／「新增 → triage」）。打開清單即刻全部當已讀，清走光球同鈴嘅數字；今次打開仍然用粗體顯示啱啱未讀嗰啲。撳一條就開嗰張卡嘅詳情（同撳卡一樣）；「看板有更新」冇卡，唔撳得。冇事件顯示「未有看板通知」。再撳鈴、Esc（最先收）或者關看板都會收起清單。
+2. 看板光球用細數字章（`.kanban-count`，1–9，之後「9+」）取代淨係一粒點。數字章 `position: absolute`、`pointer-events: none`，命中區仍然係 `.morph-orb` 嘅 44px 光碟（R-CT），唔會因為數字章變大。
+3. 看板面板標題列「關閉」左邊有一粒 24px 鈴圖示掣（`#btn-kanban-bell`），tooltip／`aria-label`「看板通知」（有未讀時「看板通知（N 個未讀）」，掣角有同款細數字）。撳開一張清單（相對時間「啱啱」／「N 分鐘前」，一個鐘以上用 HH:MM；標題；狀態變化「todo → ready」／「新增 → triage」）。打開清單即刻全部當已讀，清走光球同鈴嘅數字；未喺清單見過嘅條目今次仍然用粗體。撳一條就開嗰張卡嘅詳情（同撳卡一樣）；「看板有更新」冇卡，唔撳得。冇事件顯示「未有看板通知」。再撳鈴、Esc（最先收）或者關看板都會收起清單。
 4. 5 秒膠囊（R-KB-02）照舊，用返同一句 `kanbanChangeLine`。
-- 來源：Devon t227u（2026-11-03）。
-- 驗收（單元）：`kanban-bell.test.js`（每卡一條、generic 一條、首快照／登入／未有看板／轉板唔記、50 上限最新排頭、已讀、9+、時間格式、唔寫 config、鈴掣 24px 有 tooltip、數字章唔影響命中、Esc 先收清單）。盒：真 Hermes 0.22.5 看板加卡同拖卡之後，光球數字、鈴清單、撳一條開詳情、清單打開後數字清走、空清單。
+5. 未讀一定清（Devon t228u）：打開看板面板（撳光球、Ctrl+撳、撳緊膠囊、面板已開或者開緊時再撳＝raise）或者打開鈴清單，都即刻清走未讀旗、全部事件數字、光球嘅點／數字章同 `.orb-ping` 圈（`clearKanbanUnread`，直接改光球 class，唔等 `renderBots`）。面板開住、開緊（`data-opening="panel"`／`data-intent="open"`）或者鈴清單開住時到嘅變化（`kanbanSeen`）唔會設未讀、唔 ping，事件一入就當已讀；`backgroundBlocked` 時押後嘅 commit 記住到嗰陣係咪睇緊（`kanbanPendingSeen`），關咗面板先 flush 都唔會再亮點。收緊（`is-collapsing`）就當已經唔睇。`.orb-ping` 播完（`animationend`）自己移走。
+   - 根因：(a) `openKanban` 只係將 `state.kanban.unread` 設 false，光球嘅 `has-unread` class 要等 `renderBots` 重畫，而 `renderBots` 喺開面板動畫期間（`reason=morph`）同 `backgroundBlocked` 時一定押後，所以點最少留多 0.3–1 秒；盒上 18 次 Ctrl+撳開有 1 次押後嘅重畫一直冇落地，面板開住 8 秒點都仲喺度。(b) `toggleKanban` 嘅 raise 分支（面板已開／開緊）完全唔清未讀。(c) 鈴版本開面板唔清數字（上面第 2 點舊字）。(d) 押後嘅 commit 只睇 flush 嗰刻 `kanbanOpen`，開咗面板時到、關咗先 flush 嘅變化會當未讀。(e) `pingOrb` 加嘅 `.orb-ping` 冇人移走。
+- 來源：Devon t227u、t228u（2026-11-03）。
+- 驗收（單元）：`kanban-bell.test.js`（每卡一條、generic 一條、首快照／登入／未有看板／轉板唔記、50 上限最新排頭、已讀、9+、時間格式、唔寫 config、鈴掣 24px 有 tooltip、數字章唔影響命中、Esc 先收清單；`kanbanSeen` 真值表、`clearKanbanUnread` 即刻清 class／數字／ping、open／raise／鈴三條路都經 `clearKanbanUnread`、面板關住有變先亮、開住／開緊唔亮、押後 commit 記住 seen、ping 自己移走、欄頭 sticky）。盒：真 Hermes 0.22.5 看板加卡同拖卡之後，光球數字、鈴清單、撳一條開詳情、清單打開後數字清走、空清單。
 - 狀態：❓ / ✅(盒，next-637a7a1)。
 
 ---

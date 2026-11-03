@@ -11,6 +11,7 @@ import {
   kanbanEventChange,
   kanbanEvents,
   kanbanEventTime,
+  kanbanSeen,
   markKanbanEventsRead,
   normalizeBoard,
   pushKanbanEvents,
@@ -103,7 +104,7 @@ test("events stay in memory: nothing in main.js writes them to config", () => {
   assert.doesNotMatch(main, /store_kanban_events|kanban_events:/);
   const commit = main.slice(main.indexOf("function commitKanban("), main.indexOf("function mockKanban("));
   assert.match(commit, /kanbanEvents\(state\.kanban\.board, board, Date\.now\(\)\)/);
-  assert.match(commit, /pushKanbanEvents\(state\.kanban\.events, events\)/);
+  assert.match(commit, /pushKanbanEvents\(state\.kanban\.events, shown \? markKanbanEventsRead\(events\) : events\)/);
   assert.match(commit, /showToast\("kanban"/, "the 5 s capsule is unchanged");
 });
 
@@ -134,11 +135,157 @@ test("the orb count badge is pointer-events none and absolutely placed, so the 4
 
 test("opening the bell marks read, a row opens its card, Esc closes the list first", () => {
   const open = main.slice(main.indexOf("function openKanbanBell()"), main.indexOf("function closeKanbanBell()"));
-  assert.match(open, /markKanbanEventsRead/);
+  assert.match(open, /clearKanbanUnread\("bell"\)/);
   assert.match(open, /renderKanbanOrb\(\)/);
   const paint = main.slice(main.indexOf("function paintKanbanBell()"), main.indexOf("function openKanbanBell()"));
   assert.match(paint, /openKanbanDetail\(entry\.taskId\)/);
   assert.match(paint, /KANBAN_BELL_EMPTY/);
   const esc = main.slice(main.indexOf('if (event.key !== "Escape" || event.repeat) return;'));
   assert.match(esc.slice(0, 200), /closeKanbanBell\(\)/);
+});
+
+/** Pull one top-level function out of main.js and build it with stubs. */
+function lift(name, deps) {
+  const start = main.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, name);
+  const end = main.indexOf("\n}\n", start) + 2;
+  const keys = Object.keys(deps);
+  // eslint-disable-next-line no-new-func
+  return new Function(...keys, `${main.slice(start, end)}\nreturn ${name};`)(...keys.map((k) => deps[k]));
+}
+
+test("kanbanSeen: open, opening, intent open or the bell list count as seen; a collapsing panel does not", () => {
+  assert.equal(kanbanSeen({}), false);
+  assert.equal(kanbanSeen({ open: true }), true);
+  assert.equal(kanbanSeen({ opening: "panel" }), true);
+  assert.equal(kanbanSeen({ intent: "open" }), true);
+  assert.equal(kanbanSeen({ intent: "preview" }), false);
+  assert.equal(kanbanSeen({ open: true, collapsing: true }), false);
+  assert.equal(kanbanSeen({ intent: "open", collapsing: true }), false);
+  assert.equal(kanbanSeen({ bell: true, collapsing: true }), true);
+});
+
+function orbRig() {
+  const dom = new JSDOM(`<div class="morph" data-bot-id="kanban"><button class="bot-btn morph-orb orb--kanban has-unread has-count" data-bot-id="kanban"><span class="unread-dot"></span><span class="kanban-count">3</span><span class="orb-ping"></span></button></div>`);
+  const doc = dom.window.document;
+  const shell = doc.querySelector(".morph");
+  const logs = [];
+  const state = {
+    kanbanOpen: false,
+    kanban: { unread: true, bellOpen: false, board: null, fingerprint: "", events: [{ id: 1, read: false }, { id: 2, read: false }, { id: 3, read: false }] },
+  };
+  const deps = {
+    state,
+    shellFor: () => shell,
+    paintKanbanBell: () => logs.push("paint-bell"),
+    debugLog: (k, v) => logs.push(`${k}:${v}`),
+    markKanbanEventsRead,
+    unreadKanbanCount,
+  };
+  return { doc, shell, state, logs, deps };
+}
+
+test("clearKanbanUnread drops the dot, the count badge and the ping now, without waiting for renderBots (R-KB-09)", () => {
+  const rig = orbRig();
+  const clear = lift("clearKanbanUnread", rig.deps);
+  clear("open");
+  const btn = rig.doc.querySelector(".orb--kanban");
+  assert.equal(rig.state.kanban.unread, false);
+  assert.equal(unreadKanbanCount(rig.state.kanban.events), 0);
+  assert.equal(btn.classList.contains("has-unread"), false);
+  assert.equal(btn.classList.contains("has-count"), false);
+  assert.equal(btn.querySelector(".kanban-count").textContent, "");
+  assert.equal(rig.shell.querySelector(".orb-ping"), null);
+  assert.ok(rig.logs.includes("kanban-unread-clear:open"));
+});
+
+test("every open route clears through clearKanbanUnread: open, raise (already open / mid-morph) and the bell", () => {
+  const toggle = main.slice(main.indexOf("function toggleKanban()"), main.indexOf("function openKanban()"));
+  const raise = toggle.slice(toggle.indexOf('action === "raise"'), toggle.indexOf("openKanban();"));
+  assert.match(raise, /clearKanbanUnread\("raise"\)/);
+  const open = main.slice(main.indexOf("function openKanban()"), main.indexOf("function closeKanban()"));
+  assert.match(open, /state\.kanbanOpen = true;\s*clearKanbanUnread\("open"\);/);
+  // The open no longer depends on the deferred renderBots repaint alone.
+  assert.ok(open.indexOf("clearKanbanUnread") < open.indexOf("runShellMorph"));
+  const bell = main.slice(main.indexOf("function openKanbanBell()"), main.indexOf("function closeKanbanBell()"));
+  assert.match(bell, /clearKanbanUnread\("bell"\)/);
+  // Ctrl+click and a plain click both land in toggleKanban; nothing else opens the panel.
+  assert.equal((main.match(/(?<!function )\bopenKanban\(\)/g) || []).length, 1);
+  assert.equal((main.match(/kanban: \(\) => toggleKanban\(\)/g) || []).length, 2);
+});
+
+function commitRig({ blocked = false, seenNow = false } = {}) {
+  const rig = orbRig();
+  rig.state.kanban.unread = false;
+  rig.state.kanban.events = [];
+  rig.state.kanban.board = board([{ id: "a", title: "A", status: "todo" }]);
+  rig.state.kanban.fingerprint = "old";
+  const pings = [];
+  const flags = { blocked, seenNow };
+  const commit = lift("commitKanban", {
+    state: rig.state,
+    backgroundBlocked: () => flags.blocked,
+    debugLog: () => {},
+    armPresentationFlush: () => {},
+    boardFingerprint: (b) => JSON.stringify(b),
+    kanbanChangeLine,
+    kanbanEvents,
+    kanbanSeenNow: () => flags.seenNow,
+    pushKanbanEvents,
+    markKanbanEventsRead,
+    paintKanbanBell: () => {},
+    renderKanbanOrb: () => {},
+    showToast: () => {},
+    pingOrb: (id) => pings.push(id),
+    paintKanban: () => {},
+  });
+  const next = board([{ id: "a", title: "A", status: "todo" }, { id: "b", title: "B", status: "todo" }]);
+  return { ...rig, commit, flags, pings, next };
+}
+
+test("a change while the panel is closed sets unread, pings and counts", () => {
+  const rig = commitRig();
+  rig.commit(rig.next);
+  assert.equal(rig.state.kanban.unread, true);
+  assert.deepEqual(rig.pings, ["kanban"]);
+  assert.equal(unreadKanbanCount(rig.state.kanban.events), 1);
+});
+
+test("a change while the panel is open or opening never sets unread; its events land already read", () => {
+  const rig = commitRig({ seenNow: true });
+  rig.commit(rig.next);
+  assert.equal(rig.state.kanban.unread, false);
+  assert.deepEqual(rig.pings, []);
+  assert.equal(rig.state.kanban.events.length, 1);
+  assert.equal(unreadKanbanCount(rig.state.kanban.events), 0);
+});
+
+test("a deferred commit that arrived while open stays seen when it is flushed after the close", () => {
+  const rig = commitRig({ blocked: true, seenNow: true });
+  rig.commit(rig.next);
+  assert.equal(rig.state.kanbanPending, rig.next);
+  assert.equal(rig.state.kanbanPendingSeen, true);
+  // Panel closed, morph done: the flush passes the remembered flag along.
+  rig.flags.blocked = false;
+  rig.flags.seenNow = false;
+  const release = main.slice(main.indexOf("if (state.kanbanPending) {"), main.indexOf("} else if (state.kanbanDeferred) {"));
+  assert.match(release, /commitKanban\(board, \{ seen \}\)/);
+  assert.match(release, /state\.kanbanPendingSeen = false/);
+  rig.commit(rig.state.kanbanPending, { seen: rig.state.kanbanPendingSeen });
+  assert.equal(rig.state.kanban.unread, false);
+  assert.deepEqual(rig.pings, []);
+});
+
+test("a deferred commit from a closed board still marks unread when it lands", () => {
+  const rig = commitRig({ blocked: true });
+  rig.commit(rig.next);
+  assert.equal(rig.state.kanbanPendingSeen, false);
+  rig.flags.blocked = false;
+  rig.commit(rig.state.kanbanPending, { seen: rig.state.kanbanPendingSeen });
+  assert.equal(rig.state.kanban.unread, true);
+});
+
+test("the ping ring removes itself when its one-shot animation ends", () => {
+  const ping = main.slice(main.indexOf("function pingOrb("), main.indexOf("function showToast("));
+  assert.match(ping, /addEventListener\("animationend", \(\) => ping\.remove\(\), \{ once: true \}\)/);
 });
