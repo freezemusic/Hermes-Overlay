@@ -2313,17 +2313,33 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 .kanban-bell-readall:focus-visible { background: var(--bot-10); outline: none; }
 .kanban-bell-readall:disabled { color: #616191; cursor: default; background: transparent; }
 /* The rows scroll under the head; 12px bottom padding so the last row is never
-   cut, and a 16px fade at the bottom only while more rows are below. */
+   cut. R-KB-14: while more rows are below, the bottom 48px (one row) fade out.
+   The mask is a two-layer box mask on the scroller itself (WebKitGTK and
+   WebView2/Chromium both paint it in the scroller's border box, not the
+   scrolled content): the fade layer covers all but the right 12px, and a solid
+   layer keeps the right 12px (scrollbar + 4px padding) fully opaque. main.js
+   drops .has-more at the bottom, so the last row is never faded. */
 .kanban-bell-rows {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
   padding: 4px 4px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bot-20) transparent;
 }
+.kanban-bell-rows::-webkit-scrollbar { width: 6px; }
+.kanban-bell-rows::-webkit-scrollbar-track { background: transparent; }
+.kanban-bell-rows::-webkit-scrollbar-thumb { background: var(--bot-20); border-radius: 3px; }
 .kanban-bell-rows.has-more {
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent), linear-gradient(#000, #000);
+  -webkit-mask-size: calc(100% - 12px) 100%, 12px 100%;
+  -webkit-mask-position: left top, right top;
+  -webkit-mask-repeat: no-repeat;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent), linear-gradient(#000, #000);
+  mask-size: calc(100% - 12px) 100%, 12px 100%;
+  mask-position: left top, right top;
+  mask-repeat: no-repeat;
 }
 .kanban-bell-row {
   display: grid;

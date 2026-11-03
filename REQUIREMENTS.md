@@ -360,11 +360,11 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-KB-10** 鈴清單樣式（美術監督 72cba45 審查第 3 點，2026-11-03）。補充 R-KB-09 第 3 點：
 1. 清單頂有 32px 標題行（`.kanban-bell-head`）：左「看板通知」（Barlow Condensed 12px `#0000f2`），右「全部已讀」文字掣（12px `#0000f2`，冇框；冇未讀時 disabled，`#616191`）。撳「全部已讀」全部當已讀、清單唔收、清走數字（經 `clearKanbanUnread`）。
 2. 未讀行左邊 2px `#0000f2` 色條，卡名 600；已讀行冇色條（透明 2px 邊，唔會跳位），卡名 400 `#616191`。「未讀」＝今次打開清單之前未喺清單見過（`bellFresh`）；清單開住時新到嘅都當未讀；收清單之後全部當見過。72cba45 全部粗體係因為嗰次每一條都未見過，又冇已讀樣式對比。
-3. 清單喺鈴下面 6px（main.js 按鈴嘅位置設 `top`／`right`），最高 360px（原本 420px，所以命中區唔會大過以前，R-CT）。標題行唔捲；下面 `.kanban-bell-rows` 自己捲，底 padding 12px，下面仲有嘢先加 16px 底部漸隱遮罩（`has-more`）。
+3. 清單喺鈴下面 6px（main.js 按鈴嘅位置設 `top`／`right`），最高 360px（原本 420px，所以命中區唔會大過以前，R-CT）。標題行唔捲；下面 `.kanban-bell-rows` 自己捲，底 padding 12px，下面仲有嘢先加 16px 底部漸隱遮罩（`has-more`）（**已取代**，見 R-KB-14：而家 48px，兩層遮罩）。
 4. 狀態變化用欄頭嘅寫法：「NEW → TRIAGE」、「TODO → READY」（大楷英文，同欄頭一樣），唔再「新增 → triage」咁中英混。卡名同狀態行係 Hermes 資料，唔譯（`NO_TRANSLATE`）。
 5. 英文：「全部已讀」Mark all read、「啱啱」Just now、「N 分鐘前」N min ago、「看板通知（N 個未讀）」Kanban notifications (N unread)、「卡片」Card。帶數字嘅句用 `EN_PATTERNS`：成句由頭到尾對中先換（regex 兩頭錨定），仍然係 R-LK-02 嘅「成句先換」。
 - 來源：美術監督 72cba45 審查（2026-11-03）。
-- 驗收（單元）：`kanban-bell.test.js`「R-KB-10 …」三項（欄名、今次未讀、全部已讀；DOM 標題行同已讀／未讀行；CSS 32px、12px、色條、字重、360px、12px 底、16px 漸隱、6px）；`look.test.js`「R-KB-10 bell strings …」。盒：清單有未讀同已讀混合、捲動時底部漸隱、全部已讀之後全部變 400，截圖（繁、EN）。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-10 …」三項（欄名、今次未讀、全部已讀；DOM 標題行同已讀／未讀行；CSS 32px、12px、色條、字重、360px、12px 底、6px；漸隱改喺 R-KB-14 測）；`look.test.js`「R-KB-10 bell strings …」。盒：清單有未讀同已讀混合、捲動時底部漸隱、全部已讀之後全部變 400，截圖（繁、EN）。
 - 狀態：❓ / ✅(盒，ad-72cba45)。
 
 **R-KB-11** 卡片上嘅細格（美術監督 72cba45 審查第 4 點，2026-11-03）。嗰格係 Hermes 卡嘅優先度（`priority`，Hermes 0.22.5 `kanban_db` 係 `INTEGER DEFAULT 0`，數字愈大 dispatcher 愈早攞；Hermes dashboard 自己都係大過 0 先顯示 `P{n}`）。0 或者空就唔顯示。有數就顯示 12px 線條圖示（旗）加數字，tooltip／`aria-label`「優先度 N：數字愈大，Hermes 愈早派」（EN：Priority N. Higher numbers are picked up first.）。舊式文字優先度（low／high）照顯示文字。詳情頁嘅「負責人 · 狀態 · 優先度」行都唔再顯示 0。卡片唔自動翻譯（`NO_TRANSLATE`），所以 tooltip 喺 main.js 按而家語言翻譯，轉語言時重畫一次板（拖緊或者開住詳情就唔重畫）。唔係留言數：`comment_count` 冇顯示喺卡上。
@@ -379,6 +379,11 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-KB-13** 卡詳情（美術監督 72cba45 審查第 7 點，次要）。標題左邊有同板上張卡一樣嘅 2px 色條（`--owner`，負責人顏色；冇對應 bot 就 `#616191`）。「返回」掣同標題之間 12px（掣 `display: block`，唔受行高影響）。
 - 驗收（單元）：`kanban-bell.test.js`「R-KB-13 …」。盒：量度「返回」底同標題頂相距 12px，截圖。
 - 狀態：❓ / ✅(盒，ad-72cba45)。
+
+**R-KB-14** 鈴清單底部漸隱（美術監督 72cba45 第二輪審查第 1 點，2026-11-03，擋合併）。補充 R-KB-10 第 3 點：`.kanban-bell-rows` 下面仲有行先有 `has-more`，底部 48px（大約一行）由實漸變透明；捲到底（`scrollTop + clientHeight ≥ scrollHeight − 1`）即刻拎走 `has-more`，最尾一行唔會淡。遮罩係兩層：漸隱層蓋住除咗右邊 12px 嘅位，右邊 12px（捲軸 6px 加 4px padding）用實色層保持唔淡，所以捲軸唔會一齊淡走。`-webkit-mask-*` 同冇前綴嘅 `mask-*` 兩套都寫（WebKitGTK 同 WebView2／Chromium）。清單捲軸同設定一樣 6px（`::-webkit-scrollbar`、`scrollbar-width: thin`）。
+- 根因：唔係少咗前綴。72cba45／ad-fixes 已經兩套都有，盒上計算樣式兩個都係 `linear-gradient(rgb(0,0,0) calc(100% - 16px), rgba(0,0,0,0))`，WebKitGTK 都有畫（盒上逐點比較：底 16px 有遮同冇遮相差最多 220 灰階；換成 0→100% 嘅遮罩成張清單明顯淡落）。問題係 16px 太短：一行 47px，字只得大約 7–9px 高，16px 漸隱區通常落喺兩行中間嘅空白，最多切到下一行字頂，所以睇落似硬切。之前「捲動中」截圖同「混合」一模一樣，係因為嗰次得 5 行，全部擺得落 360px（`has-more` 係 false），`scrollTop = 40` 冇效果，捲唔郁。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-14 …」。盒：50 行，頂（有漸隱）、中間（有漸隱、scrollTop 喺中間）、到底（冇漸隱）三張截圖，逐點量底部 48px。
+- 狀態：❓ / ✅(盒，ad-72cba45 r2)。
 
 ---
 

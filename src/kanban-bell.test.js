@@ -377,7 +377,7 @@ test("R-KB-10 the bell list paints a 32px head, unread / read rows and a scrolle
   assert.equal(list.querySelectorAll(".kanban-bell-row.is-read").length, 2);
 });
 
-test("R-KB-10 bell list CSS: head 32px, 12px Barlow #0000f2, bars and weights, 360px, 12px bottom, 16px fade", () => {
+test("R-KB-10 bell list CSS: head 32px, 12px Barlow #0000f2, bars and weights, 360px, 12px bottom", () => {
   const rule = (sel) => {
     const at = css.indexOf(`\n${sel} {`);
     assert.ok(at >= 0, sel);
@@ -393,7 +393,6 @@ test("R-KB-10 bell list CSS: head 32px, 12px Barlow #0000f2, bars and weights, 3
   assert.match(rule(".kanban-bell-list"), /overflow:\s*hidden/);
   assert.match(rule(".kanban-bell-rows"), /overflow:\s*auto/);
   assert.match(rule(".kanban-bell-rows"), /padding:\s*4px 4px 12px/);
-  assert.match(rule(".kanban-bell-rows.has-more"), /mask-image:\s*linear-gradient\(to bottom, #000 calc\(100% - 16px\), transparent\)/);
   assert.match(rule(".kanban-bell-row"), /border-left:\s*2px solid transparent/);
   assert.match(css, /\.kanban-bell-row\.is-unread \{ border-left-color: #0000f2; \}/);
   assert.match(css, /\.kanban-bell-row\.is-unread \.kanban-bell-title \{ font-weight: 600;/);
@@ -481,3 +480,32 @@ test("R-KB-12 orb badge: 1.5px white ring, 16px disc for 1–9, a pill of at mos
   assert.equal(kanbanBadgeText(12), "9+");
   assert.equal(kanbanBadgeText(9), "9");
 });
+
+test("R-KB-14 bell fade: 48px two-layer mask (prefixed + unprefixed), scrollbar column kept, removed at the bottom", () => {
+  const at = css.indexOf("\n.kanban-bell-rows.has-more {");
+  assert.ok(at >= 0);
+  const body = css.slice(at, css.indexOf("}", at));
+  for (const p of ["-webkit-mask", "\n  mask"]) {
+    const img = new RegExp(`${p}-image:\\s*linear-gradient\\(to bottom, #000 calc\\(100% - 48px\\), transparent\\), linear-gradient\\(#000, #000\\)`);
+    assert.match(body, img, p);
+    assert.match(body, new RegExp(`${p}-size:\\s*calc\\(100% - 12px\\) 100%, 12px 100%`), p);
+    assert.match(body, new RegExp(`${p}-position:\\s*left top, right top`), p);
+    assert.match(body, new RegExp(`${p}-repeat:\\s*no-repeat`), p);
+  }
+  assert.match(css, /\.kanban-bell-rows::-webkit-scrollbar \{ width: 6px; \}/);
+  // The mask lives only on .has-more, which main.js toggles off at the bottom.
+  assert.doesNotMatch(css.slice(css.indexOf("\n.kanban-bell-rows {"), at), /mask-image/);
+  const paint = main.slice(main.indexOf("function paintKanbanBell("), main.indexOf("function placeKanbanBellList("));
+  assert.match(paint, /classList\.toggle\("has-more", rows\.scrollTop \+ rows\.clientHeight < rows\.scrollHeight - 1\)/);
+  assert.match(paint, /addEventListener\("scroll", fade/);
+  // DOM: with the bottom reached the class goes away; partway it stays.
+  const dom = new JSDOM(`<div class="kanban-bell-rows"></div>`);
+  const rows = dom.window.document.querySelector(".kanban-bell-rows");
+  const fade = () => rows.classList.toggle("has-more", rows.scrollTop + rows.clientHeight < rows.scrollHeight - 1);
+  Object.defineProperty(rows, "scrollHeight", { value: 955 });
+  Object.defineProperty(rows, "clientHeight", { value: 326 });
+  rows.scrollTop = 0; fade(); assert.ok(rows.classList.contains("has-more"));
+  rows.scrollTop = 300; fade(); assert.ok(rows.classList.contains("has-more"));
+  rows.scrollTop = 629; fade(); assert.ok(!rows.classList.contains("has-more"));
+});
+
