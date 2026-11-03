@@ -163,6 +163,7 @@ import {
 } from "./cron.js";
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 import { DEMO_BANNER, SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
+import { applyTextSize, createTranslator, storedLanguage, storedTextSize } from "./look.js";
 import {
   RECONNECT_STATUS,
   createProbeGate,
@@ -8517,12 +8518,36 @@ function focusSettings() {
   openSettings();
 }
 
+/** R-LK-01 / R-LK-02: the text size and language on screen (saved, or a settings preview). */
+const translator = createTranslator(document);
+const look = { size: "m", lang: "zh-HK" };
+
+function showLook(size, lang) {
+  look.size = applyTextSize(document, size);
+  look.lang = translator.setLanguage(lang);
+  paintLookControls();
+}
+
+function applySavedLook(settings) {
+  showLook(settings?.text_size, settings?.ui_language);
+}
+
+function paintLookControls() {
+  document.querySelectorAll("[data-look-size]").forEach((btn) => {
+    btn.setAttribute("aria-checked", String(btn.dataset.lookSize === look.size));
+  });
+  document.querySelectorAll("[data-look-lang]").forEach((btn) => {
+    btn.setAttribute("aria-checked", String(btn.dataset.lookLang === look.lang));
+  });
+}
+
 function openSettings() {
   hideKeyPrompt();
   window.clearTimeout(blurReleaseTimer);
   blurReleaseTimer = 0;
   state.windowFocused = true;
   fillSettings(state.settings);
+  applySavedLook(state.settings);
   ensureChrome();
   const panel = $("#settings");
   const shell = shellFor("settings");
@@ -8555,6 +8580,8 @@ function closeSettings() {
   const panel = $("#settings");
   const shell = shellFor("settings");
   if (!panel || !shell || !settingsOpen()) return;
+  // Closing without 儲存 puts the saved look back (R-LK-01/02).
+  applySavedLook(state.settings);
   const active = document.activeElement;
   if (active && panel.contains(active)) active.blur();
   if (state.pointerHitId === "settings") state.pointerHitId = "";
@@ -8586,6 +8613,8 @@ async function saveSettings(event) {
         interaction: readInteractionForm(),
         show_bot_names: !!$("#show-bot-names")?.checked,
         show_tool_detail: !!$("#show-tool-detail")?.checked,
+        text_size: storedTextSize(look.size),
+        ui_language: storedLanguage(look.lang),
         bots,
       },
     });
@@ -9424,6 +9453,12 @@ function setupComposer() {
   });
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#btn-add-bot").addEventListener("click", () => $("#bot-editor").appendChild(rowFromBot()));
+  document.querySelectorAll("[data-look-size]").forEach((btn) => {
+    btn.addEventListener("click", () => showLook(btn.dataset.lookSize, look.lang));
+  });
+  document.querySelectorAll("[data-look-lang]").forEach((btn) => {
+    btn.addEventListener("click", () => showLook(look.size, btn.dataset.lookLang));
+  });
   $("#btn-probe").addEventListener("click", probeSaved);
   $("#btn-discover").addEventListener("click", discoverProfiles);
   $("#show-bot-names")?.addEventListener("change", (event) => {
@@ -14262,6 +14297,7 @@ async function boot() {
     state.showToolDetail = !!settings?.show_tool_detail;
     state.suborbPins = settings?.suborb_pins || {};
     applyInteraction(settings.interaction);
+    applySavedLook(settings);
     if (settings.mode === "mock") useMock(DEMO_BANNER, "", "demo");
     else await connectHermes(settings);
     if (shouldAutoOpenSettings(settings)) {

@@ -196,6 +196,27 @@
             </label>
           </fieldset>
 
+          <fieldset class="look-controls">
+            <legend>外觀</legend>
+            <div class="look-row">
+              <span class="look-label" id="text-size-label">文字大小</span>
+              <div class="look-seg" id="text-size-group" role="radiogroup" aria-labelledby="text-size-label">
+                <button type="button" class="look-btn look-size-s" data-look-size="s" role="radio" aria-checked="false" title="細字" aria-label="細字"><span aria-hidden="true">A</span></button>
+                <button type="button" class="look-btn look-size-m" data-look-size="m" role="radio" aria-checked="true" title="標準字" aria-label="標準字"><span aria-hidden="true">A</span></button>
+                <button type="button" class="look-btn look-size-l" data-look-size="l" role="radio" aria-checked="false" title="大字" aria-label="大字"><span aria-hidden="true">A</span></button>
+                <button type="button" class="look-btn look-size-xl" data-look-size="xl" role="radio" aria-checked="false" title="特大字" aria-label="特大字"><span aria-hidden="true">A</span></button>
+              </div>
+            </div>
+            <div class="look-row">
+              <span class="look-label" id="ui-language-label">介面語言</span>
+              <div class="look-seg" id="ui-language-group" role="radiogroup" aria-labelledby="ui-language-label">
+                <button type="button" class="look-btn" data-look-lang="zh-HK" lang="zh-HK" role="radio" aria-checked="true" title="繁體中文（香港）" aria-label="繁體中文（香港）" data-no-translate>繁</button>
+                <button type="button" class="look-btn" data-look-lang="en" lang="en" role="radio" aria-checked="false" title="English" aria-label="English" data-no-translate>EN</button>
+              </div>
+            </div>
+            <p class="hint">文字大小同介面語言即時試睇，撳「儲存」先記住；唔儲存就關，會返原本。</p>
+          </fieldset>
+
           <p id="settings-status" class="settings-status" role="status"></p>
           <div class="settings-actions">
             <button type="button" id="btn-quit" class="icon-btn danger" title="結束程式">結束</button>

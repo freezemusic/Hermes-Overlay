@@ -3834,3 +3834,109 @@ html.platform-linux .session-menu { padding-right: 22px; }
 @media (prefers-reduced-motion: reduce) {
   .suborb-disc.is-running::after { animation: none; }
 }
+
+/* R-LK-01 / R-LK-02: compact icon buttons with tooltips (R-NS-01 rule), 24px square. */
+.look-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--sp-3);
+  margin-top: 12px;
+}
+/* Buttons sit next to their label, clear of the overlay scrollbar at the right edge. */
+.look-label {
+  min-width: 72px;
+  font: 500 12px/1 var(--font-label);
+  color: #0000f2;
+}
+.look-seg {
+  display: inline-flex;
+  gap: 4px;
+}
+.look-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgb(0 0 242 / .4);
+  border-radius: var(--r-sm);
+  background: rgb(255 255 255 / .94);
+  color: #0000f2;
+  font: 500 12px/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.look-btn:hover { background: var(--bot-10); }
+.look-btn:focus-visible { outline: 2px solid #0000f2; outline-offset: 1px; }
+.look-btn[aria-checked="true"] {
+  background: #0000f2;
+  border-color: #0000f2;
+  color: #fff;
+}
+.look-size-s span { font-size: 10px; }
+.look-size-m span { font-size: 12px; }
+.look-size-l span { font-size: 15px; }
+.look-size-xl span { font-size: 18px; }
+
+/*
+ * R-LK-01: text size. Standard ("m") has no data-text-size, so none of this applies
+ * and every size above stays exactly as specced. Panel text only: orbs, orb glyphs,
+ * orb names, panel boxes and hit areas keep their px size.
+ */
+html[data-text-size] {
+  --fs-micro: calc(10px * var(--text-scale, 1));
+  --fs-meta: calc(11px * var(--text-scale, 1));
+  --fs-ui: calc(13px * var(--text-scale, 1));
+  --fs-body: calc(14px * var(--text-scale, 1));
+  --fs-title: calc(22px * var(--text-scale, 1));
+  --fs-hero: calc(40px * var(--text-scale, 1));
+}
+
+html[data-text-size] .cron-name { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .cron-time { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .cron-tag { font-size: calc(10px * var(--text-scale, 1)); }
+html[data-text-size] .cron-meta { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .hint { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .plan-chip { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .plan-title { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .plan-toggle { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .plan-close { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .plan-body { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .plan-source { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .plan-body :is(h1, h2, h3, h4) { font-size: calc(14px * var(--text-scale, 1)); }
+html[data-text-size] .plan-body pre { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .session-select { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .bubble.bot pre { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .unsent-mark { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .approval-heading { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .approval-command { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .history-notice-title { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .clarify-heading { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .clarify-timeout { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .conn-banner { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-empty { font-size: calc(22px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-crumb-profile { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-board-pick { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-login .kanban-empty-title { font-size: calc(22px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-empty-help { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-login-btn { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .hint { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .kanban-server-hint { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .roster-head h3 { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .field { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .bot-row input:not([type="checkbox"]):not([type="color"]) { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel legend { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .show-toggle { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .bot-row .key-missing { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .session-menu-row { font-size: calc(13px * var(--text-scale, 1)); line-height: calc(18px * var(--text-scale, 1)); }
+html[data-text-size] .session-menu-empty { font-size: calc(12px * var(--text-scale, 1)); line-height: calc(18px * var(--text-scale, 1)); }
+html[data-text-size] .new-session-form input { font-size: calc(13px * var(--text-scale, 1)); }
+
+
+/* Orb labels and the orb-height preview pill keep their px size (R-OB-01, SPEC §2.4). */
+html[data-text-size] .bot-btn .bot-label,
+html[data-text-size] .orb-hover-label { font-size: 10px; }
+html[data-text-size] .morph-pill { font-size: 13px; }
+html[data-text-size] .morph-pill time { font-size: 11px; }
