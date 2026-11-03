@@ -289,3 +289,17 @@ test("the ping ring removes itself when its one-shot animation ends", () => {
   const ping = main.slice(main.indexOf("function pingOrb("), main.indexOf("function showToast("));
   assert.match(ping, /addEventListener\("animationend", \(\) => ping\.remove\(\), \{ once: true \}\)/);
 });
+
+test("Kanban column heads stay pinned while the board scrolls down (sticky, opaque fill)", () => {
+  const head = css.slice(css.indexOf(".kanban-col-head {"), css.indexOf("}", css.indexOf(".kanban-col-head {")));
+  assert.match(head, /position: sticky;/);
+  assert.match(head, /top: 0;/);
+  assert.match(head, /z-index: 1;/);
+  assert.match(head, /background: rgb\(247 248 248 \/ \.96\);/);
+  // The board itself is the scroller the heads stick to.
+  const boardRule = css.slice(css.indexOf(".kanban {"), css.indexOf("}", css.indexOf(".kanban {")));
+  assert.match(boardRule, /overflow: auto;/);
+  // The bell list floats over the pinned heads.
+  const list = css.slice(css.indexOf(".kanban-bell-list {"), css.indexOf("}", css.indexOf(".kanban-bell-list {")));
+  assert.match(list, /z-index: 6;/);
+});

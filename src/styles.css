@@ -2142,6 +2142,12 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   justify-content: space-between;
   align-items: end;
   gap: var(--sp-2);
+  /* Pinned while the board scrolls down; a near-solid fill so cards slide
+   * under it instead of showing through (R-KB-08). */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgb(247 248 248 / .96);
 }
 
 .kanban-col-head > span:not(.kanban-done-chevron) {
