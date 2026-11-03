@@ -143,6 +143,9 @@ export const EN = Object.freeze({
   "看板有更新": "Board updated",
   "看板通知": "Kanban notifications",
   "未有看板通知": "No kanban notifications yet",
+  "全部已讀": "Mark all read",
+  "啱啱": "Just now",
+  "卡片": "Card",
   "返回": "Back",
   "看板更新失敗。": "Board update failed.",
   "排程工作": "Scheduled jobs",
@@ -204,7 +207,15 @@ export const EN = Object.freeze({
   "文字大小同介面語言即時試睇，撳「儲存」先記住；唔儲存就關，會返原本。": "Text size and language preview at once. Press Save to keep them; closing without saving puts them back.",
 });
 
+/** Whole strings with one number in them (R-LK-02 addendum, R-KB-10). Still whole-string:
+ *  the pattern is anchored at both ends, so nothing inside a longer sentence changes. */
+export const EN_PATTERNS = Object.freeze([
+  Object.freeze([/^(\d+) 分鐘前$/, (n) => `${n} min ago`]),
+  Object.freeze([/^看板通知（(\d+\+?) 個未讀）$/, (n) => `Kanban notifications (${n} unread)`]),
+]);
+
 const DICTS = Object.freeze({ en: EN });
+const PATTERNS = Object.freeze({ en: EN_PATTERNS });
 
 /** One UI string in `lang`. Anything not in the table is returned unchanged. */
 export function translate(text, lang) {
@@ -213,7 +224,16 @@ export function translate(text, lang) {
   const raw = String(text ?? "");
   const key = raw.trim();
   if (!key) return raw;
-  const hit = DICTS[code]?.[key];
+  let hit = DICTS[code]?.[key];
+  if (!hit) {
+    for (const [pattern, make] of PATTERNS[code] || []) {
+      const m = pattern.exec(key);
+      if (m) {
+        hit = make(m[1]);
+        break;
+      }
+    }
+  }
   if (!hit) return raw;
   return raw.replace(key, hit);
 }
@@ -227,6 +247,8 @@ export const NO_TRANSLATE = [
   ".kanban-detail",
   ".kanban-col-head",
   ".kanban-crumb-profile",
+  ".kanban-bell-title",
+  ".kanban-bell-change",
   ".cron-name",
   ".session-menu",
   ".session-select",

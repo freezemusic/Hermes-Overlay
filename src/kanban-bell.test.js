@@ -12,6 +12,11 @@ import {
   kanbanEvents,
   kanbanEventTime,
   kanbanSeen,
+  kanbanColumnLabel,
+  kanbanEventUnread,
+  KANBAN_BELL_READ_ALL,
+  KANBAN_BELL_TIP,
+  markKanbanEventsListed,
   markKanbanEventsRead,
   normalizeBoard,
   pushKanbanEvents,
@@ -92,8 +97,10 @@ test("rows show relative or HH:MM time and the status change", () => {
   assert.equal(kanbanEventTime(now - 5_000, now), "啱啱");
   assert.equal(kanbanEventTime(now - 7 * 60_000, now), "7 分鐘前");
   assert.equal(kanbanEventTime(new Date(2026, 10, 3, 9, 5).getTime(), now), "09:05");
-  assert.equal(kanbanEventChange({ kind: "moved", from: "todo", to: "ready" }), "todo → ready");
-  assert.equal(kanbanEventChange({ kind: "added", to: "triage" }), "新增 → triage");
+  // R-KB-10: column-head words, never 新增 mixed with English statuses.
+  assert.equal(kanbanEventChange({ kind: "moved", from: "todo", to: "ready" }), "TODO → READY");
+  assert.equal(kanbanEventChange({ kind: "added", to: "triage" }), "NEW → TRIAGE");
+  assert.doesNotMatch(kanbanEventChange({ kind: "added", to: "triage" }), /[\u3400-\u9fff]/);
   assert.equal(kanbanEventChange({ kind: "updated" }), "");
   assert.equal(KANBAN_BELL_EMPTY, "未有看板通知");
 });
@@ -302,4 +309,101 @@ test("Kanban column heads stay pinned while the board scrolls down (sticky, opaq
   // The bell list floats over the pinned heads.
   const list = css.slice(css.indexOf(".kanban-bell-list {"), css.indexOf("}", css.indexOf(".kanban-bell-list {")));
   assert.match(list, /z-index: 6;/);
+});
+
+test("R-KB-10 column labels, unread for this showing, and 全部已讀", () => {
+  assert.equal(kanbanColumnLabel("scheduled"), "SCHEDULED");
+  assert.equal(kanbanColumnLabel(""), "?");
+  const fresh = new Set(["b"]);
+  assert.equal(kanbanEventUnread({ id: "a", listed: false }, fresh), true);
+  assert.equal(kanbanEventUnread({ id: "b", listed: true }, fresh), true, "new when this showing opened");
+  assert.equal(kanbanEventUnread({ id: "c", listed: true }, fresh), false);
+  const all = markKanbanEventsListed([{ id: "a" }, { id: "b", read: true, listed: true }]);
+  assert.deepEqual(all.map((e) => [e.read, e.listed]), [[true, true], [true, true]]);
+  assert.equal(KANBAN_BELL_READ_ALL, "全部已讀");
+  assert.equal(KANBAN_BELL_TIP, "看板通知");
+});
+
+test("R-KB-10 the bell list paints a 32px head, unread / read rows and a scroller", () => {
+  const dom = new JSDOM(`<aside id="kanban-panel"><button id="btn-kanban-bell"></button><span id="kanban-bell-count"></span><div id="kanban-bell-list" hidden></div></aside>`);
+  const doc = dom.window.document;
+  const now = Date.now();
+  const state = {
+    kanban: {
+      bellOpen: true,
+      bellFresh: new Set(["e1"]),
+      events: [
+        { id: "e1", kind: "moved", taskId: "t1", title: "New one", from: "todo", to: "ready", at: now, read: true, listed: true },
+        { id: "e2", kind: "added", taskId: "t2", title: "Older", from: "", to: "triage", at: now - 120_000, read: true, listed: true },
+      ],
+    },
+  };
+  const calls = [];
+  const paint = lift("paintKanbanBell", {
+    $: (sel) => doc.querySelector(sel),
+    document: doc,
+    state,
+    KANBAN_BELL_TIP,
+    KANBAN_BELL_READ_ALL,
+    KANBAN_BELL_EMPTY,
+    kanbanBadgeText,
+    unreadKanbanCount,
+    kanbanEventUnread,
+    kanbanEventTime,
+    kanbanEventChange,
+    placeKanbanBellList: () => calls.push("place"),
+    readAllKanbanBell: () => calls.push("read-all"),
+    closeKanbanBell: () => calls.push("close"),
+    openKanbanDetail: () => {},
+  });
+  paint();
+  const list = doc.getElementById("kanban-bell-list");
+  assert.equal(list.hidden, false);
+  assert.deepEqual(calls, ["place"]);
+  const head = list.querySelector(":scope > .kanban-bell-head");
+  assert.equal(head.querySelector(".kanban-bell-heading").textContent, "看板通知");
+  const readAll = head.querySelector("button.kanban-bell-readall");
+  assert.equal(readAll.textContent, "全部已讀");
+  assert.equal(readAll.disabled, false);
+  const rows = [...list.querySelectorAll(":scope > .kanban-bell-rows > .kanban-bell-row")];
+  assert.deepEqual(rows.map((r) => r.className), ["kanban-bell-row is-unread", "kanban-bell-row is-read"]);
+  assert.deepEqual(rows.map((r) => r.querySelector(".kanban-bell-change").textContent), ["TODO → READY", "NEW → TRIAGE"]);
+  readAll.click();
+  assert.deepEqual(calls, ["place", "read-all"]);
+  // Nothing unread: 全部已讀 is disabled.
+  state.kanban.bellFresh = new Set();
+  paint();
+  assert.equal(list.querySelector(".kanban-bell-readall").disabled, true);
+  assert.equal(list.querySelectorAll(".kanban-bell-row.is-read").length, 2);
+});
+
+test("R-KB-10 bell list CSS: head 32px, 12px Barlow #0000f2, bars and weights, 360px, 12px bottom, 16px fade", () => {
+  const rule = (sel) => {
+    const at = css.indexOf(`\n${sel} {`);
+    assert.ok(at >= 0, sel);
+    return css.slice(at, css.indexOf("}", at));
+  };
+  assert.match(rule(".kanban-bell-head"), /height:\s*32px/);
+  for (const sel of [".kanban-bell-heading", ".kanban-bell-readall"]) {
+    assert.match(rule(sel), /font:\s*500 12px\/1 var\(--font-label\)/);
+    assert.match(rule(sel), /color:\s*#0000f2/);
+  }
+  assert.match(css, /--font-label: "Barlow Condensed"/);
+  assert.match(rule(".kanban-bell-list"), /max-height:\s*min\(360px/);
+  assert.match(rule(".kanban-bell-list"), /overflow:\s*hidden/);
+  assert.match(rule(".kanban-bell-rows"), /overflow:\s*auto/);
+  assert.match(rule(".kanban-bell-rows"), /padding:\s*4px 4px 12px/);
+  assert.match(rule(".kanban-bell-rows.has-more"), /mask-image:\s*linear-gradient\(to bottom, #000 calc\(100% - 16px\), transparent\)/);
+  assert.match(rule(".kanban-bell-row"), /border-left:\s*2px solid transparent/);
+  assert.match(css, /\.kanban-bell-row\.is-unread \{ border-left-color: #0000f2; \}/);
+  assert.match(css, /\.kanban-bell-row\.is-unread \.kanban-bell-title \{ font-weight: 600;/);
+  assert.match(css, /\.kanban-bell-row\.is-read \.kanban-bell-title \{ font-weight: 400; color: #616191; \}/);
+  // 6px under the bell.
+  const place = main.slice(main.indexOf("function placeKanbanBellList("), main.indexOf("function openKanbanBell()"));
+  assert.match(place, /b\.bottom - p\.top \+ 6/);
+  // Read all keeps the list open and clears through clearKanbanUnread.
+  const readAll = main.slice(main.indexOf("function readAllKanbanBell()"), main.indexOf("function closeKanbanBell()"));
+  assert.match(readAll, /markKanbanEventsListed/);
+  assert.match(readAll, /clearKanbanUnread\("read-all"\)/);
+  assert.doesNotMatch(readAll, /closeKanbanBell|bellOpen = false/);
 });

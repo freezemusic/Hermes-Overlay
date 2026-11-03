@@ -283,9 +283,28 @@ export function kanbanEventTime(at, now = Date.now()) {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-/** The status part of a row: 「新增 → todo」, 「todo → ready」, or "". */
+export const KANBAN_BELL_READ_ALL = "全部已讀";
+
+/** A status as its column head reads it: TRIAGE, TODO, … (R-KB-10). */
+export function kanbanColumnLabel(status) {
+  return String(status || "?").trim().toUpperCase() || "?";
+}
+
+/** The status part of a row in column-head words, never mixed with Chinese:
+ *  「NEW → TRIAGE」, 「TODO → READY」, or "" (R-KB-10). */
 export function kanbanEventChange(entry) {
-  if (entry?.kind === "added") return `新增 → ${entry.to || "?"}`;
-  if (entry?.kind === "moved") return `${entry.from || "?"} → ${entry.to || "?"}`;
+  if (entry?.kind === "added") return `NEW → ${kanbanColumnLabel(entry.to)}`;
+  if (entry?.kind === "moved") return `${kanbanColumnLabel(entry.from)} → ${kanbanColumnLabel(entry.to)}`;
   return "";
+}
+
+/** Bold / bar for a row: not seen in the list before this showing (R-KB-10). */
+export function kanbanEventUnread(entry, fresh) {
+  if (!entry) return false;
+  return !entry.listed || !!fresh?.has?.(entry.id);
+}
+
+/** 全部已讀: every entry read and listed, nothing left bold. */
+export function markKanbanEventsListed(list) {
+  return (list || []).map((entry) => (entry.read && entry.listed ? entry : { ...entry, read: true, listed: true }));
 }

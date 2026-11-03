@@ -2236,27 +2236,77 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 
 .kanban-bell-list {
   position: absolute;
+  /* main.js sets top / right so the list hangs 6px under the bell (R-KB-10). */
   top: 64px;
   right: var(--sp-4);
   z-index: 6;
+  display: flex;
+  flex-direction: column;
   width: min(320px, calc(100% - 32px));
-  max-height: min(420px, calc(100% - 80px));
-  overflow: auto;
+  max-height: min(360px, calc(100% - 80px));
+  overflow: hidden;
   margin: 0;
-  padding: 4px;
+  padding: 0;
   background: rgb(255 255 255 / .97);
   border: 1px solid var(--nous-blue);
   border-radius: var(--r-sm);
   box-shadow: var(--glow-sm);
 }
 .kanban-bell-list[hidden] { display: none; }
+/* R-KB-10: 32px head, 看板通知 left, 全部已讀 right. */
+.kanban-bell-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--bot-20);
+}
+.kanban-bell-heading {
+  font: 500 12px/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  color: #0000f2;
+}
+.kanban-bell-readall {
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: #0000f2;
+  font: 500 12px/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.kanban-bell-readall:hover,
+.kanban-bell-readall:focus-visible { background: var(--bot-10); outline: none; }
+.kanban-bell-readall:disabled { color: #616191; cursor: default; background: transparent; }
+/* The rows scroll under the head; 12px bottom padding so the last row is never
+   cut, and a 16px fade at the bottom only while more rows are below. */
+.kanban-bell-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px 4px 12px;
+}
+.kanban-bell-rows.has-more {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+}
 .kanban-bell-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 2px 8px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 6px 8px 6px 10px;
   border: 0;
+  border-left: 2px solid transparent;
   border-radius: 2px;
   background: transparent;
   color: #14142b;
@@ -2266,7 +2316,9 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 }
 .kanban-bell-row:hover,
 .kanban-bell-row:focus-visible { background: var(--bot-10); outline: none; }
-.kanban-bell-row.is-unread .kanban-bell-title { font-weight: 600; }
+.kanban-bell-row.is-unread { border-left-color: #0000f2; }
+.kanban-bell-row.is-unread .kanban-bell-title { font-weight: 600; color: #14142b; }
+.kanban-bell-row.is-read .kanban-bell-title { font-weight: 400; color: #616191; }
 .kanban-bell-row[disabled] { cursor: default; }
 .kanban-bell-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kanban-bell-time,

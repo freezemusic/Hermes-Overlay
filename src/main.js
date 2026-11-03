@@ -136,8 +136,12 @@ import {
   kanbanEventChange,
   kanbanEvents,
   kanbanEventTime,
+  kanbanEventUnread,
   kanbanSeen,
   KANBAN_BELL_EMPTY,
+  KANBAN_BELL_READ_ALL,
+  KANBAN_BELL_TIP,
+  markKanbanEventsListed,
   markKanbanEventsRead,
   pushKanbanEvents,
   unreadKanbanCount,
@@ -3943,6 +3947,9 @@ const state = {
     // R-KB-09: bell events, newest first, memory only (never config.json).
     events: [],
     bellOpen: false,
+    // R-KB-10: ids that were new when this showing of the list opened; they keep
+    // the unread bar and weight until the list closes or 全部已讀.
+    bellFresh: new Set(),
     saving: false,
     dragging: false,
     detailOpen: false,
@@ -13207,7 +13214,9 @@ function endKanbanPointer(event) {
   }
 }
 
-/** R-KB-09: the bell button count and the event list. */
+/** R-KB-09: the bell button count and the event list.
+ *  R-KB-10: a 32px head (看板通知 · 全部已讀) over its own scroller; unread rows
+ *  get the 2px bar and 600 titles, read rows 400 #616191. */
 function paintKanbanBell() {
   const bell = $("#btn-kanban-bell");
   const badge = $("#kanban-bell-count");
@@ -13218,7 +13227,7 @@ function paintKanbanBell() {
   }
   if (bell) {
     bell.setAttribute("aria-expanded", String(!!state.kanban.bellOpen));
-    const tip = count ? `看板通知（${count} 個未讀）` : "看板通知";
+    const tip = count ? `${KANBAN_BELL_TIP}（${count} 個未讀）` : KANBAN_BELL_TIP;
     bell.title = tip;
     bell.setAttribute("aria-label", tip);
   }
@@ -13226,22 +13235,42 @@ function paintKanbanBell() {
   if (!list) return;
   list.hidden = !state.kanban.bellOpen;
   if (!state.kanban.bellOpen) return;
-  list.replaceChildren();
+  placeKanbanBellList(list, bell);
   const events = state.kanban.events || [];
+  const fresh = state.kanban.bellFresh;
+  const anyUnread = events.some((entry) => kanbanEventUnread(entry, fresh));
+  const keepScroll = list.querySelector(".kanban-bell-rows")?.scrollTop || 0;
+  list.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "kanban-bell-head";
+  const heading = document.createElement("span");
+  heading.className = "kanban-bell-heading";
+  heading.textContent = KANBAN_BELL_TIP;
+  const readAll = document.createElement("button");
+  readAll.type = "button";
+  readAll.className = "kanban-bell-readall";
+  readAll.textContent = KANBAN_BELL_READ_ALL;
+  readAll.disabled = !anyUnread;
+  readAll.addEventListener("click", (event) => {
+    event.stopPropagation();
+    readAllKanbanBell();
+  });
+  head.append(heading, readAll);
+  const rows = document.createElement("div");
+  rows.className = "kanban-bell-rows";
+  list.append(head, rows);
   if (!events.length) {
     const empty = document.createElement("p");
     empty.className = "kanban-bell-empty";
     empty.textContent = KANBAN_BELL_EMPTY;
-    list.append(empty);
+    rows.append(empty);
     return;
   }
   const now = Date.now();
   for (const entry of events) {
     const row = document.createElement("button");
     row.type = "button";
-    // Bold until the list itself has been opened once, even though opening
-    // the panel already cleared the count.
-    row.className = `kanban-bell-row${entry.listed ? "" : " is-unread"}`;
+    row.className = `kanban-bell-row ${kanbanEventUnread(entry, fresh) ? "is-unread" : "is-read"}`;
     row.dataset.eventId = entry.id;
     if (entry.taskId) row.dataset.taskId = entry.taskId;
     else row.disabled = true;
@@ -13268,13 +13297,29 @@ function paintKanbanBell() {
         void openKanbanDetail(entry.taskId);
       });
     }
-    list.append(row);
+    rows.append(row);
   }
+  rows.scrollTop = keepScroll;
+  const fade = () => rows.classList.toggle("has-more", rows.scrollTop + rows.clientHeight < rows.scrollHeight - 1);
+  rows.addEventListener("scroll", fade, { passive: true });
+  fade();
+}
+
+/** R-KB-10: the list hangs 6px under the bell, right edges lined up. */
+function placeKanbanBellList(list, bell) {
+  const panel = list.offsetParent || list.parentElement;
+  if (!panel || !bell) return;
+  const p = panel.getBoundingClientRect();
+  const b = bell.getBoundingClientRect();
+  if (!b.height) return;
+  list.style.top = `${Math.round(b.bottom - p.top + 6)}px`;
+  list.style.right = `${Math.max(0, Math.round(p.right - b.right))}px`;
 }
 
 function openKanbanBell() {
   // What the list shows keeps its unread weight this time; the count clears now.
   state.kanban.bellOpen = true;
+  state.kanban.bellFresh = new Set((state.kanban.events || []).filter((entry) => !entry.listed).map((entry) => entry.id));
   // clearKanbanUnread paints the list; rows stay bold for this showing.
   clearKanbanUnread("bell");
   state.kanban.events = (state.kanban.events || []).map((entry) => (entry.listed ? entry : { ...entry, listed: true }));
@@ -13282,16 +13327,27 @@ function openKanbanBell() {
   if (badge) badge.hidden = true;
   const bell = $("#btn-kanban-bell");
   if (bell) {
-    bell.title = "看板通知";
-    bell.setAttribute("aria-label", "看板通知");
+    bell.title = KANBAN_BELL_TIP;
+    bell.setAttribute("aria-label", KANBAN_BELL_TIP);
   }
   renderKanbanOrb();
   scheduleHitSync();
 }
 
+/** R-KB-10 全部已讀: everything read and listed, the list stays open. */
+function readAllKanbanBell() {
+  state.kanban.bellFresh = new Set();
+  state.kanban.events = markKanbanEventsListed(state.kanban.events);
+  clearKanbanUnread("read-all");
+  renderKanbanOrb();
+}
+
 function closeKanbanBell() {
   if (!state.kanban.bellOpen) return false;
   state.kanban.bellOpen = false;
+  // Rows that arrived while the list was up were seen; next time they read as read.
+  state.kanban.bellFresh = new Set();
+  state.kanban.events = (state.kanban.events || []).map((entry) => (entry.listed ? entry : { ...entry, listed: true }));
   paintKanbanBell();
   scheduleHitSync();
   return true;

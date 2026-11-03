@@ -8,6 +8,7 @@ import {
   DEFAULT_LANGUAGE,
   DEFAULT_TEXT_SIZE,
   EN,
+  NO_TRANSLATE,
   normalizeLanguage,
   normalizeTextSize,
   storedLanguage,
@@ -207,4 +208,18 @@ test("settings bot rows can shrink, so 特大字 + English never pushes a sidewa
   assert.match(row, /grid-template-columns: auto minmax\(0, 1\.1fr\) minmax\(0, 1\.1fr\) 42px auto;/);
   const input = css.slice(css.indexOf(".bot-row input {"), css.indexOf("}", css.indexOf(".bot-row input {")));
   assert.match(input, /min-width: 0;/);
+});
+
+test("R-KB-10 bell strings have English, numbered whole strings use anchored patterns, card titles stay data", () => {
+  assert.equal(translate("全部已讀", "en"), "Mark all read");
+  assert.equal(translate("看板通知", "en"), "Kanban notifications");
+  assert.equal(translate("啱啱", "en"), "Just now");
+  assert.equal(translate("7 分鐘前", "en"), "7 min ago");
+  assert.equal(translate("看板通知（3 個未讀）", "en"), "Kanban notifications (3 unread)");
+  assert.equal(translate("看板通知（9+ 個未讀）", "en"), "Kanban notifications (9+ unread)");
+  // Anchored: a longer sentence that contains the pattern is not touched.
+  assert.equal(translate("佢 7 分鐘前講過", "en"), "佢 7 分鐘前講過");
+  assert.equal(translate("7 分鐘前", "zh-HK"), "7 分鐘前");
+  assert.match(NO_TRANSLATE, /\.kanban-bell-title/);
+  assert.match(NO_TRANSLATE, /\.kanban-bell-change/);
 });
