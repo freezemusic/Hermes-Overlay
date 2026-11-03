@@ -149,7 +149,7 @@
 
 ## 13. 連線（只行 9119）同架構
 
-0. 架構（R-AR）：Hermes 網絡只經 `HermesClient`（對話、看板讀取同拖卡、登入、profile 名單）；路徑只喺 `client/endpoints.rs`；埠只喺 config 預設；完全冇 8642 呼叫，`gateway_legacy.rs` 已刪（2026-11-03，R-AR-04）。Dashboard 地址係設定「Kanban server」，留空就係 config 預設 `http://127.0.0.1:9119`，唔再由 gateway host 推（R-AR-06）。示範模式只用 `--demo`（R-AR-05）。
+0. 架構（R-AR）：Hermes 網絡只經 `HermesClient`（對話、看板讀取同拖卡、登入、profile 名單）；路徑只喺 `client/endpoints.rs`；埠只喺 config 預設；完全冇 8642 呼叫，`gateway_legacy.rs` 已刪（2026-11-03，R-AR-04）。Dashboard 地址係設定「Kanban server」，留空就係 config 預設 `http://127.0.0.1:9119`，唔再由 gateway host 推（R-AR-06）。舊 config 只做一次搬遷：Kanban server 空而有舊 gateway 位址（唔係 `demo`）時，讀 config 就寫入「舊 host + 9119」同標記 `kanban_base_url_from_gateway`，之後唔再搬（R-AR-06）。示範模式只用 `--demo`（R-AR-05）。
 
 1. 對話全部經 Hermes Dashboard（預設 9119）嘅 REST 同 `/api/ws`，由一個 `HermesClient` 負責（R-CL-01）。設定只要 Dashboard 地址同 Dashboard 登入；每個 bot 嘅 API 金鑰唔再需要。
 2. 送出用 `queued: true`，唔打斷手機嗰輪；排隊時顯示「手機嗰邊行緊，排緊隊」（R-CL-02）。

@@ -150,6 +150,12 @@ pub struct AppConfig {
     /// Written only by an explicit 釘住 / 取消釘住.
     #[serde(default, skip_serializing_if = "skip_empty_pins")]
     pub suborb_pins: BTreeMap<String, Vec<String>>,
+    /// Marker for the one-time move of the old gateway host into
+    /// `kanban_base_url` (R-AR-06). Written once with that value, then
+    /// carried through every save so the move never runs again.
+    /// Omitted while false so files that never migrated stay byte-identical.
+    #[serde(default, skip_serializing_if = "skip_false")]
+    pub kanban_base_url_from_gateway: bool,
 }
 
 fn skip_false(value: &bool) -> bool {
@@ -235,6 +241,7 @@ impl Default for AppConfig {
             show_bot_names: false,
             show_tool_detail: false,
             suborb_pins: BTreeMap::new(),
+            kanban_base_url_from_gateway: false,
         }
     }
 }
@@ -275,6 +282,64 @@ pub fn load(path: &Path) -> Result<AppConfig, String> {
     }
     let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))
+}
+
+/// The dashboard origin an old config pointed at through its gateway:
+/// the old gateway's scheme and host with the config default dashboard
+/// port ([`DEFAULT_DASHBOARD_PORT`]). `gateway_base_url` first, then the
+/// first per-bot `base_url`. Blank, `demo` and unparseable values are skipped.
+/// `http://10.10.24.33:8642` gives `http://10.10.24.33:9119`.
+pub fn dashboard_from_legacy_gateway(cfg: &AppConfig) -> Option<String> {
+    let candidates = cfg
+        .legacy_gateway_base_url
+        .iter()
+        .chain(cfg.bots.iter().filter_map(|bot| bot.legacy_base_url.as_ref()));
+    for raw in candidates {
+        let raw = raw.trim();
+        if raw.is_empty() || raw.eq_ignore_ascii_case("demo") {
+            continue;
+        }
+        let Ok(url) = reqwest::Url::parse(raw) else {
+            continue;
+        };
+        if url.scheme() != "http" && url.scheme() != "https" {
+            continue;
+        }
+        let Some(host) = url.host_str() else {
+            continue;
+        };
+        if host.is_empty() {
+            continue;
+        }
+        return Some(format!("{}://{host}:{DEFAULT_DASHBOARD_PORT}", url.scheme()));
+    }
+    None
+}
+
+/// One-time move (R-AR-06): a blank Kanban server plus an old gateway
+/// address gets the gateway's host on the dashboard port, and the marker.
+/// Never touches a non-blank field, the old keys, or an already-migrated
+/// config. True when `cfg` changed and needs one save.
+pub fn migrate_legacy_gateway(cfg: &mut AppConfig) -> bool {
+    if cfg.kanban_base_url_from_gateway || !cfg.kanban_base_url.trim().is_empty() {
+        return false;
+    }
+    let Some(origin) = dashboard_from_legacy_gateway(cfg) else {
+        return false;
+    };
+    cfg.kanban_base_url = origin;
+    cfg.kanban_base_url_from_gateway = true;
+    true
+}
+
+/// [`load`], then the one-time gateway move written once through [`save`].
+/// A missing file is never created here.
+pub fn load_and_migrate(path: &Path) -> Result<AppConfig, String> {
+    let mut cfg = load(path)?;
+    if path.exists() && migrate_legacy_gateway(&mut cfg) {
+        save(path, &cfg)?;
+    }
+    Ok(cfg)
 }
 
 pub fn save(path: &Path, cfg: &AppConfig) -> Result<(), String> {
@@ -1423,6 +1488,141 @@ mod tests {
         assert_eq!(blank.legacy_gateway_base_url.as_deref(), Some(""));
         assert_eq!(word.legacy_gateway_base_url.as_deref(), Some("demo"));
         assert_eq!(AppConfig::default().legacy_gateway_base_url, None);
+    }
+
+    fn migration_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-migrate-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Shaped like Devon's laptop file: no kanban_base_url, old gateway on 8642.
+    const LAPTOP_SHAPED: &str = r##"{
+  "version": 1,
+  "gateway_base_url": "http://10.10.24.33:8642",
+  "dashboard_base_url": "http://127.0.0.1:9119",
+  "bots": [
+    {
+      "profile": "default",
+      "display_name": "default",
+      "color": "#0000f2",
+      "base_url": "",
+      "detail": "",
+      "session_id": "",
+      "session_explicit": false,
+      "session_anchor": 0.0,
+      "enabled": true
+    }
+  ]
+}"##;
+
+    #[test]
+    fn the_laptop_gateway_becomes_exactly_10_10_24_33_9119() {
+        let cfg: AppConfig = serde_json::from_str(LAPTOP_SHAPED).unwrap();
+        assert_eq!(
+            dashboard_from_legacy_gateway(&cfg).as_deref(),
+            Some("http://10.10.24.33:9119")
+        );
+        // The port is the config default, not a literal.
+        assert_eq!(
+            dashboard_from_legacy_gateway(&cfg).unwrap(),
+            format!("http://10.10.24.33:{DEFAULT_DASHBOARD_PORT}")
+        );
+    }
+
+    #[test]
+    fn a_blank_kanban_server_with_an_old_gateway_is_filled_once() {
+        let dir = migration_dir("fill");
+        let path = dir.join("config.json");
+        fs::write(&path, LAPTOP_SHAPED).unwrap();
+        let cfg = load_and_migrate(&path).unwrap();
+        assert_eq!(cfg.kanban_base_url, "http://10.10.24.33:9119");
+        assert!(cfg.kanban_base_url_from_gateway);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"kanban_base_url\": \"http://10.10.24.33:9119\""), "{text}");
+        assert!(text.contains("\"kanban_base_url_from_gateway\": true"), "{text}");
+        // Old keys kept verbatim.
+        assert!(text.contains("\"gateway_base_url\": \"http://10.10.24.33:8642\""), "{text}");
+        assert!(text.contains("\"base_url\": \"\""), "{text}");
+        assert!(text.contains("\"dashboard_base_url\": \"http://127.0.0.1:9119\""), "{text}");
+
+        // A per-bot address alone is enough too; `demo` never counts.
+        let mut only_bot: AppConfig = serde_json::from_str(LAPTOP_SHAPED).unwrap();
+        only_bot.legacy_gateway_base_url = Some(" demo ".into());
+        only_bot.bots[0].legacy_base_url = Some("https://gw.example:8643/".into());
+        assert!(migrate_legacy_gateway(&mut only_bot));
+        assert_eq!(only_bot.kanban_base_url, "https://gw.example:9119");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_non_blank_kanban_server_is_never_overwritten() {
+        let dir = migration_dir("keep");
+        let path = dir.join("config.json");
+        let text = LAPTOP_SHAPED.replacen(
+            "  \"dashboard_base_url\"",
+            "  \"kanban_base_url\": \"http://192.0.2.7:9119\",\n  \"dashboard_base_url\"",
+            1,
+        );
+        fs::write(&path, &text).unwrap();
+        let cfg = load_and_migrate(&path).unwrap();
+        assert_eq!(cfg.kanban_base_url, "http://192.0.2.7:9119");
+        assert!(!cfg.kanban_base_url_from_gateway);
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_old_gateway_leaves_the_field_blank_and_the_file_alone() {
+        let dir = migration_dir("none");
+        let path = dir.join("config.json");
+        for gateway in ["", "demo", "DEMO", "not a url"] {
+            let text = LAPTOP_SHAPED.replace("http://10.10.24.33:8642", gateway);
+            fs::write(&path, &text).unwrap();
+            let cfg = load_and_migrate(&path).unwrap();
+            assert_eq!(cfg.kanban_base_url, "", "{gateway}");
+            assert!(!cfg.kanban_base_url_from_gateway);
+            assert_eq!(crate::kanban::origin(&cfg.kanban_base_url), default_dashboard_origin());
+            assert_eq!(fs::read_to_string(&path).unwrap(), text, "{gateway}");
+        }
+        let text = LAPTOP_SHAPED.replace("  \"gateway_base_url\": \"http://10.10.24.33:8642\",\n", "");
+        fs::write(&path, &text).unwrap();
+        assert_eq!(load_and_migrate(&path).unwrap().kanban_base_url, "");
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        // A missing file is not created.
+        let missing = dir.join("missing.json");
+        assert_eq!(load_and_migrate(&missing).unwrap().kanban_base_url, "");
+        assert!(!missing.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_migration_runs_once_and_later_saves_are_byte_identical() {
+        let dir = migration_dir("twice");
+        let path = dir.join("config.json");
+        fs::write(&path, LAPTOP_SHAPED).unwrap();
+        let first = load_and_migrate(&path).unwrap();
+        let after_first = fs::read(&path).unwrap();
+        let second = load_and_migrate(&path).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(fs::read(&path).unwrap(), after_first);
+        // A no-change save after migration is byte-identical.
+        save(&path, &second).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), after_first);
+        // The marker stops it even if the field is blanked later.
+        let mut blanked = second.clone();
+        blanked.kanban_base_url.clear();
+        assert!(!migrate_legacy_gateway(&mut blanked));
+        assert_eq!(blanked.kanban_base_url, "");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

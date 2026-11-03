@@ -57,7 +57,7 @@ sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1
 
 打開設定（系統匣「設定」或 **Ctrl+Shift+Alt+H**）。「Kanban server」填 `hermes serve` 嘅位址（留空就係 `http://127.0.0.1:9119`），填帳號密碼（或者留空用系統瀏覽器）登入，然後儲存。Bot 名單會自動由 Dashboard 讀。冇 API 金鑰要填。
 
-Open Settings from the tray or **Ctrl+Shift+Alt+H**. Put the `hermes serve` address in "Kanban server" (blank means `http://127.0.0.1:9119`), sign in, and save. Profiles come from the dashboard; there are no per-bot API keys. Demo mode is the `--demo` launch flag only.
+Open Settings from the tray or **Ctrl+Shift+Alt+H**. Put the `hermes serve` address in "Kanban server" (blank means `http://127.0.0.1:9119`), sign in, and save. Profiles come from the dashboard; there are no per-bot API keys. An old config with a blank Kanban server and an old gateway address is moved once on first load: the gateway host on port 9119 (e.g. `http://10.10.24.33:8642` becomes `http://10.10.24.33:9119`). Demo mode is the `--demo` launch flag only.
 
 ### overlay-slash（可選）
 

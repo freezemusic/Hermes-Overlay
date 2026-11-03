@@ -206,7 +206,13 @@ fn config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 fn load_config(app: &AppHandle) -> Result<AppConfig, String> {
-    config::load(&config_path(app)?)
+    let path = config_path(app)?;
+    if demo_mode() {
+        // --demo never writes config.json.
+        return config::load(&path);
+    }
+    // One-time move of the old gateway host into Kanban server (R-AR-06).
+    config::load_and_migrate(&path)
 }
 
 #[derive(Serialize)]
@@ -1295,6 +1301,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         show_bot_names: input.show_bot_names,
         show_tool_detail: input.show_tool_detail,
         suborb_pins: previous.suborb_pins.clone(),
+        kanban_base_url_from_gateway: previous.kanban_base_url_from_gateway,
     };
     config::save(&config_path(&app)?, &cfg)?;
     if let Some(state) = state.as_ref() {
