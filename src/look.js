@@ -144,7 +144,7 @@ export const EN = Object.freeze({
   "看板通知": "Kanban notifications",
   "未有看板通知": "No kanban notifications yet",
   "全部已讀": "Mark all read",
-  "啱啱": "Just now",
+  "1 分鐘內": "Under 1 min",
   "卡片": "Card",
   "返回": "Back",
   "看板更新失敗。": "Board update failed.",

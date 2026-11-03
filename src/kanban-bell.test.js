@@ -11,6 +11,7 @@ import {
   kanbanEventChange,
   kanbanEvents,
   kanbanEventTime,
+  KANBAN_EVENT_TIME_RE,
   kanbanSeen,
   kanbanColumnLabel,
   kanbanEventUnread,
@@ -94,7 +95,7 @@ test("badge text is blank, 1–9, then 9+", () => {
 
 test("rows show relative or HH:MM time and the status change", () => {
   const now = new Date(2026, 10, 3, 16, 40, 0).getTime();
-  assert.equal(kanbanEventTime(now - 5_000, now), "啱啱");
+  assert.equal(kanbanEventTime(now - 5_000, now), "1 分鐘內");
   assert.equal(kanbanEventTime(now - 7 * 60_000, now), "7 分鐘前");
   assert.equal(kanbanEventTime(new Date(2026, 10, 3, 9, 5).getTime(), now), "09:05");
   // R-KB-10: column-head words, never 新增 mixed with English statuses.
@@ -509,3 +510,27 @@ test("R-KB-14 bell fade: 48px two-layer mask (prefixed + unprefixed), scrollbar 
   rows.scrollTop = 629; fade(); assert.ok(!rows.classList.contains("has-more"));
 });
 
+test("R-KB-15 the time slot only ever shows a time, in the body font", () => {
+  const now = new Date(2026, 10, 3, 16, 40, 0).getTime();
+  const samples = [now, now - 5_000, now - 59_999, now - 60_000, now - 59 * 60_000, now - 3_600_000, now - 86_400_000, String(now - 120_000)];
+  for (const at of samples) assert.match(kanbanEventTime(at, now), KANBAN_EVENT_TIME_RE, String(at));
+  assert.equal(kanbanEventTime(now - 5_000, now), "1 分鐘內");
+  assert.equal(kanbanEventTime(now - 59_999, now), "1 分鐘內");
+  assert.equal(kanbanEventTime(now - 60_000, now), "1 分鐘前");
+  // Every non-empty value has a digit in it; no 「啱啱」 any more.
+  for (const at of samples) assert.match(kanbanEventTime(at, now), /\d/);
+  assert.equal(kanbanEventTime(String(now - 120_000), now), "2 分鐘前");
+  // Anything that is not a timestamp gives an empty slot, never the text itself.
+  for (const bad of [undefined, null, "", "啫啫", "mt-coder", "Bingo panel follows window", NaN, 0, {}]) {
+    assert.equal(kanbanEventTime(bad, now), "", String(bad));
+  }
+  const paint = main.slice(main.indexOf("function paintKanbanBell("), main.indexOf("function placeKanbanBellList("));
+  const timeLines = paint.split("\n").filter((l) => /\btime\.(textContent|innerText|innerHTML|append)/.test(l));
+  assert.deepEqual(timeLines.map((l) => l.trim()), ["time.textContent = kanbanEventTime(entry.at, now);"]);
+  const at = css.indexOf("\n.kanban-bell-time {");
+  assert.ok(at >= 0);
+  const rule = css.slice(at, css.indexOf("}", at));
+  assert.match(rule, /font:\s*400 12px\/1\.35 var\(--font-body\)/);
+  assert.match(rule, /tabular-nums/);
+  assert.match(css, /--font-body: [^;]*"Noto Sans HK"/);
+});

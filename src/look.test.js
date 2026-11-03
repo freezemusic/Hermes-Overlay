@@ -213,7 +213,7 @@ test("settings bot rows can shrink, so 特大字 + English never pushes a sidewa
 test("R-KB-10 bell strings have English, numbered whole strings use anchored patterns, card titles stay data", () => {
   assert.equal(translate("全部已讀", "en"), "Mark all read");
   assert.equal(translate("看板通知", "en"), "Kanban notifications");
-  assert.equal(translate("啱啱", "en"), "Just now");
+  assert.equal(translate("1 分鐘內", "en"), "Under 1 min");
   assert.equal(translate("7 分鐘前", "en"), "7 min ago");
   assert.equal(translate("看板通知（3 個未讀）", "en"), "Kanban notifications (3 unread)");
   assert.equal(translate("看板通知（9+ 個未讀）", "en"), "Kanban notifications (9+ unread)");

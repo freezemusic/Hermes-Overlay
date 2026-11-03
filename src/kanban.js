@@ -274,14 +274,24 @@ export function kanbanBadgeText(count) {
   return n > 9 ? "9+" : String(n);
 }
 
-/** 「啱啱」 under a minute, 「N 分鐘前」 under an hour, else HH:MM (local). */
+/** R-KB-15: under a minute. Digits, not 「啱啱」 (which read as 「啫啫」 at 11–12px). */
+export const KANBAN_TIME_JUST_NOW = "1 分鐘內";
+
+/** R-KB-15: the bell row's time slot. Only ever a time: 「1 分鐘內」 under a
+ *  minute, 「N 分鐘前」 under an hour, else HH:MM (local); "" when the event
+ *  has no usable timestamp (never a title, bot or assignee). */
 export function kanbanEventTime(at, now = Date.now()) {
-  const age = Math.max(0, Number(now) - Number(at));
-  if (age < 60_000) return "啱啱";
+  const t = typeof at === "number" ? at : typeof at === "string" && /^\d+$/.test(at.trim()) ? Number(at) : NaN;
+  if (!Number.isFinite(t) || t <= 0) return "";
+  const age = Math.max(0, Number(now) - t);
+  if (age < 60_000) return KANBAN_TIME_JUST_NOW;
   if (age < 3_600_000) return `${Math.floor(age / 60_000)} 分鐘前`;
-  const d = new Date(Number(at));
+  const d = new Date(t);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
+
+/** R-KB-15: every string kanbanEventTime can return. */
+export const KANBAN_EVENT_TIME_RE = /^(|1 分鐘內|[1-5]?\d 分鐘前|[0-2]\d:[0-5]\d)$/;
 
 export const KANBAN_BELL_READ_ALL = "全部已讀";
 

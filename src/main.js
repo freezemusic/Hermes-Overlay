@@ -13300,8 +13300,9 @@ function paintKanbanBell() {
     title.title = entry.title || "";
     const time = document.createElement("time");
     time.className = "kanban-bell-time";
-    time.dateTime = new Date(entry.at).toISOString();
+    // R-KB-15: the time slot only ever holds kanbanEventTime(entry.at).
     time.textContent = kanbanEventTime(entry.at, now);
+    if (Number.isFinite(entry.at) && entry.at > 0) time.dateTime = new Date(entry.at).toISOString();
     row.append(title, time);
     const change = kanbanEventChange(entry);
     if (change) {

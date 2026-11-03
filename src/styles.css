@@ -2368,6 +2368,14 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   font: 400 var(--fs-meta)/1.4 var(--font-mono);
   color: #616191;
 }
+/* R-KB-15: the time slot is Chinese + digits, so it uses the body stack (which
+   has Noto Sans HK) at 12px with tabular digits, never the mono stack: IBM Plex
+   Mono has no CJK and the 11px fallback made 「啱啱」 read as 「啫啫」. */
+.kanban-bell-time {
+  font: 400 12px/1.35 var(--font-body);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .kanban-bell-change { grid-column: 1 / -1; }
 .kanban-bell-empty {
   margin: 0;
