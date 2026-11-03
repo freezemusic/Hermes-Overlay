@@ -200,3 +200,11 @@ test("main.js previews the look, saves it with settings, and reverts on close wi
   // The look is only written by 儲存 (no splice, no write on click).
   assert.doesNotMatch(main, /invoke\("set_text_size"|invoke\("set_ui_language"/);
 });
+
+test("settings bot rows can shrink, so 特大字 + English never pushes a sideways scrollbar over 儲存", () => {
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const row = css.slice(css.indexOf(".bot-row {"), css.indexOf("}", css.indexOf(".bot-row {")));
+  assert.match(row, /grid-template-columns: auto minmax\(0, 1\.1fr\) minmax\(0, 1\.1fr\) 42px auto;/);
+  const input = css.slice(css.indexOf(".bot-row input {"), css.indexOf("}", css.indexOf(".bot-row input {")));
+  assert.match(input, /min-width: 0;/);
+});

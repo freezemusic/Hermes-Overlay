@@ -1811,6 +1811,7 @@ html, body {
 .field input,
 .field select,
 .bot-row input {
+  min-width: 0;
   height: 36px;
   padding: 0 var(--sp-3);
   background: rgb(255 255 255 / .96);
@@ -3288,7 +3289,10 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 
 .bot-row {
   display: grid;
-  grid-template-columns: auto 1.1fr 1.1fr 42px auto;
+  /* minmax(0, …): at 特大字 + English the inputs used to keep their intrinsic
+   * width, the row ran 25px past the form and the sideways scrollbar sat on
+   * top of 儲存 (R-LK-01). */
+  grid-template-columns: auto minmax(0, 1.1fr) minmax(0, 1.1fr) 42px auto;
   gap: 6px;
   align-items: center;
 }
