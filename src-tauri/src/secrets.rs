@@ -144,24 +144,8 @@ fn read_password(account: &str) -> Result<Lookup, String> {
     }
 }
 
-pub fn get_profile_key(profile: &str) -> Result<Lookup, String> {
-    let account = account_for_profile(profile);
-    run_keyring(KEYRING_TIMEOUT, move || read_password(&account))
-}
-
-pub fn set_profile_key(profile: &str, key: &str) -> Result<(), String> {
-    let key = key.trim();
-    if key.is_empty() {
-        return Err("金鑰係空".into());
-    }
-    if key.chars().any(|c| c == '\n' || c == '\r' || c == '\0') {
-        return Err("金鑰唔可以有換行".into());
-    }
-    entry(&account_for_profile(profile))?
-        .set_password(key)
-        .map_err(|e| format!("寫入鑰匙圈失敗：{e}"))
-}
-
+/// Per-bot API keys (the old gateway `API_SERVER_KEY`) are no longer read or
+/// written (R-CL-01, 2026-11-03). Removing a bot still deletes its old entry.
 pub fn delete_profile_key(profile: &str) -> Result<(), String> {
     delete_account(&account_for_profile(profile))
 }

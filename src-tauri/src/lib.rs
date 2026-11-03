@@ -5,7 +5,6 @@ mod secrets;
 mod sse;
 mod client;
 use client::kanban;
-mod gateway_legacy;
 
 use config::{AppConfig, BotConfig};
 use hermes::{explain, HermesError, TurnEvent};
@@ -138,7 +137,6 @@ struct ProfileStreams {
 }
 
 struct AppState {
-    http: reqwest::Client,
     streams: Arc<Mutex<HashMap<String, ProfileStreams>>>,
     run_ids: Arc<Mutex<HashMap<String, String>>>,
     queued_run_ids: Arc<Mutex<HashMap<String, String>>>,
@@ -154,11 +152,30 @@ struct AppState {
 
 /// The chat client, pointed at the dashboard address in `cfg`.
 fn chat_client(state: &AppState, cfg: &AppConfig) -> Arc<client::HermesClient> {
-    state
-        .client
-        .set_origin(&kanban::origin(&cfg.gateway_base_url, &cfg.kanban_base_url));
+    state.client.set_origin(&kanban::origin(&cfg.kanban_base_url));
     Arc::clone(&state.client)
 }
+
+static DEMO_MODE: OnceLock<bool> = OnceLock::new();
+
+/// The offline demo runs only when launched with `--demo` (or
+/// `HERMES_OVERLAY_DEMO=1`). Nothing in config.json or Settings turns it on.
+fn demo_mode() -> bool {
+    *DEMO_MODE.get_or_init(|| {
+        config::demo_requested(std::env::args(), std::env::var(config::DEMO_ENV).ok())
+    })
+}
+
+/// `mock` is the demo, `hermes` is the dashboard. Shown to the web layer.
+fn app_mode() -> &'static str {
+    if demo_mode() {
+        "mock"
+    } else {
+        "hermes"
+    }
+}
+
+const DEMO_LINE: &str = "示範模式（--demo），冇連 Hermes。";
 
 fn new_chat_client(http: reqwest::Client) -> Arc<client::HermesClient> {
     client::HermesClient::new(
@@ -197,9 +214,7 @@ struct PublicBot {
     profile: String,
     display_name: String,
     color: String,
-    base_url: String,
     detail: String,
-    has_key: bool,
     enabled: bool,
     compose_mode: String,
 }
@@ -218,7 +233,6 @@ struct PublicInteraction {
 #[derive(Serialize)]
 struct PublicSettings {
     mode: String,
-    gateway_base_url: String,
     dashboard_base_url: String,
     kanban_base_url: String,
     kanban_board: String,
@@ -255,13 +269,7 @@ struct SaveBot {
     #[serde(default)]
     color: String,
     #[serde(default)]
-    base_url: String,
-    #[serde(default)]
     detail: String,
-    #[serde(default)]
-    key: String,
-    #[serde(default)]
-    clear_key: bool,
     #[serde(default = "default_bot_enabled")]
     enabled: bool,
 }
@@ -272,8 +280,6 @@ fn default_bot_enabled() -> bool {
 
 #[derive(Deserialize)]
 struct SaveSettings {
-    #[serde(default)]
-    gateway_base_url: String,
     #[serde(default)]
     dashboard_base_url: String,
     #[serde(default)]
@@ -358,9 +364,10 @@ struct DiscoveredBot {
     color: String,
 }
 
-fn require_hermes(cfg: &AppConfig) -> Result<(), String> {
-    if cfg.mode() == "mock" {
-        Err("未設定 gateway，而家係離線示範模式。".into())
+fn require_hermes(_cfg: &AppConfig) -> Result<(), String> {
+    // `_cfg` stays so every caller reads config first; demo is the launch flag.
+    if demo_mode() {
+        Err(DEMO_LINE.into())
     } else {
         Ok(())
     }
@@ -436,7 +443,7 @@ fn note_link_hint(app: &AppHandle, chat: &client::HermesClient, targets: &[(Stri
 
 async fn poll_bot_chats(app: &AppHandle) {
     let cfg = match load_config(app) {
-        Ok(cfg) if cfg.mode() == "hermes" => cfg,
+        Ok(cfg) if !demo_mode() => cfg,
         _ => return,
     };
     let Some(state) = app.try_state::<AppState>() else {
@@ -994,17 +1001,11 @@ fn save_bot_meta_sync(app: AppHandle, input: SaveBotMeta) -> Result<PublicBot, S
         name.to_string()
     };
     bot.detail = input.detail.trim().to_string();
-    let has_key = match secrets::get_profile_key(&profile) {
-        Ok(Lookup::Value(key)) => !key.trim().is_empty(),
-        _ => false,
-    };
     let saved = PublicBot {
         profile: bot.profile.clone(),
         display_name: bot.display_name.clone(),
         color: bot.color.clone(),
-        base_url: bot.base_url.clone(),
         detail: bot.detail.clone(),
-        has_key,
         enabled: bot.enabled,
         compose_mode: bot.compose_mode.clone(),
     };
@@ -1016,6 +1017,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
     let path = config_path(&app)?;
     let needs_setup = !path.exists();
     let cfg = config::load(&path)?;
+    // Per-bot API keys are not read any more (R-CL-01): no network code uses them.
     let mut keyring_error = match secrets::store_is_mock() {
         Ok(true) => Some(
             "鑰匙圈係記憶體模擬，金鑰唔會保存。呢個版本應該用系統鑰匙圈（Windows Credential Manager、macOS Keychain、Linux Secret Service）。"
@@ -1026,21 +1028,11 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
     };
     let mut bots = Vec::new();
     for bot in &cfg.bots {
-        let has_key = match secrets::get_profile_key(&bot.profile) {
-            Ok(Lookup::Value(key)) => !key.trim().is_empty(),
-            Ok(Lookup::Missing) => false,
-            Err(err) => {
-                keyring_error.get_or_insert(err);
-                false
-            }
-        };
         bots.push(PublicBot {
             profile: bot.profile.clone(),
             display_name: bot.display_name.clone(),
             color: bot.color.clone(),
-            base_url: bot.base_url.clone(),
             detail: bot.detail.clone(),
-            has_key,
             enabled: bot.enabled,
             compose_mode: bot.compose_mode.clone(),
         });
@@ -1070,11 +1062,10 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         .map(|state| state.interaction.supported)
         .unwrap_or_else(interaction::platform_supports_global_input);
     Ok(PublicSettings {
-        mode: cfg.mode().into(),
-        kanban_server_url: kanban::origin(&cfg.gateway_base_url, &cfg.kanban_base_url),
+        mode: app_mode().into(),
+        kanban_server_url: kanban::origin(&cfg.kanban_base_url),
         kanban_base_url: cfg.kanban_base_url,
         kanban_board: cfg.kanban_board,
-        gateway_base_url: cfg.gateway_base_url,
         dashboard_base_url: cfg.dashboard_base_url,
         has_kanban_login,
         has_dashboard_token,
@@ -1204,7 +1195,6 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         .map(|state| session_map(state).clone())
         .unwrap_or_default();
     let previous = load_config(&app)?;
-    let gateway_base_url = config::normalize_http_base(&input.gateway_base_url, true)?;
     let dashboard_base_url = {
         let raw = input.dashboard_base_url.trim();
         if raw.is_empty() {
@@ -1231,8 +1221,9 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
                 name.to_string()
             }
         };
-        let base_url = config::normalize_http_base(&bot.base_url, true)?;
         let previous_bot = previous.bot(&profile);
+        // Retired per-bot gateway address: kept as the file has it, never read.
+        let legacy_base_url = previous_bot.and_then(|bot| bot.legacy_base_url.clone());
         let previous_id = previous_bot
             .map(|bot| bot.session_id.clone())
             .unwrap_or_default();
@@ -1252,7 +1243,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
             detail: bot.detail.trim().to_string(),
             profile,
             display_name,
-            base_url,
+            legacy_base_url,
             session_id,
             session_explicit,
             session_anchor,
@@ -1265,16 +1256,9 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         previous.bots.iter().map(|b| b.profile.as_str()).collect();
     let next_profiles: std::collections::HashSet<_> =
         bots.iter().map(|b| b.profile.as_str()).collect();
+    // A removed bot's old API key (if any) is deleted, never read.
     for removed in previous_profiles.difference(&next_profiles) {
         secrets::delete_profile_key(removed)?;
-    }
-    for bot in &input.bots {
-        let profile = bot.profile.trim();
-        if bot.clear_key {
-            secrets::delete_profile_key(profile)?;
-        } else if !bot.key.trim().is_empty() {
-            secrets::set_profile_key(profile, &bot.key)?;
-        }
     }
     if input.clear_dashboard_token {
         secrets::delete_dashboard_token()?;
@@ -1302,7 +1286,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
     };
     let cfg = AppConfig {
         version: 1,
-        gateway_base_url,
+        legacy_gateway_base_url: previous.legacy_gateway_base_url.clone(),
         dashboard_base_url,
         kanban_base_url,
         kanban_board: previous.kanban_board,
@@ -1404,7 +1388,8 @@ async fn discover_profiles(
     } else {
         Some(stored.as_str())
     };
-    let found = hermes::list_dashboard_profiles(&state.http, &dashboard, token_ref)
+    let found = chat_client(&state, &cfg)
+        .session_token_profiles(&dashboard, token_ref, std::time::Duration::from_secs(15))
         .await
         .map_err(|err| match err {
             HermesError::Http { status: 401 | 403, .. } => {
@@ -1449,10 +1434,9 @@ async fn sync_profiles(
 ) -> Result<PublicSettings, String> {
     let quiet = quiet.unwrap_or(false);
     let initial = load_config(&app)?;
-    if initial.mode() != "hermes" {
+    if demo_mode() {
         return load_public_settings(app);
     }
-    let gateway = initial.gateway_base_url.clone();
     let dashboard = initial.dashboard_base_url.clone();
     if quiet {
         // A down dashboard skips this tick. R-SY-08 owns the backoff (R-CL-01).
@@ -1466,30 +1450,18 @@ async fn sync_profiles(
     let mut hints = Vec::new();
     // A remote list that answered. Local ~/.hermes alone never counts, so a
     // stale local folder cannot hide gateway bots (R-SY-09 removal).
+    // Profile names come only from the dashboard (9119) through HermesClient.
+    // The old gateway `/health` hint is gone (R-AR-04, 2026-11-03).
     let mut listed_remote = false;
-    let health = gateway_legacy::profiles_from_gateway_health(&state.http, &gateway).await;
-    listed_remote |= !health.is_empty();
-    for item in health {
-        hints.push(config::ProfileHint {
-            profile: item.profile,
-            display_name: item.display_name,
-            detail: item.detail,
-            color: item.color,
-        });
-    }
     let token = match secrets::get_dashboard_token() {
         Ok(Lookup::Value(value)) if !value.trim().is_empty() => Some(value),
         _ => None,
     };
     let mut saw_dashboard = false;
     if let Some(token) = token.as_deref() {
-        if let Ok(found) = hermes::list_dashboard_profiles_timeout(
-            &state.http,
-            &dashboard,
-            Some(token),
-            std::time::Duration::from_secs(4),
-        )
-        .await
+        if let Ok(found) = chat_client(&state, &initial)
+            .session_token_profiles(&dashboard, Some(token), std::time::Duration::from_secs(4))
+            .await
         {
             saw_dashboard = true;
             listed_remote = true;
@@ -1512,7 +1484,7 @@ async fn sync_profiles(
         .unwrap_or_else(|err| err.into_inner());
     let path = config_path(&app)?;
     let mut cfg = config::load(&path)?;
-    if cfg.mode() == "hermes" {
+    if !demo_mode() {
         if quiet {
             config::apply_quiet_roster(&path, &hints)?;
         } else {
@@ -2725,13 +2697,13 @@ async fn get_kanban_board(
 ) -> Result<hermes::KanbanBoard, String> {
     let cfg = load_config(&app)?;
     let slug = kanban_slug(board);
-    if cfg.mode() == "mock" {
+    if demo_mode() {
         return Ok(hermes::KanbanBoard {
             board: slug,
             columns: Vec::new(),
             unavailable: true,
             needs_login: false,
-            message: "未設定 gateway，而家係離線示範模式。".into(),
+            message: DEMO_LINE.into(),
         });
     }
     // R-AR-01: the client reads, renews once and stores a renewed login.
@@ -2791,7 +2763,7 @@ async fn sign_in_kanban(
     require_hermes(&cfg)?;
     let typed = config::normalize_http_base(&input.kanban_base_url, true)?;
     let origin = if typed.is_empty() {
-        kanban::origin(&cfg.gateway_base_url, &cfg.kanban_base_url)
+        kanban::origin(&cfg.kanban_base_url)
     } else {
         typed.clone()
     };
@@ -2879,7 +2851,7 @@ async fn get_kanban_boards(
     state: State<'_, AppState>,
 ) -> Result<kanban::KanbanBoardList, String> {
     let cfg = load_config(&app)?;
-    if cfg.mode() == "mock" {
+    if demo_mode() {
         return Ok(kanban::KanbanBoardList::default());
     }
     chat_client(&state, &cfg)
@@ -2960,7 +2932,7 @@ async fn list_cron_jobs(
     state: State<'_, AppState>,
 ) -> Result<Vec<CronProfileOut>, String> {
     let cfg = load_config(&app)?;
-    if cfg.mode() != "hermes" {
+    if demo_mode() {
         return Ok(Vec::new());
     }
     let chat = chat_client(&state, &cfg);
@@ -3734,7 +3706,7 @@ async fn set_suborb_pin(
 #[tauri::command]
 async fn seed_session_lists(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let cfg = load_config(&app)?;
-    if cfg.mode() != "hermes" {
+    if demo_mode() {
         return Ok(());
     }
     {
@@ -3914,8 +3886,7 @@ pub fn run() {
         .manage({
             let http = http_client();
             AppState {
-            client: new_chat_client(http.clone()),
-            http,
+            client: new_chat_client(http),
             streams: Arc::new(Mutex::new(HashMap::new())),
             run_ids: Arc::new(Mutex::new(HashMap::new())),
             queued_run_ids: Arc::new(Mutex::new(HashMap::new())),
@@ -4457,5 +4428,116 @@ mod tests {
         let old_json = serde_json::to_value(old).expect("old json");
         assert_eq!(old_json["source"], "api_server");
         assert_eq!(old_json["archived"], true);
+    }
+
+    /// R-AR-04 (2026-11-03): the app makes no call to the old gateway (8642).
+    /// Code outside `client/` sends nothing; gateway HTTP left in hermes.rs is
+    /// `#[cfg(test)]` only; no URL is built from the retired settings keys.
+    #[test]
+    fn the_app_makes_no_gateway_calls() {
+        fn app_code(src: &str) -> String {
+            let src = src.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
+            let mut out = String::new();
+            let mut skip_item = false;
+            let mut depth: i32 = 0;
+            let mut started = false;
+            for line in src.lines() {
+                let trimmed = line.trim_start();
+                if !skip_item && trimmed.starts_with("#[cfg(test)]") {
+                    skip_item = true;
+                    depth = 0;
+                    started = false;
+                    continue;
+                }
+                if skip_item {
+                    for ch in line.chars() {
+                        if ch == '{' {
+                            depth += 1;
+                            started = true;
+                        } else if ch == '}' {
+                            depth -= 1;
+                        }
+                    }
+                    let one_line = !started && trimmed.ends_with(';');
+                    if (started && depth <= 0) || one_line {
+                        skip_item = false;
+                    }
+                    continue;
+                }
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
+            out
+        }
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/");
+        assert!(
+            !std::path::Path::new(dir).join("gateway_legacy.rs").exists(),
+            "gateway_legacy.rs is gone: nothing uses the gateway"
+        );
+        let outside_client = [
+            ("lib.rs", include_str!("lib.rs")),
+            ("hermes.rs", include_str!("hermes.rs")),
+            ("config.rs", include_str!("config.rs")),
+            ("secrets.rs", include_str!("secrets.rs")),
+            ("sse.rs", include_str!("sse.rs")),
+            ("interaction.rs", include_str!("interaction.rs")),
+            ("main.rs", include_str!("main.rs")),
+        ];
+        for (name, src) in outside_client {
+            let code = app_code(src);
+            for banned in [
+                ".send()",
+                "http.get(",
+                "http.post(",
+                "http.patch(",
+                "reqwest::Client::new",
+                "Client::new()",
+                "8642",
+                "/v1/",
+                "\"/health\"",
+                "/health\"",
+                "gateway_legacy",
+                "profiles_from_gateway_health",
+                "list_dashboard_profiles",
+                "get_profile_key",
+                "set_profile_key",
+            ] {
+                assert!(!code.contains(banned), "{name} app code has {banned}");
+            }
+        }
+        // hermes.rs keeps no request builder in the app at all.
+        assert!(!app_code(include_str!("hermes.rs")).contains("reqwest::Client"));
+        // The retired keys are only carried through a save, never read for a URL.
+        let lib = app_code(include_str!("lib.rs"));
+        assert_eq!(lib.matches("legacy_gateway_base_url").count(), 2, "one field init in save");
+        assert_eq!(lib.matches(".legacy_base_url").count(), 1);
+        let save = lib.find("fn save_settings_sync").expect("save");
+        let save_end = lib[save..].find("async fn probe_gateway").expect("probe");
+        let save_body = &lib[save..save + save_end];
+        assert!(save_body.contains("previous.legacy_gateway_base_url.clone()"));
+        assert!(save_body.contains("bot.legacy_base_url.clone()"));
+        for (name, src) in [
+            ("client/mod.rs", include_str!("client/mod.rs")),
+            ("client/kanban.rs", include_str!("client/kanban.rs")),
+            ("client/ws.rs", include_str!("client/ws.rs")),
+            ("client/turn.rs", include_str!("client/turn.rs")),
+            ("client/endpoints.rs", include_str!("client/endpoints.rs")),
+        ] {
+            let code = app_code(src);
+            assert!(!code.contains("legacy_"), "{name} reads a retired key");
+            assert!(!code.contains("gateway_base_url"), "{name} reads the gateway address");
+            assert!(!code.contains("base_url"), "{name} reads a per-bot address");
+        }
+        // The dashboard origin is the field or the config default, never the gateway.
+        assert_eq!(crate::kanban::origin(""), crate::config::default_dashboard_origin());
+        // Profile lists come from the client.
+        let sync = lib.find("async fn sync_profiles").expect("sync");
+        let sync_end = lib[sync..].find("fn listed_profiles").expect("listed");
+        let sync_body = &lib[sync..sync + sync_end];
+        assert!(sync_body.contains(".session_token_profiles("));
+        assert!(sync_body.contains(".native_profiles()"));
     }
 }

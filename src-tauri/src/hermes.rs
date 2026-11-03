@@ -1,4 +1,11 @@
-//! HTTP client for a self-hosted Hermes Agent API server.
+//! Hermes data types, parsers and session rules shared by the client and the
+//! Tauri commands. This module makes no network calls in the app: every
+//! request goes through `client::HermesClient` (R-AR-01).
+//!
+//! The old gateway API-server (port 8642) HTTP functions that are still here
+//! are `#[cfg(test)]` only: they are not in the built app and stay as test
+//! fixtures for the shared parsers (R-AR-04). `the_app_makes_no_gateway_calls`
+//! checks that.
 //!
 //! Field names follow the public API-server docs, `gateway/platforms/api_server.py`,
 //! and a live Hermes v0.21.6 gateway (`assistant.delta` uses `delta`, tool events use
@@ -6,14 +13,21 @@
 //! `display_kind: failed_turn` rather than `run.failed.error`).
 
 use crate::config::BOT_CHAT_TITLE;
+#[cfg(test)]
 use crate::sse::{self, SseEvent};
+#[cfg(not(test))]
+use crate::sse::SseEvent;
+#[cfg(test)]
 use futures_util::StreamExt;
+#[cfg(test)]
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Instant;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum HermesError {
@@ -1791,12 +1805,14 @@ fn map_reqwest(err: reqwest::Error) -> HermesError {
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 fn authed(builder: reqwest::RequestBuilder, key: &str) -> reqwest::RequestBuilder {
     builder
         .header("Authorization", format!("Bearer {}", key.trim()))
         .header("Accept", "application/json")
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn send(
     builder: reqwest::RequestBuilder,
     key: &str,
@@ -1814,6 +1830,7 @@ async fn send(
     })
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn list_sessions_url(
     http: &Client,
     key: &str,
@@ -1827,6 +1844,7 @@ async fn list_sessions_url(
     Ok(parse_session_list(&value))
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn list_sessions(
     http: &Client,
     root: &str,
@@ -1838,6 +1856,7 @@ pub async fn list_sessions(
 
 /// Exact-title lookup for the canonical Bot Chat, including hidden and archived rows.
 /// `include_hidden` is honored only together with `title` on current Hermes.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn list_titled_bot_chats(
     http: &Client,
     root: &str,
@@ -1851,6 +1870,7 @@ pub async fn list_titled_bot_chats(
 }
 
 /// Blanket list plus the exact-title lookup. A failed title query keeps the blanket list.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn list_sessions_for_bot_chat(
     http: &Client,
     root: &str,
@@ -1878,7 +1898,7 @@ fn adopt_title_conflict(sessions: &[SessionSummary], body: &str) -> Option<Strin
 /// `POST /api/sessions` with `{title: "Bot Chat", source: "api_server"}`.
 /// Startup, open, and send must not call this. A 400 adopts the occupant
 /// when that session is titled `Bot Chat`, whatever its source.
-#[allow(dead_code)]
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn create_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
     match create_session(http, root, key, Some(BOT_CHAT_TITLE)).await {
         Ok(id) => Ok(id),
@@ -1918,6 +1938,7 @@ impl BotChatPick {
 }
 
 /// Canonical Bot Chat already on the gateway. Never creates a session.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn ensure_bot_chat(
     http: &Client,
     root: &str,
@@ -1935,6 +1956,7 @@ pub struct MessagePage {
     pub returned: u64,
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_message_page(
     http: &Client,
     root: &str,
@@ -1974,6 +1996,7 @@ pub fn message_page_from(value: &Value) -> MessagePage {
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_messages(
     http: &Client,
     root: &str,
@@ -1987,6 +2010,7 @@ pub async fn fetch_messages(
 
 /// Every stored row, including a transcript longer than one page.
 /// `count` is the session list's `message_count`.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_counted_messages(
     http: &Client,
     root: &str,
@@ -2005,6 +2029,7 @@ pub async fn fetch_counted_messages(
     Ok(out)
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn probe_health(http: &Client, gateway: &str) -> Result<String, HermesError> {
     let url = format!("{}/health", gateway.trim_end_matches('/'));
     let resp = http
@@ -2024,6 +2049,7 @@ pub async fn probe_health(http: &Client, gateway: &str) -> Result<String, Hermes
     Ok(clip(&body, 200))
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn probe_sessions(http: &Client, root: &str, key: &str) -> Result<(), HermesError> {
     let url = format!("{root}/api/sessions?limit=1");
     let _ = send(http.get(url).timeout(Duration::from_secs(15)), key).await?;
@@ -2106,6 +2132,7 @@ pub fn commands_from_fetch(
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_overlay_commands(
     http: &Client,
     root: &str,
@@ -2646,6 +2673,7 @@ enum CronFetchBody {
     Fallback,
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn fetch_cron_url(
     http: &Client,
     url: &str,
@@ -2677,6 +2705,7 @@ async fn fetch_cron_url(
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_cron_jobs(
     http: &Client,
     root: &str,
@@ -2693,6 +2722,7 @@ pub async fn fetch_cron_jobs(
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_kanban_board(
     http: &Client,
     root: &str,
@@ -2732,6 +2762,7 @@ pub async fn fetch_kanban_board(
     Ok(parse_kanban_board(&value, board))
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn create_session(
     http: &Client,
     root: &str,
@@ -2756,6 +2787,7 @@ pub async fn create_session(
         .ok_or_else(|| HermesError::Protocol("建立 session 回應冇 id".into()))
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn patch_session_title(
     http: &Client,
     root: &str,
@@ -2774,6 +2806,7 @@ pub async fn patch_session_title(
     Ok(())
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn patch_session_archived(
     http: &Client,
     root: &str,
@@ -2791,6 +2824,7 @@ pub async fn patch_session_archived(
     Ok(())
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fork_session(
     http: &Client,
     root: &str,
@@ -2873,6 +2907,7 @@ pub fn parse_model_options(value: &Value) -> Vec<String> {
     out
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn list_model_options(
     http: &Client,
     root: &str,
@@ -2887,6 +2922,7 @@ pub async fn list_model_options(
     Ok(parse_model_options(&value))
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn lock_session_model(
     http: &Client,
     root: &str,
@@ -2906,88 +2942,6 @@ pub async fn lock_session_model(
     )
     .await?;
     Ok(())
-}
-
-pub fn profiles_from_health_body(body: &str) -> Vec<DiscoveredProfile> {
-    let Ok(value) = serde_json::from_str::<Value>(body) else {
-        return Vec::new();
-    };
-    if value.get("profiles").and_then(Value::as_array).is_none() {
-        return Vec::new();
-    }
-    parse_dashboard_profiles(&value)
-}
-
-/// A failed health read means the gateway is down. Callers skip the roster write.
-pub async fn require_gateway(http: &Client, gateway: &str) -> Result<(), HermesError> {
-    let url = format!("{}/health", gateway.trim_end_matches('/'));
-    let resp = http
-        .get(url)
-        .timeout(Duration::from_secs(8))
-        .send()
-        .await
-        .map_err(map_reqwest)?;
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(HermesError::Http {
-            status: resp.status().as_u16(),
-            body: String::new(),
-        })
-    }
-}
-
-pub async fn profiles_from_gateway_health(http: &Client, gateway: &str) -> Vec<DiscoveredProfile> {
-    let url = format!("{}/health", gateway.trim_end_matches('/'));
-    let Ok(resp) = http.get(url).timeout(Duration::from_secs(8)).send().await else {
-        return Vec::new();
-    };
-    if !resp.status().is_success() {
-        return Vec::new();
-    }
-    let Ok(body) = resp.text().await else {
-        return Vec::new();
-    };
-    profiles_from_health_body(&body)
-}
-
-pub async fn list_dashboard_profiles(
-    http: &Client,
-    dashboard: &str,
-    token: Option<&str>,
-) -> Result<Vec<DiscoveredProfile>, HermesError> {
-    list_dashboard_profiles_timeout(http, dashboard, token, Duration::from_secs(15)).await
-}
-
-pub async fn list_dashboard_profiles_timeout(
-    http: &Client,
-    dashboard: &str,
-    token: Option<&str>,
-    timeout: Duration,
-) -> Result<Vec<DiscoveredProfile>, HermesError> {
-    let url = format!("{}/api/profiles", dashboard.trim_end_matches('/'));
-    let mut req = http
-        .get(url)
-        .timeout(timeout)
-        .header("Accept", "application/json");
-    if let Some(token) = token.map(str::trim).filter(|t| !t.is_empty()) {
-        req = req.header("X-Hermes-Session-Token", token);
-    }
-    let resp = req.send().await.map_err(map_reqwest)?;
-    let status = resp.status();
-    if !status.is_success() {
-        let code = status.as_u16();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(HermesError::Http {
-            status: code,
-            body: clip(&body, 300),
-        });
-    }
-    let value: Value = resp
-        .json()
-        .await
-        .map_err(|e| HermesError::Protocol(format!("dashboard profiles 唔係 JSON：{e}")))?;
-    Ok(parse_dashboard_profiles(&value))
 }
 
 /// `GET /api/profiles` on the Hermes 0.22.5 dashboard.
@@ -3115,6 +3069,7 @@ struct SseRead {
     queued: bool,
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn read_sse_body<F>(
     resp: reqwest::Response,
     stop: &AtomicBool,
@@ -3202,6 +3157,7 @@ fn direct_sse_end(read: &SseRead, stop: &AtomicBool, stop_requested: &AtomicBool
     Ok(())
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn finish_direct_sse<F>(
     resp: reqwest::Response,
     stop: &AtomicBool,
@@ -3229,6 +3185,7 @@ where
 }
 
 /// Older gateways have no `/v1/runs`. 202 here is a queued chat admission with nothing left to read.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn stream_chat_turn<F>(
     http: &Client,
     root: &str,
@@ -3270,6 +3227,7 @@ where
     finish_direct_sse(resp, stop, stop_requested, landed, on_event).await
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn open_run_events(
     http: &Client,
     root: &str,
@@ -3395,6 +3353,7 @@ fn run_still_open(status: &str, pending: bool) -> bool {
         )
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn finish_open_run<F>(
     http: &Client,
     root: &str,
@@ -3455,6 +3414,7 @@ where
 
 /// A user stop on a run that has already finished must not become a cancel.
 /// The panel would flash 「已停止」 and then idle once the 409 snapshot lands.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn settle_user_stop<F>(
     http: &Client,
     root: &str,
@@ -3477,6 +3437,7 @@ where
 /// Events-SSE disconnect does not stop the run. Reconnect with backoff for
 /// about a minute, and keep following a live run until it is terminal.
 /// A newer send aborts this reader and must POST `/stop`.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn follow_run_events<F>(
     http: &Client,
     root: &str,
@@ -3607,7 +3568,7 @@ where
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn stream_turn<F>(
     http: &Client,
     root: &str,
@@ -3677,6 +3638,7 @@ pub fn waiting_elsewhere(run_status: &str, rows: &[Value], own_text: &str) -> Op
     Some(text.trim() != own_text.trim())
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn probe_queue_elsewhere(
     http: &Client,
     root: &str,
@@ -3705,6 +3667,7 @@ async fn probe_queue_elsewhere(
 /// `stream_turn` that, with `probe`, also says when the send waits behind
 /// another client's turn (R-ST-05). The send itself, stop and the stream are
 /// unchanged; the probe only reads and ends at the first stream event.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn stream_turn_watched<F>(
     http: &Client,
     root: &str,
@@ -4156,6 +4119,7 @@ fn plain_permission_detail(text: String) -> String {
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn submit_approval(
     http: &Client,
     root: &str,
@@ -4203,6 +4167,7 @@ fn text_is_stale_generation(text: &str) -> bool {
 
 /// Authority clarify body is exactly `{request_id, execution_generation, answer}`.
 /// The answer is not logged and is not kept on the error.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn submit_clarify(
     http: &Client,
     root: &str,
@@ -4243,6 +4208,7 @@ pub async fn submit_clarify(
     })
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_run(
     http: &Client,
     root: &str,
@@ -4295,6 +4261,7 @@ pub fn terminal_run_status(status: &str) -> bool {
 
 /// `POST /p/{profile}/v1/runs/{run_id}/stop` with no body.
 /// 409 `run_not_active` (and an already-terminal 200) is [`StopOutcome::NotActive`].
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn stop_run(
     http: &Client,
     root: &str,
@@ -4329,6 +4296,7 @@ pub async fn stop_run(
 
 /// `POST /p/{profile}/v1/runs/{run_id}/steer` with exactly `{"input": text}`.
 /// 409 (`run_not_accepting_steer` or `steer_not_accepted`) is [`SteerOutcome::Rejected`].
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn steer_run(
     http: &Client,
     root: &str,
@@ -4436,22 +4404,22 @@ pub fn explain(err: &HermesError) -> String {
             session_read_only_reason().into()
         }
         HermesError::Http { status: 401, .. } => {
-            "Gateway 拒絕金鑰（401）。請核對呢個 profile 嘅 API_SERVER_KEY。".into()
+            "Hermes Dashboard 拒絕登入（401）。請喺設定重新登入。".into()
         }
         HermesError::Http { status: 403, .. } => "Gateway 拒絕存取（403）。".into(),
         HermesError::Http { status: 404, body } => format!(
-            "找不到路徑（404）。具名 profile 需要 gateway.multiplex_profiles，或者填呢個 Bot 嘅專用位址。{body}"
+            "找不到路徑（404）。{body}"
         ),
         HermesError::Http { status: 429, .. } => "Gateway 太忙（429），稍後再試。".into(),
         HermesError::Http { status, body } => format!("Gateway 回應 {status}。{body}"),
         HermesError::Connect(_) => {
-            "連唔到 Hermes gateway。請確認 gateway 已開，位址係設定入面嗰個（預設埠 8642）。".into()
+            "連唔到 Hermes gateway。請確認 hermes serve 已開，位址係設定入面嘅 Kanban server。".into()
         }
         HermesError::Timeout(_) => {
-            "Hermes gateway 逾時。請確認 gateway 已開，位址係設定入面嗰個（預設埠 8642）。".into()
+            "Hermes gateway 逾時。請確認 hermes serve 已開，位址係設定入面嘅 Kanban server。".into()
         }
         HermesError::Transport(_) => {
-            "同 Hermes gateway 嘅連線中斷。請確認 gateway 已開，位址係設定入面嗰個（預設埠 8642）。"
+            "同 Hermes gateway 嘅連線中斷。請確認 hermes serve 已開，位址係設定入面嘅 Kanban server。"
                 .into()
         }
         HermesError::Protocol(msg) => msg.clone(),
@@ -5228,7 +5196,7 @@ mod tests {
             profile: profile.into(),
             display_name: profile.into(),
             color: String::new(),
-            base_url: String::new(),
+            legacy_base_url: None,
             detail: String::new(),
             session_id: id.into(),
             session_explicit: explicit,
@@ -5238,7 +5206,7 @@ mod tests {
         };
         let cfg = AppConfig {
             version: 1,
-            gateway_base_url: "http://127.0.0.1:8642".into(),
+            legacy_gateway_base_url: None,
             dashboard_base_url: "http://127.0.0.1:9119".into(),
             kanban_base_url: String::new(),
             kanban_board: String::new(),
@@ -6137,11 +6105,9 @@ mod tests {
         assert_eq!(joyce[0].detail, "文稿同回覆");
         assert_eq!(joyce[1].detail, "只用 detail");
         assert_eq!(found[0].color, "");
-        assert!(profiles_from_health_body("ok").is_empty());
-        assert!(profiles_from_health_body(r#"{"status":"ok"}"#).is_empty());
-        let health = profiles_from_health_body(
-            r#"{"status":"ok","profiles":[{"profile":"coder","description":"程式"}]}"#,
-        );
+        let health = parse_dashboard_profiles(&json!(
+            {"status":"ok","profiles":[{"profile":"coder","description":"程式"}]}
+        ));
         assert_eq!(health.len(), 1);
         assert_eq!(health[0].profile, "coder");
         assert_eq!(health[0].detail, "程式");
@@ -7677,19 +7643,6 @@ data: {}\n\
         assert!(matches!(seen[1], TurnEvent::Delta(ref text) if text == "計劃"));
     }
 
-    #[tokio::test]
-    async fn a_closed_gateway_skips_the_quiet_roster_tick() {
-        let http = reqwest::Client::new();
-        let err = require_gateway(&http, "http://127.0.0.1:1")
-            .await
-            .expect_err("closed port");
-        let text = explain(&err);
-        assert!(
-            text.contains("連唔到") || text.contains("逾時") || text.contains("中斷"),
-            "{text}"
-        );
-    }
-
     #[test]
     fn connect_explanation_hides_the_gateway_url() {
         let msg = explain(&HermesError::Connect(
@@ -7697,7 +7650,8 @@ data: {}\n\
         ));
         assert!(!msg.contains("http://"));
         assert!(!msg.contains("127.0.0.1"));
-        assert!(msg.contains("8642"));
+        assert!(!msg.contains("8642"), "no gateway port in the hint");
+        assert!(msg.contains("Kanban server"));
     }
 
     #[test]

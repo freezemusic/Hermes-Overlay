@@ -1,7 +1,8 @@
 //! Every path and JSON-RPC method the overlay uses on Hermes, in one place.
 //! The chat runs on the dashboard server (`hermes serve`). Its address comes
-//! from Settings (`kanban_base_url`, labelled 「Dashboard 地址」); an empty field
-//! falls back to the gateway host with [`crate::config::DEFAULT_DASHBOARD_PORT`].
+//! from Settings (`kanban_base_url`, labelled 「Kanban server」); an empty field
+//! is the config default, [`crate::config::default_dashboard_origin`]. The old
+//! gateway API server is not used at all (R-AR-04).
 
 /// REST on the dashboard server. Profile is the `?profile=` query.
 pub mod rest {

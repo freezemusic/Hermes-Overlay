@@ -63,19 +63,16 @@ pub struct NativeTokens {
     pub expires_at: String,
 }
 
-/// Empty `configured` uses the gateway host with port 9119.
-pub fn origin(gateway: &str, configured: &str) -> String {
+/// The dashboard origin for chat, Kanban and profiles. Empty `configured`
+/// is the config default ([`crate::config::default_dashboard_origin`]). There is
+/// no gateway fallback (R-AR-03, R-AR-04).
+pub fn origin(configured: &str) -> String {
     let configured = configured.trim().trim_end_matches('/');
-    if !configured.is_empty() {
-        return configured.to_string();
+    if configured.is_empty() {
+        crate::config::default_dashboard_origin()
+    } else {
+        configured.to_string()
     }
-    let Ok(url) = reqwest::Url::parse(gateway.trim()) else {
-        return crate::config::default_dashboard_origin();
-    };
-    let Some(host) = url.host_str() else {
-        return crate::config::default_dashboard_origin();
-    };
-    format!("{}://{host}:{}", url.scheme(), crate::config::DEFAULT_DASHBOARD_PORT)
 }
 
 /// An empty slug omits `?board=` so hermes serve returns its current board.
@@ -597,6 +594,41 @@ pub async fn list_profiles_with_bearer(
     ProfileBearer::Listed(parse_dashboard_profiles(&value))
 }
 
+/// `GET {origin}/api/profiles` with a dashboard session token
+/// (`X-Hermes-Session-Token`, the page's `window.__HERMES_SESSION_TOKEN__`).
+/// Settings 「匯入名單」 and the profile sync. Was `hermes::list_dashboard_profiles`
+/// (moved into the client, R-AR-01). GET only; the body is not logged.
+pub async fn read_session_token_profiles(
+    http: &Client,
+    origin: &str,
+    token: Option<&str>,
+    timeout: Duration,
+) -> Result<Vec<DiscoveredProfile>, HermesError> {
+    let url = format!("{}{}", origin.trim_end_matches('/'), rest::PROFILES);
+    let mut req = http
+        .get(url)
+        .timeout(timeout)
+        .header("Accept", "application/json");
+    if let Some(token) = token.map(str::trim).filter(|t| !t.is_empty()) {
+        req = req.header("X-Hermes-Session-Token", token);
+    }
+    let resp = req.send().await.map_err(map_reqwest)?;
+    let status = resp.status();
+    if !status.is_success() {
+        let code = status.as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(HermesError::Http {
+            status: code,
+            body: crate::hermes::clip(&body, 300),
+        });
+    }
+    let value: Value = resp
+        .json()
+        .await
+        .map_err(|e| HermesError::Protocol(format!("dashboard profiles 唔係 JSON：{e}")))?;
+    Ok(parse_dashboard_profiles(&value))
+}
+
 /// `GET {origin}/api/profiles` with the Kanban native access token.
 /// A 401 refreshes once via `POST /auth/native/refresh`, then retries that GET once.
 /// The profiles call itself stays GET. A miss returns no rows and does not fail the roster.
@@ -1065,6 +1097,17 @@ impl HermesClient {
     }
 
     /// Profiles with the native bearer, for setup discovery (R-SY-09).
+    /// Profiles from the dashboard at `origin` with a session token
+    /// (Settings 「Dashboard 位址」 + 「Dashboard session token」).
+    pub async fn session_token_profiles(
+        &self,
+        origin: &str,
+        token: Option<&str>,
+        timeout: Duration,
+    ) -> Result<Vec<DiscoveredProfile>, HermesError> {
+        read_session_token_profiles(&self.http, origin, token, timeout).await
+    }
+
     pub async fn native_profiles(&self) -> NativeProfileRead {
         let read = read_native_profiles(&self.http, &self.origin(), self.current_secrets()).await;
         if read.changed {
@@ -1142,15 +1185,10 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn origin_uses_the_gateway_host_on_port_9119() {
-        assert_eq!(
-            origin("http://10.10.24.33:8642/", ""),
-            "http://10.10.24.33:9119"
-        );
-        assert_eq!(
-            origin("http://10.10.24.33:8642", "http://10.10.24.33:9120/"),
-            "http://10.10.24.33:9120"
-        );
+    fn origin_is_the_field_or_the_config_default_never_the_gateway() {
+        assert_eq!(origin(""), crate::config::default_dashboard_origin());
+        assert_eq!(origin("  "), crate::config::default_dashboard_origin());
+        assert_eq!(origin("http://10.10.24.33:9120/"), "http://10.10.24.33:9120");
         assert!(authorize_url(
             "http://10.10.24.33:9119",
             "chal",
