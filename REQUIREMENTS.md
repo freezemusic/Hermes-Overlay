@@ -368,6 +368,10 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（單元）：`kanban-bell.test.js`「R-KB-11 …」（0／空唔出、2 有圖示、數字、tooltip、EN tooltip、詳情唔出 0）。盒：有優先度同冇優先度嘅卡截圖。
 - 狀態：❓ / ✅(盒，ad-72cba45)。
 
+**R-KB-12** 看板光球數字章（美術監督 72cba45 審查第 5 點，2026-11-03）。補充 R-KB-09 第 2 點：大細同位置唔改（藍底白字 16px）。加 1.5px `#fff` 外圈（`box-shadow: 0 0 0 1.5px #fff`，唔係 border，所以個盒唔變大），喺淺色牆紙同光暈上都分得開。1–9 係 16px 圓；「9+」用 pill（`.is-wide`，最闊 22px，圓角 8px）。仍然 `position: absolute`、`pointer-events: none`，命中區仍然係 44px 光碟（R-CT），唔量數字章。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-12 …」。盒：淺色牆紙上 3 同 9+ 嘅截圖；量度命中矩形同改之前一樣。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
 **R-KB-13** 卡詳情（美術監督 72cba45 審查第 7 點，次要）。標題左邊有同板上張卡一樣嘅 2px 色條（`--owner`，負責人顏色；冇對應 bot 就 `#616191`）。「返回」掣同標題之間 12px（掣 `display: block`，唔受行高影響）。
 - 驗收（單元）：`kanban-bell.test.js`「R-KB-13 …」。盒：量度「返回」底同標題頂相距 12px，截圖。
 - 狀態：❓ / ✅(盒，ad-72cba45)。

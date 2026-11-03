@@ -461,3 +461,23 @@ test("R-KB-13 card detail: the card's 2px bar left of the title, 12px under 返�
   assert.match(css, /\.kanban-card \{[^}]*border-left:\s*2px solid var\(--owner, var\(--bot\)\)/s);
   assert.match(css, /\.kanban-detail \.kanban-detail-back \{ display: block;/);
 });
+
+test("R-KB-12 orb badge: 1.5px white ring, 16px disc for 1–9, a pill of at most 22px for 9+, still pointer-events none", () => {
+  const rule = css.match(/\.orb--kanban \.kanban-count \{([^}]*)\}/s)?.[1] || "";
+  assert.match(rule, /box-shadow:\s*0 0 0 1\.5px #fff/);
+  assert.match(rule, /width:\s*16px/);
+  assert.match(rule, /height:\s*16px/);
+  assert.match(rule, /pointer-events:\s*none/);
+  assert.match(rule, /position:\s*absolute/);
+  assert.doesNotMatch(rule, /border:|outline:|margin:/, "the ring is a shadow, not box size");
+  const wide = css.match(/\.orb--kanban \.kanban-count\.is-wide \{([^}]*)\}/s)?.[1] || "";
+  assert.match(wide, /max-width:\s*22px/);
+  const minW = Number(/min-width:\s*(\d+)px/.exec(wide)?.[1]);
+  assert.ok(minW > 16 && minW <= 22, "9+ is visibly wider than the 16px disc");
+  assert.match(wide, /border-radius:\s*8px/);
+  assert.match(wide, /width:\s*auto/);
+  const render = main.slice(main.indexOf("function renderKanbanOrb()"), main.indexOf("function renderKanbanOrb()") + 1600);
+  assert.match(render, /countEl\.classList\.toggle\("is-wide", count\.length > 1\)/);
+  assert.equal(kanbanBadgeText(12), "9+");
+  assert.equal(kanbanBadgeText(9), "9");
+});

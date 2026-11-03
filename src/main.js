@@ -4497,6 +4497,8 @@ function renderKanbanOrb() {
     btn.append(countEl);
   }
   if (countEl.textContent !== count) countEl.textContent = count;
+  // R-KB-12: 1–9 is a 16px disc, 9+ a pill (max 22px). Paint only; the hit disc is the button.
+  countEl.classList.toggle("is-wide", count.length > 1);
   const next = ["bot-btn", "morph-orb", "orb--kanban", state.kanbanOpen ? "active" : "", state.kanban.unread || count ? "has-unread" : "", count ? "has-count" : ""]
     .filter(Boolean)
     .join(" ");
