@@ -638,12 +638,10 @@ pub async fn read_native_profiles(
     mut secrets: KanbanSecrets,
 ) -> NativeProfileRead {
     if secrets.access_token.trim().is_empty() && secrets.refresh_token.trim().is_empty() {
-        return NativeProfileRead {
-            profiles: Vec::new(),
-            secrets,
-            changed: false,
-            listed: false,
-        };
+        // Basic login (cookie, or the saved password to get one). With the
+        // gateway `/health` hint gone this is how a basic-auth serve lists
+        // profiles (R-AR-04, R-AR-06).
+        return read_cookie_profiles(http, origin, secrets).await;
     }
     let timeout = Duration::from_secs(4);
     let mut changed = false;
@@ -678,6 +676,48 @@ pub async fn read_native_profiles(
     let (profiles, listed) = match listed {
         ProfileBearer::Listed(rows) => (rows, true),
         ProfileBearer::Expired | ProfileBearer::Missed => (Vec::new(), false),
+    };
+    NativeProfileRead {
+        profiles,
+        secrets,
+        changed,
+        listed,
+    }
+}
+
+/// `GET {origin}/api/profiles` with the basic-login session cookie. An expired
+/// or missing cookie renews once from the saved password. No cookie and no
+/// password is "not listed", never an error.
+async fn read_cookie_profiles(
+    http: &Client,
+    origin: &str,
+    mut secrets: KanbanSecrets,
+) -> NativeProfileRead {
+    let has_password = !secrets.username.trim().is_empty() && !secrets.password.is_empty();
+    if secrets.session_cookie.trim().is_empty() && !has_password {
+        return NativeProfileRead {
+            profiles: Vec::new(),
+            secrets,
+            changed: false,
+            listed: false,
+        };
+    }
+    let url = format!("{}{}", origin.trim_end_matches('/'), rest::PROFILES);
+    let mut changed = false;
+    let mut read = if secrets.session_cookie.trim().is_empty() {
+        Ok(ReadBody::Expired)
+    } else {
+        get_json(http, &url, &secrets).await
+    };
+    if matches!(read, Ok(ReadBody::Expired)) {
+        if let Ok(true) = renew(http, origin, &mut secrets).await {
+            changed = true;
+            read = get_json(http, &url, &secrets).await;
+        }
+    }
+    let (profiles, listed) = match read {
+        Ok(ReadBody::Json(value)) => (parse_dashboard_profiles(&value), true),
+        _ => (Vec::new(), false),
     };
     NativeProfileRead {
         profiles,
@@ -1322,6 +1362,50 @@ mod tests {
         assert_eq!(detail.comments[0].body, "睇過");
         assert_eq!(detail.events, vec!["moved".to_string()]);
         assert!(posts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_basic_login_lists_profiles_from_9119_with_its_cookie() {
+        // No /health hint any more (R-AR-04): a basic-auth serve lists
+        // profiles with the login cookie, renewing once from the password.
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        let base = serve(move |head| {
+            let line = head.lines().next().unwrap_or("").to_string();
+            seen.lock().unwrap().push(line.clone());
+            if line.starts_with("POST") && line.contains("/auth/password-login") {
+                return (200, "Set-Cookie: hermes_session=fresh-cookie; Path=/; HttpOnly\r\n", "{}".into());
+            }
+            if line.starts_with("GET") && line.contains("/api/profiles") {
+                let lower = head.to_ascii_lowercase();
+                assert!(!lower.contains("authorization:"), "{head}");
+                if head.contains("hermes_session=fresh-cookie") {
+                    return (200, "", r#"{"profiles":[{"name":"scripted"},{"name":"writer"}]}"#.into());
+                }
+                return (401, "", r#"{"error":"session_expired"}"#.into());
+            }
+            (404, "", "{}".into())
+        });
+        let http = Client::new();
+        let secrets = KanbanSecrets {
+            session_cookie: "hermes_session=stale-cookie".into(),
+            username: "cookie-roster-user".into(),
+            password: "cookie-roster-pass".into(),
+            ..KanbanSecrets::default()
+        };
+        let read = read_native_profiles(&http, &base, secrets).await;
+        assert!(read.listed);
+        assert!(read.changed);
+        assert!(read.secrets.session_cookie.contains("fresh-cookie"));
+        let names: Vec<_> = read.profiles.iter().map(|item| item.profile.as_str()).collect();
+        assert_eq!(names, vec!["scripted", "writer"]);
+        let log = calls.lock().unwrap().clone();
+        assert_eq!(log.iter().filter(|line| line.contains("/auth/password-login")).count(), 1);
+        assert_eq!(log.iter().filter(|line| line.contains("/api/profiles")).count(), 2);
+
+        // Nothing to log in with: not listed, and no request at all.
+        let none = read_native_profiles(&http, "http://127.0.0.1:9", KanbanSecrets::default()).await;
+        assert!(!none.listed && !none.changed && none.profiles.is_empty());
     }
 
     #[tokio::test]
