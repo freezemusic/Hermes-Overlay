@@ -3176,10 +3176,24 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 /* The header stays in the visible card. Sticky-inside-the-form put 關閉
    at the bottom of the ~2256px content (y≈2430 on a 1080px screen). */
 .morph[data-header="bottom"] .settings-head {
-  position: static;
+  position: sticky;
+  bottom: 0;
   z-index: 3;
   margin-top: 0;
   background: #f8f8fc;
+  border-top: 1px solid rgb(0 0 242 / .2);
+}
+
+/* R-AD-08: the footer is its own bar. #settings-form does not scroll (overflow
+   hidden, the head is outside .settings-scroll), so sticky here never rides the
+   content; .settings-scroll is the only scroller and its last row (結束／測試／
+   儲存) ends at least 16px above the footer's top border at every text size. */
+.morph[data-header="bottom"] .settings-scroll::after {
+  content: "";
+  display: block;
+  flex: none;
+  /* 16px plus 1px for the sub-pixel scroll end (scrollTop is whole px). */
+  height: 17px;
 }
 
 .morph-body,
@@ -3305,6 +3319,29 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   font: 400 12px/1 var(--font-body);
   letter-spacing: 0;
   text-transform: none;
+}
+
+/* R-AD-09: 「永遠顯示員工名」「顯示工具細節」 rows. The 14px custom checkbox is
+   the R-AD-04 one; the label is body text, not a blue field label. 16px from the
+   paragraph above, 8px between the two rows. The bot-row 「顯示」 keeps .show-toggle. */
+.settings-panel .settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  color: #14142b;
+  font: 400 13px/1.5 var(--font-body);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.settings-panel :not(.settings-toggle) + .settings-toggle { margin-top: 16px; }
+.settings-panel .settings-toggle + .settings-toggle { margin-top: 8px; }
+.settings-panel .settings-toggle input[type="checkbox"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
 }
 
 .bot-row input[type="checkbox"] {
@@ -3933,6 +3970,7 @@ html[data-text-size] .settings-panel .field { font-size: calc(12px * var(--text-
 html[data-text-size] .settings-panel .bot-row input:not([type="checkbox"]):not([type="color"]) { font-size: calc(13px * var(--text-scale, 1)); }
 html[data-text-size] .settings-panel legend { font-size: calc(12px * var(--text-scale, 1)); }
 html[data-text-size] .show-toggle { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .settings-toggle { font-size: calc(13px * var(--text-scale, 1)); }
 html[data-text-size] .settings-panel .bot-row .key-missing { font-size: calc(12px * var(--text-scale, 1)); }
 html[data-text-size] .session-menu-row { font-size: calc(13px * var(--text-scale, 1)); line-height: calc(18px * var(--text-scale, 1)); }
 html[data-text-size] .session-menu-empty { font-size: calc(12px * var(--text-scale, 1)); line-height: calc(18px * var(--text-scale, 1)); }

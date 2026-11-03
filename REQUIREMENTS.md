@@ -267,6 +267,16 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-AD-07** （2026-11-03：Bot 列冇「專用位址」同「API 金鑰」格，冇 `.key-missing`，見 R-AR-06。）設定。Kanban server 只得欄位標籤，唔好再加一個 legend。說明放喺個標籤下面，12px/1.5 `#616191`。「Bot 名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，上面 24px。設定開住時金鑰橫額保持收起，`keyPromptBots` 唔清空。未有金鑰嘅 profile 喺金鑰欄下面顯示 12px `#e5484d` 提示「未有 API 金鑰」。Bot 列同 token 欄嘅提示（「詳情（可留空）」、「專用位址（可留空）」、「可留空」）係 `placeholder`，`::placeholder` 色 `#616191`，唔好寫入 value。實驗 legend「實驗：由 dashboard 匯入名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，fieldset 上面 24px。
 - 驗收：設定 HTML 冇 `<legend>Kanban server</legend>`。`.kanban-server-hint` 係 12px/1.5 `#616191`。`.settings-panel .roster-head` margin-top 24px，`.roster-head h3::before` 係 `content: none`。`rowFromBot` 喺有 profile 而 `has_key` 係 false 時加 `.key-missing`。`.settings-panel .bot-row input::placeholder` 同 `.settings-panel .field input::placeholder` 係 `#616191`。token 欄標籤冇「可留空」，input 嘅 placeholder 係「可留空」。`.settings-panel .experimental legend::before` 係 `content: none`。`.settings-panel legend` 係 12px Barlow Condensed `#0000f2`，`.settings-panel fieldset` margin-top 24px。
 
+**R-AD-08** 設定頁尾（美術監督 72cba45 審查第 1 點，2026-11-03，擋合併）。光球喺上面、頁尾喺下面（`data-header="bottom"`）時，「Hermes／置頂／關閉」頁尾係自己一條 bar：`position: sticky; bottom: 0`，底色 `#f8f8fc`，上邊 1px `rgb(0 0 242 / .2)`。內容區 `.settings-scroll` 係唯一捲動區（`overflow: auto`），`#settings-form` 唔捲（`overflow: hidden`），所以 sticky 唔會跟內容走（取代「`.settings-head` 一定 `position: static`」嗰句測試；嗰次出事係因為 form 自己捲）。「結束／測試已儲存連線／儲存」一行喺內容區最底，下面留最少 16px（`.settings-scroll::after`）先到頁尾上邊線。四級字（R-LK-01）× 繁／EN（R-LK-02）八個組合都唔可以疊住或者切開頁尾。面板尺寸同命中區唔變（R-CT）。
+- 根因：72cba45 頁尾係 `position: static` 冇邊線，內容區最尾嗰行掣直接貼住頁尾頂（盒量度：掣底 = 頁尾頂 = 976px，0px 距離）；特大字加英文時內容最長，捲到底就睇落似疊住同切開頁尾。
+- 驗收（單元）：`styles.test.js`「R-AD-08 …」。盒：八個組合捲到底量度掣底同頁尾頂嘅距離 ≥ 16px，全頁截圖。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
+**R-AD-09** 「永遠顯示員工名」「顯示工具細節」兩行（美術監督 72cba45 審查第 2 點，2026-11-03）。剔選格用 R-AD-04 嗰款 14×14 自訂格（`appearance: none`，1px `rgba(0,0,242,.4)` 邊，圓角 2px）。字係正文：13px、行高 1.5、`#14142b`（唔係藍色欄位標籤）；格同字隔 8px。同上面段落隔 16px，兩行之間 8px。文字大小（R-LK-01）由 13px 起計。Bot 列嘅「顯示」唔改（仍然係 `.show-toggle`）。兩行用 `.settings-toggle`。
+- 根因：唔係語言切換換走咗 markup（盒上 EN 下 `outerHTML` 同 zh-HK 一樣，`appearance` 仍然係 `none`，14px，藍邊）；美術監督見到嘅「原生格」其實係 R-AD-04 嗰款自訂格，只係 1px 淺藍邊喺 JPEG 似原生。真正問題：呢兩行由 9a9e68a（10-15）起一直用 `.show-toggle` 12px/1 藍字、冇 margin，從來冇定過「13px #14142b、8px／16px」嘅規格（git 歷史同本檔都冇），74d1a7f（R-LK-01）再將佢放大到 15.6px（特大），所以睇落「16px 藍字、黐住上面段落」。
+- 驗收（單元）：`styles.test.js`「R-AD-09 …」。盒：計算樣式（13px × scale、`#14142b`、行高 1.5、兩行相隔 8px、同段落 16px）八個組合截圖。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
 ---
 
 ## 5. 排程（cron）光球（R-CR）

@@ -552,7 +552,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.settings-panel \.bot-row input\[type="checkbox"\] \{[^}]*width:\s*14px/s);
   assert.doesNotMatch(css, /\.bot-row input\[type="checkbox"\] \{[^}]*width:\s*16px/s);
   assert.match(css, /\.alt-warning::before \{[^}]*background:\s*var\(--nous-orange\)/s);
-  assert.match(css, /\.morph\[data-header="bottom"\] \.settings-head \{\s*position:\s*static;/);
+  // R-AD-08: sticky inside the non-scrolling form (overflow hidden), never inside .settings-scroll.
+  assert.match(css, /\.morph\[data-header="bottom"\] \.settings-head \{\s*position:\s*sticky;\s*bottom:\s*0;/);
   assert.match(html, /<div class="settings-scroll">/);
   const scrollAt = html.indexOf('<div class="settings-scroll">');
   const closeAt = html.indexOf('id="btn-settings-close"');
@@ -1556,4 +1557,63 @@ test("all eight kanban columns fit the 960px panel; a narrower panel scrolls sid
   assert.match(head, /font:\s*500 24px\/1 var\(--font-display\)/);
   assert.match(rule(".kanban-col-head > span:not(.kanban-done-chevron)"), /text-overflow:\s*ellipsis/);
   assert.match(rule(".kanban-meta"), /flex-wrap:\s*wrap/);
+});
+
+/** Every block for exactly this selector, joined (a selector can appear in more than one rule). */
+function ruleBody(selector) {
+  const out = [];
+  let at = css.indexOf(`\n${selector} {`);
+  while (at >= 0) {
+    out.push(css.slice(at, css.indexOf("}", at)));
+    at = css.indexOf(`\n${selector} {`, at + 1);
+  }
+  assert.ok(out.length, `rule ${selector}`);
+  return out.join("\n");
+}
+
+test("R-AD-08 settings footer is its own sticky bar and the action row ends 16px above it", () => {
+  const head = ruleBody('.morph[data-header="bottom"] .settings-head');
+  assert.match(head, /position:\s*sticky/);
+  assert.match(head, /bottom:\s*0/);
+  assert.match(head, /background:\s*#f8f8fc/);
+  assert.match(head, /border-top:\s*1px solid/);
+  // The content area is the only scroller; the form itself never scrolls.
+  assert.match(ruleBody(".settings-scroll"), /overflow:\s*auto/);
+  assert.match(ruleBody('.morph[data-header="bottom"] #settings-form'), /overflow:\s*hidden/);
+  const spacer = ruleBody('.morph[data-header="bottom"] .settings-scroll::after');
+  assert.match(spacer, /display:\s*block/);
+  const gap = Number(/height:\s*(\d+)px/.exec(spacer)?.[1]);
+  assert.ok(gap >= 16, `gap ${gap}`);
+  // The head is a sibling before the scroller; the action row is the scroller's last child.
+  const scrollAt = html.indexOf('<div class="settings-scroll">');
+  const headAt = html.indexOf('<header class="settings-head">');
+  const actionsAt = html.indexOf('<div class="settings-actions">');
+  assert.ok(headAt > 0 && headAt < scrollAt && actionsAt > scrollAt);
+  const tail = html.slice(actionsAt, html.indexOf("</form>"));
+  assert.equal((tail.match(/<div\b/g) || []).length, 2, "settings-actions + settings-actions-main only");
+});
+
+test("R-AD-09 show-names and tool-detail rows: 14px custom box, 13px #14142b label, 1.5, 8px between, 16px above", () => {
+  for (const id of ["show-bot-names", "show-tool-detail"]) {
+    assert.match(html, new RegExp(`<label class="show-toggle settings-toggle" for="${id}">\\s*<input id="${id}" type="checkbox" />`));
+  }
+  const row = ruleBody(".settings-panel .settings-toggle");
+  assert.match(row, /display:\s*flex/);
+  assert.match(row, /gap:\s*8px/);
+  assert.match(row, /color:\s*#14142b/);
+  assert.match(row, /font:\s*400 13px\/1\.5 var\(--font-body\)/);
+  assert.match(ruleBody(".settings-panel :not(.settings-toggle) + .settings-toggle"), /margin-top:\s*16px/);
+  assert.match(ruleBody(".settings-panel .settings-toggle + .settings-toggle"), /margin-top:\s*8px/);
+  const box = ruleBody('.settings-panel .settings-toggle input[type="checkbox"]');
+  assert.match(box, /width:\s*14px/);
+  assert.match(box, /height:\s*14px/);
+  // The shared custom checkbox (R-AD-04) still applies: appearance none, 1px blue border, radius 2px.
+  const shared = ruleBody('.settings-panel input[type="checkbox"]');
+  assert.match(shared, /appearance:\s*none/);
+  assert.match(shared, /border:\s*1px solid rgba\(0, 0, 242, \.4\)/);
+  assert.match(shared, /border-radius:\s*2px/);
+  // Text size scales the label from 13px and outranks the generic 12px .show-toggle rule.
+  assert.match(css, /html\[data-text-size\] \.settings-panel \.settings-toggle \{ font-size: calc\(13px \* var\(--text-scale, 1\)\); \}/);
+  // The bot-row 「顯示」 keeps the old compact toggle.
+  assert.match(ruleBody(".show-toggle"), /font:\s*400 12px\/1 var\(--font-body\)/);
 });
