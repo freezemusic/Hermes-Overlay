@@ -2736,11 +2736,20 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   padding: var(--sp-4);
 }
 
+/* R-AD-10: the scrollbar lives in a gutter outside the content. The scroller
+   reaches 12px into the form's 16px right padding (margin-right: -12px) and
+   keeps 18px padding-right: WebKitGTK draws its overlay thumb over the padding
+   about 6px in from the scroller edge, so the thumb still clears the 儲存／SAVE
+   right edge by 12px; a classic (WebView2) scrollbar sits outside the 18px.
+   scrollbar-gutter keeps the width steady when it appears. */
 .settings-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  margin-right: -12px;
+  padding-right: 18px;
 }
 
 .morph {

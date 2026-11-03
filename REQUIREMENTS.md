@@ -277,6 +277,10 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（單元）：`styles.test.js`「R-AD-09 …」。盒：計算樣式（13px × scale、`#14142b`、行高 1.5、兩行相隔 8px、同段落 16px）八個組合截圖。
 - 狀態：❓ / ✅(盒，ad-72cba45)。
 
+**R-AD-10** 設定捲軸（美術監督 72cba45 第二輪審查第 2 點，2026-11-03）。`.settings-scroll` 嘅捲軸唔可以貼住「儲存／SAVE」右邊（之前 thumb x≈667，掣右邊 671）。捲動區伸入 `#settings-form` 右邊 16px padding 入面 12px（`margin-right: -12px`），自己留 `padding-right: 18px`，加 `scrollbar-gutter: stable`：WebKitGTK 嘅 overlay thumb 畫喺 padding 上面、離捲動區右邊大約 6px，所以 thumb 同「儲存」右邊仍然相距 12px；WebView2 嘅傳統捲軸喺 18px padding 外面；捲軸出唔出現內容闊度都唔變；唔會出咗卡邊。面板尺寸同命中區唔變（R-CT）。
+- 驗收（單元）：`styles.test.js`「R-AD-10 …」。盒：量 thumb 左邊同「儲存」右邊相距 ≥ 12px（特大＋EN、標準＋繁），截圖 B11-xl-en、B10-m-zh。
+- 狀態：❓ / ✅(盒，ad-72cba45 r2)。
+
 ---
 
 ## 5. 排程（cron）光球（R-CR）

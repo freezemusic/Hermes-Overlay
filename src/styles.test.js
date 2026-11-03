@@ -1617,3 +1617,13 @@ test("R-AD-09 show-names and tool-detail rows: 14px custom box, 13px #14142b lab
   // The bot-row 「顯示」 keeps the old compact toggle.
   assert.match(ruleBody(".show-toggle"), /font:\s*400 12px\/1 var\(--font-body\)/);
 });
+
+test("R-AD-10 settings scrollbar sits in a 12px gutter clear of the 儲存 button", () => {
+  const body = ruleBody(".settings-scroll");
+  assert.match(body, /scrollbar-gutter:\s*stable/);
+  assert.match(body, /margin-right:\s*-12px/);
+  assert.match(body, /padding-right:\s*18px/);
+  // The gutter reaches into the form's 16px padding, not past the card edge.
+  assert.match(ruleBody("#settings-form"), /padding:\s*var\(--sp-4\)/);
+  assert.match(css, /--sp-4:\s*16px/);
+});
