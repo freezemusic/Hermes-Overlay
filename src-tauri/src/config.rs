@@ -156,6 +156,34 @@ pub struct AppConfig {
     /// Omitted while false so files that never migrated stay byte-identical.
     #[serde(default, skip_serializing_if = "skip_false")]
     pub kanban_base_url_from_gateway: bool,
+    /// R-LK-01 text size: "s", "l" or "xl". Empty is the standard size and is
+    /// omitted, so an untouched config.json stays byte-identical.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text_size: String,
+    /// R-LK-02 interface language: "en". Empty is zh-HK and is omitted.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ui_language: String,
+}
+
+/// R-LK-01. Only the non-standard steps are stored; "m", blank and unknown
+/// values are the standard size (stored as "").
+pub fn normalize_text_size(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "s" => "s".into(),
+        "l" => "l".into(),
+        "xl" => "xl".into(),
+        _ => String::new(),
+    }
+}
+
+/// R-LK-02. Only English is stored; zh-HK, blank and unknown values are "".
+pub fn normalize_ui_language(raw: &str) -> String {
+    let text = raw.trim().to_ascii_lowercase();
+    if text == "en" || text.starts_with("en-") || text.starts_with("en_") || text == "english" {
+        "en".into()
+    } else {
+        String::new()
+    }
 }
 
 fn skip_false(value: &bool) -> bool {
@@ -242,6 +270,8 @@ impl Default for AppConfig {
             show_tool_detail: false,
             suborb_pins: BTreeMap::new(),
             kanban_base_url_from_gateway: false,
+            text_size: String::new(),
+            ui_language: String::new(),
         }
     }
 }
@@ -2564,6 +2594,61 @@ other:
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
         assert!(store_suborb_pin(&path, "mt-coder", "bad id", true).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn text_size_and_language_keep_only_non_default_values() {
+        assert_eq!(normalize_text_size("m"), "");
+        assert_eq!(normalize_text_size(""), "");
+        assert_eq!(normalize_text_size("huge"), "");
+        assert_eq!(normalize_text_size(" XL "), "xl");
+        assert_eq!(normalize_text_size("s"), "s");
+        assert_eq!(normalize_text_size("l"), "l");
+        assert_eq!(normalize_ui_language("zh-HK"), "");
+        assert_eq!(normalize_ui_language(""), "");
+        assert_eq!(normalize_ui_language("ja"), "");
+        assert_eq!(normalize_ui_language("en"), "en");
+        assert_eq!(normalize_ui_language("en-GB"), "en");
+    }
+
+    #[test]
+    fn an_old_file_gains_no_look_keys_and_a_picked_look_round_trips() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-look-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let old = "{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"kanban_base_url\": \"http://10.10.24.33:9119\",\n  \"bots\": []\n}";
+        fs::write(&path, old).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.text_size, "");
+        assert_eq!(loaded.ui_language, "");
+        save(&path, &loaded).unwrap();
+        let plain = fs::read_to_string(&path).unwrap();
+        assert!(!plain.contains("text_size"));
+        assert!(!plain.contains("ui_language"));
+        let mut picked = load(&path).unwrap();
+        picked.text_size = normalize_text_size("l");
+        picked.ui_language = normalize_ui_language("en");
+        save(&path, &picked).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"text_size\": \"l\""));
+        assert!(text.contains("\"ui_language\": \"en\""));
+        let back = load(&path).unwrap();
+        assert_eq!(back.text_size, "l");
+        assert_eq!(back.ui_language, "en");
+        let mut standard = back.clone();
+        standard.text_size = normalize_text_size("m");
+        standard.ui_language = normalize_ui_language("zh-HK");
+        save(&path, &standard).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), plain);
         let _ = fs::remove_dir_all(&dir);
     }
 }

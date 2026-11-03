@@ -252,6 +252,9 @@ struct PublicSettings {
     show_bot_names: bool,
     show_tool_detail: bool,
     suborb_pins: std::collections::BTreeMap<String, Vec<String>>,
+    /// R-LK-01 / R-LK-02. "" is the standard size / zh-HK.
+    text_size: String,
+    ui_language: String,
     /// Profiles a remote list really returned on this sync (R-SY-09 removal).
     /// None when no remote list answered, so nobody is hidden on a failed read.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -300,6 +303,11 @@ struct SaveSettings {
     show_bot_names: bool,
     #[serde(default)]
     show_tool_detail: bool,
+    /// None (an older form) keeps what the file already has (R-LK-01/02).
+    #[serde(default)]
+    text_size: Option<String>,
+    #[serde(default)]
+    ui_language: Option<String>,
     bots: Vec<SaveBot>,
 }
 
@@ -1094,6 +1102,8 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         show_bot_names: cfg.show_bot_names,
         show_tool_detail: cfg.show_tool_detail,
         suborb_pins: cfg.suborb_pins.clone(),
+        text_size: config::normalize_text_size(&cfg.text_size),
+        ui_language: config::normalize_ui_language(&cfg.ui_language),
         listed_profiles: None,
     })
 }
@@ -1302,6 +1312,12 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         show_tool_detail: input.show_tool_detail,
         suborb_pins: previous.suborb_pins.clone(),
         kanban_base_url_from_gateway: previous.kanban_base_url_from_gateway,
+        text_size: config::normalize_text_size(
+            input.text_size.as_deref().unwrap_or(&previous.text_size),
+        ),
+        ui_language: config::normalize_ui_language(
+            input.ui_language.as_deref().unwrap_or(&previous.ui_language),
+        ),
     };
     config::save(&config_path(&app)?, &cfg)?;
     if let Some(state) = state.as_ref() {
@@ -4546,5 +4562,24 @@ mod tests {
         let sync_body = &lib[sync..sync + sync_end];
         assert!(sync_body.contains(".session_token_profiles("));
         assert!(sync_body.contains(".native_profiles()"));
+    }
+
+    #[test]
+    fn settings_save_keeps_the_file_look_when_an_older_form_sends_none() {
+        let older: super::SaveSettings = serde_json::from_str(r#"{"bots": []}"#).unwrap();
+        assert!(older.text_size.is_none());
+        assert!(older.ui_language.is_none());
+        let newer: super::SaveSettings =
+            serde_json::from_str(r#"{"bots": [], "text_size": "xl", "ui_language": "en"}"#).unwrap();
+        assert_eq!(newer.text_size.as_deref(), Some("xl"));
+        assert_eq!(newer.ui_language.as_deref(), Some("en"));
+        let src = include_str!("lib.rs");
+        let save = src.find("fn save_settings_sync").expect("save");
+        let save_end = src[save..].find("async fn probe_gateway").expect("probe");
+        let body = &src[save..save + save_end];
+        assert!(body.contains("input.text_size.as_deref().unwrap_or(&previous.text_size)"));
+        assert!(body.contains("input.ui_language.as_deref().unwrap_or(&previous.ui_language)"));
+        assert!(body.contains("config::normalize_text_size("));
+        assert!(body.contains("config::normalize_ui_language("));
     }
 }

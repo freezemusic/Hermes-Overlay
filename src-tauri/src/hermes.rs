@@ -5214,6 +5214,8 @@ mod tests {
             show_tool_detail: false,
             suborb_pins: std::collections::BTreeMap::new(),
             kanban_base_url_from_gateway: false,
+            text_size: String::new(),
+            ui_language: String::new(),
             bots: vec![
                 bot("researcher", "20261015_researcher", true, 1792546080.05),
                 bot("writer", "20261015_writer", true, 1792546210.56),
