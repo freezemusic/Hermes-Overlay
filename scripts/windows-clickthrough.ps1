@@ -27,6 +27,8 @@ New-Item -ItemType Directory -Force -Path $hermesHome | Out-Null
 $configDir = Join-Path $env:APPDATA "com.freezemusic.hermes-overlay"
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 $utf8 = New-Object System.Text.UTF8Encoding $false
+# The old gateway_base_url and per-bot base_url keys stay in this file on
+# purpose: an old config must still load, and the app must never call them.
 [System.IO.File]::WriteAllText((Join-Path $configDir "config.json"), @'
 {
   "version": 1,
@@ -97,7 +99,8 @@ if (-not (Test-Path $gwLog)) { throw "fake gateway did not start" }
 
 # Chat runs on the Hermes Dashboard (9119) through HermesClient (R-CL-01):
 # REST for sessions and history, one WebSocket for RPC. The 8642 fake above
-# only answers the legacy paths. scripts/ci-fake-dashboard.mjs serves the same
+# is a tripwire: since 2026-11-03 the app makes no gateway call at all
+# (R-AR-04), so its log must stay at the "listening" line (no-gateway-calls). scripts/ci-fake-dashboard.mjs serves the same
 # Bot Chat with the /plan history, so the field panel hosts the plan window.
 $dashboard = Start-Process -FilePath "node" -ArgumentList @("scripts/ci-fake-dashboard.mjs", "9119", "`"$dashLog`"") `
   -WorkingDirectory $root -RedirectStandardError $dashErr -WindowStyle Hidden -PassThru
@@ -948,6 +951,14 @@ try {
   if ((Test-Path $gwLog) -and (Select-String -Path $gwLog -Pattern "POST /api/sessions" -Quiet)) {
     Note-Fail "gateway" "startup created a session"
   }
+  # R-AR-04: zero requests to the old gateway (8642), not even GET /health.
+  $gwHits = @()
+  if (Test-Path $gwLog) { $gwHits = @(Get-Content $gwLog | Where-Object { $_ -ne "listening" }) }
+  if ($gwHits.Count -gt 0) {
+    Note-Fail "no-gateway-calls" ("8642 got " + $gwHits.Count + " request(s): " + (($gwHits | Select-Object -First 5) -join "; "))
+  } else {
+    Note-Ok "no-gateway-calls" "8642 fake saw no request"
+  }
   # Same rule on 9119: opening a panel must not make a session (R-CL-07).
   if ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern "^(POST /api/sessions|RPC session\.create)" -Quiet)) {
     Note-Fail "dashboard" "startup created a session"
@@ -989,4 +1000,5 @@ try {
   }
   if ($dashboard -and -not $dashboard.HasExited) { Stop-Process -Id $dashboard.Id -Force -ErrorAction SilentlyContinue }
   if (Test-Path $dashLog) { Copy-Item $dashLog (Join-Path $root "fake-dashboard.log") -Force }
+  if (Test-Path $gwLog) { Copy-Item $gwLog (Join-Path $root "fake-gateway.log") -Force }
 }

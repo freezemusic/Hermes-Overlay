@@ -189,4 +189,5 @@ jobs:
             clickthrough-debug.log
             window-tree.txt
             fake-dashboard.log
+            fake-gateway.log
           if-no-files-found: ignore
