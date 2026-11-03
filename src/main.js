@@ -4046,7 +4046,7 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
     return;
   }
   banner.textContent = text;
-  if ((kind === "ok" || kind === "info") && sticky !== "keyring" && sticky !== "gateway" && sticky !== "keys") {
+  if ((kind === "ok" || kind === "info") && sticky !== "keyring" && sticky !== "gateway" && sticky !== "keys" && sticky !== "demo") {
     bannerTimer = window.setTimeout(() => {
       bannerTimer = 0;
       const held = banner.dataset.sticky;
@@ -8114,7 +8114,7 @@ async function sendClientCommand(id, text, action) {
   }
 }
 
-function useMock(reason, bannerAction = "") {
+function useMock(reason, bannerAction = "", sticky = "") {
   cancelReconnect();
   stopRosterSync();
   window.clearInterval(state.chatRefresh);
@@ -8153,7 +8153,8 @@ function useMock(reason, bannerAction = "") {
   state.activeId = null;
   state.slashPanelId = "";
   state.openIds = [];
-  setBanner(reason, "info", "", bannerAction);
+  // The --demo line stays up while the demo runs (R-AR-05).
+  setBanner(reason, "info", sticky, bannerAction);
   renderBots();
 }
 
@@ -8571,7 +8572,7 @@ async function saveSettings(event) {
     state.settings = settings;
     $("#settings-status").textContent = "已儲存。";
     $("#dashboard-token").value = "";
-    if (settings.mode === "mock") useMock(DEMO_BANNER);
+    if (settings.mode === "mock") useMock(DEMO_BANNER, "", "demo");
     else await connectHermes(settings);
     reconcileKeyPrompt(settings.bots || []);
     closeSettings();
@@ -14092,7 +14093,7 @@ async function boot() {
     state.showToolDetail = !!settings?.show_tool_detail;
     state.suborbPins = settings?.suborb_pins || {};
     applyInteraction(settings.interaction);
-    if (settings.mode === "mock") useMock(DEMO_BANNER);
+    if (settings.mode === "mock") useMock(DEMO_BANNER, "", "demo");
     else await connectHermes(settings);
     if (shouldAutoOpenSettings(settings)) {
       if (settings.mode !== "mock") setBanner(SETUP_BANNER, "info", "", "settings");

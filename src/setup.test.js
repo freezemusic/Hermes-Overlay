@@ -37,8 +37,10 @@ test("settings have no gateway address, per-bot address or API key, and no demo 
   assert.doesNotMatch(save, /gateway_base_url|bot\.key/);
   // Demo comes from the backend's launch flag (settings.mode), never from a field.
   const boot = main.slice(main.indexOf("const settings = await invoke(\"get_settings\")"), main.indexOf("startWatchers();\n}"));
-  assert.match(boot, /settings\.mode === "mock"\) useMock\(DEMO_BANNER\)/);
+  assert.match(boot, /settings\.mode === "mock"\) useMock\(DEMO_BANNER, "", "demo"\)/);
   assert.doesNotMatch(boot, /useMock\(SETUP_BANNER/);
+  // The demo line does not time out like other info banners.
+  assert.match(main, /sticky !== "keys" && sticky !== "demo"\)/);
 });
 
 test("tauri dev merges the dev identifier and build does not", () => {
