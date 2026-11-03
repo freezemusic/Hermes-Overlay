@@ -327,6 +327,11 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（單元）：`a_card_move_patches_the_dashboard_plugin_on_the_board_shown`（`PATCH /api/plugins/kanban/tasks/t_1?board=mt4`、Bearer、done 帶 result；409 嘅 detail 原文顯示；冇 `/v1/overlay`）；`the_client_reads_the_board_and_keeps_a_refreshed_login`；`patch_body_sends_done_evidence_and_an_integer_priority`。CI：`kanban-on-dashboard`（假 dashboard log 有 `GET /api/plugins/kanban/board`，8642 冇 `/v1/overlay/kanban`）。盒：overlay 拖卡之後 `GET /api/plugins/kanban/tasks/{id}` 見到新狀態。
 - 狀態：見 kanban-9119/RESULTS.md；Win 未驗。
 
+**R-KB-08** 八欄（R-KB-05）喺預設 960px 看板面板入面全部睇得到，唔使橫捲：欄最窄 `--kanban-col-min` 112px（8 × 112 = 896px ≤ 面板 padding 入面嘅 928px），闊啲就平均分（`1fr`）。欄頭 24px 顯示字，最長嘅 SCHEDULED 都唔出欄；名太長用省略號，唔好出界。卡片 margin 6px、padding 8px，負責人同優先次序放唔落一行就摺行，唔好凸出卡邊。面板窄過 928px（細螢幕）先喺看板入面橫捲，`overflow: auto` 保留。
+- 來源：Devon 手提 637a7a1 看樣（2026-11-03，1920×1080）：REVIEW 切咗一半、DONE 睇唔到，要拉底部橫捲軸先見到。原因：140px 最窄值係六欄時代（2026-10-15）定，R-KB-05 加咗 scheduled 同 review 之後 8 × 140 = 1120px，大過 928px。
+- 驗收（單元）：`styles.test.js`「all eight kanban columns fit the 960px panel」：8 × `--kanban-col-min` ≤ 960 − 2 × 16；`.kanban` 仲有 `overflow: auto`；冇 `minmax(140px`。盒（1920×1080）：`scrollWidth == clientWidth`（928），八個欄頭全部喺面板入面。
+- 狀態：✅ 盒 / ❓ Win。
+
 ---
 
 ## 7. Session（R-SS）

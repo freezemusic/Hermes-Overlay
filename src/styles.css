@@ -2109,22 +2109,30 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   line-height: 1.4;
 }
 
+/* All eight R-KB-05 columns fit the 960px panel (928px inside its 16px
+   padding): 8 x 112px = 896px. The 140px minimum dates from the six-column
+   board and pushed REVIEW and DONE past the panel edge. A narrower panel
+   (small screen) still scrolls sideways inside the board. */
 .kanban {
+  --kanban-col-min: 112px;
   flex: 1;
   min-height: 0;
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(140px, 1fr);
+  grid-auto-columns: minmax(var(--kanban-col-min), 1fr);
   overflow: auto;
   width: 100%;
 }
+
+.kanban-col { min-width: 0; }
 
 .kanban[hidden] { display: none; }
 
 .kanban-col + .kanban-col { border-left: var(--hair); }
 
 .kanban-col-head {
-  font: 500 var(--fs-hero)/1 var(--font-display);
+  /* 24px keeps SCHEDULED (the longest name) inside a 112px column. */
+  font: 500 24px/1 var(--font-display);
   letter-spacing: 0;
   text-transform: none;
   color: var(--nous-blue);
@@ -2134,6 +2142,13 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   justify-content: space-between;
   align-items: end;
   gap: var(--sp-2);
+}
+
+.kanban-col-head > span:not(.kanban-done-chevron) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .kanban-col-head small {
@@ -2153,8 +2168,8 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 }
 
 .kanban-card {
-  margin: var(--sp-2);
-  padding: var(--sp-3);
+  margin: 6px;
+  padding: var(--sp-2);
   background: rgb(255 255 255 / .94);
   border: var(--hair);
   border-left: 2px solid var(--owner, var(--bot));
@@ -2184,6 +2199,8 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 
 .kanban-meta {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 6px;
   align-items: center;
   color: var(--text-muted);

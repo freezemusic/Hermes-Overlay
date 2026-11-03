@@ -4,6 +4,7 @@ import test from "node:test";
 import { JSDOM } from "jsdom";
 import { clipPath, insetsFor, ORB, orbHaloInsets, restoreIdleOrbClip, seamClipStillClosed } from "./morph.js";
 import { applyOrbFadeFrame, opacityFramesMonotonic, opacityFramesToward, orbDiscHit } from "./proximity.js";
+import { KANBAN_STATUSES } from "./kanban.js";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -1530,4 +1531,29 @@ test("session menu rows keep one line height when the list scrolls (R-SO-10)", (
   for (const rule of css.matchAll(/([^{}]*\.session-menu-(?:row|empty)[^{}]*)\{([^}]*)\}/g)) {
     assert.doesNotMatch(rule[2], /flex(?:-shrink)?:\s*(?:1|auto|0 1)/, `${rule[1].trim()} brings shrinking back`);
   }
+});
+
+test("all eight kanban columns fit the 960px panel; a narrower panel scrolls sideways (R-KB-08)", () => {
+  const rule = (sel) => {
+    const m = css.match(new RegExp("(?:^|\\n)" + sel.replace(/[.[\]()]/g, "\\$&") + " \\{([^}]*)\\}"));
+    assert.ok(m, `${sel} rule`);
+    return m[1];
+  };
+  const board = rule(".kanban");
+  const min = Number(board.match(/--kanban-col-min:\s*(\d+)px/)?.[1]);
+  assert.ok(min > 0, "--kanban-col-min in px");
+  assert.match(board, /grid-auto-columns:\s*minmax\(var\(--kanban-col-min\), 1fr\)/);
+  assert.match(board, /overflow:\s*auto/);
+  assert.doesNotMatch(board, /minmax\(140px/);
+  const panelMax = Number(rule(".kanban-panel").match(/width:\s*min\((\d+)px/)[1]);
+  const pad = Number(css.match(/--sp-4:\s*(\d+)px/)[1]);
+  assert.equal(rule(".center-panel").match(/padding:\s*([^;]+);/)[1].trim(), "var(--sp-4)");
+  assert.equal(KANBAN_STATUSES.length, 8);
+  assert.ok(KANBAN_STATUSES.length * min <= panelMax - 2 * pad,
+    `${KANBAN_STATUSES.length} x ${min}px must fit ${panelMax - 2 * pad}px`);
+  assert.match(rule(".kanban-col"), /min-width:\s*0/);
+  const head = rule(".kanban-col-head");
+  assert.match(head, /font:\s*500 24px\/1 var\(--font-display\)/);
+  assert.match(rule(".kanban-col-head > span:not(.kanban-done-chevron)"), /text-overflow:\s*ellipsis/);
+  assert.match(rule(".kanban-meta"), /flex-wrap:\s*wrap/);
 });
