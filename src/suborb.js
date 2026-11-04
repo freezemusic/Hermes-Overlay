@@ -7,8 +7,8 @@ import { looksLikePlan } from "./plan.js";
 
 export const BOT_CHAT_TITLE = "Bot Chat";
 export const GATEWAY_FORK_TITLE = "Continue previous conversation";
-/** Visible task orbs. The next slot is 「+N」 when more qualify (R-SO-02). */
-export const SUBORB_CAP = 5;
+/** Visible task orbs (fan draft: 4). The next slot is 「+N」 when more qualify (R-SO-02). */
+export const SUBORB_CAP = 4;
 export const SUBORB_DISMISS_MS = 3000;
 export const SUBORB_MIN_OPACITY = 0.18;
 export const SUBORB_FADE_MS = PLAN_GROW_MS;
@@ -576,6 +576,158 @@ export function suborbPositions({
     slots.push({ x: sx - size / 2, y: sy - size / 2, size });
   }
   return slots;
+}
+
+/* ---- Fan layout (R-SO-02 draft, 2026-11-04, Art Director proposal) ---- */
+/** Visible task orbs on the fan. The next slot is 「+N」. */
+export const SUBORB_FAN_CAP = 4;
+/** Hit circle per sub-orb, wider than the 0.45× disc. */
+export const SUBORB_HIT_PX = 24;
+/** Gap from the main disc edge to the sub-orb disc edge on the orbit. */
+export const SUBORB_FAN_GAP_PX = 10;
+/** Widest arc. More slots than fit at the base orbit push the orbit out. */
+export const SUBORB_FAN_MAX_SPAN_DEG = 120;
+/** Air between two neighbouring hit circles on the arc. */
+export const SUBORB_FAN_HIT_AIR_PX = 2;
+/** A slot this close to a neighbour's halo (or nearer) collapses the fan. */
+export const SUBORB_NEIGHBOUR_CLEAR_PX = 8;
+/** Main-orb halo (ORB_HALO_PX in morph.js). Repeated to keep suborb.js pure. */
+export const SUBORB_NEIGHBOUR_HALO_PX = 34;
+/** Keep this much of the work area free around a slot's disc. */
+export const SUBORB_WORK_MARGIN_PX = 4;
+/** Turns the arc may make, away from a crowded side, before it collapses. */
+export const SUBORB_FAN_NUDGE_DEG = [0, 15, -15, 30, -30];
+export const SUBORB_FAN_MS = 200;
+export const SUBORB_FAN_EASE = "cubic-bezier(.2,.8,.2,1)";
+
+const DEG = Math.PI / 180;
+
+/**
+ * Where the arc points: from the main orb toward the work-area centre.
+ * An orb sitting on the centre points left (the rail's usual inward side).
+ */
+export function suborbFanDirection(x, y, work) {
+  const cx = work.left + work.width / 2;
+  const cy = work.top + work.height / 2;
+  const dx = cx - x;
+  const dy = cy - y;
+  if (Math.hypot(dx, dy) < 1) return Math.PI;
+  return Math.atan2(dy, dx);
+}
+
+/**
+ * Orbit radius and angular step for `count` slots.
+ * Base orbit = parent radius + gap + sub-orb radius. Adjacent hit circles
+ * keep SUBORB_FAN_HIT_AIR_PX between them. If that needs more than the max
+ * span, the step shrinks to fit and the orbit grows instead.
+ */
+export function suborbFanOrbit(count, { parent = 44, size = 20, hit = SUBORB_HIT_PX, gap = SUBORB_FAN_GAP_PX, maxSpanDeg = SUBORB_FAN_MAX_SPAN_DEG } = {}) {
+  const base = parent / 2 + gap + size / 2;
+  if (count <= 1) return { radius: base, step: 0 };
+  const chord = hit + SUBORB_FAN_HIT_AIR_PX;
+  const stepAtBase = 2 * Math.asin(Math.min(1, chord / (2 * base)));
+  const maxSpan = maxSpanDeg * DEG;
+  if (stepAtBase * (count - 1) <= maxSpan + 1e-9) return { radius: base, step: stepAtBase };
+  const step = maxSpan / (count - 1);
+  return { radius: Math.max(base, chord / (2 * Math.sin(step / 2))), step };
+}
+
+function arcSlots(x, y, count, dir, orbit, size) {
+  const start = dir - (orbit.step * (count - 1)) / 2;
+  const slots = [];
+  for (let i = 0; i < count; i += 1) {
+    // Screen y grows down, so a growing angle runs clockwise on screen.
+    const angle = start + i * orbit.step;
+    const cx = x + orbit.radius * Math.cos(angle);
+    const cy = y + orbit.radius * Math.sin(angle);
+    slots.push({ x: cx - size / 2, y: cy - size / 2, cx, cy, size, angle });
+  }
+  return slots;
+}
+
+function slotLeavesWork(slot, work, margin) {
+  const r = slot.size / 2 + margin;
+  return slot.cx - r < work.left
+    || slot.cy - r < work.top
+    || slot.cx + r > work.left + work.width
+    || slot.cy + r > work.top + work.height;
+}
+
+function slotCrowds(slot, neighbours, halo, clear) {
+  return (neighbours || []).some((n) => {
+    const reach = (Number(n.r) || 22) + halo + clear + slot.size / 2;
+    return Math.hypot(slot.cx - n.x, slot.cy - n.y) < reach - 1e-9;
+  });
+}
+
+/**
+ * Fan of sub-orb slots on the side of the main orb that faces the work-area
+ * centre. Slot 0 is the counter-clockwise end; later slots run clockwise
+ * (pinned first, then creation time — the caller's order).
+ * If no turn in `nudges` keeps every slot inside the work area and clear of
+ * every neighbour halo by `clear` px, the fan collapses into one badge
+ * at the arc centre (mode "badge"); the caller shows the slots only while
+ * the modifier is held.
+ */
+export function suborbFanLayout({
+  x = 0,
+  y = 0,
+  parent = 44,
+  count = 0,
+  size = 20,
+  hit = SUBORB_HIT_PX,
+  work = null,
+  screenW = 1280,
+  screenH = 800,
+  neighbours = [],
+  halo = SUBORB_NEIGHBOUR_HALO_PX,
+  clear = SUBORB_NEIGHBOUR_CLEAR_PX,
+  margin = SUBORB_WORK_MARGIN_PX,
+  nudges = SUBORB_FAN_NUDGE_DEG,
+} = {}) {
+  const area = work || { left: 0, top: 0, width: screenW, height: screenH };
+  const dir = suborbFanDirection(x, y, area);
+  const orbit = suborbFanOrbit(count, { parent, size, hit });
+  const baseRadius = parent / 2 + SUBORB_FAN_GAP_PX + size / 2;
+  const badgeAt = (angle) => {
+    const cx = x + baseRadius * Math.cos(angle);
+    const cy = y + baseRadius * Math.sin(angle);
+    return { x: cx - size / 2, y: cy - size / 2, cx, cy, size, angle };
+  };
+  if (count <= 0) return { mode: "fan", reason: "", dir, turn: 0, radius: orbit.radius, step: orbit.step, slots: [], badge: badgeAt(dir) };
+  let firstSlots = null;
+  let firstReason = "";
+  for (const turnDeg of nudges && nudges.length ? nudges : [0]) {
+    const angle = dir + turnDeg * DEG;
+    const slots = arcSlots(x, y, count, angle, orbit, size);
+    const out = slots.some((slot) => slotLeavesWork(slot, area, margin));
+    const crowd = !out && slots.some((slot) => slotCrowds(slot, neighbours, halo, clear));
+    if (!firstSlots) {
+      firstSlots = slots;
+      firstReason = out ? "work" : crowd ? "neighbour" : "";
+    }
+    if (!out && !crowd) {
+      return { mode: "fan", reason: "", dir: angle, turn: turnDeg, radius: orbit.radius, step: orbit.step, slots, badge: badgeAt(angle) };
+    }
+  }
+  // Collapsed: the slots still come back (unturned) so Ctrl can expand them.
+  return { mode: "badge", reason: firstReason, dir, turn: 0, radius: orbit.radius, step: orbit.step, slots: firstSlots, badge: badgeAt(dir) };
+}
+
+/** Which look a sub-orb shell takes on the rail. */
+export function suborbFanState({ mode = "fan", held = false, parentOpen = false } = {}) {
+  if (parentOpen) return "tucked";
+  if (mode !== "badge") return "fan";
+  return held ? "expanded" : "collapsed";
+}
+
+/** 24px hit circle on a sub-orb disc centre; never smaller than the disc. */
+export function suborbHitCircle(disc, hit = SUBORB_HIT_PX) {
+  if (!disc || !(disc.w >= 1) || !(disc.h >= 1)) return disc;
+  const size = Math.max(hit, Math.min(disc.w, disc.h));
+  const cx = disc.x + disc.w / 2;
+  const cy = disc.y + disc.h / 2;
+  return { x: cx - size / 2, y: cy - size / 2, w: size, h: size };
 }
 
 /** Tail text from one changed page. Not a whole transcript. */

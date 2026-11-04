@@ -162,7 +162,7 @@ test("a pin stays after it is finished and read, and status does not reorder", (
   assert.equal(again.shown[0].id, "b");
 });
 
-test("overflow is capped at five orbs plus a +N slot", () => {
+test("overflow is capped at four orbs plus a +N slot (fan draft)", () => {
   const sessions = [bot];
   for (let i = 0; i < 8; i += 1) sessions.push(task(`t${i}`, { started_at: i + 1 }));
   const first = reconcileSuborbs(emptySuborbModel(), { sessions, mainId: "bot-chat", now: 0 });
@@ -173,10 +173,10 @@ test("overflow is capped at five orbs plus a +N slot", () => {
     pinned: ["t0", "t1", "t2", "t3", "t4", "t5"],
     now: 1,
   });
-  assert.equal(SUBORB_CAP, 5);
-  assert.equal(view.shown.length, 5);
-  assert.equal(view.overflow.length, 2);
-  assert.deepEqual(view.shown.map((row) => row.id), ["t0", "t1", "t2", "t3", "t4"]);
+  assert.equal(SUBORB_CAP, 4);
+  assert.equal(view.shown.length, 4);
+  assert.equal(view.overflow.length, 3);
+  assert.deepEqual(view.shown.map((row) => row.id), ["t0", "t1", "t2", "t3"]);
 });
 
 test("badges prefer waiting, then failure, then a plan, then unread", () => {

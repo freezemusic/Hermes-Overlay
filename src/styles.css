@@ -4102,3 +4102,73 @@ html[data-text-size] .bot-btn .bot-label,
 html[data-text-size] .orb-hover-label { font-size: 10px; }
 html[data-text-size] .morph-pill { font-size: 13px; }
 html[data-text-size] .morph-pill time { font-size: 11px; }
+
+/* ---- R-SO-02 fan draft (2026-11-04): arc toward the screen centre, badge when crowded,
+   title-bar tabs while the parent panel is open. Motion is opacity + transform only,
+   200ms cubic-bezier(.2,.8,.2,1); nothing runs at idle. ---- */
+.morph[data-kind="suborb"][data-state="orb"] .suborb-disc {
+  transition: opacity 200ms cubic-bezier(.2, .8, .2, 1), transform 200ms cubic-bezier(.2, .8, .2, 1);
+}
+.morph[data-kind="suborb"][data-state="orb"][data-fan="collapsed"] .suborb-disc,
+.morph[data-kind="suborb"][data-state="orb"][data-fan="tucked"] .suborb-disc,
+.morph[data-kind="suborb"][data-state="orb"][data-fan="hidden"] .suborb-disc {
+  opacity: 0;
+  transform: scale(.6);
+  pointer-events: none;
+}
+.suborb-disc.suborb-more.is-fan-badge {
+  border-style: solid;
+  background: rgb(var(--bot-rgb) / .14);
+  font: 700 11px/1 "Barlow Condensed", sans-serif;
+  color: var(--bot-ink, rgb(var(--bot-rgb)));
+}
+.suborb-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  margin-right: 8px;
+  min-width: 0;
+}
+.suborb-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.suborb-tab-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  border: 1px dashed rgb(var(--bot-rgb));
+  background: #fff;
+  color: var(--bot-ink, rgb(var(--bot-rgb)));
+  font: 600 9px/1 "Noto Sans HK", sans-serif;
+}
+.suborb-tab[data-pinned="1"] .suborb-tab-dot { border-style: solid; }
+.suborb-tab[data-running="1"] .suborb-tab-dot { border-color: rgb(var(--bot-rgb)); }
+.suborb-tab[data-badge="failed"] .suborb-tab-dot { box-shadow: inset 0 0 0 1.5px #e5484d; }
+.suborb-tab:hover .suborb-tab-dot,
+.suborb-tab:focus-visible .suborb-tab-dot { background: rgb(var(--bot-rgb) / .12); }
+.suborb-tab:focus-visible { outline: 2px solid rgb(var(--bot-rgb) / .6); outline-offset: 1px; }
+.suborb-tab-more {
+  width: auto;
+  min-width: 22px;
+  padding: 0 4px;
+  font: 600 11px/1 "Barlow Condensed", sans-serif;
+  color: var(--bot-ink, rgb(var(--bot-rgb)));
+}
+.morph[data-kind="suborb"] .suborb-tabs { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .morph[data-kind="suborb"][data-state="orb"] .suborb-disc { transition: none; }
+}

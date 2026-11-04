@@ -334,19 +334,19 @@ test("removing a sub-orb tears down its plan host", () => {
   assert.doesNotMatch(paint, /shell\.remove\(\)/);
 });
 
-test("a new session with five discs stays on the rail and opens a shifted panel", () => {
+test("a new session with four discs (the fan cap) stays on the rail and opens a shifted panel", () => {
   const seed = reconcileSuborbs(emptySuborbModel(), {
     sessions: [bot],
     mainId: "bot-chat",
     now: 0,
   });
-  const tasks = [0, 1, 2, 3, 4].map((i) => row(`t${i}`, { started_at: i + 1 }));
+  const tasks = [0, 1, 2, 3].map((i) => row(`t${i}`, { started_at: i + 1 }));
   const five = reconcileSuborbs(seed.model, {
     sessions: [bot, ...tasks],
     mainId: "bot-chat",
     now: 1,
   });
-  assert.equal(five.shown.length, 5);
+  assert.equal(five.shown.length, 4);
   five.model.forced.fresh = true;
   const born = reconcileSuborbs(five.model, {
     sessions: [bot, ...tasks, row("fresh", { started_at: 40 })],
@@ -371,8 +371,8 @@ test("a new session with five discs stays on the rail and opens a shifted panel"
     now: 4,
   });
   assert.equal(kept.shown.some((item) => item.id === "fresh"), true);
-  assert.equal(kept.shown.length, 6);
-  assert.deepEqual(capSuborbs(kept.shown, 5, ["fresh"]).shown.map((item) => item.id).includes("fresh"), true);
+  assert.equal(kept.shown.length, 5);
+  assert.deepEqual(capSuborbs(kept.shown, 4, ["fresh"]).shown.map((item) => item.id).includes("fresh"), true);
   const first = placeSuborbCascade({
     left: 860,
     top: 40,

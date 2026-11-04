@@ -27,7 +27,11 @@ import {
   placeSuborbCascade,
   suborbCascadeOrigin,
   suborbPanelId,
-  suborbPositions,
+  suborbFanLayout,
+  suborbFanState,
+  suborbHitCircle,
+  SUBORB_FAN_EASE,
+  SUBORB_FAN_MS,
   suborbSizePx,
   tailSignals,
 } from "./suborb.js";
@@ -9746,6 +9750,8 @@ function collectHits() {
   document.querySelectorAll(".morph").forEach((shell) => {
     const id = shell.dataset.hitId;
     if (!id) return;
+    // Fan draft: a collapsed or tucked sub-orb is not on screen, so it has no hit.
+    if (shell.dataset.kind === "suborb" && shell.dataset.state === "orb" && suborbFanHidden(shell)) return;
     const z = Number.parseInt(shell.style.zIndex, 10);
     const level = Number.isFinite(z)
       ? z
@@ -9838,7 +9844,9 @@ function collectHits() {
         const disc = button && button.width >= 1 && button.height >= 1
           ? { x: button.x, y: button.y, w: button.width, h: button.height }
           : null;
-        const circle = orbDiscHit(box, disc);
+        const circle = shell.dataset.kind === "suborb"
+          ? suborbHitCircle(orbDiscHit(box, disc))
+          : orbDiscHit(box, disc);
         const label = state.showBotNames && state.modifierHeld
           ? orbNameHitBox(shell.dataset.botId)
           : null;
@@ -10091,6 +10099,7 @@ function orbShellAtPoint(x, y) {
   document.querySelectorAll(".morph").forEach((shell) => {
     const visual = shell.dataset.visual || shell.dataset.state;
     if (visual !== "orb" && visual !== "pill") return;
+    if (shell.dataset.kind === "suborb" && shell.dataset.state === "orb" && suborbFanHidden(shell)) return;
     // A retracting pill is still the orb under the cursor. Skipping it
     // dropped the open, and the flag then stayed true (R-KB).
     const visible = visibleBox(shell);
@@ -10101,7 +10110,7 @@ function orbShellAtPoint(x, y) {
       const disc = button && button.width >= 1 && button.height >= 1
         ? { x: button.x, y: button.y, w: button.width, h: button.height }
         : null;
-      box = orbDiscHit(box, disc);
+      box = shell.dataset.kind === "suborb" ? suborbHitCircle(orbDiscHit(box, disc)) : orbDiscHit(box, disc);
       const label = orbNameHitBox(shell.dataset.botId);
       if (label) {
         box = orbHitRect(box, label, true);
@@ -10714,6 +10723,7 @@ function acceptModifier(payload) {
   else if (payload?.held === false) state.modifierHeld = false;
   if (state.modifierHeld === true) document.documentElement.dataset.pass = "1";
   else delete document.documentElement.dataset.pass;
+  syncSuborbFanHeld();
   return true;
 }
 
@@ -10883,6 +10893,7 @@ function paintOrbNames() {
       return;
     }
     if (shell.dataset.state !== "orb") return;
+    if (shell.dataset.kind === "suborb" && suborbFanHidden(shell)) return;
     const btn = shell.querySelector(".morph-orb");
     const name = (btn?.dataset.orbName || btn?.getAttribute("aria-label") || "").trim();
     const disc = btn?.getBoundingClientRect();
@@ -11608,54 +11619,139 @@ function parentOrbBox(profile) {
   };
 }
 
+/** Main orbs and fixed orbs other than `profile`, as fan neighbours. */
+function fanNeighbours(profile) {
+  const out = [];
+  document.querySelectorAll(".morph").forEach((shell) => {
+    if (shell.dataset.kind === "suborb") return;
+    const id = shell.dataset.botId || "";
+    if (!id || id === profile) return;
+    if (shell.dataset.state !== "orb" && shell.dataset.visual !== "orb") return;
+    const box = shell.querySelector(".morph-orb")?.getBoundingClientRect?.();
+    if (!box || box.width < 1 || box.height < 1) return;
+    out.push({ id, x: box.x + box.width / 2, y: box.y + box.height / 2, r: box.width / 2 });
+  });
+  return out;
+}
+
+function fanWorkArea() {
+  const vw = window.innerWidth || 1280;
+  const vh = window.innerHeight || 800;
+  const ins = state.workInsets || {};
+  const left = Math.max(0, Number(ins.left) || 0);
+  const top = Math.max(0, Number(ins.top) || 0);
+  const right = Math.max(0, Number(ins.right) || 0);
+  const bottom = Math.max(0, Number(ins.bottom) || 0);
+  return { left, top, width: Math.max(1, vw - left - right), height: Math.max(1, vh - top - bottom) };
+}
+
+function parentPanelOpen(profile) {
+  const shell = shellFor(profile);
+  if (!shell) return false;
+  return shell.dataset.state === "panel" || shell.dataset.opening === "panel";
+}
+
+/** Disc centre before a re-place, so the move can glide (200ms, transform only). */
+function suborbDiscCentre(shell) {
+  const box = shell?.querySelector(".suborb-disc")?.getBoundingClientRect?.();
+  if (!box || box.width < 1 || box.height < 1) return null;
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+function glideSuborb(shell, from) {
+  if (!from || shell.dataset.state !== "orb") return;
+  const disc = shell.querySelector(".suborb-disc");
+  const to = suborbDiscCentre(shell);
+  if (!disc || !to) return;
+  const dx = from.x - to.x;
+  const dy = from.y - to.y;
+  if (Math.hypot(dx, dy) < 0.5) return;
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return;
+  try {
+    disc.animate(
+      [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0px, 0px)" }],
+      { duration: SUBORB_FAN_MS, easing: SUBORB_FAN_EASE, id: "suborb-fan" },
+    );
+  } catch {
+    /* No WAAPI: it just lands. */
+  }
+}
+
+function suborbFanHidden(shell) {
+  const look = shell?.dataset?.fan || "";
+  return look === "collapsed" || look === "tucked" || look === "hidden";
+}
+
+function setFanState(shell, look) {
+  if (shell.dataset.fan === look) return;
+  shell.dataset.fan = look;
+}
+
 function renderSuborbs() {
   if (!state.suborbViews) return;
   const rail = $("#bot-rail");
   if (!rail) return;
   const keep = new Set();
+  const held = state.osModifierDown === true;
+  state.suborbFanModes = state.suborbFanModes || new Map();
   for (const bot of state.bots) {
     const view = state.suborbViews.get(bot.id);
     if (!view) continue;
     const anchor = parentOrbBox(bot.id);
     const size = suborbSizePx(ORB);
-    const slots = anchor
-      ? suborbPositions({
-        edge: anchor.edge,
+    const total = view.shown.length + (view.overflow.length ? 1 : 0);
+    const fan = anchor
+      ? suborbFanLayout({
         x: anchor.x,
         y: anchor.y,
         parent: anchor.parent,
-        count: view.shown.length + (view.overflow.length ? 1 : 0),
+        count: total,
         size,
-        screenW: window.innerWidth || 1280,
-        screenH: window.innerHeight || 800,
+        work: fanWorkArea(),
+        neighbours: fanNeighbours(bot.id),
       })
-      : [];
+      : null;
+    const slots = anchor ? fan.slots : [];
+    const parentOpen = parentPanelOpen(bot.id);
+    const look = suborbFanState({ mode: fan?.mode, held, parentOpen });
+    state.suborbFanModes.set(bot.id, fan?.mode || "fan");
+    const badge = fan?.badge;
+    const homeOf = (slot) => (look === "collapsed" && badge ? badge : slot);
     view.shown.forEach((row, index) => {
       const id = suborbPanelId(bot.id, row.id);
       keep.add(id);
       const shell = ensureSuborbShell(bot, row);
-      const slot = slots[index];
+      const slot = homeOf(slots[index]);
       if (slot) {
         shell.dataset.homeX = String(slot.x);
         shell.dataset.homeY = String(slot.y);
         shell.dataset.edge = anchor?.edge || "right";
       }
+      setFanState(shell, look);
       paintSuborbDisc(id, row);
       if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel" && !shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")) {
+        const from = suborbDiscCentre(shell);
         placeSuborbShell(shell);
+        glideSuborb(shell, from);
       }
     });
-    if (view.overflow.length) {
-      const id = `suborb-more:${bot.id}`;
-      keep.add(id);
-      const shell = ensureSuborbMore(bot, view.overflow.length);
-      const slot = slots[view.shown.length];
+    // 「+N」 is the last fan slot. A collapsed fan turns it into the count badge.
+    const moreId = `suborb-more:${bot.id}`;
+    if (view.overflow.length || (look === "collapsed" && view.shown.length)) {
+      keep.add(moreId);
+      const badgeMode = look === "collapsed";
+      const shell = ensureSuborbMore(bot, view.overflow.length, badgeMode ? view.shown.length + view.overflow.length : 0);
+      const slot = badgeMode ? badge : slots[view.shown.length];
       if (slot) {
         shell.dataset.homeX = String(slot.x);
         shell.dataset.homeY = String(slot.y);
       }
+      setFanState(shell, badgeMode ? "badge" : look);
+      const from = suborbDiscCentre(shell);
       placeSuborbShell(shell);
+      glideSuborb(shell, from);
     }
+    paintSuborbTabs(bot, view);
   }
   rail.querySelectorAll(".morph[data-kind='suborb']").forEach((shell) => {
     const id = shell.dataset.botId || "";
@@ -11666,6 +11762,79 @@ function renderSuborbs() {
   // R-OB-06: a sub-orb that just appeared or moved gets its plate now, not on the next paint.
   if (state.showBotNames) paintOrbNames();
   scheduleHitSync();
+}
+
+/** Ctrl edge: a collapsed fan opens only while the modifier is held. */
+function syncSuborbFanHeld() {
+  const held = state.osModifierDown === true;
+  if (state.suborbFanHeld === held) return;
+  state.suborbFanHeld = held;
+  const modes = state.suborbFanModes;
+  if (!modes || ![...modes.values()].includes("badge")) return;
+  renderSuborbs();
+}
+
+/** Parent panel open: its sub-orbs ride in the title bar as small tabs. */
+function paintSuborbTabs(bot, view) {
+  const panel = panelFor(bot.id);
+  const header = panel?.querySelector(".panel-header");
+  if (!header) return;
+  let strip = header.querySelector(".suborb-tabs");
+  const rows = view?.shown || [];
+  const extra = view?.overflow?.length || 0;
+  if (!rows.length && !extra) {
+    strip?.remove();
+    return;
+  }
+  if (!strip) {
+    strip = document.createElement("div");
+    strip.className = "suborb-tabs";
+    strip.setAttribute("role", "toolbar");
+    strip.setAttribute("aria-label", "子光球");
+    header.insertBefore(strip, header.querySelector(".panel-actions"));
+  }
+  const sig = JSON.stringify([rows.map((row) => [row.id, row.title, !!row.pinned, row.channels?.badge || "", row.channels?.activity || ""]), extra]);
+  if (strip.dataset.sig === sig) return;
+  strip.dataset.sig = sig;
+  strip.replaceChildren();
+  applyBotColor(strip, bot.color);
+  for (const row of rows) {
+    const id = suborbPanelId(bot.id, row.id);
+    const label = row.title || "任務";
+    const pinned = !!row.pinned || suborbPinned(id);
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "suborb-tab";
+    tab.dataset.suborbId = id;
+    tab.dataset.pinned = pinned ? "1" : "0";
+    if (row.channels?.badge) tab.dataset.badge = row.channels.badge;
+    if (row.channels?.activity === "running") tab.dataset.running = "1";
+    tab.title = label;
+    tab.setAttribute("aria-label", pinned ? `${label}，已釘住` : label);
+    const dot = document.createElement("span");
+    dot.className = "suborb-tab-dot";
+    dot.textContent = Array.from(label)[0] || "任";
+    tab.append(dot);
+    tab.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (shellFor(id)?.dataset.state === "panel") focusOpenPanel(id);
+      else openSuborbPanel(id);
+    });
+    strip.append(tab);
+  }
+  if (extra) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "suborb-tab suborb-tab-more";
+    more.textContent = `+${extra}`;
+    more.title = `仲有 ${extra} 個`;
+    more.setAttribute("aria-label", `仲有 ${extra} 個子光球`);
+    more.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void openParentSessionPicker(bot.id);
+    });
+    strip.append(more);
+  }
 }
 
 function layoutSuborbOrbs() {
@@ -11736,7 +11905,7 @@ function ensureSuborbShell(bot, row) {
   return shell;
 }
 
-function ensureSuborbMore(bot, count) {
+function ensureSuborbMore(bot, count, badgeCount = 0) {
   const id = `suborb-more:${bot.id}`;
   let shell = shellFor(id);
   if (!shell) {
@@ -11760,7 +11929,12 @@ function ensureSuborbMore(bot, count) {
     $("#bot-rail")?.appendChild(shell);
   }
   const btn = shell.querySelector("button");
-  if (btn) btn.textContent = `+${count}`;
+  if (btn) {
+    const text = badgeCount ? String(badgeCount) : `+${count}`;
+    if (btn.textContent !== text) btn.textContent = text;
+    btn.classList.toggle("is-fan-badge", !!badgeCount);
+    btn.title = badgeCount ? `${badgeCount} 個子光球，揸住 Ctrl 展開` : `仲有 ${count} 個`;
+  }
   applyBotColor(shell, bot.color);
   applyBotColor(btn, bot.color);
   return shell;
