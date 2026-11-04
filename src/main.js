@@ -12034,6 +12034,9 @@ function paintSuborbDisc(id, row) {
   btn.classList.toggle("has-unread", live?.channels?.badge === "unread");
   btn.classList.toggle("has-plan", live?.channels?.badge === "plan");
   btn.classList.toggle("is-failed", live?.channels?.badge === "failed");
+  // r3: the dot follows the reconciled badge only; idle (no badge) has none.
+  const badge = live?.channels?.badge || "";
+  if (btn.dataset.badge !== badge) btn.dataset.badge = badge;
   const glyph = btn.querySelector(".orb-glyph");
   const letter = Array.from(live?.title || "任")[0] || "任";
   if (glyph && glyph.textContent !== letter) glyph.textContent = letter;

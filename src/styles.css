@@ -4227,7 +4227,13 @@ html[data-text-size] .morph-pill time { font-size: 11px; }
 }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc {
   background: rgba(248, 248, 252, .92);
+  /* 1.5px CSS border (AD r3: no SVG); Chromium/WebView2 may round it to a whole px. */
   border: 1.5px dashed rgb(var(--bot-rgb));
+  /* r3: static lift so the disc reads on any wallpaper. */
+  box-shadow: 0 1px 2px rgba(20, 20, 43, .18);
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc.is-failed {
+  box-shadow: inset 0 0 0 1.5px #e5484d, 0 1px 2px rgba(20, 20, 43, .18);
 }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc[data-pinned="1"] {
   border-style: solid;
@@ -4237,7 +4243,15 @@ html[data-text-size] .morph-pill time { font-size: 11px; }
   color: #14142b;
   text-shadow: none;
 }
-/* Status dot: 6px, 1.5px white ring, centred on the disc edge at 45° (top right). */
+/* Status dot: 6px, 1.5px white ring plus a .5px dark hairline, centred on the disc
+   edge at 45° (top right). r3: an idle sub-orb has no dot; only the reconciled
+   badge (data-badge, R-SO-08 channels) shows one, never the bare thread unread flag. */
+.morph[data-kind="suborb"] .suborb-disc .unread-dot { display: none; }
+.morph[data-kind="suborb"] .suborb-disc[data-badge="unread"] .unread-dot,
+.morph[data-kind="suborb"] .suborb-disc[data-badge="plan"] .unread-dot { display: block; }
+.morph[data-kind="suborb"] .suborb-disc[data-badge="plan"] .unread-dot { background: rgb(var(--bot-rgb)); }
+.morph[data-kind="suborb"] .suborb-disc[data-badge="unread"] .unread-dot { background: var(--nous-yellow); }
+.morph[data-kind="suborb"] .suborb-disc:not([data-badge="waiting"]) .approval-badge { display: none; }
 .morph[data-kind="suborb"][data-state="orb"] .suborb-disc .unread-dot,
 .morph[data-kind="suborb"][data-state="orb"] .suborb-disc .approval-badge {
   top: calc(50% - var(--suborb-size, 20px) * .35355 - 3px);
@@ -4246,7 +4260,7 @@ html[data-text-size] .morph-pill time { font-size: 11px; }
   bottom: auto;
   width: 6px;
   height: 6px;
-  box-shadow: 0 0 0 1.5px #fff;
+  box-shadow: 0 0 0 1.5px #fff, 0 0 0 2px rgba(20, 20, 43, .25);
 }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc.suborb-more {
   border: 1.5px dashed #616191;
@@ -4254,9 +4268,10 @@ html[data-text-size] .morph-pill time { font-size: 11px; }
   color: #14142b;
 }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc.suborb-more.is-fan-badge {
-  border: 1.5px solid rgb(var(--bot-rgb));
+  /* r3: the crowded badge (「7」) uses the same +N style. */
+  border: 1.5px dashed #616191;
   background: rgba(248, 248, 252, .92);
-  font: 700 11px/1 "Barlow Condensed", sans-serif;
+  font: 600 11px/1 "Barlow Condensed", sans-serif;
   color: #14142b;
 }
 /* The parent keeps the only halo, cut so its rim is where the discs start. */
@@ -4264,7 +4279,7 @@ html[data-text-size] .morph-pill time { font-size: 11px; }
   inset: calc(var(--bot-size, 44px) / 2 - var(--fan-rim, 35px));
   background: radial-gradient(circle closest-side, rgb(var(--bot-rgb) / .55) 0%, rgb(var(--bot-rgb) / .22) 62%, transparent 100%);
 }
-/* Optional orbit arc: 1px, bot colour at .2, only while Ctrl is held. Never a hit. */
+/* Optional orbit arc: 1px, bot colour at .35 (AD r3), only while Ctrl is held. Never a hit. */
 .suborb-orbit {
   position: absolute;
   z-index: 1;
@@ -4275,7 +4290,7 @@ html[data-text-size] .morph-pill time { font-size: 11px; }
 }
 .suborb-orbit path {
   fill: none;
-  stroke: rgb(var(--bot-rgb) / .2);
+  stroke: rgb(var(--bot-rgb) / .35);
   stroke-width: 1;
 }
 html[data-fan-held="1"] .suborb-orbit { opacity: 1; }
