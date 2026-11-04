@@ -9,7 +9,11 @@ import {
   SUBORB_FAN_MAX_SPAN_DEG,
   SUBORB_FAN_MS,
   SUBORB_HIT_PX,
+  SUBORB_NEIGHBOUR_CLEAR_PX,
+  SUBORB_PARENT_HALO_RATIO,
   suborbFanDirection,
+  suborbFanRim,
+  suborbOrbitPath,
   suborbFanLayout,
   suborbFanOrbit,
   suborbFanState,
@@ -73,30 +77,49 @@ test("slots run clockwise from the counter-clockwise end (right edge: bottom fir
   assert.ok(left.slots.every((slot) => slot.cx > 66));
 });
 
-test("a fan that would leave the work area, or crowd a neighbour halo, collapses", () => {
-  const near = [{ x: 1854, y: 465, r: 22 }]; // 75px above: the AD's eyeballed gap
-  const crowded = suborbFanLayout({ x: 1854, y: 540, parent: 44, count: 5, size, work: W1920, neighbours: near });
+test("round 2: a fan collapses when a disc comes within 12px of a neighbour DISC (halos may overlap)", () => {
+  assert.equal(SUBORB_NEIGHBOUR_CLEAR_PX, 12);
+  const reach = 22 + 12 + size / 2;
+  // One neighbour 75px above (the AD's eyeballed gap): a turned fan fits, halos overlap.
+  const one = suborbFanLayout({ x: 1854, y: 540, parent: 44, count: 5, size, work: W1920, neighbours: [{ x: 1854, y: 465, r: 22 }] });
+  assert.equal(one.mode, "fan");
+  for (const slot of one.slots) assert.ok(Math.hypot(slot.cx - 1854, slot.cy - 465) >= reach - 1e-9);
+  // Squeezed between two orbs 75px either side: badge.
+  const both = [{ x: 1854, y: 465, r: 22 }, { x: 1854, y: 615, r: 22 }];
+  const crowded = suborbFanLayout({ x: 1854, y: 540, parent: 44, count: 5, size, work: W1920, neighbours: both });
   assert.equal(crowded.mode, "badge");
   assert.equal(crowded.reason, "neighbour");
   assert.equal(crowded.slots.length, 5, "slots are kept so Ctrl can expand them");
+  // Ctrl-expanded slots never put a disc into a neighbour disc.
+  for (const slot of crowded.slots) {
+    for (const n of both) assert.ok(Math.hypot(slot.cx - n.x, slot.cy - n.y) - 22 - size / 2 >= 0);
+  }
   assert.ok(crowded.badge && Math.hypot(crowded.badge.cx - 1854, crowded.badge.cy - 540) > 22);
-  // 130px (1920×1080 default cron↔bot gap) leaves room.
-  const room = suborbFanLayout({ x: 1854, y: 540, parent: 44, count: 5, size, work: W1920, neighbours: [{ x: 1854, y: 410, r: 22 }] });
-  assert.equal(room.mode, "fan");
-  for (const slot of room.slots) assert.ok(Math.hypot(slot.cx - 1854, slot.cy - 410) >= 22 + 34 + 8 + size / 2 - 1e-9);
-  // A tiny work area: every turn leaves it.
   const tight = suborbFanLayout({ x: 30, y: 30, parent: 44, count: 4, size, work: { left: 0, top: 0, width: 60, height: 60 } });
   assert.equal(tight.mode, "badge");
   assert.equal(tight.reason, "work");
 });
 
 test("the arc may turn up to 30° away from a crowded side before it collapses", () => {
-  const cron = [{ x: 1216, y: 304, r: 22 }]; // 1280×800 default: cron 96px above coder
-  const strict = suborbFanLayout({ x: 1216, y: 400, parent: 44, count: 5, size, screenW: 1280, screenH: 800, neighbours: cron, nudges: [0] });
+  const near = [{ x: 1854, y: 490, r: 22 }]; // 50px above
+  const strict = suborbFanLayout({ x: 1854, y: 540, parent: 44, count: 3, size, work: W1920, neighbours: near, nudges: [0] });
   assert.equal(strict.mode, "badge");
-  const nudged = suborbFanLayout({ x: 1216, y: 400, parent: 44, count: 5, size, screenW: 1280, screenH: 800, neighbours: cron });
+  const nudged = suborbFanLayout({ x: 1854, y: 540, parent: 44, count: 3, size, work: W1920, neighbours: near });
   assert.equal(nudged.mode, "fan");
   assert.ok(Math.abs(nudged.turn) <= 30 && nudged.turn !== 0);
+});
+
+test("round 2: the parent halo rim is where the discs start; the orbit arc spans first→last slot", () => {
+  const three = suborbFanLayout({ x: 1854, y: 540, parent: 44, count: 3, size, work: W1920 });
+  const five = suborbFanLayout({ x: 1854, y: 540, parent: 44, count: 5, size, work: W1920 });
+  assert.equal(Math.round(suborbFanRim(three, { parent: 44, size }) * 10) / 10, 32);
+  assert.equal(Math.round(suborbFanRim(five, { parent: 44, size }) * 10) / 10, 40.3);
+  assert.equal(Math.round(suborbFanRim(five, { parent: 44, size, collapsed: true }) * 10) / 10, 32);
+  const mean = (suborbFanRim(three, { parent: 44, size }) + suborbFanRim(five, { parent: 44, size })) / 44;
+  assert.ok(Math.abs(mean - SUBORB_PARENT_HALO_RATIO) < 0.05, `mean reach ${mean}× diameter`);
+  const d = suborbOrbitPath(five);
+  assert.match(d, /^M [\d.]+ [\d.]+ A 50\.2\d 50\.2\d 0 0 1 [\d.]+ [\d.]+$/);
+  assert.equal(suborbOrbitPath({ radius: 40, slots: [{ angle: 0 }] }), "");
 });
 
 test("look: tucked while the parent panel is open, a badge expands only with Ctrl", () => {
@@ -126,4 +149,21 @@ test("css: fan motion is opacity + transform, 200ms, and hidden looks take no po
   assert.match(css, /transition: opacity 200ms cubic-bezier\(\.2, \.8, \.2, 1\), transform 200ms cubic-bezier\(\.2, \.8, \.2, 1\)/);
   assert.match(css, /\[data-fan="collapsed"\] \.suborb-disc,[\s\S]*?pointer-events: none;/);
   assert.match(css, /\.suborb-tab\[data-pinned="1"\] \.suborb-tab-dot \{ border-style: solid; \}/);
+});
+
+test("round 2 css: no sub-orb halo or glyph glow, solid glass disc, 45° status dot, +N, Ctrl-only orbit", () => {
+  const r2 = css.slice(css.indexOf("fan draft, round 2"));
+  assert.match(r2, /\.suborb-disc::before \{\s*content: none;\s*display: none;/);
+  assert.match(r2, /\.suborb-disc \.orb-core \{\s*display: none;/);
+  assert.match(r2, /background: rgba\(248, 248, 252, \.92\);\s*border: 1\.5px dashed rgb\(var\(--bot-rgb\)\);/);
+  assert.match(r2, /\.orb-glyph \{\s*font: 500 11px\/1 "Noto Sans HK", sans-serif;\s*color: #14142b;\s*text-shadow: none;/);
+  assert.match(r2, /width: 6px;\s*height: 6px;\s*box-shadow: 0 0 0 1\.5px #fff;/);
+  assert.match(r2, /\.35355/);
+  assert.match(r2, /suborb-more \{\s*border: 1\.5px dashed #616191;\s*font: 600 11px\/1 "Barlow Condensed", sans-serif;\s*color: #14142b;/);
+  assert.match(r2, /\.morph-orb\.has-fan::before \{\s*inset: calc\(var\(--bot-size, 44px\) \/ 2 - var\(--fan-rim/);
+  assert.match(r2, /stroke: rgb\(var\(--bot-rgb\) \/ \.2\);\s*stroke-width: 1;/);
+  assert.match(r2, /html\[data-fan-held="1"\] \.suborb-orbit \{ opacity: 1; \}/);
+  assert.match(r2, /\.suborb-orbit \{[^}]*pointer-events: none;/);
+  assert.match(main, /dataset\.fanHeld = "1"/);
+  assert.match(main, /paintFanParent\(bot\.id, fan, look, total, size\)/);
 });

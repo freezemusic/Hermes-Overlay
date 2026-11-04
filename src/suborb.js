@@ -589,10 +589,13 @@ export const SUBORB_FAN_GAP_PX = 10;
 export const SUBORB_FAN_MAX_SPAN_DEG = 120;
 /** Air between two neighbouring hit circles on the arc. */
 export const SUBORB_FAN_HIT_AIR_PX = 2;
-/** A slot this close to a neighbour's halo (or nearer) collapses the fan. */
-export const SUBORB_NEIGHBOUR_CLEAR_PX = 8;
-/** Main-orb halo (ORB_HALO_PX in morph.js). Repeated to keep suborb.js pure. */
-export const SUBORB_NEIGHBOUR_HALO_PX = 34;
+/** Round 2 (AD): a slot's disc keeps this much air from a neighbouring main
+ *  orb's DISC. Halos may overlap. */
+export const SUBORB_NEIGHBOUR_CLEAR_PX = 12;
+/** Halo counted around a neighbour disc. 0 since round 2 (disc rule). */
+export const SUBORB_NEIGHBOUR_HALO_PX = 0;
+/** Parent halo reach while it has a fan: about 1.6× the main orb diameter. */
+export const SUBORB_PARENT_HALO_RATIO = 1.6;
 /** Keep this much of the work area free around a slot's disc. */
 export const SUBORB_WORK_MARGIN_PX = 4;
 /** Turns the arc may make, away from a crowded side, before it collapses. */
@@ -653,11 +656,20 @@ function slotLeavesWork(slot, work, margin) {
     || slot.cy + r > work.top + work.height;
 }
 
+/** Smallest air (px) between any slot disc and any neighbour disc, minus halo. */
+function slotsClearance(slots, neighbours, halo) {
+  let best = Infinity;
+  for (const slot of slots) {
+    for (const n of neighbours || []) {
+      const air = Math.hypot(slot.cx - n.x, slot.cy - n.y) - (Number(n.r) || 22) - halo - slot.size / 2;
+      if (air < best) best = air;
+    }
+  }
+  return best;
+}
+
 function slotCrowds(slot, neighbours, halo, clear) {
-  return (neighbours || []).some((n) => {
-    const reach = (Number(n.r) || 22) + halo + clear + slot.size / 2;
-    return Math.hypot(slot.cx - n.x, slot.cy - n.y) < reach - 1e-9;
-  });
+  return slotsClearance([slot], neighbours, halo) < clear - 1e-9;
 }
 
 /**
@@ -695,23 +707,57 @@ export function suborbFanLayout({
     return { x: cx - size / 2, y: cy - size / 2, cx, cy, size, angle };
   };
   if (count <= 0) return { mode: "fan", reason: "", dir, turn: 0, radius: orbit.radius, step: orbit.step, slots: [], badge: badgeAt(dir) };
-  let firstSlots = null;
   let firstReason = "";
+  let fallback = null;
   for (const turnDeg of nudges && nudges.length ? nudges : [0]) {
     const angle = dir + turnDeg * DEG;
     const slots = arcSlots(x, y, count, angle, orbit, size);
     const out = slots.some((slot) => slotLeavesWork(slot, area, margin));
     const crowd = !out && slots.some((slot) => slotCrowds(slot, neighbours, halo, clear));
-    if (!firstSlots) {
-      firstSlots = slots;
-      firstReason = out ? "work" : crowd ? "neighbour" : "";
-    }
+    if (!firstReason) firstReason = out ? "work" : crowd ? "neighbour" : "";
     if (!out && !crowd) {
       return { mode: "fan", reason: "", dir: angle, turn: turnDeg, radius: orbit.radius, step: orbit.step, slots, badge: badgeAt(angle) };
     }
+    // Ctrl-expanded slots: the in-area turn with the most air from neighbours.
+    const air = out ? -Infinity : slotsClearance(slots, neighbours, halo);
+    if (!fallback || air > fallback.air) fallback = { air, turn: turnDeg, angle, slots };
   }
-  // Collapsed: the slots still come back (unturned) so Ctrl can expand them.
-  return { mode: "badge", reason: firstReason, dir, turn: 0, radius: orbit.radius, step: orbit.step, slots: firstSlots, badge: badgeAt(dir) };
+  // Collapsed: the best-effort slots still come back so Ctrl can expand them.
+  return {
+    mode: "badge",
+    reason: firstReason,
+    dir,
+    turn: fallback.turn,
+    radius: orbit.radius,
+    step: orbit.step,
+    slots: fallback.slots,
+    badge: badgeAt(dir),
+  };
+}
+
+/**
+ * Round 2: the parent keeps the only halo. Its visible rim sits where the
+ * sub-orb discs start (orbit − sub radius), so the discs rest on its outer
+ * edge: 32px for ≤4 slots, 40.3px for 5 (≈1.45–1.83×, mean ≈1.6× diameter).
+ * A collapsed fan's badge sits on the base orbit.
+ */
+export function suborbFanRim(fan, { parent = 44, size = 20, collapsed = false } = {}) {
+  const base = parent / 2 + SUBORB_FAN_GAP_PX + size / 2;
+  const radius = collapsed || !fan ? base : Number(fan.radius) || base;
+  return Math.max(parent / 2, radius - size / 2);
+}
+
+/** SVG arc path (centre 0,0 shifted by `pad`) through the first and last slot angles. */
+export function suborbOrbitPath(fan, pad = 2) {
+  const slots = fan?.slots || [];
+  if (slots.length < 2) return "";
+  const r = Number(fan.radius) || 0;
+  const c = r + pad;
+  const a0 = slots[0].angle;
+  const a1 = slots[slots.length - 1].angle;
+  const p = (a) => `${(c + r * Math.cos(a)).toFixed(2)} ${(c + r * Math.sin(a)).toFixed(2)}`;
+  const large = a1 - a0 > Math.PI ? 1 : 0;
+  return `M ${p(a0)} A ${r.toFixed(2)} ${r.toFixed(2)} 0 ${large} 1 ${p(a1)}`;
 }
 
 /** Which look a sub-orb shell takes on the rail. */

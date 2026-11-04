@@ -28,7 +28,9 @@ import {
   suborbCascadeOrigin,
   suborbPanelId,
   suborbFanLayout,
+  suborbFanRim,
   suborbFanState,
+  suborbOrbitPath,
   suborbHitCircle,
   SUBORB_FAN_EASE,
   SUBORB_FAN_MS,
@@ -11700,6 +11702,7 @@ function renderSuborbs() {
     const anchor = parentOrbBox(bot.id);
     const size = suborbSizePx(ORB);
     const total = view.shown.length + (view.overflow.length ? 1 : 0);
+    const neighbours = anchor ? fanNeighbours(bot.id) : [];
     const fan = anchor
       ? suborbFanLayout({
         x: anchor.x,
@@ -11708,7 +11711,7 @@ function renderSuborbs() {
         count: total,
         size,
         work: fanWorkArea(),
-        neighbours: fanNeighbours(bot.id),
+        neighbours,
       })
       : null;
     const slots = anchor ? fan.slots : [];
@@ -11717,6 +11720,8 @@ function renderSuborbs() {
     state.suborbFanModes.set(bot.id, fan?.mode || "fan");
     const badge = fan?.badge;
     const homeOf = (slot) => (look === "collapsed" && badge ? badge : slot);
+    paintFanParent(bot.id, fan, look, total, size);
+    paintFanOrbit(bot, anchor, fan, look);
     view.shown.forEach((row, index) => {
       const id = suborbPanelId(bot.id, row.id);
       keep.add(id);
@@ -11753,6 +11758,11 @@ function renderSuborbs() {
     }
     paintSuborbTabs(bot, view);
   }
+  for (const bot of state.bots) {
+    if (state.suborbViews.get(bot.id)) continue;
+    paintFanParent(bot.id, null, "fan", 0, 0);
+    paintFanOrbit(bot, null, null, "fan");
+  }
   rail.querySelectorAll(".morph[data-kind='suborb']").forEach((shell) => {
     const id = shell.dataset.botId || "";
     if (keep.has(id)) return;
@@ -11764,11 +11774,64 @@ function renderSuborbs() {
   scheduleHitSync();
 }
 
+/** Round 2: the parent orb keeps the only halo, cut to the rim the discs rest on. */
+function paintFanParent(profile, fan, look, total, size) {
+  const btn = shellFor(profile)?.querySelector(".morph-orb");
+  if (!btn) return;
+  const on = !!fan && total > 0 && look !== "tucked";
+  btn.classList.toggle("has-fan", on);
+  // Read-only markers for box mockups and tests.
+  if (fan) {
+    btn.dataset.fanMode = fan.mode;
+    btn.dataset.fanTurn = String(fan.turn || 0);
+  } else {
+    delete btn.dataset.fanMode;
+    delete btn.dataset.fanTurn;
+  }
+  if (!on) {
+    btn.style.removeProperty("--fan-rim");
+    return;
+  }
+  const rim = suborbFanRim(fan, { parent: ORB, size, collapsed: look === "collapsed" });
+  const text = `${rim.toFixed(1)}px`;
+  if (btn.style.getPropertyValue("--fan-rim") !== text) btn.style.setProperty("--fan-rim", text);
+}
+
+/** Optional 1px orbit arc in the bot colour (.2), shown only while Ctrl is held. No hit. */
+function paintFanOrbit(bot, anchor, fan, look) {
+  const id = `suborb-orbit:${bot.id}`;
+  let svg = document.querySelector(`.suborb-orbit[data-orbit-id="${cssEscape(id)}"]`);
+  const path = anchor && fan && (look === "fan" || look === "expanded") ? suborbOrbitPath(fan) : "";
+  if (!path) {
+    svg?.remove();
+    return;
+  }
+  const pad = 2;
+  const side = 2 * (fan.radius + pad);
+  if (!svg) {
+    svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "suborb-orbit");
+    svg.setAttribute("aria-hidden", "true");
+    svg.dataset.orbitId = id;
+    svg.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "path"));
+    $("#bot-rail")?.appendChild(svg);
+  }
+  applyBotColor(svg, bot.color);
+  svg.setAttribute("width", String(side));
+  svg.setAttribute("height", String(side));
+  svg.setAttribute("viewBox", `0 0 ${side} ${side}`);
+  svg.style.left = `${anchor.x - side / 2}px`;
+  svg.style.top = `${anchor.y - side / 2}px`;
+  svg.firstChild.setAttribute("d", path);
+}
+
 /** Ctrl edge: a collapsed fan opens only while the modifier is held. */
 function syncSuborbFanHeld() {
   const held = state.osModifierDown === true;
   if (state.suborbFanHeld === held) return;
   state.suborbFanHeld = held;
+  if (held) document.documentElement.dataset.fanHeld = "1";
+  else delete document.documentElement.dataset.fanHeld;
   const modes = state.suborbFanModes;
   if (!modes || ![...modes.values()].includes("badge")) return;
   renderSuborbs();
