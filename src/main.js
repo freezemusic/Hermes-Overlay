@@ -14356,6 +14356,16 @@ async function boot() {
     window.__handleHermes = handleHermes;
     window.__setBanner = setBanner;
     window.__applyKanbanBoard = (payload) => commitKanban(normalizeBoard(payload));
+    // Browser-preview mockups only (never in Tauri): park an orb at a point,
+    // and set sub-orb pins without a config write.
+    window.__placeOrb = (id, x, y) => {
+      state.anchors[id] = { placed: true, x: Number(x), y: Number(y) };
+      layoutShells();
+    };
+    window.__setSuborbPins = (pins) => {
+      state.suborbPins = pins && typeof pins === "object" ? pins : {};
+      reevalSuborbs();
+    };
     useMock("瀏覽器預覽：離線示範。登入同連線只喺桌面版可用。", "settings");
     startWatchers();
     if (new URLSearchParams(location.search).has("setup")) {
