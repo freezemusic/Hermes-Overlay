@@ -168,6 +168,11 @@ import {
   cronOrbActive,
   cronOrbFace,
   cronProgress,
+  cronRenderStep,
+  CRON_FAILED_LABEL,
+  groupFailedCount,
+  jobFailed,
+  jobFailText,
   nextRunLabel,
   normalizeCronGroup,
   pruneRunMarks,
@@ -4633,13 +4638,19 @@ function placeCronStatus(shell) {
 }
 
 function renderCronOrb(options = {}) {
-  if (!options.force && backgroundBlocked()) {
+  if (cronRenderStep({ force: !!options.force, blocked: backgroundBlocked() }) === "defer") {
     if (collapseBusy() || collapseQuiet()) {
       state.cronDeferred = true;
       debugLog("refresh-tick-defer", "cron-orb");
     }
+    // Any skipped render (presentationBusy too) is painted once the overlay is
+    // free; before, a morph/plan/settle clock dropped it and the face stayed
+    // stale until a hover changed the sig (red ring only on Ctrl+hover).
+    state.cronOrbDue = true;
+    armPresentationFlush();
     return;
   }
+  state.cronOrbDue = false;
   ensureChrome();
   const shell = shellFor("cron");
   const btn = shell?.querySelector(".orb--cron");
@@ -4679,7 +4690,7 @@ function renderCronOrb(options = {}) {
   const label = face.label || "";
   const show = cronReadoutVisible(shell, label);
   const sig = `${classes.join(" ")}|${face.p}|${label}|${show ? 1 : 0}|${live ? 1 : 0}`;
-  if (shell.dataset.cronSig === sig) return;
+  if (cronRenderStep({ force: !!options.force, sameSig: shell.dataset.cronSig === sig }) === "skip") return;
   shell.dataset.cronSig = sig;
   shell.classList.toggle("is-cron-live", live);
   shell.classList.toggle("is-cron-fail", face.mode === "failed");
@@ -10474,6 +10485,7 @@ function releaseDeferredTicks() {
     state.cronDeferred = false;
     refreshCron();
   }
+  if (state.cronOrbDue) renderCronOrb();
   if (pendingHistory.size) {
     for (const [id, job] of [...pendingHistory]) {
       if (job.token !== state.reconnectToken) {
@@ -13761,6 +13773,7 @@ async function dropKanban(taskId, status) {
 }
 
 function mockCronGroups() {
+  if (Array.isArray(state.mockCronOverride)) return state.mockCronOverride.map((group) => normalizeCronGroup(group));
   const soon = new Date(Date.now() + 30 * 60 * 1000).toISOString();
   const earlier = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   return [
@@ -13868,8 +13881,35 @@ function cronStatusMark(job) {
     return mark;
   }
   const dot = document.createElement("span");
+  if (jobFailed(job)) {
+    // R-CR-05 draft: the job that keeps the red ring is marked red.
+    dot.className = "cron-dot is-failed";
+    dot.title = CRON_FAILED_LABEL;
+    dot.setAttribute("aria-label", CRON_FAILED_LABEL);
+    return dot;
+  }
   dot.className = job.enabled ? "cron-dot is-on" : "cron-dot is-off";
   return dot;
+}
+
+/** 「上次失敗」 line under the job: label plus last_error, one line, full text in the tooltip. */
+function cronFailLine(job) {
+  if (!jobFailed(job)) return null;
+  const line = document.createElement("p");
+  line.className = "cron-fail";
+  const label = document.createElement("span");
+  label.className = "cron-fail-label";
+  label.textContent = CRON_FAILED_LABEL;
+  line.append(label);
+  const text = jobFailText(job);
+  if (text) {
+    const err = document.createElement("span");
+    err.className = "cron-fail-error";
+    err.textContent = text;
+    line.append(err);
+  }
+  line.title = text ? `${CRON_FAILED_LABEL}：${text}` : CRON_FAILED_LABEL;
+  return line;
 }
 
 function paintCronArcs() {
@@ -13973,6 +14013,15 @@ function paintCron() {
     const title = document.createElement("h2");
     title.className = "cron-group-title";
     title.textContent = group.name || group.profile || "Bot";
+    const failed = groupFailedCount(group);
+    if (failed) {
+      // Flag the bot, not reorder it: group and job order stay as Hermes sent them.
+      block.classList.add("has-failed");
+      const flag = document.createElement("span");
+      flag.className = "cron-group-flag";
+      flag.textContent = `${failed} 個${CRON_FAILED_LABEL}`;
+      title.append(flag);
+    }
     block.appendChild(title);
     const noteText = cronGroupNote(group);
     if (noteText) {
@@ -14006,7 +14055,13 @@ function paintCron() {
       const tag = document.createElement("span");
       tag.className = job.enabled ? "cron-tag is-on" : "cron-tag";
       tag.textContent = job.enabled ? "啟用" : "停用";
-      copy.append(name, expr, time, tag);
+      copy.append(name, expr, time);
+      const fail = cronFailLine(job);
+      if (fail) {
+        row.classList.add("is-failed");
+        copy.append(fail);
+      }
+      copy.append(tag);
       row.append(copy, cronStatusMark(job));
       cards.appendChild(row);
     });
@@ -14598,6 +14653,11 @@ async function boot() {
     window.__placeOrb = (id, x, y) => {
       state.anchors[id] = { placed: true, x: Number(x), y: Number(y) };
       layoutShells();
+    };
+    // Browser preview only: replace the demo cron jobs (mock data for mockups).
+    window.__setMockCron = (groups) => {
+      state.mockCronOverride = Array.isArray(groups) ? groups : null;
+      void refreshCron();
     };
     window.__setSuborbPins = (pins) => {
       state.suborbPins = pins && typeof pins === "object" ? pins : {};

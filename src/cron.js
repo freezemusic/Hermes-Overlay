@@ -288,3 +288,36 @@ export function normalizeCronGroup(payload, fallback = {}) {
     message: "",
   };
 }
+
+/** R-CR-05 draft: 「上次失敗」 marker text. */
+export const CRON_FAILED_LABEL = "上次失敗";
+
+/** last_error as one line (whitespace collapsed); objects and arrays as JSON. */
+export function jobFailText(job) {
+  if (!jobFailed(job)) return "";
+  const raw = job?.last_error ?? job?.lastError ?? job?.latest_execution?.last_error ?? job?.latest_execution?.error ?? "";
+  let text = "";
+  if (typeof raw === "string") text = raw;
+  else if (raw && typeof raw === "object") {
+    try { text = JSON.stringify(raw); } catch { text = String(raw); }
+  } else if (raw != null && raw !== false) text = String(raw);
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** Jobs in a group that keep the red ring (same rule as the orb, R-CR-03). */
+export function groupFailedCount(group) {
+  return (group?.jobs || []).filter((job) => jobFailed(job)).length;
+}
+
+/**
+ * What renderCronOrb does with one call.
+ * - blocked and not forced: "defer" (the caller must retry once not busy).
+ * - same DOM sig and not forced: "skip".
+ * - otherwise "paint". `force` always paints.
+ */
+export function cronRenderStep({ force = false, blocked = false, sameSig = false } = {}) {
+  if (force) return "paint";
+  if (blocked) return "defer";
+  if (sameSig) return "skip";
+  return "paint";
+}

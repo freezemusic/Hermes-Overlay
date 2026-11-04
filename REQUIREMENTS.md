@@ -303,6 +303,10 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-CR-04** 排程面板：按 bot 分組，每個顯示中嘅 profile 都列出（冇工作就寫「未有排程」）；資料來自 `GET {root}/api/jobs?include_disabled=true`，404 先試 `/api/crons`；唔虛構工作；時間 24 小時 `HH:MM`。
 - 來源：SPEC §12.4–12.7；REPORT-v24。驗收（盒，真 Hermes）：同 `hermes` CLI 列出嘅工作對得上。狀態：❓ / ❓。
 
+**R-CR-05** 排程面板標出邊個工作失敗（Devon 2026-11-04：個環一直紅，但面板睇唔到係邊個）。`jobFailed()` 係真嘅工作：狀態點變 `#e5484d` 實心紅點，卡邊淡紅；排程下面加一行「上次失敗」＋ `last_error`，壓成一行（空白收埋），太長就 `…` 截斷，滑鼠停留出全文 tooltip；冇 `last_error` 就淨係寫「上次失敗」。有失敗工作嘅 bot 組標題後面加紅點同「N 個上次失敗」；**唔重新排序**（組同工作次序照 R-CR-04）。停用（paused）工作照計失敗，同 R-CR-03 一樣，冇改。
+- 來源：Devon；cron-red-ring 調查（2026-11-04）。驗收（單元）：`cron.test.js`「R-CR-05 draft …」、「panel: failed dot …」。盒：淺色主題面板截圖，一個失敗＋一個停用失敗工作，量截斷同 tooltip。
+- 狀態：❓ / ✅(盒，fan-suborbs r3 cron-panel.png)。
+
 ---
 
 ## 6. 看板（R-KB）

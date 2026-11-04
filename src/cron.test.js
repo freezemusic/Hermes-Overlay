@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  CRON_FAILED_LABEL,
   CRON_NONE,
   CRON_POLL_MS,
   CRON_UNAVAILABLE,
@@ -9,6 +11,9 @@ import {
   cronOrbActive,
   cronOrbFace,
   cronProgress,
+  cronRenderStep,
+  groupFailedCount,
+  jobFailText,
   jobFailed,
   jobRunning,
   lastRunValue,
@@ -242,4 +247,61 @@ test("a running job reports elapsed time and a progress fraction", () => {
   }], next);
   assert.equal(idle.mode, "idle");
   assert.equal(idle.label, "18:05");
+});
+
+const mainSrc = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+const cssSrc = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+
+test("R-CR-05 draft: a failed job gets 「上次失敗」 and its last_error as one line", () => {
+  assert.equal(CRON_FAILED_LABEL, "上次失敗");
+  const group = normalizeCronGroup({
+    profile: "writer",
+    jobs: [
+      { id: "ok", name: "好", state: "scheduled", last_status: "ok" },
+      { id: "bad", name: "壞", state: "scheduled", last_status: "error", last_error: "  RuntimeError:\n  model  timeout after 120s  " },
+      { id: "obj", name: "物件", state: "paused", enabled: false, last_error: { code: 502, msg: "bad gateway" } },
+      { id: "run", name: "行緊", state: "running", last_error: "old" },
+    ],
+  });
+  const [ok, bad, obj, run] = group.jobs;
+  assert.equal(jobFailText(ok), "");
+  assert.equal(jobFailText(bad), "RuntimeError: model timeout after 120s");
+  assert.equal(jobFailText(obj), '{"code":502,"msg":"bad gateway"}');
+  assert.equal(jobFailText(run), "", "a running job is not marked failed");
+  // Paused jobs still count, as R-CR-03 says today (Devon decides any change).
+  assert.equal(jobFailed(obj), true);
+  assert.equal(groupFailedCount(group), 2);
+  assert.equal(groupFailedCount({ jobs: [] }), 0);
+});
+
+test("renderCronOrb: force always paints; blocked defers; same sig skips", () => {
+  assert.equal(cronRenderStep({ force: true, blocked: true, sameSig: true }), "paint");
+  assert.equal(cronRenderStep({ blocked: true }), "defer");
+  assert.equal(cronRenderStep({ blocked: true, sameSig: true }), "defer");
+  assert.equal(cronRenderStep({ sameSig: true }), "skip");
+  assert.equal(cronRenderStep({}), "paint");
+});
+
+test("main.js: a deferred cron orb render is retried once not busy, and force skips the sig return", () => {
+  const body = mainSrc.slice(mainSrc.indexOf("function renderCronOrb("), mainSrc.indexOf("function chatStamp("));
+  const defer = body.slice(0, body.indexOf("ensureChrome();"));
+  assert.match(defer, /cronRenderStep\(\{ force: !!options\.force, blocked: backgroundBlocked\(\) \}\) === "defer"/);
+  // Every skipped render arms the retry, not only collapse (presentationBusy too).
+  assert.match(defer, /state\.cronOrbDue = true;\s*armPresentationFlush\(\);\s*return;/);
+  assert.doesNotMatch(body, /if \(shell\.dataset\.cronSig === sig\) return;/);
+  assert.match(body, /cronRenderStep\(\{ force: !!options\.force, sameSig: shell\.dataset\.cronSig === sig \}\) === "skip"/);
+  const release = mainSrc.slice(mainSrc.indexOf("function releaseDeferredTicks("), mainSrc.indexOf("function releaseDeferredTicks(") + 3000);
+  assert.match(release, /if \(state\.cronOrbDue\) renderCronOrb\(\);/);
+});
+
+test("panel: failed dot is #e5484d, the error is one truncated line with a tooltip, groups are flagged not sorted", () => {
+  assert.match(cssSrc, /\.cron-dot\.is-failed \{ background: #e5484d; \}/);
+  assert.match(cssSrc, /\.cron-fail-error \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
+  const mark = mainSrc.slice(mainSrc.indexOf("function cronStatusMark("), mainSrc.indexOf("function paintCronArcs("));
+  assert.match(mark, /jobFailed\(job\)/);
+  assert.match(mark, /line\.title = text \?/);
+  const paint = mainSrc.slice(mainSrc.indexOf("function paintCron() {"), mainSrc.indexOf("async function refreshCron("));
+  assert.match(paint, /groupFailedCount\(group\)/);
+  assert.match(paint, /blocks\.forEach\(/);
+  assert.doesNotMatch(paint, /\.sort\(/);
 });

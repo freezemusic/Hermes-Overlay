@@ -679,6 +679,46 @@ html, body {
   box-shadow: none;
 }
 
+/* R-CR-05 draft: the job that keeps the red ring. */
+.cron-dot.is-failed { background: #e5484d; }
+.cron-job.is-failed { border-color: rgba(229, 72, 77, .55); }
+.cron-fail {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  font: 400 11px/1.4 var(--font-body);
+  color: #14142b;
+}
+.cron-fail-label {
+  flex: none;
+  color: #c4282d;
+  font-weight: 600;
+}
+.cron-fail-error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.cron-group-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  color: #c4282d;
+  font: 600 11px/1.3 var(--font-body);
+}
+.cron-group-flag::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e5484d;
+}
+
 .cron-arc {
   width: 12px;
   height: 12px;
