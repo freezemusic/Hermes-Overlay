@@ -444,3 +444,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ├── hermes-plugin/overlay-slash/  # 舊版 8642 用的 plugin（v0.3 不需要）
 └── scripts/                   # CI 用的假伺服器、Windows 穿透測試
 ```
+
+## 授權
+
+本專案以 MIT License 釋出，全文見 [LICENSE](LICENSE)。

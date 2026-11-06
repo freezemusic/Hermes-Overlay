@@ -3,6 +3,7 @@ name = "hermes-overlay"
 version = "0.3.0"
 description = "Transparent always-on-top Hermes Overlay (Windows / macOS / Linux)"
 authors = ["freezemusic"]
+license = "MIT"
 edition = "2021"
 
 [lib]
