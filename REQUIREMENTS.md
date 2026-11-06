@@ -63,9 +63,9 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：mock gateway 見到 `POST /p/mt-coder/v1/runs/{活躍 run_id}/stop`、冇 body；已完結 id 嘅 409 之後會打去活躍 id；409 本身唔顯示「已停止」；使用者停止唔會設 reader abort。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
-**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常嗰條傳送（`POST /v1/runs`，舊 gateway 冇呢條先至 `POST /api/sessions/{id}/chat/stream`）。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。有句排住喺度，狀態行顯示「排隊中」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 只有忙碌或者租約衝突（`session_active_turn`、`queue_full`、`admission_started`、`busy`，或者 code 含 `lease`）先顯示「個 bot 仲忙，呢句未送出。」。已關閉或者分叉嘅 409 見 R-SS-09。
-- 來源：Devon（2026-10-26）。真用：訊息排咗 admission seq 8，約一分鐘後先答，畫面冇排隊狀態。
-- 驗收（盒）：steer 路徑同 body 只有 `input`；409 變排隊句；忙碌發送唔再係直接 `return`。
+**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就只保留用戶氣泡（同 Hermes Desktop 一樣：`session.redirect`／composer mid-turn 插一句真實 user message，唔加 system／commentary 標籤例如「已加入呢一輪」），唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常嗰條傳送（`POST /v1/runs`，舊 gateway 冇呢條先至 `POST /api/sessions/{id}/chat/stream`）。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。有句排住喺度，狀態行顯示「排隊中」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 只有忙碌或者租約衝突（`session_active_turn`、`queue_full`、`admission_started`、`busy`，或者 code 含 `lease`）先顯示「個 bot 仲忙，呢句未送出。」。已關閉或者分叉嘅 409 見 R-SS-09。
+- 來源：Devon（2026-10-26；2026-11-06 要求唔要「已加入呢一輪」，跟 Hermes Desktop）。真用：訊息排咗 admission seq 8，約一分鐘後先答，畫面冇排隊狀態。Desktop 證據：`apps/desktop/src/app/session/hooks/use-prompt-actions/index.ts` redirectPrompt「record it once as a real user message … rather than a system note」；composer busy 文字走 steer／redirect，transcript 只有 user bubble。
+- 驗收（盒）：steer 路徑同 body 只有 `input`；成功 steer 對話有用戶氣泡、**冇**「已加入呢一輪」commentary；409 變排隊句「排隊中，等佢講完就會行」；忙碌發送唔再係直接 `return`。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
 **R-ST-04** Bot 回覆進行中，可以轉去同一個 Bot 嘅另一個 session，亦可以打開另一個 Bot。手上嗰輪繼續喺伺服器行，唔好切斷 SSE，唔好打 `/stop`。原 session 嘅回覆繼續收，返去先顯示。光球保持忙碌。唔好出「停咗先至轉對話」呢類冇下一步嘅提示。真正停止之後，忙碌清除，轉對話即刻可以。
@@ -703,7 +703,7 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 - 狀態：✅(盒)。
 
 **R-CL-08** 斜線指令唔可以當普通字送。`prompt.submit` 唔識讀斜線（盒 p10：`/plan …`、`/btw …` 原文入咗模型）。旁問 `/btw` 用 `prompt.btw`，答案喺 `btw.complete`，唔寫入對話；Plan `/plan` 同其他指令用 `command.dispatch`（4018 就改用 `slash.exec`），`send` 類就送出佢返嘅訊息，其他類顯示輸出。插話用 `session.steer`（唔用 `prompt.submit`，否則會打斷嗰輪）。分支用 `session.branch_stored`，參數 `parent_session_id`（0.22.5 `methods_session.py` `_create_session`）；佢唔收 `title`（`extra="forbid"`，送咗會 4000），標題之後用 `session.title`。`/title` 用 `session.title`（live session），封存用 `session.archive`；0.22.5 嘅 `PATCH /api/sessions/{id}` 要 revision fence，冇就 409 `client_upgrade_required`。`/new`、`/reset`、`/title`、`/branch`、`/fork`、`/model`、`/stop` 喺 `complete.slash` 目錄入面標 `kind: client`，由 overlay 自己做（R-SL）。斜線選單完全同名排先，然後係開頭相同、模糊、描述（9119 目錄長，`/model` 唔可以變 `/moa`）。Hermes 喺歷史插入嘅換模型提示（`display_kind: model_switch`，`[System: The active model …`）唔顯示做用戶訊息。
-- 驗收（盒）：見 RESULTS（Plan 模型收到 plan-mode 提示；旁問答案出現而且唔入歷史；插話「已加入呢一輪」而模型收到 out-of-band 訊息；`/branch 名` 開新 session 帶住個名；`/title` 改名喺選單見到；`/model scripted` 顯示「已切換模型」、冇 `[System:` 用戶行）。
+- 驗收（盒）：見 RESULTS（Plan 模型收到 plan-mode 提示；旁問答案出現而且唔入歷史；插話只見用戶氣泡（冇「已加入呢一輪」）而模型收到 out-of-band 訊息；`/branch 名` 開新 session 帶住個名；`/title` 改名喺選單見到；`/model scripted` 顯示「已切換模型」、冇 `[System:` 用戶行）。
 - 狀態：見 RESULTS.md。
 
 **R-CL-07** Dashboard 唔會自己開 Bot Chat。一個 profile 完全冇 `Bot Chat` 時，第一次送出開一條（`session.create`，標題 `Bot Chat`），之後一直用佢。啟動同打開都唔開。

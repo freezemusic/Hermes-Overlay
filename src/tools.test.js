@@ -26,7 +26,7 @@ test("consecutive tool results collapse into one row", () => {
     { role: "approval", text: "", requestId: "req" },
     { role: "clarify", text: "", promptId: "ask" },
     { role: "failure", text: "回覆失敗" },
-    { role: "commentary", text: "過程：已加入呢一輪" },
+    { role: "commentary", text: "過程：排隊中，等佢講完就會行" },
     { role: "tool", name: "terminal", text: "ls" },
   ]);
   assert.equal(folded[0].unsent, true);

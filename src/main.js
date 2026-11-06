@@ -8979,7 +8979,7 @@ async function sendWhileBusy(id, text) {
     }
   }
   if (joined) {
-    appendMessage(id, { role: "commentary", text: "已加入呢一輪" });
+    // Match Hermes Desktop: user bubble only — no joined-turn commentary label.
     if (panelFor(id)) renderChat(id);
     return;
   }
@@ -12379,7 +12379,7 @@ async function sendSuborbBusy(id, sub, thread, text) {
     joined = false;
   }
   if (joined) {
-    appendMessage(id, { role: "commentary", text: "已加入呢一輪" });
+    // Match Hermes Desktop: user bubble only — no joined-turn commentary label.
     return;
   }
   appendMessage(id, { role: "commentary", text: "排隊中，等佢講完就會行" });
