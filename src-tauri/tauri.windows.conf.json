@@ -1,0 +1,22 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Hermes Overlay",
+        "width": 1280,
+        "height": 800,
+        "fullscreen": false,
+        "maximized": true,
+        "resizable": true,
+        "visible": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "shadow": false,
+        "skipTaskbar": false,
+        "center": false
+      }
+    ]
+  }
+}

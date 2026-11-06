@@ -120,14 +120,17 @@ test("the command catalog refreshes when the popup opens", () => {
   assert.equal(shouldRefreshCatalog(true, false), true);
 });
 
-test("gateway retry backs off to 30 seconds", () => {
-  assert.equal(reconnectDelayMs(0), 1000);
-  assert.equal(reconnectDelayMs(1), 2000);
-  assert.equal(reconnectDelayMs(2), 4000);
-  assert.equal(reconnectDelayMs(4), 16000);
-  assert.equal(reconnectDelayMs(5), 30000);
-  assert.equal(reconnectDelayMs(9), 30000);
+test("gateway retry backs off from 5 seconds and ignores a rejected key", () => {
+  const mid = () => 0.5;
+  assert.equal(reconnectDelayMs(0, mid), 5000);
+  assert.equal(reconnectDelayMs(1, mid), 10000);
+  assert.equal(reconnectDelayMs(2, mid), 20000);
+  assert.equal(reconnectDelayMs(3, mid), 60000);
+  assert.equal(reconnectDelayMs(9, mid), 60000);
+  assert.equal(reconnectDelayMs(0, () => 0), 4000);
+  assert.equal(reconnectDelayMs(0, () => 1), 6000);
   assert.equal(gatewayDown("連唔到 Hermes gateway。請確認 gateway 已開，位址係設定入面嗰個（預設埠 8642）。"), true);
   assert.equal(gatewayDown("Hermes gateway 逾時。請確認 gateway 已開。"), true);
+  assert.equal(gatewayDown("hermes gateway timeout"), true);
   assert.equal(gatewayDown("Gateway 拒絕金鑰（401）。"), false);
 });

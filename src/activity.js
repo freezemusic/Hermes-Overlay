@@ -109,6 +109,12 @@ export function toastSide(orb, viewportWidth) {
   return width - center < center ? "left" : "right";
 }
 
+/** 24-hour HH:MM. Locale 12-hour strings such as 下午09:42 are not used. */
+export function formatToastClock(date = new Date()) {
+  const value = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+  return `${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}`;
+}
+
 export function toastAnchor(orb, viewport, index = 0) {
   const width = 280;
   const gap = 12;

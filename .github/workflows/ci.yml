@@ -116,3 +116,76 @@ jobs:
           name: linux-deb
           path: src-tauri/target/release/bundle/deb/*.deb
           if-no-files-found: error
+
+  windows-nsis:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Windows x64 NSIS bundle
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-nsis
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-pdb
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/*.pdb
+          if-no-files-found: error
+
+  windows-clickthrough:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Windows build without a bundle
+        run: npm run tauri build -- --no-bundle
+
+      - name: Click-through reaches the window behind
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-clickthrough.ps1
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: windows-clickthrough-debug
+          path: |
+            clickthrough-debug.log
+            window-tree.txt
+          if-no-files-found: ignore

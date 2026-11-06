@@ -6,6 +6,7 @@ import {
   emptyActivity,
   pushToast,
   reduceActivity,
+  formatToastClock,
   orbMotion,
   statusAfterWatchdog,
   toastAnchor,
@@ -61,6 +62,7 @@ test("thinking follows send, tools, tokens, and terminal events", () => {
   assert.equal(reasoning.toast, null);
   assert.equal(reasoning.unread, false);
   assert.equal(statusAfterWatchdog("思考中…"), "等候中");
+  assert.equal(statusAfterWatchdog("等緊批准"), "等緊批准");
   assert.equal(statusAfterWatchdog("閒置"), "閒置");
 
   assert.equal(orbMotion(reduceActivity(emptyActivity(), { type: "send" }, 0).state, "busy"), "spin");
@@ -68,6 +70,13 @@ test("thinking follows send, tools, tokens, and terminal events", () => {
   assert.equal(orbMotion(reduceActivity({ thinking: true, streaming: false, deadline: 1 }, { type: "watchdog" }, 90_000).state, "busy"), "wait");
   assert.equal(orbMotion(emptyActivity(), "idle"), "idle");
   assert.equal(orbMotion(emptyActivity(), "error"), "idle");
+});
+
+test("toast clock is 24-hour HH:MM", () => {
+  assert.equal(formatToastClock(new Date(2026, 9, 15, 21, 42, 7)), "21:42");
+  assert.equal(formatToastClock(new Date(2026, 9, 15, 9, 5, 0)), "09:05");
+  assert.equal(formatToastClock(new Date(2026, 9, 15, 0, 0, 0)), "00:00");
+  assert.doesNotMatch(formatToastClock(new Date(2026, 9, 15, 21, 42)), /下午|上午|AM|PM/i);
 });
 
 test("toasts stack to three and sit away from the screen edge", () => {

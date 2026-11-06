@@ -39,6 +39,15 @@ test("tauri dev merges the dev identifier and build does not", () => {
   const prod = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
   assert.equal(dev.identifier, "com.freezemusic.hermes-overlay.dev");
   assert.equal(prod.identifier, "com.freezemusic.hermes-overlay");
+  assert.equal(prod.app.windows[0].visible, false);
+  assert.equal(prod.app.windows[0].decorations, false);
+  assert.equal(prod.app.windows[0].transparent, true);
+  assert.equal(prod.app.windows[0].maximized, false);
+  const windows = JSON.parse(readFileSync(new URL("../src-tauri/tauri.windows.conf.json", import.meta.url), "utf8"));
+  assert.equal(windows.app.windows[0].visible, true);
+  assert.equal(windows.app.windows[0].maximized, true);
+  assert.equal(windows.app.windows[0].decorations, false);
+  assert.equal(windows.app.windows[0].transparent, true);
   assert.equal(prod.bundle.category, "Utility");
   assert.equal(prod.bundle.linux.deb.recommends.includes("gnome-keyring"), true);
   assert.equal(prod.bundle.linux.deb.recommends.includes("xdg-utils"), true);

@@ -64,8 +64,65 @@ export function isSafeLink(href) {
   }
 }
 
+function clipWindowsPath(chunk) {
+  let end = 0;
+  for (let i = 0; i < chunk.length; i += 1) {
+    const ch = chunk[i];
+    if (ch === "\r" || ch === "\n" || /[。，、；！？]/.test(ch)) break;
+    if (ch === " " || ch === "\t") {
+      const rest = chunk.slice(i + 1);
+      const stop = rest.search(/[\r\n。，、；！？]/);
+      const window = stop === -1 ? rest : rest.slice(0, stop);
+      if (!window.includes("\\")) break;
+      end = i + 1;
+      continue;
+    }
+    if (/[<>"|?*]/.test(ch)) break;
+    end = i + 1;
+  }
+  return chunk.slice(0, end).replace(/[)\].,;:]+$/g, "").replace(/\s+$/g, "");
+}
+
+/** Keep `C:\...` verbatim. Marked treats `\.` as an escaped dot. */
+function shieldWindowsPaths(source) {
+  const text = String(source ?? "");
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text.startsWith("```", i)) {
+      const close = text.indexOf("```", i + 3);
+      if (close === -1) {
+        out += text.slice(i);
+        break;
+      }
+      out += text.slice(i, close + 3);
+      i = close + 3;
+      continue;
+    }
+    if (text[i] === "`") {
+      const close = text.indexOf("`", i + 1);
+      if (close !== -1 && !text.slice(i + 1, close).includes("\n")) {
+        out += text.slice(i, close + 1);
+        i = close + 1;
+        continue;
+      }
+    }
+    if (/[A-Za-z]/.test(text[i] || "") && text[i + 1] === ":" && text[i + 2] === "\\") {
+      const path = clipWindowsPath(text.slice(i));
+      if (path.includes("\\") && path.length >= 4 && !path.includes("`")) {
+        out += `\`${path}\``;
+        i += path.length;
+        continue;
+      }
+    }
+    out += text[i];
+    i += 1;
+  }
+  return out;
+}
+
 export function renderAssistantMarkdown(source, purify) {
-  const raw = parser.parse(String(source ?? ""), { async: false });
+  const raw = parser.parse(shieldWindowsPaths(source), { async: false });
   const html = typeof raw === "string" ? raw : "";
   return purifyFor(purify).sanitize(html, PURIFY_CONFIG);
 }
