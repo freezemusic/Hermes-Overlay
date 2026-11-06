@@ -1,0 +1,40 @@
+name: Feature request
+description: 建議新功能或路線圖調整
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        請先看 [README 路線圖](https://github.com/freezemusic/Hermes-Overlay/blob/main/README.md) 與 [docs/ROADMAP.md](https://github.com/freezemusic/Hermes-Overlay/blob/main/docs/ROADMAP.md)。
+        驗收依據是 REQUIREMENTS.md 的 `R-xx` 條號。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解決什麼問題？ / Problem
+      description: 你現在在 Overlay 或 Desktop 怎麼做、卡在哪。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建議做法 / Proposal
+      description: 若已知對應的 Desktop 行為或 9119 API，請寫下來。可附 REQUIREMENTS 條號。
+    validations:
+      required: true
+  - type: dropdown
+    id: roadmap
+    attributes:
+      label: 和路線圖的關係 / Roadmap fit
+      options:
+        - 已在 v0.4–v1.0 清單裡（請註明哪一項）
+        - 新想法，不在清單
+        - 不確定
+    validations:
+      required: true
+  - type: textarea
+    id: extras
+    attributes:
+      label: 其他 / Extra context
+    validations:
+      required: false

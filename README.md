@@ -181,6 +181,8 @@ Desktop 改版很快：過去三個月大約發了 23 個正式版，從 v0.22.5
 
 ## 已知問題
 
+安裝相關細節見 [docs/INSTALL.md](docs/INSTALL.md#已知問題)。
+
 - 安裝檔沒有簽章，Windows 會跳出 SmartScreen。
 - 純 Wayland 讀不到全域游標，Overlay 只能一直保持可點擊，沒有穿透效果。
 - 關閉程式時偶爾會當掉（見 v0.4）。
@@ -199,12 +201,25 @@ Desktop 改版很快：過去三個月大約發了 23 個正式版，從 v0.22.5
   - 請不要貼出密碼、token 或金鑰。
 - **路線圖的項目**都可以討論：哪一項比較重要、哪一項可以不做，都歡迎直接在 issue 裡說。
 - **送 PR 之前**：
-  - 先讀 [AGENTS.md](AGENTS.md)。驗收依據是 [REQUIREMENTS.md](REQUIREMENTS.md)，實作細節在 [SPEC.md](SPEC.md)，兩者衝突時以 REQUIREMENTS.md 為準。
+  - 先讀 [CONTRIBUTING.md](CONTRIBUTING.md) 與 [AGENTS.md](AGENTS.md)。驗收依據是 [REQUIREMENTS.md](REQUIREMENTS.md)，實作細節在 [SPEC.md](SPEC.md)，兩者衝突時以 REQUIREMENTS.md 為準。
   - 改動要對上 REQUIREMENTS 的條號，並在說明裡列出受影響、重新驗證過的項目。
   - CI 必須全部通過（`npm test`、`cargo test`、Linux 和 Windows 打包檢查）。
   - 不要自行建立 git tag 或 GitHub Release。
 
 ## 安裝
+
+完整步驟（SmartScreen、SHA256、NSIS／MSI、`config.json` 路徑、解除安裝）見 **[docs/INSTALL.md](docs/INSTALL.md)**。變更紀錄見 [CHANGELOG.md](CHANGELOG.md)；貢獻見 [CONTRIBUTING.md](CONTRIBUTING.md)；安全回報見 [SECURITY.md](SECURITY.md)。
+
+### 系統需求（摘要）
+
+| 項目 | 要求 |
+|------|------|
+| 作業系統 | **Windows 10／11 x64**（主要實測）。macOS／Linux 有 CI 打包，但日常實測以 Windows 為準 |
+| WebView2 | 需要 WebView2 Runtime。`tauri.conf.json` 未覆寫 `webviewInstallMode`，沿用 Tauri 2 預設 `downloadBootstrapper`（silent） |
+| Hermes | **v0.22.5 stable** + `hermes serve`（預設埠 **9119**）。v0.23.0 未測 |
+| 簽章 | 安裝檔**沒有**程式碼簽章 |
+
+<!-- tested on: filled after laptop test -->
 
 安裝檔可以從 [GitHub Releases](https://github.com/freezemusic/Hermes-Overlay/releases) 下載。目前只有 v0.1.0 有 Release。v0.3.0 還沒發佈，Windows 版請用 CI 產生的 artifact `windows-x64-nsis`。安裝檔都**沒有簽章**。macOS 版開了 `macOSPrivateApi` 才能透明，所以**不能上架 Mac App Store**。
 
@@ -423,7 +438,11 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ├── REQUIREMENTS.md            # 驗收依據
 ├── SPEC.md                    # 實作細節
 ├── AGENTS.md                  # 協作者須知
+├── CHANGELOG.md               # 版本變更（Keep a Changelog）
+├── CONTRIBUTING.md            # 如何貢獻
+├── SECURITY.md                # 弱點回報與本機儲存
 ├── docs/
+│   ├── INSTALL.md             # 安裝、SmartScreen、系統需求
 │   ├── ROADMAP.md             # 和 Desktop 的逐項比較、路線圖依據
 │   └── CLICKTHROUGH.md        # 游標與穿透的實作筆記
 ├── src/
