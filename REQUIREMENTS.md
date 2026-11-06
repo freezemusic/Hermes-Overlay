@@ -1,4 +1,4 @@
-# Hermes-Overlay 要求同驗收清單（v0.1）
+# Hermes-Overlay 要求同驗收清單（v0.3.0）
 
 > 狀態：**Devon 於 2026-10-21 核准。** 本檔係驗收依據。同 `SPEC.md` 衝突時以本檔為準。`SPEC.md` 只做實作細節。
 > 整理日期：2026-10-21。整合自：Devon 歷來要求（記憶）、repo `SPEC.md`／`AGENTS.md`／`README.md`（branch `cursor/v20-art-director-fixes-ddc6`，head `d8fd9b0`）、PR #3 內文、`DESIGN-REVIEW*.md`、`DESIGN-SPEC.md`、`ORB-REVERT-SPEC.md`、`SUBORB-SPEC.md`、`screens-v84/ad`、`screens-v85/ad`、`laptop-b919b7f/CLICKTHROUGH-DIAG.md`。
