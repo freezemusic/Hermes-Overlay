@@ -1,0 +1,66 @@
+name: Bug report
+description: 回報 Overlay 的錯誤（請勿貼金鑰／token）
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感謝回報。請**不要**貼上 API 金鑰、token、cookie、密碼，或含密文的設定／鑰匙圈截圖。
+        Thanks — never paste API keys, tokens, cookies, or passwords.
+  - type: input
+    id: overlay_version
+    attributes:
+      label: Overlay 版本 / Overlay version
+      description: 例如 0.3.0，或 `git rev-parse --short HEAD`／安裝檔檔名。
+      placeholder: "0.3.0 or b201293"
+    validations:
+      required: true
+  - type: input
+    id: hermes_version
+    attributes:
+      label: Hermes Agent 版本 / Hermes Agent version
+      description: 伺服器上 `hermes --version`（本專案以 v0.22.5 stable 實測）。
+      placeholder: "0.22.5"
+    validations:
+      required: true
+  - type: input
+    id: windows_version
+    attributes:
+      label: Windows 版本 / Windows version
+      description: 主要實測平台是 Windows。其他 OS 請寫發行版與工作階段（X11／Wayland 等）。
+      placeholder: "Windows 11 23H2 / Windows 10 22H2"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 重現步驟 / Steps to reproduce
+      description: 從啟動 Overlay 寫到問題出現。
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 預期行為 / Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 實際行為 / Actual
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日誌（可選）/ Logs (optional)
+      description: |
+        可貼非敏感的 UI 錯誤訊息或狀態列文字。
+        警告：永遠不要貼 API keys、tokens、cookies、密碼。
+        Warning: never paste secrets.
+    validations:
+      required: false

@@ -141,3 +141,48 @@ jobs:
           tar -C "$dir" -czf "$archive" "$base"
           tag="v$(jq -r .version src-tauri/tauri.conf.json)"
           gh release upload "$tag" "$archive" --clobber
+
+      # One checksum file per matrix job (windows|macos|linux). Does not change
+      # drafting: releaseDraft stays true on tauri-action above.
+      - name: Upload SHA256 checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v$(jq -r .version src-tauri/tauri.conf.json)"
+          case "${{ matrix.platform }}" in
+            windows-latest) label=windows ;;
+            macos-latest) label=macos ;;
+            ubuntu-22.04) label=linux ;;
+            *) label="${{ matrix.platform }}" ;;
+          esac
+          out="${label}-SHA256SUMS.txt"
+          : > "$out"
+          hash_one() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1"
+            else
+              shasum -a 256 "$1"
+            fi
+          }
+          # Portable across bash 3.2 (macOS) and Git Bash (Windows).
+          list_file=$(mktemp)
+          find src-tauri/target -type f -path '*/bundle/*' \( \
+            -name '*-setup.exe' -o -name '*.msi' -o -name '*.dmg' -o \
+            -name '*.AppImage' -o -name '*.deb' -o -name '*.tar.gz' \
+          \) 2>/dev/null | sort -u > "$list_file" || true
+          count=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            rel="${f#./}"
+            hash_one "$f" | awk -v name="$rel" '{print $1 "  " name}' >> "$out"
+            count=$((count + 1))
+          done < "$list_file"
+          rm -f "$list_file"
+          if [ "$count" -eq 0 ]; then
+            echo "No bundle artefacts found under src-tauri/target/**/bundle/" >&2
+            exit 1
+          fi
+          cat "$out"
+          gh release upload "$tag" "$out" --clobber

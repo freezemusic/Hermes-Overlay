@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 讀 README／安裝指南
+    url: https://github.com/freezemusic/Hermes-Overlay/blob/main/docs/INSTALL.md
+    about: 安裝、SmartScreen、9119 設定請先看 docs/INSTALL.md 與 README。

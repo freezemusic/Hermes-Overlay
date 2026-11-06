@@ -8,7 +8,9 @@
  * whole UI strings by exact match through a MutationObserver. The observer is
  * only connected while English is on, so zh-HK runs exactly as before.
  * Chat, plans, kanban cards, session titles and other Hermes data are never
- * translated.
+ * translated. Overlay chrome that sits inside those areas (approval and clarify
+ * cards, the tool line, code copy, the card detail back button) is listed in
+ * `UI_IN_DATA` and is translated; the Hermes text around it is not.
  */
 
 export const TEXT_SIZES = Object.freeze([
@@ -205,6 +207,101 @@ export const EN = Object.freeze({
   "大": "Large",
   "特大": "Extra large",
   "文字大小同介面語言即時試睇，撳「儲存」先記住；唔儲存就關，會返原本。": "Text size and language preview at once. Press Save to keep them; closing without saving puts them back.",
+  // Approval card (R-LK-02 sweep; rendered inside chat, see UI_IN_DATA)
+  "呢個批准已經過時": "This approval has expired",
+  "批准未送出。": "Approval was not sent.",
+  "呢個 bot 想行 Python（execute_code），經 Overlay 唔允許，叫佢改用 terminal 指令": "This bot wants to run Python (execute_code). The overlay doesn't allow it; ask it to use a terminal command instead.",
+  // Clarify card
+  "要你答": "Needs your answer",
+  "推薦": "Recommended",
+  "送出": "Send",
+  "其他（自己打）": "Other (type your own)",
+  "呢條問題已經過時": "This question has expired",
+  "時間到，個 bot 會自己繼續": "Time's up; the bot will carry on by itself",
+  "已答": "Answered",
+  "已跳過": "Skipped",
+  "答案未送出。": "Answer was not sent.",
+  // History notices (approval / clarify asked elsewhere)
+  "呢度答唔到。": "Can't answer here.",
+  // Chat chrome
+  "收起完整提示": "Hide full prompt",
+  "顯示完整提示": "Show full prompt",
+  "未送出": "Not sent",
+  "已複製": "Copied",
+  "工具": "Tool",
+  "未知錯誤": "Unknown error",
+  // Orbs and sub-orbs
+  "設定": "Settings",
+  "排程": "Schedule",
+  "Hermes 設定": "Hermes settings",
+  "排程工作進行中": "Scheduled job running",
+  "排程工作失敗": "Scheduled job failed",
+  "子光球": "Sub-orbs",
+  "任務": "Task",
+  "停止未送到": "Stop was not sent",
+  "開唔到新對話。": "Couldn't open a new session.",
+  "示範模式冇連 Hermes，開唔到新 session。": "Demo mode isn't connected to Hermes, so it can't open a new session.",
+  "建立": "Create",
+  // Kanban and schedule (sweep)
+  "未裝 overlay-slash kanban，看板唔會出現。": "overlay-slash kanban isn't installed, so the board won't appear.",
+  "呢部 Hermes 未有看板。伺服器冇提供看板功能。": "This Hermes has no Kanban board. The server doesn't offer one.",
+  "看板拒絕呢次移動。": "The board refused this move.",
+  "未有排程工作。": "No scheduled jobs yet.",
+  "呢個 Bot 未有排程。": "This bot has no scheduled jobs.",
+  "上次失敗": "Last run failed",
+  "進行中": "Running",
+  "啟用": "On",
+  "未命名": "Untitled",
+  "瀏覽器預覽唔可以登入。": "Sign-in isn't available in the browser preview.",
+  "開緊瀏覽器登入…": "Opening the browser to sign in…",
+  "已登入 Hermes Dashboard": "Signed in to Hermes Dashboard",
+  // Settings (sweep)
+  "顏色": "Colour",
+  "置頂保護": "Keep-on-top guard",
+  "瀏覽器預覽改唔到鑰匙圈。請用 npm run tauri dev。": "The browser preview can't change the keyring. Use npm run tauri dev.",
+  "瀏覽器預覽唔可以儲存。": "The browser preview can't save.",
+  "Hermes Dashboard 同名單可用。": "Hermes Dashboard and the roster are reachable.",
+  "Hermes Dashboard 有回應，但部分 Bot 讀唔到。睇設定入面嘅結果。": "Hermes Dashboard answered, but some bots couldn't be read. See the results in Settings.",
+  "實驗匯入中…": "Importing (experimental)…",
+  "Dashboard 冇返回 profile。": "The dashboard returned no profiles.",
+  "示範模式：已記喺呢個視窗。": "Demo mode: kept in this window only.",
+  "已儲存呢個 Bot。": "Saved this bot.",
+  "示範模式（--demo），冇連 Hermes。": "Demo mode (--demo), not connected to Hermes.",
+  "未裝 overlay-slash，/ 選單唔會出現。": "overlay-slash isn't installed, so the / menu won't appear.",
+  "呢個環境讀唔到全域游標或修飾鍵，所以保持可點擊，唔會穿透。": "This environment can't read the global cursor or modifier keys, so the overlay stays clickable and never clicks through.",
+  // Settings help (index.html). Inline <code> splits these into separate text nodes;
+  // each piece is still a whole text node, matched end to end.
+  "第一次用：Kanban server 填 hermes serve 嘅位址（留空就係": "First run: set Kanban server to your hermes serve address (blank means",
+  "），登入，然後儲存。": "), sign in, then save.",
+  "對話、看板同 Bot 名單都經 hermes serve（Hermes Dashboard）。留空就用": "Chat, Kanban and the bot roster all go through hermes serve (Hermes Dashboard). Blank uses",
+  "。帳號密碼同登入資料只寫入呢個程式自己嘅鑰匙圈，唔會寫入設定檔，亦唔會改其他程式嘅登入。": ". Usernames, passwords and sign-ins go only into this app's own keyring, never into the config file, and never change another app's sign-in.",
+  "光球（包括設定、看板同排程）預設實色，滑鼠穿透，唔會接點擊或 hover。游標行近嗰粒先淡出。按住修飾鍵時，游標下面嗰粒光球返實色、可以點；右鍵隱藏都只喺按住修飾鍵時先有效。放開就回復穿透。新訊息會由光球向畫面中心橫向展開成膠囊，顯示 5 秒之後收回。膠囊唔使按修飾鍵都睇到，但要按住先至點得入去。面板預設實色，游標喺面板上面就可以拖同點。按住修飾鍵時，面板變透明並穿透。輸入框聚焦唔使按住修飾鍵。": "Orbs (Settings, Kanban and Schedule too) are solid by default and let the mouse through: no clicks or hover. The orb nearest the cursor fades. Hold the modifier key and the orb under the cursor turns solid and clickable; right-click to hide also needs the modifier held. Let go and clicks pass through again. A new message unfolds from its orb towards the screen centre as a capsule for 5 seconds. You can see the capsule without the modifier, but you need to hold it to click in. Panels are solid by default; with the cursor over a panel you can drag and click. Hold the modifier and the panel turns see-through and lets clicks through. A focused input box doesn't need the modifier.",
+  "連上 Hermes Dashboard 時會自動發現 profile 並寫入設定：本機 Hermes 目錄（": "Profiles are found and written to settings when you connect to Hermes Dashboard: the local Hermes folder (",
+  "或": "or",
+  "），同埋 Dashboard 嘅": "), and the dashboard's",
+  "（用你嘅登入，或者已存嘅 dashboard session token）。新 profile 會出圓球。圓球顏色讀 profile.yaml 嘅": "(with your sign-in, or a saved dashboard session token). A new profile gets an orb. The orb colour comes from profile.yaml",
+  "（或 dashboard 同欄位）；冇顏色先用預設色。下面個掣只係再匯入到呢個表，仍然要儲存。": "(or the same dashboard field); with no colour it uses the default. The button below only re-imports into this list; you still need to save.",
+  "手動匯入用 Hermes dashboard 嘅": "Manual import uses the Hermes dashboard's",
+  "（預設": "(default",
+  "）。匯入只填名稱同描述。Dashboard 即使係 localhost 都要 session token，否則 401。Token 係 dashboard 頁面嘅": "). Import fills only names and descriptions. The dashboard needs a session token even on localhost, otherwise 401. The token is the dashboard page's",
+  "，存喺鑰匙圈。": ", kept in the keyring.",
+  // Built-in slash commands (slash.js); plugin commands keep Hermes' own text.
+  "寫實作計劃，唔會即刻執行": "Write an implementation plan without running it",
+  "開一條新 session": "Start a new session",
+  "改呢條 session 嘅標題": "Rename this session",
+  "由而家呢條分支出去": "Branch off from here",
+  "停止呢次回覆": "Stop this reply",
+  "睇或者切換模型": "View or switch the model",
+  "列出可用指令": "List the available commands",
+  "搜尋 arXiv 論文": "Search arXiv papers",
+  "語音（已停用）": "Voice (off)",
+  "其他": "Other",
+  "等候中": "Waiting",
+  "取消置頂": "Not on top",
+  // Fallback words inside numbered strings (EN_PATTERNS)
+  "一個指令": "a command",
+  "一條問題": "a question",
+  "呢個 bot": "This bot",
 });
 
 /** Whole strings with one number in them (R-LK-02 addendum, R-KB-10). Still whole-string:
@@ -213,7 +310,80 @@ export const EN_PATTERNS = Object.freeze([
   Object.freeze([/^(\d+) 分鐘前$/, (n) => `${n} min ago`]),
   Object.freeze([/^看板通知（(\d+\+?) 個未讀）$/, (n) => `Kanban notifications (${n} unread)`]),
   Object.freeze([/^優先度 (-?\d+(?:\.\d+)?)：數字愈大，Hermes 愈早派$/, (n) => `Priority ${n}. Higher numbers are picked up first.`]),
+  // Tool line (tools.js toolRunSummary / toolCallLine). Tool names stay as they are.
+  Object.freeze([/^執行緊 ([\s\S]+)…$/, (name) => `Running ${name}…`]),
+  Object.freeze([/^用咗 (\d+) 個工具 · ([\s\S]+)$/, (n, list) => `Used ${n} ${n === "1" ? "tool" : "tools"} · ${list}`]),
+  Object.freeze([/^用咗 (\d+) 個工具$/, (n) => `Used ${n} ${n === "1" ? "tool" : "tools"}`]),
+  Object.freeze([/^([\s\S]+?)  失敗$/, (name) => `${name}  failed`]),
+  // Clarify card. The answer and the choice are the user's / Hermes' own words.
+  Object.freeze([/^已答：([\s\S]+)$/, (answer) => `Answered: ${answer}`]),
+  Object.freeze([/^仲有 (\d+) 秒$/, (n) => `${n}s left`]),
+  Object.freeze([/^推薦 ([\s\S]+)$/, (choice) => `Recommended: ${choice}`]),
+  // History notices (sessions.js historyNoticeCopy).
+  Object.freeze([/^([\s\S]+?) 等緊你批准：([\s\S]+)$/, (who, what) => `${word(who)} is waiting for your approval: ${word(what)}`]),
+  Object.freeze([/^([\s\S]+?) 等緊你答：([\s\S]+)$/, (who, what) => `${word(who)} is waiting for your answer: ${word(what)}`]),
+  Object.freeze([/^呢度答唔到。大約 (\d+) 分鐘後逾時。$/, (n) => `Can't answer here. Times out in about ${n} min.`]),
+  Object.freeze([/^呢度答唔到。逾時時間已過，等歷史更新。$/, () => "Can't answer here. The timeout has passed; waiting for the history to update."]),
+  // Orb tooltips / aria-labels.
+  Object.freeze([/^([\s\S]+)，有工具等緊批准$/, (name) => `${name}, a tool is waiting for approval`]),
+  Object.freeze([/^([\s\S]+)，有問題等你答$/, (name) => `${name}, a question is waiting for your answer`]),
+  Object.freeze([/^([\s\S]+)，已釘住$/, (name) => `${word(name)}, pinned`]),
+  Object.freeze([/^仲有 (\d+) 個$/, (n) => `${n} more`]),
+  Object.freeze([/^仲有 (\d+) 個子光球$/, (n) => `${n} more sub-orbs`]),
+  Object.freeze([/^(\d+) 個子光球，揸住 Ctrl 展開$/, (n) => `${n} sub-orbs, hold Ctrl to expand`]),
+  // Schedule panel.
+  Object.freeze([/^(\d+) 個上次失敗$/, (n) => `${n} failed last run`]),
+  Object.freeze([/^下次 ([\d:\- ]+)$/, (when) => `Next ${when}`]),
+  Object.freeze([/^上次 ([\d:\- ]+)$/, (when) => `Last ${when}`]),
+  Object.freeze([/^行緊 (\d+:\d\d)$/, (t) => `Running ${t}`]),
+  Object.freeze([/^優先度：([\s\S]+)$/, (text) => `Priority: ${text}`]),
+  // Bot panel hint (main.js hintText), with the modifier key name three times.
+  Object.freeze([
+    /^光球預設實色同穿透。游標行近先淡出；按住 (Ctrl|Alt|Shift)，游標下嗰粒返實色、可以點同右鍵隱藏。新訊息會由光球橫向展開成膠囊 5 秒，唔使按 \1 都睇到，但要按住先至點得。面板預設實色，可以拖同點；按住 \1 就變透明並穿透。$/,
+    (key) => `Orbs are solid and let clicks through by default. They fade as the cursor gets close; hold ${key} and the orb under the cursor turns solid, clickable and right-click hides it. A new message unfolds from its orb as a capsule for 5 seconds; you can see it without ${key}, but hold it to click. Panels are solid by default and can be dragged and clicked; hold ${key} to make them see-through and let clicks through.`,
+  ]),
+  // Kanban move errors; the reason is the server's own text.
+  Object.freeze([/^看板拒絕呢次移動：([\s\S]+)$/, (why) => `The board refused this move: ${why}`]),
+  Object.freeze([/^看板更新失敗：([\s\S]+)$/, (why) => `Board update failed: ${why}`]),
+  // Settings: dashboard import and missing API keys.
+  Object.freeze([/^匯入 (\d+) 個 profile，然後儲存。$/, (n) => `Imported ${n} ${n === "1" ? "profile" : "profiles"}. Now save.`]),
+  Object.freeze([/^([\s\S]+) 未有 API 金鑰，請喺設定填寫。金鑰唔會自動產生。$/, (names) => `${names.replaceAll("、", ", ")}: no API key yet. Add it in Settings. Keys are never generated for you.`]),
 ]);
+
+/** A fallback word inside a pattern ("呢個 bot", "一個指令"); anything else is data and stays. */
+function word(text) {
+  return EN[text] || text;
+}
+
+/**
+ * Overlay chrome inside a `NO_TRANSLATE` area. These nodes are still translated
+ * whole-string, but only while no closer `NO_TRANSLATE` element (a `code`, a
+ * `pre`, a `textarea`) sits between them and the text.
+ */
+export const UI_IN_DATA = [
+  ".approval-heading",
+  ".approval-actions button",
+  ".approval-result",
+  ".clarify-heading",
+  ".clarify-countdown",
+  ".clarify-other-label",
+  ".clarify-actions button:not([data-choice])",
+  ".clarify-actions button[data-choice=\"\"]",
+  ".clarify-actions button.clarify-primary[data-choice]",
+  ".clarify-actions .clarify-option:first-child",
+  ".clarify-result",
+  ".history-notice-title",
+  ".history-notice-detail",
+  ".tool-run-label",
+  ".tool-call-line",
+  ".tool-blocked",
+  ".plan-chip",
+  ".cmd-chip",
+  ".unsent-mark",
+  ".prompt-toggle",
+  ".code-copy",
+  ".kanban-detail-back",
+].join(", ");
 
 const DICTS = Object.freeze({ en: EN });
 const PATTERNS = Object.freeze({ en: EN_PATTERNS });
@@ -230,7 +400,7 @@ export function translate(text, lang) {
     for (const [pattern, make] of PATTERNS[code] || []) {
       const m = pattern.exec(key);
       if (m) {
-        hit = make(m[1]);
+        hit = make(...m.slice(1));
         break;
       }
     }
@@ -273,7 +443,12 @@ const ATTRS = ["title", "placeholder", "aria-label"];
 function skipped(node) {
   const el = node?.nodeType === 1 ? node : node?.parentElement;
   if (!el) return true;
-  return Boolean(el.closest?.(NO_TRANSLATE));
+  const data = el.closest?.(NO_TRANSLATE);
+  if (!data) return false;
+  // Chrome inside a data area: translated only if the nearest data element
+  // holds the chrome node (so a `code` inside the chrome still stays as it is).
+  const ui = el.closest?.(UI_IN_DATA);
+  return !(ui && data.contains(ui));
 }
 
 /**
@@ -301,7 +476,7 @@ export function createTranslator(doc, Observer = globalThis.MutationObserver) {
   }
 
   function attrs(el) {
-    if (el.nodeType !== 1 || el.closest?.(NO_TRANSLATE)) return;
+    if (el.nodeType !== 1 || skipped(el)) return;
     for (const name of ATTRS) {
       if (!el.hasAttribute(name)) continue;
       const now = el.getAttribute(name);
@@ -317,6 +492,22 @@ export function createTranslator(doc, Observer = globalThis.MutationObserver) {
     }
   }
 
+  /** Only the `UI_IN_DATA` chrome inside a data subtree. */
+  function walkChrome(root) {
+    const hits = root.matches?.(UI_IN_DATA) ? [root] : [];
+    root.querySelectorAll?.(UI_IN_DATA).forEach((el) => hits.push(el));
+    for (const el of hits) {
+      attrs(el);
+      const inner = doc.createTreeWalker(el, 0x1 | 0x4);
+      let node = inner.nextNode();
+      while (node) {
+        if (node.nodeType === 3) textNode(node);
+        else attrs(node);
+        node = inner.nextNode();
+      }
+    }
+  }
+
   function walk(root) {
     if (!root) return;
     if (root.nodeType === 3) {
@@ -325,12 +516,19 @@ export function createTranslator(doc, Observer = globalThis.MutationObserver) {
     }
     if (root.nodeType !== 1 && root.nodeType !== 11) return;
     if (root.nodeType === 1) {
-      if (root.closest?.(NO_TRANSLATE)) return;
+      if (skipped(root)) {
+        walkChrome(root);
+        return;
+      }
       attrs(root);
     }
+    const data = [];
     const walker = doc.createTreeWalker(root, 0x1 | 0x4, {
       acceptNode(node) {
-        if (node.nodeType === 1 && node.matches?.(NO_TRANSLATE)) return 2; // reject subtree
+        if (node.nodeType === 1 && node.matches?.(NO_TRANSLATE) && skipped(node)) {
+          data.push(node);
+          return 2; // reject subtree
+        }
         return 1;
       },
     });
@@ -340,6 +538,7 @@ export function createTranslator(doc, Observer = globalThis.MutationObserver) {
       else attrs(node);
       node = walker.nextNode();
     }
+    data.forEach(walkChrome);
   }
 
   function restore() {

@@ -180,6 +180,7 @@ import {
 } from "./cron.js";
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 import { DEMO_BANNER, SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
+import { chromeOrbText, DEMO_BANNER_EN, DEMO_BOTS_EN, DEMO_OLD_SESSION_EN, demoCommandEn, demoCronEn, demoKanbanEn, demoPlanEn, demoReplyEn, PREVIEW_BANNER, PREVIEW_BANNER_EN } from "./demo.js";
 import { applyTextSize, createTranslator, storedLanguage, storedTextSize, translate } from "./look.js";
 import {
   RECONNECT_STATUS,
@@ -3891,7 +3892,11 @@ function bindPanelDrag(panel) {
 }
 
 function removeBotPanels() {
-  document.querySelectorAll(".morph[data-kind='bot'], .morph[data-kind='suborb']").forEach((shell) => shell.remove());
+  document.querySelectorAll(".morph[data-kind='bot'], .morph[data-kind='suborb']").forEach((shell) => {
+    // A plan rehearsal parked off-screen must not put a dropped shell back (duplicate orb).
+    shell._dropped = 1;
+    shell.remove();
+  });
   state.openIds = [];
 }
 
@@ -4058,7 +4063,7 @@ function setBanner(text, kind = "error", sticky = "", action = "") {
     button.type = "button";
     button.className = "banner-action";
     button.dataset.action = "settings";
-    const link = "設定";
+    const link = text.includes("設定") || !text.includes("Settings") ? "設定" : "Settings";
     const linkAt = text.indexOf(link);
     const paint = (value, kind) => {
       if (!value) return;
@@ -4321,9 +4326,30 @@ function ensureChrome() {
   const settings = document.getElementById("settings");
   const kanban = document.getElementById("kanban-panel");
   const cron = document.getElementById("cron-panel");
-  if (settings) ensureChromeShell(settings, "settings", "設", "設定", "orb--settings");
-  if (kanban) ensureChromeShell(kanban, "kanban", "▥", "看板", "orb--kanban");
-  if (cron) ensureChromeShell(cron, "cron", "時", "排程", "orb--cron");
+  const text = (id) => chromeOrbText(id, look.lang);
+  if (settings) ensureChromeShell(settings, "settings", text("settings").glyph, text("settings").label, "orb--settings");
+  if (kanban) ensureChromeShell(kanban, "kanban", text("kanban").glyph, text("kanban").label, "orb--kanban");
+  if (cron) ensureChromeShell(cron, "cron", text("cron").glyph, text("cron").label, "orb--cron");
+}
+
+/** R-LK-02: glyph and name of the settings / kanban / schedule orbs follow the language.
+ *  `.orb-glyph` and `.bot-label` are never auto-translated, so they are set here. */
+/** Sub-orb glyph when a task has no title. `.orb-glyph` is never auto-translated. */
+function taskGlyph() {
+  return look.lang === "en" ? "T" : "任";
+}
+
+function paintChromeOrbs() {
+  for (const id of ["settings", "kanban", "cron"]) {
+    const btn = shellFor(id)?.querySelector(".morph-orb");
+    if (!btn) continue;
+    const { glyph, label } = chromeOrbText(id, look.lang);
+    const disc = btn.querySelector(".orb-glyph");
+    if (disc && disc.textContent !== glyph) disc.textContent = glyph;
+    const name = btn.querySelector(".bot-label");
+    if (name && name.textContent !== label) name.textContent = label;
+    if (btn.dataset.orbName !== label) btn.dataset.orbName = label;
+  }
 }
 
 function botPaintSig() {
@@ -5852,7 +5878,7 @@ async function pickSession(id, sessionId) {
     const anchor = Math.max(0, ...(thread.sessions || []).map((session) => Number(session.last_active) || 0));
     const picked = (thread.sessions || []).find((session) => session.id === sessionId);
     const stored = thread.bySession?.get(sessionId);
-    showSession(thread, sessionId, (stored || [{ role: "bot", text: "（舊對話）" }]).map((message) => ({ ...message })));
+    showSession(thread, sessionId, (stored || [{ role: "bot", text: demoOldSession() }]).map((message) => ({ ...message })));
     thread.sessionExplicit = true;
     thread.sessionAnchor = anchor;
     const locked = readOnlyLocked(state.deniedSessions, id, sessionId, sessionReadOnlyIn(picked, thread.sessions));
@@ -7965,6 +7991,7 @@ function composeUserMessage(wire) {
 }
 
 function demoReply(shown) {
+  if (look.lang === "en") return shown.command === "plan" ? demoPlanEn(shown.text) : demoReplyEn(shown);
   if (shown.command === "plan") return planDemoMarkdown(shown.text);
   if (shown.command === "btw") return `（示範旁問）${shown.text}`;
   return `（示範回覆）收到：「${shown.text}」。示範模式冇連 Hermes。`;
@@ -8144,7 +8171,7 @@ async function sendClientCommand(id, text, action) {
     return;
   }
   if (state.mode !== "hermes" || !inTauri()) {
-    appendMessage(id, { role: "commentary", text: `（示範）${action.mapsTo || action.command}` });
+    appendMessage(id, { role: "commentary", text: look.lang === "en" ? demoCommandEn(action) : `（示範）${action.mapsTo || action.command}` });
     return;
   }
   const fields = action.command === "model" ? modelFields(action.args) : { model: "", provider: "" };
@@ -8179,14 +8206,32 @@ async function sendClientCommand(id, text, action) {
   }
 }
 
+/** R-LK-02: the demo talks in the UI language. zh-HK is MOCK_BOTS as it always was. */
+function mockBotsFor(lang) {
+  if (lang !== "en") return MOCK_BOTS;
+  return DEMO_BOTS_EN.map((bot, index) => ({ ...bot, color: MOCK_BOTS[index]?.color || PALETTE[index % PALETTE.length] }));
+}
+
+function mockBanner(reason) {
+  if (look.lang !== "en") return reason;
+  if (reason === DEMO_BANNER) return DEMO_BANNER_EN;
+  if (reason === PREVIEW_BANNER) return PREVIEW_BANNER_EN;
+  return reason;
+}
+
+function demoOldSession() {
+  return look.lang === "en" ? DEMO_OLD_SESSION_EN : "（舊對話）";
+}
+
 function useMock(reason, bannerAction = "", sticky = "") {
   cancelReconnect();
   stopRosterSync();
   window.clearInterval(state.chatRefresh);
   state.chatRefresh = 0;
   state.mode = "mock";
+  state.mockSeed = { reason, bannerAction, sticky, lang: look.lang };
   state.composeCatalogs.clear();
-  state.bots = MOCK_BOTS.map((bot) => ({
+  state.bots = mockBotsFor(look.lang).map((bot) => ({
     ...bot,
     messages: bot.messages.map((m) => ({ ...m })),
   }));
@@ -8208,8 +8253,8 @@ function useMock(reason, bannerAction = "", sticky = "") {
     thread.messages = bot.messages.map((m) => ({ ...m }));
     thread.bySession = new Map([
       [choice.id, thread.messages.map((m) => ({ ...m }))],
-      [`${bot.id}-desktop`, [{ role: "bot", text: "（舊對話）" }]],
-      [`${bot.id}-splitLot`, [{ role: "bot", text: "（舊對話）_splitLot" }]],
+      [`${bot.id}-desktop`, [{ role: "bot", text: demoOldSession() }]],
+      [`${bot.id}-splitLot`, [{ role: "bot", text: `${demoOldSession()}_splitLot` }]],
     ]);
     thread.status = bot.status;
     thread.loaded = true;
@@ -8219,7 +8264,7 @@ function useMock(reason, bannerAction = "", sticky = "") {
   state.slashPanelId = "";
   state.openIds = [];
   // The --demo line stays up while the demo runs (R-AR-05).
-  setBanner(reason, "info", sticky, bannerAction);
+  setBanner(mockBanner(reason), "info", sticky, bannerAction);
   renderBots();
 }
 
@@ -8574,6 +8619,20 @@ function showLook(size, lang) {
   if (before !== look.lang && state.kanban.board && !state.kanban.dragging && !state.kanban.detailOpen) {
     paintKanban(state.kanban.board);
   }
+  if (before === look.lang) return;
+  paintChromeOrbs();
+  // R-LK-02: the demo is fake content in the UI language; switching re-seeds it.
+  const seed = state.mockSeed;
+  if (state.mode === "mock" && seed && seed.lang !== look.lang) {
+    useMock(seed.reason, seed.bannerAction, seed.sticky);
+    if (!state.kanban.dragging && !state.kanban.detailOpen && state.kanban.board) {
+      state.kanban.board = mockKanban();
+      state.kanban.fingerprint = boardFingerprint(state.kanban.board);
+      paintKanban(state.kanban.board);
+    }
+    if (state.cronOpen) void refreshCron();
+  }
+  if (state.showBotNames) paintOrbNames();
 }
 
 function applySavedLook(settings) {
@@ -11464,7 +11523,7 @@ function botForPanel(id) {
     id,
     name: `${parent.name} / ${label}`,
     color: parent.color,
-    short: Array.from(label)[0] || parent.short || "任",
+    short: Array.from(label)[0] || parent.short || taskGlyph(),
     detail: parent.detail || "",
     status: "",
   };
@@ -11904,7 +11963,7 @@ function paintSuborbTabs(bot, view) {
     tab.setAttribute("aria-label", pinned ? `${label}，已釘住` : label);
     const dot = document.createElement("span");
     dot.className = "suborb-tab-dot";
-    dot.textContent = Array.from(label)[0] || "任";
+    dot.textContent = Array.from(label)[0] || taskGlyph();
     tab.append(dot);
     tab.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -12054,7 +12113,7 @@ function paintSuborbDisc(id, row) {
   const badge = live?.channels?.badge || "";
   if (btn.dataset.badge !== badge) btn.dataset.badge = badge;
   const glyph = btn.querySelector(".orb-glyph");
-  const letter = Array.from(live?.title || "任")[0] || "任";
+  const letter = Array.from(live?.title || taskGlyph())[0] || taskGlyph();
   if (glyph && glyph.textContent !== letter) glyph.textContent = letter;
   const label = live?.title || "任務";
   btn.setAttribute("aria-label", pinned ? `${label}，已釘住` : label);
@@ -13185,6 +13244,7 @@ function commitKanban(board, { seen = false } = {}) {
 }
 
 function mockKanban() {
+  if (look.lang === "en") return demoKanbanEn();
   return {
     board: "",
     columns: [
@@ -13799,6 +13859,7 @@ async function dropKanban(taskId, status) {
 
 function mockCronGroups() {
   if (Array.isArray(state.mockCronOverride)) return state.mockCronOverride.map((group) => normalizeCronGroup(group));
+  if (look.lang === "en") return demoCronEn().map((group) => normalizeCronGroup(group));
   const soon = new Date(Date.now() + 30 * 60 * 1000).toISOString();
   const earlier = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   return [
@@ -14076,7 +14137,8 @@ function paintCron() {
       if (job.running) bits.push("進行中");
       const last = nextRunLabel(job.last_run_at);
       if (last) bits.push(`上次 ${last}`);
-      time.textContent = bits.join(" · ");
+      // R-LK-02: the line is joined from parts, so each part is translated on its own.
+      time.textContent = bits.map((bit) => translate(bit, look.lang)).join(" · ");
       const tag = document.createElement("span");
       tag.className = job.enabled ? "cron-tag is-on" : "cron-tag";
       tag.textContent = job.enabled ? "啟用" : "停用";
@@ -14260,7 +14322,7 @@ function restorePlanRehearsal(shell, saved, stand) {
   stand?.remove();
   if (shell?._rehearsalRestored) return;
   if (shell) shell._rehearsalRestored = 1;
-  if (shell && saved?.rail && shell.parentElement !== saved.rail) saved.rail.append(shell);
+  if (shell && !shell._dropped && saved?.rail && shell.parentElement !== saved.rail) saved.rail.append(shell);
   saved?.host?.remove();
   if (!shell?.isConnected) {
     if (!hitsBlocked()) scheduleHitSync("plan-rehearsal");
@@ -14269,7 +14331,7 @@ function restorePlanRehearsal(shell, saved, stand) {
   const morphOwns = shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing");
   delete shell.dataset.rehearsal;
   delete shell._rehearsalHit;
-  if (saved?.rail && shell.parentElement !== saved.rail) saved.rail.append(shell);
+  if (!shell._dropped && saved?.rail && shell.parentElement !== saved.rail) saved.rail.append(shell);
   // A fade sample written while the rehearsal pinned opacity 1 is the orb's
   // real look. Restoring the pre-rehearsal value left a resting orb solid,
   // because the settled fade does not write again (R-OB-05, R-OB-07).
@@ -14688,7 +14750,7 @@ async function boot() {
       state.suborbPins = pins && typeof pins === "object" ? pins : {};
       reevalSuborbs();
     };
-    useMock("瀏覽器預覽：離線示範。登入同連線只喺桌面版可用。", "settings");
+    useMock(PREVIEW_BANNER, "settings");
     startWatchers();
     if (new URLSearchParams(location.search).has("setup")) {
       state.settings = { needs_setup: true, mode: "mock" };
