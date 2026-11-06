@@ -2,7 +2,7 @@
 
 驗收以根目錄的 REQUIREMENTS.md 為準。同本檔衝突時，以 REQUIREMENTS.md 為準。本檔只記實作細節。之後每一次改動都要重核 REQUIREMENTS.md §1–§11，再逐條核對受影響的本檔條文。與 README、註解或較早說明衝突、而且 REQUIREMENTS.md 冇覆蓋時，以本檔為準。
 
-條文用「必須／不得」寫成可觀察的結果。UI 字串維持繁體中文（zh-HK）。英文只用於程式、協定與專有名詞。
+條文用「必須／不得」寫成可觀察的結果。UI 字串預設繁體中文（zh-HK）；設定可以揀 English（R-LK-02，逐句對照表，Hermes 資料唔譯）。除此之外英文只用於程式、協定與專有名詞。
 
 預設修飾鍵是 Ctrl，可在設定改成 Shift 或 Alt。下面寫 Ctrl 的地方，若設定改了修飾鍵，就改指那個鍵。透明度百分比的預設是 18%（設定範圍 5–60），下面稱作靜止透明度。光球在游標不近時是不透明（1），不是靜止透明度。靜止透明度用在面板按住修飾鍵時，以及光球游標進入近距（命中圓外 72px，`ORB_PROXIMITY_PX`）時的下限，而且那個下限不得高過 30%。
 
@@ -16,7 +16,7 @@
 4. 右鍵「隱藏呢個 Bot」只在按住修飾鍵、而且游標在該 Bot 光球上時出現。未按住修飾鍵時，右鍵不得打開這個選單。
 5. 隱藏選單是面板：修飾鍵仍按住時它跟其他面板一樣穿透；放開修飾鍵後才可以點「隱藏呢個 Bot」。
 6. 面板（Bot 面板、設定、看板、排程，以及貼在 Bot 面板旁的計劃視窗）在未按住修飾鍵時必須不透明（透明度 1）、可點、可操作。游標移近或移過面板不得讓它變淡。計劃視窗沒有自己的命中 id，它的範圍併入該 Bot 面板的命中矩形。面板打開期間，該矩形必須一直留在作業系統的命中區，不得等 hover 或 mousemove 輪詢先取消穿透。游標剛到達輸入列、「關閉計劃視窗」或面板內其他控制的第一次按下必須生效。已經聚焦嘅輸入框不得因為修飾鍵按下或放開而 blur，亦不得重建那個 input。放開修飾鍵之後打出嘅第一個字必須進入仍然聚焦嘅輸入框。Bot 仍在回覆（停止掣可見）時打開面板，面板剪裁同計劃接縫未完嗰陣打出嘅字必須進入嗰個輸入列並留喺度，等回覆完再送。串流更新、焦點交還、或者按下打中停止掣，都不得吞走呢啲字。Busy 仍然只係阻止送出非 `/stop` 嘅訊息，不得清走輸入列。
-7. 按住修飾鍵、而且游標位置已知時，所有面板必須降到靜止透明度並穿透，關閉按鈕一併穿透。作業系統 input shape 這時只包含光球，以及游標下面嘅預覽膠囊，不得包含面板矩形或 `close:`。放開修飾鍵後恢復不透明與可操作，面板矩形同關閉按鈕（連同周圍約 36px）回到命中區，第一次按下就關閉該面板。光球不得因為面板打開而變成未按修飾鍵也可點。任何 hit flush 或 input shape 公佈都要跟住而家嘅修飾鍵：修飾鍵按住而且游標喺光球或預覽膠囊上時，必須保留或重算嗰個矩形，不得公佈 n=0。指標已經按下期間亦不得清走現有命中區。呢條適用於每一條 flush，包括看板膠囊 settle 之後嗰下。權威係 Rust 嘅系統鍵監測（同驅動 Ctrl n=1 嗰個 `device_query`），唔係網頁 keydown。網頁喺穿透視窗未聚焦時撳落嘅 Ctrl 唔會有 keydown，頁面報 `ctrl=0` 都不得清走 Rust 已經睇到嘅鍵態。游標喺已公佈嘅光球或預覽膠囊上時，即使有面板蓋住，input shape 都要留住嗰個矩形。真實鍵態要交返俾頁面。滑鼠鍵同樣由 `device_query` 讀。按下如果係喺修飾鍵按住、游標喺光球上開始，就要把當時的 input shape 鎖到放開為止，期間的重新公佈不得改形狀。重新公佈時用同 n=1 一樣的 CSS 座標打新矩形；游標樣本缺失就沿用上次打中的座標。游標仍然喺上一份形狀的光球或預覽膠囊裡面時，不得公佈 n=0。設定 `HERMES_OVERLAY_DEBUG_LOG` 時，打不中或者鎖住形狀要寫 `hit-shape`（游標、候選矩形、原因）。Ctrl+光球的打開由 pointerup 開始：pointerdown 用 `setPointerCapture` 記住光球 id，不得等同一個元素的 DOM `click`。按下已被 Rust 鎖住形狀時，用 Rust 鎖住的光球 id。指標按下期間，以及距上次 pointerdown 約 300ms 內，不得開始計劃彩排，亦不得重畫光球 DOM；pointerdown 會中止進行中的彩排並延後。真實計劃接縫期間不得開始彩排，重疊的 hit flush 亦要延後。同一份記錄寫 `pointer`（phase、目標、光球 id、pointerdown 當下嘅修飾鍵）。pointerup 打開要係按下開始時修飾鍵已經按住：Rust 喺 hit check 見到 Ctrl 加按下就鎖住嗰粒光球 id，頁面遲啲先處理 pointerdown 都要跟呢個鎖，唔好改睇而家嘅鍵。DOM 嘅 ctrlKey 同樣算數。之後先至推到嘅鍵態不得取消一個開始時按住修飾鍵嘅按下。按下開始時修飾鍵已經放開（包括剛放開嗰一下）就不得打開。複製貼上組合唔算按住。系統輸入唔支援時（瀏覽器預覽）維持可以打開。修飾鍵按下或放開要由 `device_query` 監測即時推去頁面，不得等 morph、收回、彩排或 hit flush。面板（連同計劃）嘅透明要直接寫喺已經合成嘅殼上（inline opacity，計劃層維持 1，免得兩層相乘），冇 transition，唔好靠成棵樹繼承嘅自訂屬性，而且要即刻要一幀。放開後一個畫面內返到實色，按下後一個畫面內變淡，不得再閃一幀淡。呢下更新不得重畫 Bot、refresh 或 flush。透明只係按住嗰陣。Ctrl 一直按住穿過打開，打開動畫可以照舊，動畫完結之後第一幀就要套上而家按住嘅透明同穿透，之後嘅寫入不得改返實色。聚焦輸入框嘅 Enter：DOM ctrlKey 就係權威，同系統鍵態用 OR，唔好用 AND。ctrlKey 係 true 就係 Ctrl+Enter，即使系統監測未見到鍵都不得送出。系統鍵態係 true 同樣不得送出。
+7. 按住修飾鍵、而且游標位置已知時，所有面板必須降到靜止透明度並穿透，關閉按鈕一併穿透。作業系統 input shape 這時只包含光球，以及游標下面嘅預覽膠囊，不得包含面板矩形或 `close:`。放開修飾鍵後恢復不透明與可操作，面板矩形同關閉按鈕（連同周圍約 36px）回到命中區，第一次按下就關閉該面板。光球不得因為面板打開而變成未按修飾鍵也可點。任何 hit flush 或 input shape 公佈都要跟住而家嘅修飾鍵：修飾鍵按住而且游標喺光球或預覽膠囊上時，必須保留或重算嗰個矩形，不得公佈 n=0。指標已經按下期間亦不得清走現有命中區。呢條適用於每一條 flush，包括看板膠囊 settle 之後嗰下。權威係 Rust 嘅系統鍵監測（同驅動 Ctrl n=1 嗰個 `device_query`），唔係網頁 keydown。網頁喺穿透視窗未聚焦時撳落嘅 Ctrl 唔會有 keydown，頁面報 `ctrl=0` 都不得清走 Rust 已經睇到嘅鍵態。游標喺已公佈嘅光球或預覽膠囊上時，即使有面板蓋住，input shape 都要留住嗰個矩形。真實鍵態要交返俾頁面。滑鼠鍵同樣由 `device_query` 讀。按下如果係喺修飾鍵按住、游標喺光球上開始，就要把當時的 input shape 鎖到放開為止，期間的重新公佈不得改形狀。重新公佈時用同 n=1 一樣的 CSS 座標打新矩形；游標樣本缺失就沿用上次打中的座標。游標仍然喺上一份形狀的光球或預覽膠囊裡面時，不得公佈 n=0。設定 `HERMES_OVERLAY_DEBUG_LOG` 時，打不中或者鎖住形狀要寫 `hit-shape`（游標、候選矩形、原因）。Ctrl+光球的打開由 pointerup 開始：pointerdown 用 `setPointerCapture` 記住光球 id，不得等同一個元素的 DOM `click`。按下已被 Rust 鎖住形狀時，用 Rust 鎖住的光球 id。指標按下期間，以及距上次 pointerdown 約 300ms 內，不得開始計劃彩排，亦不得重畫光球 DOM；pointerdown 會中止進行中的彩排並延後。真實計劃接縫期間不得開始彩排，重疊的 hit flush 亦要延後。同一份記錄寫 `pointer`（phase、目標、光球 id、pointerdown 當下嘅修飾鍵）。pointerup 打開要係按下開始時修飾鍵已經按住：Rust 喺 hit check 見到 Ctrl 加按下就鎖住嗰粒光球 id，頁面遲啲先處理 pointerdown 都要跟呢個鎖，唔好改睇而家嘅鍵。DOM 嘅 ctrlKey 同樣算數。之後先至推到嘅鍵態不得取消一個開始時按住修飾鍵嘅按下。按下開始時修飾鍵已經放開（包括剛放開嗰一下）就不得打開。複製貼上組合唔算按住。系統輸入唔支援時（瀏覽器預覽）維持可以打開。修飾鍵按下或放開要由 `device_query` 監測即時推去頁面，不得等 morph、收回、彩排或 hit flush。面板（連同計劃）嘅透明要直接寫喺已經合成嘅殼上（inline opacity；仲喺殼入面嘅計劃層維持 1，免得兩層相乘；已經搬出殼外（`plan-hit-host`）嘅計劃寫同殼一樣嘅數，揸住修飾鍵時同主面板一齊淡，放手一齊返平時透明度，Devon 2026-11-02），冇 transition，唔好靠成棵樹繼承嘅自訂屬性，而且要即刻要一幀。放開後一個畫面內返到實色，按下後一個畫面內變淡，不得再閃一幀淡。呢下更新不得重畫 Bot、refresh 或 flush。透明只係按住嗰陣。Ctrl 一直按住穿過打開，打開動畫可以照舊，動畫完結之後第一幀就要套上而家按住嘅透明同穿透，之後嘅寫入不得改返實色。聚焦輸入框嘅 Enter：DOM ctrlKey 就係權威，同系統鍵態用 OR，唔好用 AND。ctrlKey 係 true 就係 Ctrl+Enter，即使系統監測未見到鍵都不得送出。系統鍵態係 true 同樣不得送出。
 8. 訊息預覽是膠囊，不是獨立 toast。它在未按住修飾鍵時必須不透明（透明度 1）而且滑鼠穿透。只有按住修飾鍵、而且游標在該膠囊上時才可點，並可以繼續展開成面板。
 9. 在其他程式或本程式輸入框按 Ctrl+C 或 Ctrl+V 時，光球與面板的透明度與穿透不得改變，也不得閃一下。這包括 C／V 先放開、Ctrl 仍按住的整段尾巴。單獨按住 Ctrl 必須在 100ms 內進入第 2 與第 7 條的互動狀態。修飾鍵若改成 Shift 或 Alt，Ctrl+C／Ctrl+V 不適用這條約束。
 10. 面板必須能在視窗內拖移：拖標題列改變該面板的 `left`／`top`。不得改成拖動整個作業系統視窗。拖移中途游標離開原矩形，拖移仍須完成。拖移只移動打開中的面板。收回成光球時必須丟掉這次拖移位置，光球回到原本的邊緣錨點，不得留在畫面中間。
@@ -41,22 +41,22 @@
 
 ## 3. 設定光球與 Bot 面板
 
-1. 必須有一粒獨立的設定光球。它開啟的面板才放 Hermes gateway、dashboard、名單、API 金鑰、修飾鍵、置頂與結束程式。
+1. 必須有一粒獨立的設定光球。它開啟的面板才放 Kanban server（Hermes Dashboard 地址）與登入、dashboard 匯入、名單、修飾鍵、置頂與結束程式。設定沒有 Gateway 位址、每個 Bot 的專用位址或 API 金鑰欄，也沒有示範開關（R-AR-05、R-AR-06）。示範模式只用啟動參數 `--demo`（或 `HERMES_OVERLAY_DEMO=1`）。
 2. Bot 面板只編輯該 Bot 的顯示名稱、詳情與 `SOUL.md`。Bot 面板不得出現 gateway 位址或 API 金鑰欄。
 3. Bot 面板的主畫面必須是標題列、session 選擇器、可捲動的訊息列表，以及釘在底部、永遠可見的輸入列。訊息列表必須是 `flex: 1` 且有 `min-height`，滾輪必須能捲動它，高度不得變成 0。顯示名稱、詳情與 `SOUL.md` 放在另一個分頁，不得佔滿 420×560 而把對話或輸入列推出畫面。送出訊息、重新打開面板，以及串流進行中，列表必須留在最新訊息。使用者向上捲離底部後必須停在該處，直到再捲回接近底部才恢復跟隨。另一塊面板打開，或者幾秒後嘅重新排版，不得把仍跟隨底部嘅列表跳去最舊訊息。只有使用者自己嘅捲動先可以離開底部。
 4. `SOUL.md` 路徑：環境變數 `HERMES_HOME` 有非空值就用它，否則用 `$HOME/.hermes`。profile `default` 寫在該目錄根上的 `SOUL.md`；其他 profile 寫在 `profiles/<profile>/SOUL.md`。
 5. profile 名稱只允許 1–64 字元的 ASCII 英數與 `.`、`_`、`-`。不得含 `/`、`\`、`.` 或 `..`。
-6. API 金鑰只放系統鑰匙圈，不得寫入 `config.json`。讀取必須離開 GTK 主線程，大約 3 秒未回應就當鎖定：顯示鑰匙圈錯誤，光球繼續畫，程式仍然可以結束。沒有金鑰唔係錯誤。
+6. 登入資料只放系統鑰匙圈，不得寫入 `config.json`。讀取必須離開 GTK 主線程，大約 3 秒未回應就當鎖定：顯示鑰匙圈錯誤，光球繼續畫，程式仍然可以結束。每個 Bot 的 API 金鑰已不再讀寫（2026-11-03）。舊 `config.json` 的 `gateway_base_url` 與每個 bot 的 `base_url` 照讀、不使用、儲存時原樣寫回。
 
 ## 4. 發現 profile 與隱藏
 
-1. 連上 Hermes（`mode == hermes`）時必須自動發現 profile，並寫入設定。發現來源只有：本機 Hermes home（根目錄有 `config.yaml` 或 `SOUL.md` 則為 `default`；`profiles/` 下合法子目錄為其他 profile）、已儲存 dashboard session token 時的 `GET /api/profiles`（逾時 4 秒，失敗則略過）、以及 gateway `/health` JSON 裡真正帶有 `profiles` 陣列的情況。
+1. 連上 Hermes（`mode == hermes`）時必須自動發現 profile，並寫入設定。發現來源只有：本機 Hermes home（根目錄有 `config.yaml` 或 `SOUL.md` 則為 `default`；`profiles/` 下合法子目錄為其他 profile）、已儲存 dashboard session token 時的 `GET /api/profiles`（逾時 4 秒，失敗則略過）、以及用 Dashboard 登入的 `GET /api/profiles`。全部經 `HermesClient`，只打 9119。不再讀 gateway `/health`（2026-11-03，R-AR-04）。
 2. 不得靠猜測 `GET /p/<id>/health` 來枚舉 profile。本機已發現的 profile 不得因為 gateway health 失敗而被刪掉。
-3. 新發現的 profile 預設顯示為光球。不得自動產生 API 金鑰。只有這次新加入且沒有金鑰的 profile 才提示「未有 API 金鑰，請喺設定填寫。金鑰唔會自動產生。」
-4. 設定名單必須列出已停用的 profile，並有「顯示」勾選。取消顯示後光球消失，列與金鑰都保留。
-5. 右鍵隱藏（見第 1.4 條）等同取消顯示，而且不得從儲存名單刪掉該列，否則鑰匙圈金鑰會被刪掉。
-6. 「移除」才刪除該 profile 的金鑰。之後再次發現會重新出現，但必須重新填金鑰。
-7. 再次發現不得覆蓋使用者已改的顯示名稱、詳情、專用位址或 session。顯示名稱只在空白或仍等於 profile id 時更新；詳情只在空白時更新。Hermes 若提供可解析的顏色，該顏色必須覆蓋既有顏色。
+3. 新發現的 profile 預設顯示為光球。不再有 API 金鑰提示（R-AR-06）。
+4. 設定名單必須列出已停用的 profile，並有「顯示」勾選。取消顯示後光球消失，列保留。
+5. 右鍵隱藏（見第 1.4 條）等同取消顯示，而且不得從儲存名單刪掉該列。
+6. 「移除」刪除該列（以及該 profile 舊有的鑰匙圈金鑰項目，如有）。之後再次發現會重新出現。
+7. 再次發現不得覆蓋使用者已改的顯示名稱、詳情或 session。顯示名稱只在空白或仍等於 profile id 時更新；詳情只在空白時更新。Hermes 若提供可解析的顏色，該顏色必須覆蓋既有顏色。
 
 ## 5. 對話
 
@@ -70,6 +70,7 @@
 6. `/new` 與 `/branch` 寫上 explicit。呢個回合不得立刻被 Bot Chat 蓋掉。收合再打開留喺呢個 explicit session。
 7. 送出時用而家面板開住嘅 session。該 id 回 404 時清掉，再解析已存在的 Bot Chat。沒有 Bot Chat 先至建立；呢個係送出，唔係打開或啟動。建立不可行就保持未有對話，不得改開最新或其他 session。啟動同 `open_bot` 不得呼叫建立。
 8. Overlay 必須輪詢每個已顯示且有金鑰的 profile 的 Bot Chat。新訊息到達後：面板若正開着該 session，訊息必須即時出現在對話，而且不得把面板收成膠囊；光球收起時必須展開預覽膠囊（24 小時 `HH:MM`，約 5 秒）。面板若開着其他 session，新訊息只記在 Bot Chat，不得打亂目前畫面，也不得把面板收成膠囊。
+9. 伺服器結束咗嘅對話（`ended_at` 或 `end_reason`）跟 R-SS-09：唔可以傳、選單標「（已結束）」。Hermes 會自己再開返嘅意外結束（`agent_close`、`ws_orphan_reap`、`superseded_by_resume`、`startup_orphan_reap`）唔算結束，照樣可以傳、冇「（已結束）」。主 Bot Chat 唔標「（隱藏）」或者「（已結束）」。「轉去 Bot Chat」先去呢個 profile 嘅主 Bot Chat。
 
 ## 6. 光球顏色與計劃預覽
 
@@ -91,6 +92,8 @@
 4. Bot 思考中或使用工具時，光球必須持續顯示 spinner。閒置時不得有無限循環的動畫。
 5. 名稱以 `_` 開頭或名為 `reasoning` 的進度只轉 spinner，不另開預覽。
 6. 助手開始串流文字後 spinner 停止。完成、失敗、取消，或 90 秒沒有新事件後，思考狀態必須結束；若回合仍忙，狀態改為等候且不再空轉。
+7. 跟 R-ST-05：送出嘅一句排緊隊等另一部機（手機、Desktop）喺同一個對話行緊嘅一輪時，狀態行顯示「手機嗰邊行緊，排緊隊」，第一個串流事件一到就變返「思考中…」。唔擋、唔取消、唔改停止。
+
 
 ## 8. 看板
 
@@ -98,7 +101,7 @@
 2. 看板資料來自 Hermes 上的 overlay-slash plugin。未安裝時必須顯示「未裝 overlay-slash kanban，看板唔會出現。」不得顯示假任務。瀏覽器預覽可以顯示示範任務。
 3. 欄位順序為 triage、todo、ready、running、blocked、done。`archived` 不得出現。
 4. 無論面板開或收，都必須每 5 秒輪詢。第一次快照只作基準，不得彈出預覽。之後卡片新增、移動或狀態改變，而且看板面板未打開時，必須用第 7 節的膠囊預覽（約 5 秒，未按住修飾鍵時穿透）。一張新增寫「新增：標題」；多張寫「新增 N 張卡片」。一張改狀態寫「標題 → 狀態」；多張寫「N 張卡片改咗狀態」。其他指紋變化寫「看板有更新」。看板面板已經打開時不得再彈膠囊。拖卡片只發生在面板打開時，因此不得因今次拖動再彈一粒。
-5. 拖卡片必須能改任務狀態並寫回。
+5. 拖卡片必須能改任務狀態並寫回。寫回打 Hermes Dashboard 嘅看板 plugin（`PATCH /api/plugins/kanban/tasks/{id}?board=…`，同讀取同一個登入），唔打 gateway；拖去 done 要帶 result／summary 證據；伺服器拒絕就放返張卡、顯示伺服器原因（REQUIREMENTS R-KB-07）。
 6. 看板光球遵守第 1 節的光球規則，看板面板遵守第 1 節的面板規則。菱形光球用第 2 節的同一套變形展開成看板，不得另外做一張飛出的面板。
 
 ## 9. Markdown 與斜線指令
@@ -108,7 +111,7 @@
 3. 原始 HTML、事件處理器與 `javascript:` 連結必須被去掉。
 4. 連結必須用系統瀏覽器打開，不得在 overlay 裡換頁。
 5. 輸入 `/` 必須打開 overlay-slash 的指令選單（`GET /v1/overlay/commands`）。分類按首次出現順序。↑↓ 移動，Tab 補全。沒有參數提示的指令按 Enter 要補全並送出。
-6. `/new`、`/title`、`/branch`、`/model`、`/stop` 由 overlay 處理。其他指令原文送出，由 plugin 改寫。回合進行中仍必須能送 `/stop`。
+6. `/new`、`/title`、`/branch`、`/model`、`/stop` 由 overlay 處理。其他指令：舊 8642 原文送出，由 plugin 改寫；9119 用 `command.dispatch`／`prompt.btw`（見 §13 第 6 點，R-CL-08）。回合進行中仍必須能送 `/stop`。
 7. 歷史裡的 `<!-- overlay-slash: ... -->` 必須顯示成可讀的指令標籤，而不是整段註解。
 
 ## 10. 視覺（美術監督 v20）
@@ -143,3 +146,15 @@
 6. 第一版只供查看，不得在 overlay 開關工作。提示必須是「只供查看。開關留喺 Hermes。」「未有排程」用 `#616191`。
 7. 完全沒有 profile 時顯示「未有排程工作。」某個已顯示 profile 的工作列表是空的時，該組仍要出現，並顯示「未有排程」，不得整組省略。該 profile 沒有排程 API（HTTP 404 或 `cron_unavailable`）時顯示「呢個 Bot 未有排程。」連線失敗不得虛構工作。瀏覽器預覽可以顯示示範工作；已連接的 Hermes 不得。
 8. 面板遵守第 1 節的面板規則。關閉按鈕有第 1.7 條的例外。
+
+## 13. 連線（只行 9119）同架構
+
+0. 架構（R-AR）：Hermes 網絡只經 `HermesClient`（對話、看板讀取同拖卡、登入、profile 名單）；路徑只喺 `client/endpoints.rs`；埠只喺 config 預設；完全冇 8642 呼叫，`gateway_legacy.rs` 已刪（2026-11-03，R-AR-04）。Dashboard 地址係設定「Kanban server」，留空就係 config 預設 `http://127.0.0.1:9119`，唔再由 gateway host 推（R-AR-06）。舊 config 只做一次搬遷：Kanban server 空而有舊 gateway 位址（唔係 `demo`）時，讀 config 就寫入「舊 host + 9119」同標記 `kanban_base_url_from_gateway`，之後唔再搬（R-AR-06）。示範模式只用 `--demo`（R-AR-05）。
+
+1. 對話全部經 Hermes Dashboard（預設 9119）嘅 REST 同 `/api/ws`，由一個 `HermesClient` 負責（R-CL-01）。設定只要 Dashboard 地址同 Dashboard 登入；每個 bot 嘅 API 金鑰唔再需要。
+2. 送出用 `queued: true`，唔打斷手機嗰輪；排隊時顯示「手機嗰邊行緊，排緊隊」（R-CL-02）。
+3. 另一部機嘅一輪即時流入面板，完咗畫返存咗嘅行（R-CL-03）。
+4. 斷線時狀態行寫「連唔到 Hermes Dashboard，等陣自動再試」，自動重連（R-CL-04）。
+5. 每個 session 都可以送（R-CL-05）；批准同澄清經 WebSocket（R-CL-06）；冇 Bot Chat 時第一次送出開一條（R-CL-07）。
+6. 斜線：旁問用 `prompt.btw`（唔入歷史），Plan 同其他指令用 `command.dispatch`，插話用 `session.steer`（R-CL-08）。登入成功即刻重讀開住嘅面板，句子寫「已登入 Hermes Dashboard」。
+7. Session 改動：`/title` 用 `session.title`，封存用 `session.archive`，分支 `session.branch_stored`（只送 `parent_session_id`，標題之後先改）。唔用 `PATCH /api/sessions/{id}`（0.22.5 要 revision fence）。歷史入面 `display_kind: model_switch` 嘅提示行唔顯示。

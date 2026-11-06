@@ -19,6 +19,9 @@ import {
   CLOSED_SESSION_LINE,
   GATEWAY_FORK_TITLE,
   closedSwitchTarget,
+  endReasonRecoverable,
+  RECOVERABLE_END_REASONS,
+  sessionSendClosed,
   isBotChat,
   isClosedSendText,
   isGatewayForkTitle,
@@ -126,10 +129,10 @@ test("Bot Chat is the default even when another session is newer", () => {
   assert.equal(mostRecentBotChat(mixed).id, "desk-chat");
   const deskOpen = resolveSession(mixed, {});
   assert.equal(deskOpen.id, "desk-chat");
-  assert.equal(deskOpen.readOnly, true);
+  assert.equal(deskOpen.readOnly, true); // two "Bot Chat" rows: not a gateway list, source rule stays
   assert.equal(resolveSession(mixed, { id: "tui-chat", explicit: true, anchor: 1 }).id, "tui-chat");
   assert.equal(mostRecentBotChat([tui]).id, "tui-chat");
-  assert.equal(resolveSession([tui], {}).readOnly, true);
+  assert.equal(resolveSession([tui], {}).readOnly, false);
   assert.deepEqual(orderSessions(mixed).map((session) => session.id), ["tui-chat", "desk-chat", "notes"]);
 });
 
@@ -145,7 +148,7 @@ test("Devon Bot Chats: the hidden titled row wins, including an empty one", () =
   }];
   const forest = resolveSession(forex, { id: "saved-other", explicit: true, anchor: 1 });
   assert.equal(forest.id, "20261001_013827_25b1eb");
-  assert.equal(forest.readOnly, true);
+  assert.equal(forest.readOnly, false);
   assert.equal(forest.id, "20261001_013827_25b1eb");
   assert.equal(SESSION_READ_ONLY_REASON, "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢");
 
@@ -252,7 +255,7 @@ test("laptop session check keeps a configured id and an explicit pick", () => {
   }];
   const forest = resolveSession(forex, { id: "20261001_013827_25b1eb", explicit: false, anchor: 1759279107 });
   assert.equal(forest.id, "20261001_013827_25b1eb");
-  assert.equal(forest.readOnly, true);
+  assert.equal(forest.readOnly, false);
   assert.equal(forest.anchor, 1759279107);
   assert.equal(storedPinAfterResolve(
     { id: "20261001_013827_25b1eb", explicit: false, anchor: 1759279107 },
@@ -495,7 +498,7 @@ test("foreign session sources stay readable and permission_denied stays plain", 
     const row = { id: `row-${source || "empty"}`, title: "Bot Chat", source };
     const opened = resolveSession([row], {});
     assert.equal(opened.id, row.id, source);
-    assert.equal(opened.readOnly, true, source);
+    assert.equal(opened.readOnly, source === "", source); // the Bot Chat row itself
     assert.equal(sessionReadOnly(source), true, source);
   }
   for (const source of ["api_server", "API_Server", "bot_room", "Bot_Room"]) {
@@ -545,7 +548,10 @@ test("foreign session sources stay readable and permission_denied stays plain", 
   const rustSend = lib.slice(lib.indexOf("async fn send_chat"), lib.indexOf("fn dispatch_turn"));
   const head = rustSend.slice(0, rustSend.indexOf("status: 404"));
   assert.match(head, /turn_is_permission_denied/);
-  assert.doesNotMatch(head, /ensure_bot_chat|create_session|create_bot_chat/);
+  // R-CL-07: the one allowed creation is the first Bot Chat of a profile that has none.
+  const first = head.slice(head.indexOf("// R-CL-07 first Bot Chat"), head.indexOf("Err(err) => return Err(err)"));
+  assert.match(first, /BOT_CHAT_TITLE && !row\.archived/);
+  assert.doesNotMatch(head.replace(first, ""), /ensure_bot_chat|create_session|create_bot_chat/);
   const rewriteAt = head.indexOf("if target.rewrite");
   assert.ok(rewriteAt > 0);
   assert.doesNotMatch(head.slice(0, rewriteAt), /persist_pin/);
@@ -1536,7 +1542,7 @@ test("the session menu separates desktop, archived, and api Bot Chats", () => {
   assert.equal(sendErrorDraft(closedErrors, "mt-orch", "e969").includes("個 bot 仲忙"), false);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
-  const endedAt = send.indexOf("sessionEnded");
+  const endedAt = send.indexOf("sessionSendClosed");
   const invokeAt = send.indexOf('await invoke("send_chat"');
   assert.ok(endedAt >= 0 && invokeAt > endedAt);
   const failed = main.slice(main.indexOf('if (payload.type === "session.moved")'), main.indexOf("async function sendActive"));
@@ -1836,4 +1842,144 @@ test("an in-flight typed line survives a re-render", () => {
   assert.match(opened, /mergePendingSend/);
   const failedNote = main.slice(main.indexOf("function noteSendFailed"), main.indexOf("function noteReadOnly"));
   assert.ok(failedNote.indexOf("retainOutgoing") >= 0 && failedNote.indexOf("retainOutgoing") < failedNote.indexOf("markUnsentDraft"));
+});
+
+test("S20: our user line read after the run ended is held until the reply, not shown twice", async () => {
+  const sessions = await import("./sessions.js");
+  const user = "v141 B17 clsingle 181707 CLSINGLE";
+  const reply = 'Thinking about CLSINGLE. mock: clarify answer="Rust"';
+  const local = [
+    { role: "bot", text: "older" },
+    { role: "user", text: user },
+    { role: "bot", text: "Thinking about CLSINGLE." },
+    { role: "bot", text: 'mock: clarify answer="Rust"' },
+  ];
+  const ownTurn = { runId: "run_1", userText: user, sentAt: 1, awaitTail: true };
+  // The watcher saw message_count +1: only our user row was stored when it looked.
+  const userTail = [{ role: "user", text: user }];
+  assert.equal(typeof sessions.holdsOwnTurnUser, "function");
+  assert.equal(sessions.holdsOwnTurnUser(userTail, ownTurn), true);
+  let held = sessions.holdWatchedTail(null, userTail);
+  held = sessions.holdWatchedTail(held, [{ role: "bot", text: reply }]);
+  const shown = sessions.releaseHeldWatch(local, held);
+  assert.deepEqual(shown.map((message) => `${message.role}:${message.text}`), ["bot:older", `user:${user}`, `bot:${reply}`]);
+  // Only our own just-finished turn, and only a user-only tail.
+  assert.equal(sessions.holdsOwnTurnUser(userTail, { ...ownTurn, awaitTail: false }), false);
+  assert.equal(sessions.holdsOwnTurnUser([{ role: "user", text: "someone else" }], ownTurn), false);
+  assert.equal(sessions.holdsOwnTurnUser([...userTail, { role: "bot", text: reply }], ownTurn), false);
+  assert.equal(sessions.holdsOwnTurnUser([], ownTurn), false);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const cron = main.slice(main.indexOf("function deliverCron"), main.indexOf("function bannerSticky"));
+  assert.match(cron, /holdsOwnTurnUser\(incoming, thread\.ownTurnTail\)/);
+  assert.ok(cron.indexOf("holdsOwnTurnUser") < cron.indexOf("finishWatchedRows"));
+});
+
+// Devon's mt-orch list, 2 Nov 2026 (bug-ended-pin/probe.mjs). MT5 wrapper was
+// reaped when a Desktop window closed (ws_orphan_reap); Hermes reopens it.
+const MT_ORCH_2NOV = [
+  { id: "api_1793297254_e36fa90f", source: "api_server", title: "MT5 wrapper", ended_at: 1793625320.9, end_reason: "ws_orphan_reap", last_active: 1793625108 },
+  { id: "local-888a", source: "cron", title: "nt01-weekly-keepalive · Oct 28 10:00", ended_at: 1, end_reason: "cron_complete", last_active: 1793584800 },
+  { id: "api_1793099723_0e9584f2", source: "api_server", title: "Bingo/Gemini", last_active: 1793534400 },
+  { id: "api_1793027493_fb267b4d", source: "api_server", title: "time0", last_active: 1793460000 },
+  { id: "api_1793018623_7aa638ec", source: "api_server", title: "MT5 wrapper (舊)", last_active: 1793452680, ended_at: 1, end_reason: "tui_shutdown" },
+  { id: "20261026_203357_7de695", source: "tui", title: "Bot Chat", hidden: true, ended_at: 1793472480, end_reason: "tui_shutdown" },
+  { id: "local-e2dd", source: "oneshot", title: "MT5 wrapper (CLI)", last_active: 1793450000 },
+  { id: "20261023_181919_4e4a4b", source: "tui", title: "", ended_at: 1, end_reason: "tui_shutdown" },
+];
+
+test("R-SS-09.3: a recoverable end reason is not ended, stays sendable, and has no 已結束", () => {
+  assert.deepEqual([...RECOVERABLE_END_REASONS], ["agent_close", "ws_orphan_reap", "superseded_by_resume", "startup_orphan_reap"]);
+  for (const reason of RECOVERABLE_END_REASONS) {
+    const row = { id: reason, title: "MT5 wrapper", source: "api_server", ended_at: 1793625320.9, end_reason: reason };
+    assert.equal(endReasonRecoverable(reason), true);
+    assert.equal(sessionEnded(row), false, reason);
+    // The Rust list may still say ended:true on an older build; the reason wins.
+    assert.equal(sessionEnded({ ...row, ended: true }), false, reason);
+    assert.equal(sessionSendClosed(row, [row]), false, reason);
+    assert.equal(sessionLabel(row, [row]), "MT5 wrapper");
+  }
+  assert.equal(endReasonRecoverable(" WS_ORPHAN_REAP "), true);
+  for (const reason of ["tui_shutdown", "cli_close", "cron_complete", "user_exit", "x"]) {
+    const row = { id: reason, title: "notes", source: "api_server", ended_at: 1, end_reason: reason };
+    assert.equal(endReasonRecoverable(reason), false);
+    assert.equal(sessionEnded(row), true, reason);
+    assert.equal(sessionSendClosed(row, [row]), true, reason);
+    assert.equal(sessionLabel(row, [row]), "notes（已結束）");
+  }
+  assert.equal(sessionEnded({ ended_at: 5 }), true);
+  assert.equal(sessionEnded({ ended: true }), true);
+  const mt5 = MT_ORCH_2NOV[0];
+  assert.equal(sessionSendClosed(mt5, MT_ORCH_2NOV), false);
+  assert.equal(sessionLabel(mt5, MT_ORCH_2NOV), "MT5 wrapper");
+});
+
+test("the main Bot Chat label never shows 隱藏 or 已結束", () => {
+  const bot = MT_ORCH_2NOV[5];
+  assert.equal(sessionLabel(bot, MT_ORCH_2NOV), "Bot Chat");
+  assert.equal(sessionSendClosed(bot, MT_ORCH_2NOV), false);
+  const api = { id: "api_bot", title: "Bot Chat", source: "api_server", hidden: true, end_reason: "cli_close", ended_at: 1 };
+  assert.equal(sessionLabel(api, [api]), "Bot Chat");
+  // Without the list (or with two Bot Chat rows) the old suffixes stay.
+  assert.equal(sessionLabel(bot), "Bot Chat（隱藏／已結束）");
+  const twin = { id: "zz", title: "Bot Chat", source: "api_server", hidden: true };
+  assert.equal(sessionLabel(bot, [bot, twin]), "Bot Chat（隱藏／已結束）");
+  // A Bot Chat from a source Hermes will not reopen still says so.
+  const archived = { id: "old", title: "Bot Chat", source: "api_server", archived: true };
+  assert.equal(sessionLabel(archived, [archived]), "Bot Chat（已封存）");
+  const other = { id: "h", title: "_splitLot", source: "api_server", hidden: true };
+  assert.equal(sessionLabel(other, [other, bot]), "_splitLot（隱藏）");
+  const dom = new JSDOM("<select></select>");
+  const select = dom.window.document.querySelector("select");
+  writeSessionMenu(select, MT_ORCH_2NOV, mt5Id(), { rebuild: true });
+  const labels = [...select.options].map((option) => option.textContent);
+  assert.ok(labels.includes("Bot Chat"));
+  assert.ok(labels.includes("MT5 wrapper"));
+  assert.ok(!labels.some((label) => label.includes("隱藏／已結束")));
+  assert.ok(labels.includes("MT5 wrapper (舊)（已結束）"));
+});
+
+function mt5Id() {
+  return MT_ORCH_2NOV[0].id;
+}
+
+test("closedSwitchTarget picks this profile's live Bot Chat, tui Bot Chat included", () => {
+  // From the tui_shutdown row, not Bingo/Gemini (the old unrelated chat).
+  assert.equal(closedSwitchTarget(MT_ORCH_2NOV, "api_1793018623_7aa638ec")?.id, "20261026_203357_7de695");
+  assert.equal(closedSwitchTarget(MT_ORCH_2NOV, "20261023_181919_4e4a4b")?.id, "20261026_203357_7de695");
+  // Never offers itself, and never a closed or read-only row.
+  const withoutBot = MT_ORCH_2NOV.filter((row) => row.title !== "Bot Chat");
+  const target = closedSwitchTarget(withoutBot, "api_1793018623_7aa638ec");
+  assert.equal(target?.id, "api_1793297254_e36fa90f");
+  assert.equal(closedSwitchTarget(MT_ORCH_2NOV, "20261026_203357_7de695")?.id, "api_1793297254_e36fa90f");
+  // An archived Bot Chat or a second Bot Chat title does not get the exception.
+  const archivedBot = { ...MT_ORCH_2NOV[5], archived: true };
+  const rows = MT_ORCH_2NOV.map((row) => (row.id === archivedBot.id ? archivedBot : row));
+  assert.notEqual(closedSwitchTarget(rows, "api_1793018623_7aa638ec")?.id, archivedBot.id);
+  const twin = { id: "zz", title: "Bot Chat", source: "tui", hidden: true };
+  assert.notEqual(closedSwitchTarget([...MT_ORCH_2NOV, twin], "api_1793018623_7aa638ec")?.title, "Bot Chat");
+  assert.equal(closedSwitchTarget([], "x"), null);
+});
+
+test("the closed-session switch button reads 轉去 Bot Chat", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(main, /switchBtn\.textContent = "轉去 Bot Chat";/);
+  assert.match(html, /data-role="switch" hidden>轉去 Bot Chat<\/button>/);
+  assert.doesNotMatch(main, /轉去新對話/);
+  assert.doesNotMatch(html, /轉去新對話/);
+});
+
+test("R-ST-05: a busy status line from Rust is shown as sent and run.started resets it", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const status = main.slice(main.indexOf('if (payload.type === "status") {'), main.indexOf('if (payload.type === "done") {'));
+  // The waiting line rides the existing status event: its detail is the label, busy stays busy.
+  assert.match(status, /let label = payload\.detail \|\|/);
+  assert.match(status, /payload\.state === "busy" \? "busy"/);
+  assert.match(status, /payload\.run_id && !finishApplies\(thread, payload\.run_id\) && payload\.state !== "busy"/);
+  // Our label is not a 思考中 label, so the own-queue 排隊中 rewrite never swallows it.
+  assert.doesNotMatch("手機嗰邊行緊，排緊隊", /思考中/);
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.match(lib, /TurnEvent::QueueElsewhere\(waiting\)/);
+  const hermes = readFileSync(new URL("../src-tauri/src/hermes.rs", import.meta.url), "utf8");
+  assert.match(hermes, /pub const QUEUE_ELSEWHERE_LINE: &str = "手機嗰邊行緊，排緊隊";/);
 });

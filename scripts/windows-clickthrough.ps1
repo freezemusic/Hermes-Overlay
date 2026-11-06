@@ -9,7 +9,9 @@ $tree = Join-Path $root "window-tree.txt"
 $clickLog = Join-Path $env:TEMP "hermes-behind-clicks.txt"
 $hwndFile = Join-Path $env:TEMP "hermes-behind-hwnd.txt"
 $gwLog = Join-Path $env:TEMP "hermes-fake-gateway.log"
-foreach ($path in @($log, $tree, $clickLog, $hwndFile, $gwLog)) {
+$dashLog = Join-Path $env:TEMP "hermes-fake-dashboard.log"
+$dashErr = Join-Path $env:TEMP "hermes-fake-dashboard.err"
+foreach ($path in @($log, $tree, $clickLog, $hwndFile, $gwLog, $dashLog, $dashErr)) {
   if (Test-Path $path) { Remove-Item $path -Force }
 }
 
@@ -25,11 +27,14 @@ New-Item -ItemType Directory -Force -Path $hermesHome | Out-Null
 $configDir = Join-Path $env:APPDATA "com.freezemusic.hermes-overlay"
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 $utf8 = New-Object System.Text.UTF8Encoding $false
+# The old gateway_base_url and per-bot base_url keys stay in this file on
+# purpose: an old config must still load, and the app must never call them.
 [System.IO.File]::WriteAllText((Join-Path $configDir "config.json"), @'
 {
   "version": 1,
   "gateway_base_url": "http://127.0.0.1:8642",
   "dashboard_base_url": "http://127.0.0.1:9119",
+  "kanban_base_url": "http://127.0.0.1:9119",
   "bots": [{
     "profile": "field",
     "display_name": "Field",
@@ -91,6 +96,22 @@ $gwHandle = $gw.BeginInvoke()
 $deadline = (Get-Date).AddSeconds(10)
 while (-not (Test-Path $gwLog) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
 if (-not (Test-Path $gwLog)) { throw "fake gateway did not start" }
+
+# Chat runs on the Hermes Dashboard (9119) through HermesClient (R-CL-01):
+# REST for sessions and history, one WebSocket for RPC. The 8642 fake above
+# is a tripwire: since 2026-11-03 the app makes no gateway call at all
+# (R-AR-04), so its log must stay at the "listening" line (no-gateway-calls). scripts/ci-fake-dashboard.mjs serves the same
+# Bot Chat with the /plan history, so the field panel hosts the plan window.
+$dashboard = Start-Process -FilePath "node" -ArgumentList @("scripts/ci-fake-dashboard.mjs", "9119", "`"$dashLog`"") `
+  -WorkingDirectory $root -RedirectStandardError $dashErr -WindowStyle Hidden -PassThru
+$deadline = (Get-Date).AddSeconds(15)
+while (-not ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern "^listening " -Quiet)) -and (Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 100
+}
+if (-not ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern "^listening " -Quiet))) {
+  if (Test-Path $dashErr) { Get-Content $dashErr | Write-Host }
+  throw "fake dashboard did not start"
+}
 
 $behindSrc = Join-Path $env:TEMP "HermesBehind.cs"
 $behindExe = Join-Path $env:TEMP "HermesBehind.exe"
@@ -452,6 +473,77 @@ function Assert-Through([string]$label, [int]$x, [int]$y) {
   Note-Ok $label "($x,$y) class=$cls"
 }
 
+# R-CT-05 / SPEC 1.7: while Ctrl is held every panel, its close button and the
+# docked plan pass through; only orbs (and a pill under the cursor) capture.
+# Ctrl is the "reach an orb under a panel" key, not a panel-click key.
+function Assert-ThroughHeld([string]$label, [int]$x, [int]$y) {
+  [ClickProbe]::SetCursorPos($x, $y) | Out-Null
+  [ClickProbe]::Ctrl($true)
+  try {
+    Start-Sleep -Milliseconds 300
+    $hit = [ClickProbe]::HitAt($x, $y)
+    $root = [ClickProbe]::GetAncestor($hit, 2)
+    $cls = [ClickProbe]::ClassName($hit)
+    if ($cls.StartsWith("Chrome_") -or ($root -ne $behindHwnd -and $hit -ne $behindHwnd)) {
+      Dump-Tree
+      Note-Fail $label "Ctrl held: WindowFromPoint ($x,$y) class=$cls hwnd=$hit root=$root expected Behind $behindHwnd"
+      return
+    }
+    $before = Click-Count
+    [ClickProbe]::Click()
+    $limit = (Get-Date).AddMilliseconds(500)
+    do {
+      if ((Click-Count) -gt $before) { break }
+      Start-Sleep -Milliseconds 20
+    } while ((Get-Date) -lt $limit)
+    if ((Click-Count) -le $before) {
+      Dump-Tree
+      Note-Fail $label "Ctrl+click at ($x,$y) did not reach Behind within 500ms class=$cls"
+      return
+    }
+    Note-Ok $label "($x,$y) class=$cls"
+  } finally {
+    [ClickProbe]::Ctrl($false)
+    Start-Sleep -Milliseconds 300
+  }
+}
+
+# R-CT-05 (Devon 2026-11-02): the docked plan is drawn at the panel's held
+# opacity while Ctrl is held, and back at rest after. The app writes a
+# debug-only plan-look line per open plan after each key edge with the drawn
+# (computed) opacity: the plan's own when it is hosted outside the shell,
+# the shell's when it is still inside it.
+# `held` is the armed look: the first key-down edge can still be held=0 (the
+# Ctrl→C lead, R-CT-06), so match the painted look, not only the key.
+function Assert-PlanLook([string]$label, [string]$bot, [int]$down, [int]$before, [double]$lo, [double]$hi) {
+  $pattern = "plan-look down=$down held=$down bot=$bot "
+  if (-not (Wait-Count $pattern $before 4)) {
+    Note-Fail $label "debug log has no new '$pattern' line"
+    return
+  }
+  $line = @(Select-String -Path $log -Pattern $pattern)[-1].Line
+  if ($line -notmatch "hosted=(\d) opacity=([0-9.]+)") {
+    Note-Fail $label "unreadable plan-look line: $line"
+    return
+  }
+  $hosted = $Matches[1]
+  $drawn = [double]::Parse($Matches[2], [System.Globalization.CultureInfo]::InvariantCulture)
+  if ($drawn -lt $lo -or $drawn -gt $hi) {
+    Note-Fail $label "plan drawn at opacity $drawn hosted=$hosted, expected $lo..$hi"
+    return
+  }
+  Note-Ok $label "opacity $drawn hosted=$hosted"
+}
+
+# A point inside the panel or plan that is clear of every orb's 12px hit pad
+# (R-CT-02: Ctrl over an orb must reach the orb, even under a panel).
+function Clear-OfOrbs($p, $orbs) {
+  foreach ($o in $orbs) {
+    if ($p.x -ge ($o.x - 24) -and $p.x -lt ($o.x + $o.w + 24) -and $p.y -ge ($o.y - 24) -and $p.y -lt ($o.y + $o.h + 24)) { return $false }
+  }
+  return $true
+}
+
 function Assert-OnScreen([string]$label, $rect) {
   if (-not $rect) {
     Note-Fail $label "rect missing"
@@ -702,6 +794,39 @@ try {
       } else {
         Note-Ok "plan-close-on-screen" "$($closer.x),$($closer.y)"
       }
+      # Laptop look-test 2 Nov: Ctrl+click on the session picker and 關閉 of a
+      # bot panel with its plan open went to the window behind. That is the
+      # spec (R-CT-05): plain clicks operate panels, Ctrl+click passes through.
+      # Pin both halves with the plan open: Ctrl passes through the panel body
+      # and the plan, and a plain click on the same point of the panel hit rect
+      # (panel:field covers the panel and its docked plan) is captured.
+      $orbs = @(Read-HitRects | Where-Object { $_.id -like "bot:*" })
+      $inPlan = @{ x = [int]($plan.x + $plan.w / 2); y = [int]($plan.y + $plan.h / 2) }
+      $heldPoints = @(@{ name = "plan"; pt = $inPlan })
+      $inPanel = $null
+      if ($fieldRect) {
+        $inPanel = @{ x = [int]($fieldRect.x + 48); y = [int]($fieldRect.y + [Math]::Min(240, [Math]::Max(24, $fieldRect.h - 80))) }
+        $heldPoints = @(@{ name = "panel"; pt = $inPanel }) + $heldPoints
+      }
+      $heldChecked = 0
+      foreach ($p in $heldPoints) {
+        if (-not (Clear-OfOrbs $p.pt $orbs)) { continue }
+        $heldChecked++
+        $downBefore = Count-Log "plan-look down=1 held=1 bot=field "
+        $upBefore = Count-Log "plan-look down=0 held=0 bot=field "
+        Assert-ThroughHeld "ctrl-through-$($p.name)" $p.pt.x $p.pt.y
+        if ($p.name -eq "plan") {
+          # min_opacity 0.18 above, panel rest 1: held = min(0.18, 1).
+          Assert-PlanLook "ctrl-plan-faded" "field" 1 $downBefore 0.0 0.20
+          Assert-PlanLook "ctrl-plan-rest" "field" 0 $upBefore 0.98 1.0
+        }
+      }
+      if ($heldChecked -lt 1) {
+        Note-Fail "ctrl-through" "no panel or plan point clear of the orbs"
+      }
+      if ($inPanel -and (Clear-OfOrbs $inPanel $orbs)) {
+        Assert-Captured "plain-click-panel-with-plan" $inPanel.x $inPanel.y
+      }
       # Kanban's orb sits under the field panel on a 1024px runner.
       # Ctrl+click must reach that orb (R-CT-02), not the window behind.
       # The field plan seam keeps hit flushes deferred, so close:kanban is not
@@ -714,6 +839,19 @@ try {
       } else {
         Note-Ok "ctrl-orb-under-panel-opened" ""
         [ClickProbe]::Ctrl($false)
+        # R-KB-07 / R-AR-04 (todo 37): the kanban panel reads the dashboard
+        # Kanban plugin (9119) through HermesClient, never the gateway proxy.
+        $deadline = (Get-Date).AddSeconds(8)
+        while (-not (Select-String -Path $dashLog -Pattern "^GET /api/plugins/kanban/board$" -Quiet) -and (Get-Date) -lt $deadline) {
+          Start-Sleep -Milliseconds 200
+        }
+        if (-not (Select-String -Path $dashLog -Pattern "^GET /api/plugins/kanban/board$" -Quiet)) {
+          Note-Fail "kanban-on-dashboard" "fake dashboard log has no GET /api/plugins/kanban/board"
+        } elseif (Select-String -Path $gwLog -Pattern "/v1/overlay/kanban" -Quiet) {
+          Note-Fail "kanban-on-dashboard" "the app called the gateway kanban proxy on 8642"
+        } else {
+          Note-Ok "kanban-on-dashboard" "board read on 9119, none on 8642"
+        }
         $kanbanClose = Wait-PanelCloseBox "kanban" 8
         if (-not $kanbanClose) {
           Note-Fail "ctrl-orb-under-panel-closed" "kanban close button was not measured"
@@ -813,6 +951,24 @@ try {
   if ((Test-Path $gwLog) -and (Select-String -Path $gwLog -Pattern "POST /api/sessions" -Quiet)) {
     Note-Fail "gateway" "startup created a session"
   }
+  # R-AR-04: zero requests to the old gateway (8642), not even GET /health.
+  $gwHits = @()
+  if (Test-Path $gwLog) { $gwHits = @(Get-Content $gwLog | Where-Object { $_ -ne "listening" }) }
+  if ($gwHits.Count -gt 0) {
+    Note-Fail "no-gateway-calls" ("8642 got " + $gwHits.Count + " request(s): " + (($gwHits | Select-Object -First 5) -join "; "))
+  } else {
+    Note-Ok "no-gateway-calls" "8642 fake saw no request"
+  }
+  # Same rule on 9119: opening a panel must not make a session (R-CL-07).
+  if ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern "^(POST /api/sessions|RPC session\.create)" -Quiet)) {
+    Note-Fail "dashboard" "startup created a session"
+  }
+  # The field history came from the dashboard, over REST and a live socket.
+  foreach ($want in @("^POST /api/auth/ws-ticket", "^WS open", "^GET /api/sessions/[^/]+/messages")) {
+    if (-not ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern $want -Quiet))) {
+      Note-Fail "dashboard" "fake dashboard log has no $want"
+    }
+  }
   Write-Host "---- click-through samples ----"
   foreach ($line in $script:sampleNotes) { Write-Host $line }
   [Console]::Out.Flush()
@@ -842,4 +998,7 @@ try {
     try { $gw.Stop() } catch {}
     $gw.Dispose()
   }
+  if ($dashboard -and -not $dashboard.HasExited) { Stop-Process -Id $dashboard.Id -Force -ErrorAction SilentlyContinue }
+  if (Test-Path $dashLog) { Copy-Item $dashLog (Join-Path $root "fake-dashboard.log") -Force }
+  if (Test-Path $gwLog) { Copy-Item $gwLog (Join-Path $root "fake-gateway.log") -Force }
 }

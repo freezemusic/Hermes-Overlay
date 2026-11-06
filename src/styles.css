@@ -679,6 +679,46 @@ html, body {
   box-shadow: none;
 }
 
+/* R-CR-05 draft: the job that keeps the red ring. */
+.cron-dot.is-failed { background: #e5484d; }
+.cron-job.is-failed { border-color: rgba(229, 72, 77, .55); }
+.cron-fail {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  font: 400 11px/1.4 var(--font-body);
+  color: #14142b;
+}
+.cron-fail-label {
+  flex: none;
+  color: #c4282d;
+  font-weight: 600;
+}
+.cron-fail-error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.cron-group-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  color: #c4282d;
+  font: 600 11px/1.3 var(--font-body);
+}
+.cron-group-flag::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e5484d;
+}
+
 .cron-arc {
   width: 12px;
   height: 12px;
@@ -1408,12 +1448,23 @@ html, body {
 .bubble.bot code,
 .cmd-chip,
 .kanban-priority {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font: 400 var(--fs-meta)/1.4 var(--font-mono);
   padding: 0 4px;
   background: var(--bot-5);
   border: 1px solid var(--bot-20);
   border-radius: var(--r-xs);
   color: #14142b;
+  cursor: help;
+}
+/* R-KB-11: 12px line icon in front of the number. */
+.kanban-priority-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: #0000f2;
 }
 
 .bubble.bot pre {
@@ -1811,6 +1862,7 @@ html, body {
 .field input,
 .field select,
 .bot-row input {
+  min-width: 0;
   height: 36px;
   padding: 0 var(--sp-3);
   background: rgb(255 255 255 / .96);
@@ -2109,22 +2161,30 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   line-height: 1.4;
 }
 
+/* All eight R-KB-05 columns fit the 960px panel (928px inside its 16px
+   padding): 8 x 112px = 896px. The 140px minimum dates from the six-column
+   board and pushed REVIEW and DONE past the panel edge. A narrower panel
+   (small screen) still scrolls sideways inside the board. */
 .kanban {
+  --kanban-col-min: 112px;
   flex: 1;
   min-height: 0;
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(140px, 1fr);
+  grid-auto-columns: minmax(var(--kanban-col-min), 1fr);
   overflow: auto;
   width: 100%;
 }
+
+.kanban-col { min-width: 0; }
 
 .kanban[hidden] { display: none; }
 
 .kanban-col + .kanban-col { border-left: var(--hair); }
 
 .kanban-col-head {
-  font: 500 var(--fs-hero)/1 var(--font-display);
+  /* 24px keeps SCHEDULED (the longest name) inside a 112px column. */
+  font: 500 24px/1 var(--font-display);
   letter-spacing: 0;
   text-transform: none;
   color: var(--nous-blue);
@@ -2134,6 +2194,19 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   justify-content: space-between;
   align-items: end;
   gap: var(--sp-2);
+  /* Pinned while the board scrolls down; a near-solid fill so cards slide
+   * under it instead of showing through (R-KB-08). */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgb(247 248 248 / .96);
+}
+
+.kanban-col-head > span:not(.kanban-done-chevron) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .kanban-col-head small {
@@ -2153,8 +2226,8 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 }
 
 .kanban-card {
-  margin: var(--sp-2);
-  padding: var(--sp-3);
+  margin: 6px;
+  padding: var(--sp-2);
   background: rgb(255 255 255 / .94);
   border: var(--hair);
   border-left: 2px solid var(--owner, var(--bot));
@@ -2162,6 +2235,194 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   cursor: grab;
   touch-action: none;
   transition: transform var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-out);
+}
+
+/* R-KB-09: notification bell. Orb badge sits on the disc and never grows the hit area. */
+.orb--kanban .kanban-count {
+  display: none;
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  z-index: 4;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: #0000f2;
+  color: #fff;
+  font: 600 10px/16px var(--font-label);
+  text-align: center;
+  pointer-events: none;
+  /* R-KB-12: 1.5px white ring so the badge reads on light wallpaper and on the
+     halo. A shadow, so the 16px box (and the 44px hit disc) does not grow. */
+  box-shadow: 0 0 0 1.5px #fff;
+  width: 16px;
+  padding: 0;
+}
+/* R-KB-12: 9+ is a pill, at most 22px wide. */
+.orb--kanban .kanban-count.is-wide {
+  width: auto;
+  min-width: 20px;
+  max-width: 22px;
+  padding: 0 5px;
+  border-radius: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.orb--kanban.has-count .kanban-count { display: block; }
+.orb--kanban.has-count .unread-dot { display: none; }
+
+.icon-btn.kanban-bell {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+.icon-btn.kanban-bell[aria-expanded="true"] { background: var(--bot-10); }
+.kanban-bell-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  background: #0000f2;
+  color: #fff;
+  font: 600 9px/14px var(--font-label);
+  pointer-events: none;
+}
+.kanban-bell-count[hidden] { display: none; }
+
+.kanban-bell-list {
+  position: absolute;
+  /* main.js sets top / right so the list hangs 6px under the bell (R-KB-10). */
+  top: 64px;
+  right: var(--sp-4);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  width: min(320px, calc(100% - 32px));
+  max-height: min(360px, calc(100% - 80px));
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  background: rgb(255 255 255 / .97);
+  border: 1px solid var(--nous-blue);
+  border-radius: var(--r-sm);
+  box-shadow: var(--glow-sm);
+}
+.kanban-bell-list[hidden] { display: none; }
+/* R-KB-10: 32px head, 看板通知 left, 全部已讀 right. */
+.kanban-bell-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--bot-20);
+}
+.kanban-bell-heading {
+  font: 500 12px/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  color: #0000f2;
+}
+.kanban-bell-readall {
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: #0000f2;
+  font: 500 12px/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.kanban-bell-readall:hover,
+.kanban-bell-readall:focus-visible { background: var(--bot-10); outline: none; }
+.kanban-bell-readall:disabled { color: #616191; cursor: default; background: transparent; }
+/* The rows scroll under the head; 12px bottom padding so the last row is never
+   cut. R-KB-14: while more rows are below, the bottom 48px (one row) fade out.
+   The mask is a two-layer box mask on the scroller itself (WebKitGTK and
+   WebView2/Chromium both paint it in the scroller's border box, not the
+   scrolled content): the fade layer covers all but the right 12px, and a solid
+   layer keeps the right 12px (scrollbar + 4px padding) fully opaque. main.js
+   drops .has-more at the bottom, so the last row is never faded. */
+.kanban-bell-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px 4px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bot-20) transparent;
+}
+.kanban-bell-rows::-webkit-scrollbar { width: 6px; }
+.kanban-bell-rows::-webkit-scrollbar-track { background: transparent; }
+.kanban-bell-rows::-webkit-scrollbar-thumb { background: var(--bot-20); border-radius: 3px; }
+.kanban-bell-rows.has-more {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent), linear-gradient(#000, #000);
+  -webkit-mask-size: calc(100% - 12px) 100%, 12px 100%;
+  -webkit-mask-position: left top, right top;
+  -webkit-mask-repeat: no-repeat;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent), linear-gradient(#000, #000);
+  mask-size: calc(100% - 12px) 100%, 12px 100%;
+  mask-position: left top, right top;
+  mask-repeat: no-repeat;
+}
+.kanban-bell-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  width: 100%;
+  padding: 6px 8px 6px 10px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: #14142b;
+  text-align: left;
+  font: 400 var(--fs-ui)/1.35 var(--font-body);
+  cursor: pointer;
+}
+.kanban-bell-row:hover,
+.kanban-bell-row:focus-visible { background: var(--bot-10); outline: none; }
+.kanban-bell-row.is-unread { border-left-color: #0000f2; }
+.kanban-bell-row.is-unread .kanban-bell-title { font-weight: 600; color: #14142b; }
+.kanban-bell-row.is-read .kanban-bell-title { font-weight: 400; color: #616191; }
+.kanban-bell-row[disabled] { cursor: default; }
+.kanban-bell-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kanban-bell-time,
+.kanban-bell-change {
+  font: 400 var(--fs-meta)/1.4 var(--font-mono);
+  color: #616191;
+}
+/* R-KB-15: the time slot is Chinese + digits, so it uses the body stack (which
+   has Noto Sans HK) at 12px with tabular digits, never the mono stack: IBM Plex
+   Mono has no CJK and the 11px fallback made 「啱啱」 read as 「啫啫」. */
+.kanban-bell-time {
+  font: 400 12px/1.35 var(--font-body);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.kanban-bell-change { grid-column: 1 / -1; }
+.kanban-bell-empty {
+  margin: 0;
+  padding: 12px 8px;
+  font: 400 var(--fs-ui)/1.4 var(--font-body);
+  color: #14142b;
+  text-align: center;
 }
 
 .kanban-card.is-dragging {
@@ -2184,6 +2445,8 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 
 .kanban-meta {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 6px;
   align-items: center;
   color: var(--text-muted);
@@ -2333,6 +2596,14 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 .kanban-detail h2 {
   margin: 8px 0;
   font: 500 var(--fs-hero)/1.15 var(--font-display);
+}
+/* R-KB-13: 12px under 返回, and the card's 2px bar on the left. The button is a
+   block so the gap is not padded by the line box. */
+.kanban-detail .kanban-detail-back { display: block; margin-top: 0; }
+.kanban-detail .kanban-detail-title {
+  margin-top: 12px;
+  padding-left: 10px;
+  border-left: 2px solid var(--owner, var(--bot));
 }
 
 .kanban-detail p,
@@ -2529,11 +2800,20 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   padding: var(--sp-4);
 }
 
+/* R-AD-10: the scrollbar lives in a gutter outside the content. The scroller
+   reaches 12px into the form's 16px right padding (margin-right: -12px) and
+   keeps 18px padding-right: WebKitGTK draws its overlay thumb over the padding
+   about 6px in from the scroller edge, so the thumb still clears the 儲存／SAVE
+   right edge by 12px; a classic (WebView2) scrollbar sits outside the 18px.
+   scrollbar-gutter keeps the width steady when it appears. */
 .settings-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  margin-right: -12px;
+  padding-right: 18px;
 }
 
 .morph {
@@ -3004,6 +3284,13 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 .morph[data-anchor="end"] .center-panel > .panel-header,
 .morph[data-anchor="end"] .settings-head { padding-right: 40px; }
 
+.morph[data-kind="suborb"][data-anchor="end"] .center-panel > .panel-header {
+  padding-right: 64px;
+}
+.morph[data-kind="suborb"][data-anchor="start"] .center-panel > .panel-header {
+  padding-left: 64px;
+}
+
 .morph .plan-window .plan-head {
   flex: 0 1 auto;
   width: 100%;
@@ -3048,10 +3335,24 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 /* The header stays in the visible card. Sticky-inside-the-form put 關閉
    at the bottom of the ~2256px content (y≈2430 on a 1080px screen). */
 .morph[data-header="bottom"] .settings-head {
-  position: static;
+  position: sticky;
+  bottom: 0;
   z-index: 3;
   margin-top: 0;
   background: #f8f8fc;
+  border-top: 1px solid rgb(0 0 242 / .2);
+}
+
+/* R-AD-08: the footer is its own bar. #settings-form does not scroll (overflow
+   hidden, the head is outside .settings-scroll), so sticky here never rides the
+   content; .settings-scroll is the only scroller and its last row (結束／測試／
+   儲存) ends at least 16px above the footer's top border at every text size. */
+.morph[data-header="bottom"] .settings-scroll::after {
+  content: "";
+  display: block;
+  flex: none;
+  /* 16px plus 1px for the sub-pixel scroll end (scrollTop is whole px). */
+  height: 17px;
 }
 
 .morph-body,
@@ -3161,7 +3462,10 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
 
 .bot-row {
   display: grid;
-  grid-template-columns: auto 1.1fr 1.1fr 42px auto;
+  /* minmax(0, …): at 特大字 + English the inputs used to keep their intrinsic
+   * width, the row ran 25px past the form and the sideways scrollbar sat on
+   * top of 儲存 (R-LK-01). */
+  grid-template-columns: auto minmax(0, 1.1fr) minmax(0, 1.1fr) 42px auto;
   gap: 6px;
   align-items: center;
 }
@@ -3174,6 +3478,29 @@ html.overlay-passthrough .morph[data-state="panel"] .morph-orb {
   font: 400 12px/1 var(--font-body);
   letter-spacing: 0;
   text-transform: none;
+}
+
+/* R-AD-09: 「永遠顯示員工名」「顯示工具細節」 rows. The 14px custom checkbox is
+   the R-AD-04 one; the label is body text, not a blue field label. 16px from the
+   paragraph above, 8px between the two rows. The bot-row 「顯示」 keeps .show-toggle. */
+.settings-panel .settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  color: #14142b;
+  font: 400 13px/1.5 var(--font-body);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.settings-panel :not(.settings-toggle) + .settings-toggle { margin-top: 16px; }
+.settings-panel .settings-toggle + .settings-toggle { margin-top: 8px; }
+.settings-panel .settings-toggle input[type="checkbox"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
 }
 
 .bot-row input[type="checkbox"] {
@@ -3515,4 +3842,458 @@ html[data-pass="1"] .plan-hit-host * {
     left: 8%;
     width: min(360px, 70vw);
   }
+}
+
+.morph[data-kind="suborb"] {
+  background: rgba(0, 0, 242, .45);
+}
+.morph[data-kind="suborb"] .morph-fill {
+  background:
+    var(--glass-sheen),
+    var(--glass-tint),
+    linear-gradient(rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    linear-gradient(90deg, rgb(0 0 242 / .025) 1px, transparent 1px) 0 0 / var(--grid-size) var(--grid-size),
+    var(--noise),
+    rgba(248, 248, 252, .92);
+}
+.morph[data-kind="suborb"][data-state="panel"] {
+  filter: drop-shadow(0 6px 24px rgba(0, 0, 242, .12));
+  box-shadow: 0 0 0 1px rgba(0, 0, 242, .45);
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing),
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-fill {
+  background: transparent;
+  box-shadow: none;
+  filter: none;
+  overflow: visible !important;
+  contain: none;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc,
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc::before {
+  overflow: visible !important;
+  contain: none;
+}
+.morph[data-state="panel"]:not(.is-collapsing) {
+  z-index: 6;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) {
+  z-index: 2;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .bot-panel,
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .plan-window,
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-stroke,
+.plan-hit-host:has(> .plan-window[hidden]) {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+.morph[data-kind="suborb"] .bot-btn .bot-hit {
+  inset: 0;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc {
+  width: var(--suborb-size, 20px);
+  height: var(--suborb-size, 20px);
+  left: calc(var(--ax, 22px) - (var(--suborb-size, 20px) / 2));
+  top: calc(var(--ay, 22px) - (var(--suborb-size, 20px) / 2));
+  border-radius: 999px;
+  border: 1px dashed rgb(var(--bot-rgb) / .45);
+  box-sizing: border-box;
+  position: absolute;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc[data-pinned="1"] {
+  border-style: solid;
+}
+.morph[data-kind="suborb"] .spinner { display: none; }
+.suborb-disc.is-running {
+  border-color: rgb(var(--bot-rgb));
+}
+.suborb-disc.is-running::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 1px solid transparent;
+  border-top-color: rgb(var(--bot-rgb));
+  animation: spin 1.2s linear infinite;
+  pointer-events: none;
+}
+.suborb-disc.has-plan .unread-dot {
+  display: block;
+  background: rgb(var(--bot-rgb));
+}
+.suborb-disc.is-failed {
+  box-shadow: inset 0 0 0 1.5px #e5484d;
+}
+.suborb-more {
+  font: 600 11px/1 "Barlow Condensed", sans-serif;
+  color: #14142b;
+}
+.morph[data-kind="suborb"] [data-role="session"],
+.morph[data-kind="suborb"] [data-role="tab-bot"] {
+  display: none;
+}
+/* R-NS-01: panel controls are compact icons with a tooltip, not wide text bars. */
+.chat-head .session-select { flex: 1 1 auto; min-width: 0; }
+.icon-btn.new-session-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font: 500 16px/1 var(--font-label);
+}
+.icon-btn.new-session-btn[aria-expanded="true"] { background: var(--bot-10); }
+/* R-SO-10: one merged session menu. The native select is only the value
+   holder; the trigger keeps its look and the list floats inside the panel. */
+.chat-head { position: relative; }
+.session-select.is-menu-backed { display: none !important; }
+.session-trigger {
+  display: block;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-trigger:disabled { cursor: default; opacity: 0.6; }
+.session-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: #f8f8fc;
+  border: 1px solid rgb(var(--bot-rgb, 0 0 242) / .2);
+  border-radius: 2px;
+  scrollbar-width: thin;
+}
+.session-menu[hidden] { display: none; }
+/* WebKitGTK overlay scrollbars take clicks in the last ~20px of the box
+   (box smoke 2026-11-02: the icon there hit the scroller). Keep the rows
+   clear of it; a classic scrollbar already takes its own width. */
+html.platform-linux .session-menu { padding-right: 22px; }
+/* A column flex item with overflow:hidden has min-height 0; without flex:none
+   a long list squashes every row to its padding and the titles vanish
+   (Devon 2026-11-02). */
+.session-menu-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 0 4px 0 8px;
+  font: 13px/18px "Noto Sans HK", sans-serif;
+  color: #14142b;
+  cursor: pointer;
+  outline: none;
+}
+.session-menu-row[aria-selected="true"] { font-weight: 600; box-shadow: inset 2px 0 0 #0000f2; }
+.session-menu-row:hover, .session-menu-row:focus-visible, .session-menu-row:focus { background: var(--bot-10); }
+.session-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.icon-btn.session-pull-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+}
+.icon-btn.session-pull-btn:focus-visible, .icon-btn.session-pull-btn:focus { outline: 2px solid #0000f2; outline-offset: 1px; }
+.session-menu-empty { flex: none; margin: 0; padding: 4px 8px; font: 12px/18px "Noto Sans HK", sans-serif; color: #14142b; }
+.icon-btn.new-session-btn:focus-visible { outline: 2px solid #0000f2; outline-offset: 1px; }
+.new-session-form {
+  flex: 1 0 100%;
+  display: flex;
+  gap: 8px;
+  margin: 0;
+}
+.new-session-form[hidden] { display: none; }
+.new-session-form input {
+  flex: 1;
+  min-width: 0;
+  font: 13px/1.4 "Noto Sans HK", sans-serif;
+  color: #14142b;
+}
+@media (prefers-reduced-motion: reduce) {
+  .suborb-disc.is-running::after { animation: none; }
+}
+
+/* R-LK-01 / R-LK-02: compact icon buttons with tooltips (R-NS-01 rule), 24px square. */
+.look-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--sp-3);
+  margin-top: 12px;
+}
+/* Buttons sit next to their label, clear of the overlay scrollbar at the right edge. */
+.look-label {
+  min-width: 72px;
+  font: 500 12px/1 var(--font-label);
+  color: #0000f2;
+}
+.look-seg {
+  display: inline-flex;
+  gap: 4px;
+}
+.look-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgb(0 0 242 / .4);
+  border-radius: var(--r-sm);
+  background: rgb(255 255 255 / .94);
+  color: #0000f2;
+  font: 500 12px/1 var(--font-label);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.look-btn:hover { background: var(--bot-10); }
+.look-btn:focus-visible { outline: 2px solid #0000f2; outline-offset: 1px; }
+.look-btn[aria-checked="true"] {
+  background: #0000f2;
+  border-color: #0000f2;
+  color: #fff;
+}
+/* R-LK-03: even 2px steps; the smallest is 12px so it still reads at 24px. */
+.look-size-s span { font-size: 12px; }
+.look-size-m span { font-size: 14px; }
+.look-size-l span { font-size: 16px; }
+.look-size-xl span { font-size: 18px; }
+
+/*
+ * R-LK-01: text size. Standard ("m") has no data-text-size, so none of this applies
+ * and every size above stays exactly as specced. Panel text only: orbs, orb glyphs,
+ * orb names, panel boxes and hit areas keep their px size.
+ */
+html[data-text-size] {
+  --fs-micro: calc(10px * var(--text-scale, 1));
+  --fs-meta: calc(11px * var(--text-scale, 1));
+  --fs-ui: calc(13px * var(--text-scale, 1));
+  --fs-body: calc(14px * var(--text-scale, 1));
+  --fs-title: calc(22px * var(--text-scale, 1));
+  --fs-hero: calc(40px * var(--text-scale, 1));
+}
+
+html[data-text-size] .cron-name { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .cron-time { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .cron-tag { font-size: calc(10px * var(--text-scale, 1)); }
+html[data-text-size] .cron-meta { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .hint { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .plan-chip { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .plan-title { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .plan-toggle { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .plan-close { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .plan-body { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .plan-source { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .plan-body :is(h1, h2, h3, h4) { font-size: calc(14px * var(--text-scale, 1)); }
+html[data-text-size] .plan-body pre { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .session-select { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .bubble.bot pre { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .unsent-mark { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .approval-heading { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .approval-command { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .history-notice-title { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .clarify-heading { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .clarify-timeout { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .conn-banner { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-empty { font-size: calc(22px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-crumb-profile { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-board-pick { font-size: calc(11px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-login .kanban-empty-title { font-size: calc(22px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-empty-help { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .kanban-login-btn { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .hint { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .kanban-server-hint { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .roster-head h3 { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .field { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .bot-row input:not([type="checkbox"]):not([type="color"]) { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel legend { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .show-toggle { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .settings-toggle { font-size: calc(13px * var(--text-scale, 1)); }
+html[data-text-size] .settings-panel .bot-row .key-missing { font-size: calc(12px * var(--text-scale, 1)); }
+html[data-text-size] .session-menu-row { font-size: calc(13px * var(--text-scale, 1)); line-height: calc(18px * var(--text-scale, 1)); }
+html[data-text-size] .session-menu-empty { font-size: calc(12px * var(--text-scale, 1)); line-height: calc(18px * var(--text-scale, 1)); }
+html[data-text-size] .new-session-form input { font-size: calc(13px * var(--text-scale, 1)); }
+
+
+/* Orb labels and the orb-height preview pill keep their px size (R-OB-01, SPEC §2.4). */
+html[data-text-size] .bot-btn .bot-label,
+html[data-text-size] .orb-hover-label { font-size: 10px; }
+html[data-text-size] .morph-pill { font-size: 13px; }
+html[data-text-size] .morph-pill time { font-size: 11px; }
+
+/* ---- R-SO-02 fan draft (2026-11-04): arc toward the screen centre, badge when crowded,
+   title-bar tabs while the parent panel is open. Motion is opacity + transform only,
+   200ms cubic-bezier(.2,.8,.2,1); nothing runs at idle. ---- */
+.morph[data-kind="suborb"][data-state="orb"] .suborb-disc {
+  transition: opacity 200ms cubic-bezier(.2, .8, .2, 1), transform 200ms cubic-bezier(.2, .8, .2, 1);
+}
+.morph[data-kind="suborb"][data-state="orb"][data-fan="collapsed"] .suborb-disc,
+.morph[data-kind="suborb"][data-state="orb"][data-fan="tucked"] .suborb-disc,
+.morph[data-kind="suborb"][data-state="orb"][data-fan="hidden"] .suborb-disc {
+  opacity: 0;
+  transform: scale(.6);
+  pointer-events: none;
+}
+.suborb-disc.suborb-more.is-fan-badge {
+  border-style: solid;
+  background: rgb(var(--bot-rgb) / .14);
+  font: 700 11px/1 "Barlow Condensed", sans-serif;
+  color: var(--bot-ink, rgb(var(--bot-rgb)));
+}
+.suborb-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  margin-right: 8px;
+  min-width: 0;
+}
+.suborb-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.suborb-tab-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  border: 1.5px dashed rgb(var(--bot-rgb));
+  background: rgba(248, 248, 252, .92);
+  color: #14142b;
+  font: 500 9px/1 "Noto Sans HK", sans-serif;
+}
+.suborb-tab[data-pinned="1"] .suborb-tab-dot { border-style: solid; }
+.suborb-tab[data-running="1"] .suborb-tab-dot { border-color: rgb(var(--bot-rgb)); }
+.suborb-tab[data-badge="failed"] .suborb-tab-dot { box-shadow: inset 0 0 0 1.5px #e5484d; }
+.suborb-tab:hover .suborb-tab-dot,
+.suborb-tab:focus-visible .suborb-tab-dot { background: rgb(var(--bot-rgb) / .12); }
+.suborb-tab:focus-visible { outline: 2px solid rgb(var(--bot-rgb) / .6); outline-offset: 1px; }
+.suborb-tab-more {
+  width: auto;
+  min-width: 22px;
+  padding: 0 4px;
+  font: 600 11px/1 "Barlow Condensed", sans-serif;
+  color: var(--bot-ink, rgb(var(--bot-rgb)));
+}
+.morph[data-kind="suborb"] .suborb-tabs { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .morph[data-kind="suborb"][data-state="orb"] .suborb-disc { transition: none; }
+}
+
+/* ---- R-SO-02 fan draft, round 2 (AD 2026-11-04): solid glass discs, one halo ----
+   Sub-orbs drew their own 86px ::before halo (bot-btn::before, inset -34px) and a
+   transparent disc with the white orb-core gradient, so on a cyan bot they melted
+   into one cloud; the 18px display-font glyph with a 4px white text-shadow
+   overflowed the 19.8px disc and read doubled. */
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc::before {
+  content: none;
+  display: none;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc .orb-core {
+  display: none;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc {
+  background: rgba(248, 248, 252, .92);
+  /* 1.5px CSS border (AD r3: no SVG); Chromium/WebView2 may round it to a whole px. */
+  border: 1.5px dashed rgb(var(--bot-rgb));
+  /* r3: static lift so the disc reads on any wallpaper. */
+  box-shadow: 0 1px 2px rgba(20, 20, 43, .18);
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc.is-failed {
+  box-shadow: inset 0 0 0 1.5px #e5484d, 0 1px 2px rgba(20, 20, 43, .18);
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc[data-pinned="1"] {
+  border-style: solid;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc .orb-glyph {
+  font: 500 11px/1 "Noto Sans HK", sans-serif;
+  color: #14142b;
+  text-shadow: none;
+}
+/* Status dot: 6px, 1.5px white ring plus a .5px dark hairline, centred on the disc
+   edge at 45° (top right). r3: an idle sub-orb has no dot; only the reconciled
+   badge (data-badge, R-SO-08 channels) shows one, never the bare thread unread flag. */
+.morph[data-kind="suborb"] .suborb-disc .unread-dot { display: none; }
+.morph[data-kind="suborb"] .suborb-disc[data-badge="unread"] .unread-dot,
+.morph[data-kind="suborb"] .suborb-disc[data-badge="plan"] .unread-dot { display: block; }
+.morph[data-kind="suborb"] .suborb-disc[data-badge="plan"] .unread-dot { background: rgb(var(--bot-rgb)); }
+.morph[data-kind="suborb"] .suborb-disc[data-badge="unread"] .unread-dot { background: var(--nous-yellow); }
+.morph[data-kind="suborb"] .suborb-disc:not([data-badge="waiting"]) .approval-badge { display: none; }
+.morph[data-kind="suborb"][data-state="orb"] .suborb-disc .unread-dot,
+.morph[data-kind="suborb"][data-state="orb"] .suborb-disc .approval-badge {
+  top: calc(50% - var(--suborb-size, 20px) * .35355 - 3px);
+  left: calc(50% + var(--suborb-size, 20px) * .35355 - 3px);
+  right: auto;
+  bottom: auto;
+  width: 6px;
+  height: 6px;
+  box-shadow: 0 0 0 1.5px #fff, 0 0 0 2px rgba(20, 20, 43, .25);
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc.suborb-more {
+  border: 1.5px dashed #616191;
+  font: 600 11px/1 "Barlow Condensed", sans-serif;
+  color: #14142b;
+}
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc.suborb-more.is-fan-badge {
+  /* r3: the crowded badge (「7」) uses the same +N style. */
+  border: 1.5px dashed #616191;
+  background: rgba(248, 248, 252, .92);
+  font: 600 11px/1 "Barlow Condensed", sans-serif;
+  color: #14142b;
+}
+/* The parent keeps the only halo, cut so its rim is where the discs start. */
+.morph-orb.has-fan::before {
+  inset: calc(var(--bot-size, 44px) / 2 - var(--fan-rim, 35px));
+  background: radial-gradient(circle closest-side, rgb(var(--bot-rgb) / .55) 0%, rgb(var(--bot-rgb) / .22) 62%, transparent 100%);
+}
+/* Optional orbit arc: 1px, bot colour at .35 (AD r3), only while Ctrl is held. Never a hit. */
+.suborb-orbit {
+  position: absolute;
+  z-index: 1;
+  overflow: visible;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms cubic-bezier(.2, .8, .2, 1);
+}
+.suborb-orbit path {
+  fill: none;
+  stroke: rgb(var(--bot-rgb) / .35);
+  stroke-width: 1;
+}
+html[data-fan-held="1"] .suborb-orbit { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .suborb-orbit { transition: none; }
 }

@@ -1,4 +1,4 @@
-# Hermes-Overlay 要求同驗收清單（v0.1）
+# Hermes-Overlay 要求同驗收清單（v0.3.0）
 
 > 狀態：**Devon 於 2026-10-21 核准。** 本檔係驗收依據。同 `SPEC.md` 衝突時以本檔為準。`SPEC.md` 只做實作細節。
 > 整理日期：2026-10-21。整合自：Devon 歷來要求（記憶）、repo `SPEC.md`／`AGENTS.md`／`README.md`（branch `cursor/v20-art-director-fixes-ddc6`，head `d8fd9b0`）、PR #3 內文、`DESIGN-REVIEW*.md`、`DESIGN-SPEC.md`、`ORB-REVERT-SPEC.md`、`SUBORB-SPEC.md`、`screens-v84/ad`、`screens-v85/ad`、`laptop-b919b7f/CLICKTHROUGH-DIAG.md`。
@@ -49,9 +49,9 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：收埋時有 pending approval，再開之後張卡喺對話底、輸入框上面。之後用戶自己捲上唔好被拉返底。
 - 狀態：❓ / ❓。
 
-**R-AP-06** Hermes `clarify`（問用戶）出一張卡，同批准卡一齊。小標題「要你答」。同一時間只得一張。有選擇時第一個標「推薦」，送出嘅係選項原文，唔係「推薦」兩個字。冇選擇就係自由文字，空嘅「送出」停用。「跳過」送 `answer: ""`。多選送 JSON array 字串。`stale_generation`（HTTP 409）顯示「呢條問題已經過時」並收起。`clarify.settled` 或 `already_resolved` 收卡。冇 `timeout_s` 就倒數 600 秒；到時顯示「時間到，個 bot 會自己繼續」，唔自動代答。等緊答時狀態係「等你答」；批卡優先於澄清卡。SSE 斷咗或者再開面板，用 `GET /v1/runs/{id}` 嘅 `pending_controls` 補卡，並且同批准卡一樣貼底。面板收埋時澄清卡共用光球 `has-approval` 標記。多選撳「送出」先讀當下勾選。批卡同澄清卡一齊等，狀態係「等緊批准」。補卡之後澄清係「等你答」，有批卡就仍然係「等緊批准」。過時卡收起之後留喺收起，唔再貼返對話底。events 斷線用退避重連，預算大約 60 秒，並且先 GET run 先至顯示連線錯誤；run 仲在或者有未答嘅卡就繼續跟到完結。
+**R-AP-06** Hermes `clarify`（問用戶）出卡，同批准卡一齊。小標題「要你答」。9119／TUI 一批可以有 1–5 條問題（同一個 server request、唔同 `qid`）：每一條各自一張卡，全部保留到答完；唔可以因為新一張卡就刪走同一批入面未答嘅。答完用 `clarify.lock` 逐條鎖；最後一條鎖完先至完結嗰批。有選擇時第一個標「推薦」，送出嘅係選項原文，唔係「推薦」兩個字；另外一定有「其他（自己打）」自由文字，送出嗰句原文。冇選擇就係自由文字，空嘅「送出」停用。「跳過」送 `answer: ""`。多選送 JSON array 字串。已答要喺卡上留低答案原文（「已答：…」），唔可以只寫「已答」就當冇咗。等緊澄清卡時，composer 打字當自由文字答第一張未答嘅卡，唔好改走 steer／排隊以致訊息喺 catch-up 消失。`stale_generation`（HTTP 409）顯示「呢條問題已經過時」並收起。`clarify.settled` 或 `already_resolved` 收卡。冇 `timeout_s` 就倒數 600 秒；到時顯示「時間到，個 bot 會自己繼續」，唔自動代答。等緊答時狀態係「等你答」；批卡優先於澄清卡。SSE 斷咗或者再開面板，用 `GET /v1/runs/{id}` 嘅 `pending_controls` 補卡，並且同批准卡一樣貼底。面板收埋時澄清卡共用光球 `has-approval` 標記。多選撳「送出」先讀當下勾選。批卡同澄清卡一齊等，狀態係「等緊批准」。補卡之後澄清係「等你答」，有批卡就仍然係「等緊批准」。過時卡收起之後留喺收起，唔再貼返對話底。events 斷線用退避重連，預算大約 60 秒，並且先 GET run 先至顯示連線錯誤；run 仲在或者有未答嘅卡就繼續跟到完結。
 - 來源：Devon（2026-10-26，對過 NousResearch hermes-agent v0.22.5 `56b6a31`）。`session_api_turn.py` 嘅 chat sink 只轉發 `approval.request`，`clarify.request` 會掉。澄清只出現喺 `POST /v1/runs` 然後 `GET /v1/runs/{id}/events`（`id:` 係 seq，事件名喺 JSON `event`，唔係 SSE `event:`）。回覆係 `POST /v1/runs/{id}/clarify`，body 剛好 `{request_id, execution_generation, answer}`。`stale_generation` 係 409，唔係 200 嘅 status。`clarify.settled` 只有 `prompt_id` 同 `execution_generation`。`pending_controls` 只喺 admission `started` 先出現。events 斷線唔會停 run；新一次傳送頂走舊 reader 先會對嗰個 run `POST /stop`。用戶自己撳停止仍然只停一次。寫入門檻仍然係 `api_server`／`bot_room`，`permission_denied` 照舊只可以睇。
-- 驗收（盒）：mock gateway 覆蓋單選、多選、自由文字、跳過、過時、settled、逾時、SSE 重連同 `pending_controls` 恢復。唔自動批准、唔自動代答。
+- 驗收（盒）：mock gateway 覆蓋單選、多選、自由文字、跳過、過時、settled、逾時、SSE 重連同 `pending_controls` 恢復。一批三條問題要同時出三張卡，答第一張唔刪第二、第三；「其他」同 composer 自由文字答完卡上見到答案原文。唔自動批准、唔自動代答。
 - 狀態：❓ / ✅(單元測試)；Win 未再驗。
 
 ---
@@ -63,9 +63,9 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：mock gateway 見到 `POST /p/mt-coder/v1/runs/{活躍 run_id}/stop`、冇 body；已完結 id 嘅 409 之後會打去活躍 id；409 本身唔顯示「已停止」；使用者停止唔會設 reader abort。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
-**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就喺對話顯示「已加入呢一輪」，唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常嗰條傳送（`POST /v1/runs`，舊 gateway 冇呢條先至 `POST /api/sessions/{id}/chat/stream`）。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。有句排住喺度，狀態行顯示「排隊中」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 只有忙碌或者租約衝突（`session_active_turn`、`queue_full`、`admission_started`、`busy`，或者 code 含 `lease`）先顯示「個 bot 仲忙，呢句未送出。」。已關閉或者分叉嘅 409 見 R-SS-09。
-- 來源：Devon（2026-10-26）。真用：訊息排咗 admission seq 8，約一分鐘後先答，畫面冇排隊狀態。
-- 驗收（盒）：steer 路徑同 body 只有 `input`；409 變排隊句；忙碌發送唔再係直接 `return`。
+**R-ST-02** 忙碌時送出嘅字，先 `POST /p/{profile}/v1/runs/{run_id}/steer`，body 只有 `{"input":"..."}`（`api_server.py:87`，handler `api_server_runs.py:1398`；`message`／`text` gateway 都收，overlay 只送 `input`）。成功就只保留用戶氣泡（同 Hermes Desktop 一樣：`session.redirect`／composer mid-turn 插一句真實 user message，唔加 system／commentary 標籤例如「已加入呢一輪」），唔開第二條串流。409（`run_not_accepting_steer` 或 `steer_not_accepted`）就改送平常嗰條傳送（`POST /v1/runs`，舊 gateway 冇呢條先至 `POST /api/sessions/{id}/chat/stream`）。Gateway 會排隊，唔會打斷手上嗰輪（`busy_input_mode: interrupt` 只適用 Telegram／Discord）。對話顯示「排隊中，等佢講完就會行」。有句排住喺度，狀態行顯示「排隊中」。`sendActive` 唔可以靜默返回。Steer 或排隊之後，後續串流繼續寫入原本嗰個 live bot 氣泡，唔好喺呢句兩邊各開一個氣泡。嗰輪完結（live 清走）之後先開下一輪嘅新氣泡。Chat HTTP 409 只有忙碌或者租約衝突（`session_active_turn`、`queue_full`、`admission_started`、`busy`，或者 code 含 `lease`）先顯示「個 bot 仲忙，呢句未送出。」。已關閉或者分叉嘅 409 見 R-SS-09。
+- 來源：Devon（2026-10-26；2026-11-06 要求唔要「已加入呢一輪」，跟 Hermes Desktop）。真用：訊息排咗 admission seq 8，約一分鐘後先答，畫面冇排隊狀態。Desktop 證據：`apps/desktop/src/app/session/hooks/use-prompt-actions/index.ts` redirectPrompt「record it once as a real user message … rather than a system note」；composer busy 文字走 steer／redirect，transcript 只有 user bubble。
+- 驗收（盒）：steer 路徑同 body 只有 `input`；成功 steer 對話有用戶氣泡、**冇**「已加入呢一輪」commentary；409 變排隊句「排隊中，等佢講完就會行」；忙碌發送唔再係直接 `return`。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
 **R-ST-04** Bot 回覆進行中，可以轉去同一個 Bot 嘅另一個 session，亦可以打開另一個 Bot。手上嗰輪繼續喺伺服器行，唔好切斷 SSE，唔好打 `/stop`。原 session 嘅回覆繼續收，返去先顯示。光球保持忙碌。唔好出「停咗先至轉對話」呢類冇下一步嘅提示。真正停止之後，忙碌清除，轉對話即刻可以。
@@ -77,6 +77,13 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：Devon（2026-10-26）。本地停止令 overlay 唔再聽，seq 8 嘅回覆後來先寫入 session。
 - 驗收（盒）：已載入嘅面板再開會補讀；`watchReply` 喺忙碌時仍會合併未見訊息；補讀唔把忙碌中嘅狀態強制改做閒置，除非補到一條完成嘅回覆而且冇直播氣泡。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
+
+**R-ST-05** 送出之後，如果呢句排緊隊等另一部機（手機、Desktop，經 9119 `hermes serve`）喺同一個對話行緊嘅一輪，面板狀態行顯示「手機嗰邊行緊，排緊隊」，一開始串流（第一個事件：字、工具、批准、澄清，或者結束）就清走，變返「思考中…」。唔好擋住、取消或者重送呢句；停止掣同 R-ST-01 一樣。唔加對話行，唔寫 config.json。
+1. 點樣知：Hermes 0.22.5 `POST /v1/runs` 照樣 202；另一個 process 揸住 turn lease 時（`agent/turn_facade_lease.py` `_on_wait`，嗰句「Another Hermes process is using this session」只印喺 gateway console，唔入 `/v1/runs` 串流），`GET /v1/runs/{id}` 係 `running`、事件串流只有 keepalive，而且我哋嗰句未寫入對話；最新一條 user 訊息係另一部機嘅。Overlay 喺 202 之後約 2.5 秒、之後每 3 秒，未有任何串流事件就讀 `GET /v1/runs/{id}` 同 `GET /api/sessions/{id}/messages?order=latest&limit=6`：狀態係 `running`／`started` 而且最新 user 訊息唔係我哋送嘅字，就顯示；最新 user 訊息變返我哋嗰句（已開始），或者有串流事件，就清走並停止讀。
+2. 唔係呢種情況就唔顯示：我哋自己上一句仲行緊（overlay 自己排隊，R-ST-02，送出時 `queue`），或者 gateway 話 `queued`（同一條 8642 FIFO，例如另一個 API client），或者讀唔到。旁問（`/btw`）唔讀。主面板同子光球都適用。
+- 來源：Devon（2026-11-02，揀 plan-9119 §6 A）。盒 x7（0.22.5 tag，gateway 18642 + `serve --isolated` 19119）：9119 長回覆行緊時 8642 送出，等咗約 170 秒先開始，期間 `running`、只有 keepalive、尾行係 9119 嗰句；8642 自己排隊時 `GET` 係 `queued`。
+- 驗收（盒）：mock 同真 0.22.5 嘅次序一樣：另一部機嘅一輪行緊時送出，約 3 秒內狀態行變「手機嗰邊行緊，排緊隊」，冇關閉橫額、輸入同停止掣照常；佢講完、我哋嗰句開始串流，狀態變返「思考中…」，回覆喺同一個氣泡，最後「閒置」。自己上一句未講完再送：仲係「排隊中」，唔出手機句。普通送出（冇其他人）：唔出手機句。
+- 狀態：❓ / ✅(盒，單元測試)；Win 未驗。
 
 ---
 
@@ -98,14 +105,14 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（兩邊）：Ctrl+撳光球 → 開該面板；Ctrl 唔放，撳隔籬空位 → 後面收到；放 Ctrl 後再撳光球 → 後面收到。按 Ctrl 後 ≥10ms 先撳，16 次要 16 次中（0ms 競賽另計，見衝突 C-12）。
 - 狀態：❓(Win) / ❓(Win)。盒：b919 ⚠️ 14/16、15/16（失敗全部係 0ms 競賽，≥10ms 24/24）。
 
-**R-CT-04** 面板（Bot 面板、設定、看板、排程、貼住嘅計劃視窗）預設**實色、可以撳、可以操作**；游標行近唔會令佢變淡。
+**R-CT-04** 面板（Bot 面板、設定、看板、排程、貼住嘅計劃視窗）預設**實色、可以撳、可以操作**；游標行近唔會令佢變淡。「實色」係預設；用戶揀咗「面板平時透明度」就跟 R-CT-11，可以撳、可以操作唔變（2026-10-30）。
 - 來源：Devon Ctrl 規則；SPEC §1.6。
 - 驗收（兩邊）：唔撳 Ctrl，游標剛到就撳輸入列／關閉／計劃 ✕，第一下就生效；hover 過面板，透明度量度唔變。
 - 狀態：❓ / ❓(Win)。盒 b919：輸入列、關閉 ✅；計劃掣 ❌（見 R-PL-05）。
 
-**R-CT-05** 揸住 Ctrl 嗰陣，所有面板（連關閉掣同計劃視窗）變透明而且穿透；放手一幀內返實色、可操作。
-- 來源：Devon Ctrl 規則；SPEC §1.7。
-- 驗收（兩邊）：Ctrl 揸住，喺面板內文、關閉掣、計劃 ✕ 撳 → 後面視窗收到，面板冇反應；放手後 1 幀內實色（30fps 錄影，冇中間格、冇閃）。
+**R-CT-05** 揸住 Ctrl 嗰陣，所有面板（連關閉掣同計劃視窗）變透明而且穿透；放手一幀內返實色、可操作。透明度係 `interaction.min_opacity`（存嘅係「幾實」，預設 0.25，範圍 0.05–0.60）；設定表單用「數字愈大愈透」顯示佢（見 R-CT-12）。揸住時永遠唔會實過平時（取 `min(min_opacity, 面板平時不透明度)`）。「放手返實色」即係返去 R-CT-11 嘅平時透明度（預設實色）。貼住面板嘅計劃視窗，包括已經搬出殼外嘅（`plan-hit-host`），揸住 Ctrl 時同主面板一齊變到同一個透明度，放手一齊返平時透明度。舊句「已經搬出殼外嘅計劃同今日一樣唔跟 Ctrl 變，只跟 R-CT-11 平時透明度」**已取代**（Devon 2026-11-02 21:21 倫敦：計劃實色但撳落去穿透，睇落似 bug）。
+- 來源：Devon Ctrl 規則；SPEC §1.7；Devon 2026-11-02 21:21（計劃跟面板一齊淡）。
+- 驗收（兩邊）：Ctrl 揸住，喺面板內文、關閉掣、計劃 ✕ 撳 → 後面視窗收到，面板冇反應；計劃視窗同主面板畫成同一個透明度（debug log `plan-look down=1 held=1 … hosted=1 opacity=` 等於 `min(min_opacity, 平時)`）；放手後 1 幀內實色（30fps 錄影，冇中間格、冇閃），冇揸 Ctrl 撳計劃仍然係 overlay 收。
 - 狀態：❓ / ❓(Win)。盒 b919 ✅（0 個 pointer event）。
 
 **R-CT-06** 喺其他程式或者 overlay 輸入框撳 Ctrl+C／Ctrl+V，光球同面板嘅透明度同穿透**完全唔變、唔閃**，包括 C／V 放咗、Ctrl 仲揸住嗰段。
@@ -130,6 +137,13 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：SPEC §1.12、§2.6。
 - 驗收（兩邊）：啟動錄影第一個可見幀光球已經喺最終位置；冇 1280×800 置中窗；R-CT-01 喺啟動後 0.5s 已經過。
 - 狀態：❓ / ⚠️（盒過；Windows 穿透唔過，懷疑同隱藏啟動有關，見 C-08）。
+
+**R-CT-11** 面板平時透明度（Devon 2026-10-30）。冇揸 Ctrl 時，所有打開嘅面板（Bot 面板、子光球面闆、設定、看板、排程，同搬出殼外嘅計劃）用同一個透明度。值係 config.json `interaction.panel_rest_transparency`，0 = 實色，數字愈大愈透，範圍 0–0.80。預設 0，即係同今日一樣實色；值係 0 時唔寫出呢個鍵，舊檔冇呢個鍵照樣載入、唔改檔；只有用戶喺設定撳「儲存」先寫檔。上限 80%：面板最少 20% 不透明，字仲睇得到。檔案入面超出範圍嘅值夾返去 0–0.80；唔係數字當 0。只改畫面：命中、焦點、可以撳同穿透全部唔變（R-CT-01、R-CT-04）；冇揸 Ctrl 撳面板照樣收到。揸住 Ctrl 跟 R-CT-05。關閉掣、訊息預覽膠囊、通知仍然實色。
+- 驗收（盒）：0% 時面板 computed opacity 1；40% 時 0.6；80% 時 0.2；Ctrl 揸住係 `min(min_opacity, 平時)`；冇 Ctrl 撳面板 → overlay 收到、後面冇收到；Ctrl 揸住撳面板 → 後面收到。舊檔啟動後 config.json 位元組唔變。
+- 狀態：❓ / ❓（單元測試 + 盒）。
+
+**R-CT-12** 設定入面三個透明度欄用同一個讀法：「透明度（%），數字愈大愈透」，0 = 實色（Devon 2026-10-30：佢將「透明度」讀成數字大 = 更透）。三個欄：「光球平時透明度（%），數字愈大愈透」0–80（R-OB-07）；「面板平時透明度（%），數字愈大愈透」0–80（R-CT-11）；「揸住 Ctrl 時面板透明度（%），數字愈大愈透」40–95（即係 `100 − min_opacity×100`，檔案仍然存 `min_opacity`，唔改鍵、唔搬資料；Devon 而家嘅 0.6 顯示做 40）。舊字「按住修飾鍵時面板透明度（%），亦係光球平時嘅透明度」**已取代**：光球平時自 R-OB-05 起係實色，佢寫錯咗。下面加一句提示：0 係實色；平時最多 80%；游標行近光球會再淡（最少 70% 透）；揸住 Ctrl 返實色可以撳。儲存保留 `fade_enabled`、`fade_distance`（R-OB-05），表單冇嗰兩個新欄（舊前端）就保留檔案原本嘅值。
+- 狀態：❓ / ❓（單元測試 + 盒）。
 
 ---
 
@@ -183,7 +197,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：Devon／美術監督 PR3c 應改 #3。驗收（盒）：四邊截圖 header 都係「計劃」。狀態：❓ / ✅(盒，6904645 起)。
 
 **R-PL-04** 計劃揭示曲線固定 280ms `cubic-bezier(.3,.6,.2,1)`，**唔准改**。盒測閘：第一幀 ≤45%，約 100ms ≤80%，約 200ms ≥90%，≥4 格有變化，冇停格。
-- 來源：Devon 約束；美術監督 PR3c；SPEC §6.8。驗收（盒，冷開＋暖開各 ≥3 次）。狀態：❓ / ✅(盒，7/7/7 格，第一幀 7.6–27.4%)。
+- 來源：Devon 約束；美術監督 PR3c；SPEC §6.8。驗收（盒，冷開＋暖開各 ≥3 次）。狀態：❓ / ✅(盒，7/7/7 格，第一幀 7.6–27.4%)。 2026-10-30 補充：揭示由 `plan-anim-start` 計，無論每格間隔係 16–50ms、或者第一格間隔偏短，都要喺 280ms ±25ms（實際時間）之內完。WebKitGTK 上面，畫面更新嘅 pump 要行得耐過揭示時鐘，唔好中途停格（patch-anim 0001–0003）。曲線本身唔變。
 
 **R-PL-05** 計劃視窗內嘅「預覽」／「原文」／✕ 唔撳 Ctrl 時第一下就撳得中。
 - 來源：Devon；SPEC §1.6、§6.8。驗收（兩邊）：每個掣各撳 3 次，畫面有對應變化。狀態：❓ / ❌(盒，點擊落到 BODY)。3437ddd ❌（計劃變空白）；d8fd9b0 ❓。
@@ -217,10 +231,10 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-OB-04** 光球核心只得近白眩光，冇實色粗藍圈；思考圈係 1px `--bot-60` 弧，等候時唔轉，思考中先轉。
 - 來源：美術監督 v20（DESIGN-REVIEW）；SPEC §10.5–10.6。驗收（盒）：1:1 截圖；思考完弧即刻消失。狀態：❓ / ❓。
 
-**R-OB-05** 光球近距淡出。游標唔近、又冇揸 Ctrl 時，光球實色、完全睇到。游標進入該粒光球嘅命中圓再加 `ORB_PROXIMITY_PX`（72px，光暈／命中半徑加一個 60–80px 以內嘅邊）時，只有嗰粒（或同樣近嘅幾粒）用 160ms `cubic-bezier(.2,.8,.2,1)` 淡到靜止透明度（預設 25%，上限 30%）。游標離開就用同一段淡返實色。淡出由腳本逐幀寫殼嘅 inline opacity（160ms `cubic-bezier(.2,.8,.2,1)`），`transition: none`，唔靠 CSS transition 播完。第一格用而家嘅 computed opacity 做起點，之後每一格向目標行，唔好停喺 `from`=1.00。近距輪詢喺目標改變之後繼續送約 168ms，視窗未聚焦、rAF 停咗都推到時鐘；到埗之後同一目標唔再寫 style，亦唔重設起點。`--hit-opacity` 唔可以同時驅動光球，亦唔好用 `opacity: 1 !important` 釘實光球。殼保持 `will-change: opacity`。transitionend 唔改 class 或者其他 style。每一幀 computed opacity 向目標單調，包括最後一格。透明度跟全域輪詢嘅游標距離同 Ctrl，另加一個例外：打開嘅面板或者計劃（包括收合未完、`data-state` 仍然係 panel）蓋住光球嘅 44px 光碟再加 34px 光暈時，嗰粒用同一段 160ms 淡到 0，DOM `pointer-events: none`；hit rect 照發，Ctrl+click 仍然開到被蓋住嘅光球（R-CT-02）；收合完、面板唔再係 panel，先淡返。光球位置唔郁。名稱片跟住淡，蓋實就收埋。其餘情況唔跟鍵盤事件或者焦點；游標遠一定係 1。Esc 關面板之後放開 overlay 嘅鍵盤焦點。儲存設定要保留已有嘅 `fade_enabled` 同 `fade_distance`。設定表單冇呢兩個欄，唔好寫死 `fade_enabled: false`。穿透唔變：預設穿透，只有揸住 Ctrl 而且游標喺 12px 命中邊內先可以撳（R-CT-*）。Ctrl 揸住而且游標喺 72px 淡出範圍內，嗰粒用同一段 160ms 返實色；可以撳仍然只係 12px 命中邊，而且命中圓對齊可見光碟（底部 footer slack 唔好拉高 orb 嘅 hit，令圓心跌低）。Ctrl+C／Ctrl+V 唔閃（R-CT-06），就算 overlay 仲有焦點都唔好把遠方光球留喺 0.18。面板唔變：預設實色可撳，Ctrl 揸住先透明同穿透。穿透視窗要靠全域游標輪詢（Windows `GetCursorPos`、Linux `XQueryPointer`，經 `device_query`），唔好靠 DOM mouse。`prefers-reduced-motion` 縮到 1ms。冇閒置循環動畫（R-PN-08）。2026-10-22 早段「約 180ms、淡出 150–200ms」**已取代**（v92 盒：180ms linear 加輪詢，6/21 次過唔到 250ms 內 ≤30%）。5dac6e2 嘅 250ms 目標 21/21 已過，但 15/84 次尾段仍有一格反向。2da217e 將反向減到 11/84。e301d99 改用腳本逐幀之後光球完全唔淡（21/21 近距樣本仍係 1）：輪詢每個目標只送一次，時鐘冇再推。改返由 compositor 嘅 CSS transition 播去 inline 目標，而且唔再同時寫 `--hit-opacity`。ae88559 一次 inline 目標加 CSS transition 令淡出 21/21 恢復，但尾段反向返到 29/125：完結嗰格畫咗中間值或舊值。CSS transition 完結會補一格，所以改返腳本逐幀，輪詢喺淡出期間持續送樣，到埗就停寫。
+**R-OB-05** 光球近距淡出。游標唔近、又冇揸 Ctrl 時，光球實色、完全睇到。游標進入該粒光球嘅命中圓再加 `ORB_PROXIMITY_PX`（72px，光暈／命中半徑加一個 60–80px 以內嘅邊）時，只有嗰粒（或同樣近嘅幾粒）用 160ms `cubic-bezier(.2,.8,.2,1)` 淡到靜止透明度（預設 25%，上限 30%）。游標離開就用同一段淡返實色。（2026-10-30：「實色」改為「平時透明度」，預設仍然係實色，見 R-OB-07；近距目標係 `min(近距地板, 平時)`，所以近距永遠唔會實過平時；地板上限 30% 唔變。）淡出由腳本逐幀寫殼嘅 inline opacity（160ms `cubic-bezier(.2,.8,.2,1)`），`transition: none`，唔靠 CSS transition 播完。第一格用而家嘅 computed opacity 做起點，之後每一格向目標行，唔好停喺 `from`=1.00。近距輪詢喺目標改變之後繼續送約 168ms，視窗未聚焦、rAF 停咗都推到時鐘；到埗之後同一目標唔再寫 style，亦唔重設起點。`--hit-opacity` 唔可以同時驅動光球，亦唔好用 `opacity: 1 !important` 釘實光球。殼保持 `will-change: opacity`。transitionend 唔改 class 或者其他 style。每一幀 computed opacity 向目標單調，包括最後一格。透明度跟全域輪詢嘅游標距離同 Ctrl，另加一個例外：打開嘅面板或者計劃（包括收合未完、`data-state` 仍然係 panel）蓋住光球嘅 44px 光碟再加 34px 光暈時，嗰粒用同一段 160ms 淡到 0，DOM `pointer-events: none`；hit rect 照發，Ctrl+click 仍然開到被蓋住嘅光球（R-CT-02）；收合完、面板唔再係 panel，先淡返。光球位置唔郁。名稱片跟住淡，蓋實就收埋。其餘情況唔跟鍵盤事件或者焦點；游標遠一定係平時透明度（預設 1，R-OB-07）。Esc 關最後一塊面板之後放開 overlay 嘅鍵盤焦點。如果仲有面板開住，Linux 要把鍵盤焦點留喺或交返個 webview，下一吓 Esc 先收得到；Windows 呢步仍然係 no-op，唔好為咗呢步改 Windows 穿透。儲存設定要保留已有嘅 `fade_enabled` 同 `fade_distance`。設定表單冇呢兩個欄，唔好寫死 `fade_enabled: false`。穿透唔變：預設穿透，只有揸住 Ctrl 而且游標喺 12px 命中邊內先可以撳（R-CT-*）。Ctrl 揸住而且游標喺 72px 淡出範圍內，嗰粒用同一段 160ms 返實色；可以撳仍然只係 12px 命中邊，而且命中圓對齊可見光碟（底部 footer slack 唔好拉高 orb 嘅 hit，令圓心跌低）。Ctrl+C／Ctrl+V 唔閃（R-CT-06），就算 overlay 仲有焦點都唔好把遠方光球留喺 0.18。面板唔變：預設實色可撳，Ctrl 揸住先透明同穿透。穿透視窗要靠全域游標輪詢（Windows `GetCursorPos`、Linux `XQueryPointer`，經 `device_query`），唔好靠 DOM mouse。`prefers-reduced-motion` 縮到 1ms。冇閒置循環動畫（R-PN-08）。2026-10-22 早段「約 180ms、淡出 150–200ms」**已取代**（v92 盒：180ms linear 加輪詢，6/21 次過唔到 250ms 內 ≤30%）。5dac6e2 嘅 250ms 目標 21/21 已過，但 15/84 次尾段仍有一格反向。2da217e 將反向減到 11/84。e301d99 改用腳本逐幀之後光球完全唔淡（21/21 近距樣本仍係 1）：輪詢每個目標只送一次，時鐘冇再推。改返由 compositor 嘅 CSS transition 播去 inline 目標，而且唔再同時寫 `--hit-opacity`。ae88559 一次 inline 目標加 CSS transition 令淡出 21/21 恢復，但尾段反向返到 29/125：完結嗰格畫咗中間值或舊值。CSS transition 完結會補一格，所以改返腳本逐幀，輪詢喺淡出期間持續送樣，到埗就停寫。
 - 來源：Devon 2026-10-08 原規則；2026-10-22 恢復（整合 REQUIREMENTS.md 時漏咗）。見 C-16。取代 R-CT-02／R-CT-03 嘅「預設半透明」。
 - 驗收（兩邊）：游標遠時光球實色；進入 72px 後 250ms 內透明度 ≤30%；離開返實色；Ctrl 揸住近光球時實色而且 12px 內可撳；Ctrl 放開，喺淡出範圍內撳仍然穿透；Ctrl+C／V 冇閃。
-- 狀態：❓ / ❓。
+- 狀態：❓ / ✅(盒，2026-10-30 喺 0a17a08：平時透明度 0 同 0.4，113 次轉變 0 格反向；留做回歸檢查)。
 
 **R-OB-06** 設定有開關「永遠顯示員工名」，預設關。關住時光球同而家一樣。值係 config.json 嘅 `show_bot_names`；關住唔寫出呢個欄。只有 Devon 撥個開關先寫檔。啟動、重連、靜態名單同步（R-SY-09）唔好為咗呢個值改 config.json。
 開咗之後，每粒光球（Bot、設定、看板、排程，同之後嘅子光球）喺畫面中心嗰一側顯示 `display_name`，離開光碟邊 10px，同光球垂直置中。嗰側撞到面板、其他名、或者連線膠囊，先試對面同上下。長名按名稱片 96px 闊度截斷加省略號，「Hermes 主機」留全名，tooltip 同 aria-label 保留全名。名稱片高 18px、左右 padding 6px、圓角 2px；字 Barlow Condensed 12px/18px `#14142b`；底 `rgba(248,248,252,.82)`；1px `rgb(var(--bot-rgb) / .2)` 邊。中文唔好大階或者加字距。字唔可以用淺色 bot 色（黃 `#f2f200`、青 `#00f2f2`），對住淺色底至少 4.5:1。淺色 bot 嘅 glyph 用深色 `--bot-ink`（黃 `#f2f200` 係 `#6b6b00`，青 `#00f2f2` 係 `#006b6b`；白底對比低過 3:1 嘅其他色，包括 `#edff45`、`#79f200`、`#f27900`、`#ff8442`，用加深咗嘅同色墨），光暈保持純 bot 色。標籤屬於嗰粒光球：跟 R-OB-05 一齊淡，被面板蓋住就收埋，預設穿透，只有揸住 Ctrl 先可以撳同喺近距返實色（R-CT-01、R-CT-03）。冇揸 Ctrl 時命中區維持光碟加原本 12px，唔好因為標籤變大。標籤唔好疊住面板，標籤之間亦唔好重疊。撥開關只寫 `show_bot_names` 呢一個鍵；舊檔冇 `kanban_base_url` 就唔好順便寫出空字串，亦唔好把其他鍵按字母重排。設定撳「儲存」同樣只寫用戶改過、或者檔案已經有嘅鍵：舊檔冇 `kanban_base_url` 而且仍然留空，就唔好寫出 `"kanban_base_url": ""`；用戶填咗網址就寫入；個鍵已經喺檔案入面就照寫。名稱片嘅底片跟字嘅闊度，置中仍然對齊光球中心。
@@ -228,6 +242,10 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收：開關持久而且冇改過唔寫檔；標籤有渲染同截斷；冇 Ctrl 時命中矩形不變；字同底片對比 ≥4.5，唔係淺色 bot 色。儲存唔會為咗仍然留空、而且舊檔冇有嘅 `kanban_base_url` 新增個鍵。
 - 狀態：❓ / ❓。
 
+
+**R-OB-07** 光球平時透明度（Devon 2026-10-30）。游標唔近、冇揸 Ctrl 時，所有光球（Bot、設定、看板、排程、子光球同「+N」）用同一個平時透明度。值係 config.json `interaction.orb_rest_transparency`，0 = 實色，數字愈大愈透，範圍 0–0.80；預設 0，即係同今日一樣實色。值係 0 唔寫出呢個鍵；舊檔冇呢個鍵照樣載入、唔改檔；只有用戶喺設定撳「儲存」先寫檔。上限 80%：光碟最少 20% 不透明，仲搵得到。超出範圍夾返 0–0.80；唔係數字當 0。同其他規則：近距淡出（R-OB-05）目標 = `min(近距地板, 平時)`，主光球地板 `min(min_opacity, 0.30)`，子光球地板 0.18（R-SO-08），所以行近只會更淡，唔會變實；揸住 Ctrl 而且喺 72px 內嗰粒返實色 1，等你知邊粒撳得；被面板蓋住仍然淡到 0（R-AD-02）。運行緊嘅排程光球（`is-cron-live`）同今日一樣保持實色，因為佢係狀態訊號。名稱片跟光球同一個透明度。命中、穿透、Ctrl+click 全部唔變（R-CT-01–03）。子光球淡出時間仍然係 R-PL-04 嗰條 280ms `cubic-bezier(.3,.6,.2,1)`；主光球 160ms 唔變。
+- 驗收（盒）：0% 時遠距光球 computed opacity 1；40% 時 0.6；80% 時 0.2；行近主光球 ≤ 平時同 ≤0.30；行近子光球 `min(0.18, 平時)`；Ctrl 揸住近距 1；冇 Ctrl 撳光球 → 後面收到；Ctrl+撳開面板。
+- 狀態：❓ / ❓（單元測試 + 盒）。
 **R-AD-01** v104 閒置光球。`.bot-btn::before` 光暈：`inset: calc(-1 * var(--orb-glow-radius))`，`--orb-glow-radius: 34px`，`radial-gradient(circle, rgb(var(--bot-rgb) / .55) 0%, rgb(var(--bot-rgb) / .22) 42%, transparent 72%)`，opacity `.85`；hover opacity `1` 同 `scale(1.08)`。`.orb-core` 係近白眩光，`box-shadow: none`。`--bot-size: 44px`。glyph `500 18px/1`，`color: var(--bot-ink, var(--bot))`，`text-shadow: 0 0 4px #fff`。黃 `#f2f200` 嘅 `--bot-ink` 係 `#6b6b00`，青 `#00f2f2` 係 `#006b6b`。其餘喺白底對比低過 3:1 嘅 bot 色（包括 `#edff45`、`#79f200`、`#f27900`、`#ff8442`）用同一條對比規則加深成自己嘅墨，墨對白至少 4.5:1。光暈保持純 bot 色。閒置圓形光球唔畫邊。打開面板嘅 `.morph-glow` 維持 96px、alpha `.12`。Orb 狀態嘅殼 clip 每邊闊 34px（`round 999px`），殼同 `.morph-orb` 都係 `overflow: visible`。殼背景同 `.morph-fill` 喺閒置 orb 透明。命中矩形仍然係 44px 光碟，唔包括光暈。
 - 驗收：要睇渲染像素，唔可以只對 computed style。閒置光球嘅光暈要畫出 44px 光碟之外（光碟邊再外仍然有 bot 色），光碟冇實白貼紙，亦冇 1px 色環。閒置光球冇 `.morph-fill::after` 圈洗。黃 `#f2f200`、青 `#00f2f2` glyph 用上面兩隻墨；`#edff45` 嘅 glyph 唔可以係原色。打開之後再收合（關閉掣、Esc、再撳另一粒光球，以及重複開關）要返到同打開之前一樣嘅閒置渲染：殼 clip 每邊闊 34px、`round 999px`，殼同 `.morph-orb` `overflow: visible`，殼背景同 `.morph-fill` 透明，`.bot-btn::before` 光暈恢復，冇留低 `is-morphing`、`is-collapsing`、`is-orb-docked`，亦冇 fill:forwards 鎖住嘅 44px clip。命中矩形仍然係 44px 光碟，光暈穿透。
 
@@ -246,8 +264,22 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-AD-06** 金鑰橫額同連線膠囊。預設仍然 top 96px。呢個 home 都要避開每粒光球同佢 34px 光暈，再加 12px；冇面板開住、光暈擋到 home，就改放喺光暈外（頂邊看板光暈會將橫額同膠囊放到 y ≥ 132）。只係底邊面板開住、又冇碰到 home，唔好因為個面板搬走。撞到打開嘅面板就放喺面板外 12px、畫面中心嗰一側；放唔落先試其餘邊，再退到 header 行。唔好疊住光球或者佢 34px 光暈。金鑰橫額圓角 2px。膠囊仍然係唯一 999px 圓角。底係 `rgba(248,248,252,.92)`，字 `#14142b` 12px/1.4 Noto Sans HK，唔好用文字透明度。連結部分 `#0000f2` 加底線，其餘句子保持 `#14142b`。邊 1px `rgb(0 0 242 / .35)`。padding `6px 12px`。字同連結對住橫額底 `#f8f8fc` 至少 7:1。
 - 驗收：`keyBannerSlot` 預設 gap 12；光暈擋住中心側時改去另一邊。閒置橫額同膠囊唔疊住看板光暈。`#conn-banner[data-sticky="keys"]` 圓角 2px。`.conn-banner.ok, .conn-banner.info` 圓角 999px。`.conn-banner` 用上面嘅底、字、邊、padding。底線只喺包住「設定」嘅 `.banner-link`（`#0000f2`）。`.banner-action` 同 `.banner-copy` 都係 `text-decoration: none`。
 
-**R-AD-07** 設定。Kanban server 只得欄位標籤，唔好再加一個 legend。說明放喺個標籤下面，12px/1.5 `#616191`。「Bot 名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，上面 24px。設定開住時金鑰橫額保持收起，`keyPromptBots` 唔清空。未有金鑰嘅 profile 喺金鑰欄下面顯示 12px `#e5484d` 提示「未有 API 金鑰」。Bot 列同 token 欄嘅提示（「詳情（可留空）」、「專用位址（可留空）」、「可留空」）係 `placeholder`，`::placeholder` 色 `#616191`，唔好寫入 value。實驗 legend「實驗：由 dashboard 匯入名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，fieldset 上面 24px。
+**R-AD-07** （2026-11-03：Bot 列冇「專用位址」同「API 金鑰」格，冇 `.key-missing`，見 R-AR-06。）設定。Kanban server 只得欄位標籤，唔好再加一個 legend。說明放喺個標籤下面，12px/1.5 `#616191`。「Bot 名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，上面 24px。設定開住時金鑰橫額保持收起，`keyPromptBots` 唔清空。未有金鑰嘅 profile 喺金鑰欄下面顯示 12px `#e5484d` 提示「未有 API 金鑰」。Bot 列同 token 欄嘅提示（「詳情（可留空）」、「專用位址（可留空）」、「可留空」）係 `placeholder`，`::placeholder` 色 `#616191`，唔好寫入 value。實驗 legend「實驗：由 dashboard 匯入名單」唔加項目符號，用 Barlow Condensed 12px `#0000f2`，fieldset 上面 24px。
 - 驗收：設定 HTML 冇 `<legend>Kanban server</legend>`。`.kanban-server-hint` 係 12px/1.5 `#616191`。`.settings-panel .roster-head` margin-top 24px，`.roster-head h3::before` 係 `content: none`。`rowFromBot` 喺有 profile 而 `has_key` 係 false 時加 `.key-missing`。`.settings-panel .bot-row input::placeholder` 同 `.settings-panel .field input::placeholder` 係 `#616191`。token 欄標籤冇「可留空」，input 嘅 placeholder 係「可留空」。`.settings-panel .experimental legend::before` 係 `content: none`。`.settings-panel legend` 係 12px Barlow Condensed `#0000f2`，`.settings-panel fieldset` margin-top 24px。
+
+**R-AD-08** 設定頁尾（美術監督 72cba45 審查第 1 點，2026-11-03，擋合併）。光球喺上面、頁尾喺下面（`data-header="bottom"`）時，「Hermes／置頂／關閉」頁尾係自己一條 bar：`position: sticky; bottom: 0`，底色 `#f8f8fc`，上邊 1px `rgb(0 0 242 / .2)`。內容區 `.settings-scroll` 係唯一捲動區（`overflow: auto`），`#settings-form` 唔捲（`overflow: hidden`），所以 sticky 唔會跟內容走（取代「`.settings-head` 一定 `position: static`」嗰句測試；嗰次出事係因為 form 自己捲）。「結束／測試已儲存連線／儲存」一行喺內容區最底，下面留最少 16px（`.settings-scroll::after`）先到頁尾上邊線。四級字（R-LK-01）× 繁／EN（R-LK-02）八個組合都唔可以疊住或者切開頁尾。面板尺寸同命中區唔變（R-CT）。
+- 根因：72cba45 頁尾係 `position: static` 冇邊線，內容區最尾嗰行掣直接貼住頁尾頂（盒量度：掣底 = 頁尾頂 = 976px，0px 距離）；特大字加英文時內容最長，捲到底就睇落似疊住同切開頁尾。
+- 驗收（單元）：`styles.test.js`「R-AD-08 …」。盒：八個組合捲到底量度掣底同頁尾頂嘅距離 ≥ 16px，全頁截圖。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
+**R-AD-09** 「永遠顯示員工名」「顯示工具細節」兩行（美術監督 72cba45 審查第 2 點，2026-11-03）。剔選格用 R-AD-04 嗰款 14×14 自訂格（`appearance: none`，1px `rgba(0,0,242,.4)` 邊，圓角 2px）。字係正文：13px、行高 1.5、`#14142b`（唔係藍色欄位標籤）；格同字隔 8px。同上面段落隔 16px，兩行之間 8px。文字大小（R-LK-01）由 13px 起計。Bot 列嘅「顯示」唔改（仍然係 `.show-toggle`）。兩行用 `.settings-toggle`。
+- 根因：唔係語言切換換走咗 markup（盒上 EN 下 `outerHTML` 同 zh-HK 一樣，`appearance` 仍然係 `none`，14px，藍邊）；美術監督見到嘅「原生格」其實係 R-AD-04 嗰款自訂格，只係 1px 淺藍邊喺 JPEG 似原生。真正問題：呢兩行由 9a9e68a（10-15）起一直用 `.show-toggle` 12px/1 藍字、冇 margin，從來冇定過「13px #14142b、8px／16px」嘅規格（git 歷史同本檔都冇），74d1a7f（R-LK-01）再將佢放大到 15.6px（特大），所以睇落「16px 藍字、黐住上面段落」。
+- 驗收（單元）：`styles.test.js`「R-AD-09 …」。盒：計算樣式（13px × scale、`#14142b`、行高 1.5、兩行相隔 8px、同段落 16px）八個組合截圖。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
+**R-AD-10** 設定捲軸（美術監督 72cba45 第二輪審查第 2 點，2026-11-03）。`.settings-scroll` 嘅捲軸唔可以貼住「儲存／SAVE」右邊（之前 thumb x≈667，掣右邊 671）。捲動區伸入 `#settings-form` 右邊 16px padding 入面 12px（`margin-right: -12px`），自己留 `padding-right: 18px`，加 `scrollbar-gutter: stable`：WebKitGTK 嘅 overlay thumb 畫喺 padding 上面、離捲動區右邊大約 6px，所以 thumb 同「儲存」右邊仍然相距 12px；WebView2 嘅傳統捲軸喺 18px padding 外面；捲軸出唔出現內容闊度都唔變；唔會出咗卡邊。面板尺寸同命中區唔變（R-CT）。
+- 驗收（單元）：`styles.test.js`「R-AD-10 …」。盒：量 thumb 左邊同「儲存」右邊相距 ≥ 12px（特大＋EN、標準＋繁），截圖 B11-xl-en、B10-m-zh。
+- 狀態：❓ / ✅(盒，ad-72cba45 r2)。
 
 ---
 
@@ -271,6 +303,10 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-CR-04** 排程面板：按 bot 分組，每個顯示中嘅 profile 都列出（冇工作就寫「未有排程」）；資料來自 `GET {root}/api/jobs?include_disabled=true`，404 先試 `/api/crons`；唔虛構工作；時間 24 小時 `HH:MM`。
 - 來源：SPEC §12.4–12.7；REPORT-v24。驗收（盒，真 Hermes）：同 `hermes` CLI 列出嘅工作對得上。狀態：❓ / ❓。
 
+**R-CR-05** 排程面板標出邊個工作失敗（Devon 2026-11-04：個環一直紅，但面板睇唔到係邊個）。`jobFailed()` 係真嘅工作：狀態點變 `#e5484d` 實心紅點，卡邊淡紅；排程下面加一行「上次失敗」＋ `last_error`，壓成一行（空白收埋），太長就 `…` 截斷，滑鼠停留出全文 tooltip；冇 `last_error` 就淨係寫「上次失敗」。有失敗工作嘅 bot 組標題後面加紅點同「N 個上次失敗」；**唔重新排序**（組同工作次序照 R-CR-04）。停用（paused）工作照計失敗，同 R-CR-03 一樣，冇改。
+- 來源：Devon；cron-red-ring 調查（2026-11-04）。驗收（單元）：`cron.test.js`「R-CR-05 draft …」、「panel: failed dot …」。盒：淺色主題面板截圖，一個失敗＋一個停用失敗工作，量截斷同 tooltip。
+- 狀態：❓ / ✅(盒，fan-suborbs r3 cron-panel.png)。
+
 ---
 
 ## 6. 看板（R-KB）
@@ -288,14 +324,14 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：Devon（2026-10-22 手提：看板 endpoint 404）。驗收（單元＋盒）：404 回應之後看板停留喺上面嗰句，`gatewayDown` 係 false；真正連唔到或者逾時仍然行 R-SY-08。
 - 狀態：❓ / ❓。
 
-**R-KB-05** 看板讀 Devon 部機嘅 `hermes serve`（埠 9119，`/api/plugins/kanban`），唔係 gateway 8642。8642 嘅 `/api/jobs` 係排程；看板路徑 404 係預期。讀只用 GET：`/api/plugins/kanban/board`、`/api/plugins/kanban/boards` 同 `/api/plugins/kanban/tasks/{id}`。冇傳 `board` 就係伺服器嘅 current board，唔好寫死 `default`（見 R-KB-06）。欄序 triage、todo、scheduled、ready、running、blocked、review、done。撳卡片開詳情（標題、內文、負責人、狀態、優先、latest_summary、留言）。拖卡仍然走原來嘅 overlay PATCH（R-KB-01），唔好對 9119 嘅看板路徑發 POST。
+**R-KB-05** 看板讀 Devon 部機嘅 `hermes serve`（埠 9119，`/api/plugins/kanban`），唔係 gateway 8642。8642 嘅 `/api/jobs` 係排程；看板路徑 404 係預期。讀只用 GET：`/api/plugins/kanban/board`、`/api/plugins/kanban/boards` 同 `/api/plugins/kanban/tasks/{id}`。冇傳 `board` 就係伺服器嘅 current board，唔好寫死 `default`（見 R-KB-06）。欄序 triage、todo、scheduled、ready、running、blocked、review、done。撳卡片開詳情（標題、內文、負責人、狀態、優先、latest_summary、留言）。拖卡見 R-KB-07：而家都係打 9119（`PATCH`）。「拖卡仍然走原來嘅 overlay PATCH（R-KB-01）」**已取代**（todo 37，2026-11-02）。唔好對 9119 嘅看板路徑發 POST。
 
-設定有 Kanban server 位址。留空就用 gateway 嘅 host 加埠 9119。登入由 Devon 自己填：優先系統瀏覽器 PKCE（`GET /auth/native/authorize`、`POST /auth/native/token`、`POST /auth/native/refresh`）；帳號密碼一齊填就用 `POST /auth/password-login`（`provider: basic`）攞 session cookie。鑰匙圈已經有 `kanban-access-token` 同 `kanban-refresh-token`（Windows 目標名係 `kanban-access-token.com.freezemusic.hermes-overlay` 同 `kanban-refresh-token.com.freezemusic.hermes-overlay`）時，access 過期或者看板 GET 回任何 401，都用該 refresh token POST `/auth/native/refresh`（JSON 只得 `refresh_token`）。成功就把新 access 同新 refresh 寫返同一對鑰匙圈帳戶，然後同一個 GET 再試一次。Refresh 回 401 或 403 先顯示「要登入 Kanban」；同一條已拒嘅 refresh token 唔好每個輪詢再 POST。Refresh 連唔到或者逾時保持「連唔到 Kanban。」，token 留喺鑰匙圈。帳號、密碼、cookie、access、refresh 只放呢個程式自己嘅鑰匙圈（`com.freezemusic.hermes-overlay` 嘅 kanban 帳戶），唔寫 log、唔寫 config.json、唔讀寫 `dashboard-session-token`、`profile:*`，亦唔用其他程式嘅鑰匙圈。
+設定有 Kanban server 位址。留空就用 gateway 嘅 host 加埠 9119。登入由 Devon 自己填：優先系統瀏覽器 PKCE（`GET /auth/native/authorize`、`POST /auth/native/token`、`POST /auth/native/refresh`）；帳號密碼一齊填就用 `POST /auth/password-login`（`provider: basic`）攞 session cookie。鑰匙圈已經有 `kanban-access-token` 同 `kanban-refresh-token`（Windows 目標名係 `kanban-access-token.com.freezemusic.hermes-overlay` 同 `kanban-refresh-token.com.freezemusic.hermes-overlay`）時，access 過期或者看板 GET 回任何 401，都用該 refresh token POST `/auth/native/refresh`（JSON 只得 `refresh_token`）。成功就把新 access 同新 refresh 寫返同一對鑰匙圈帳戶，然後同一個 GET 再試一次。Refresh 回 401 或 403 先顯示「要登入 Kanban」；同一條已拒嘅 refresh token 唔好每個輪詢再 POST。Refresh 連唔到或者逾時保持「連唔到 Kanban。」，token 留喺鑰匙圈。帳號、密碼、cookie、access、refresh 只放呢個程式自己嘅鑰匙圈（`com.freezemusic.hermes-overlay` 嘅 kanban 帳戶），唔寫 log、唔寫 config.json、唔讀寫 `dashboard-session-token`、`profile:*`，亦唔用其他程式嘅鑰匙圈。系統瀏覽器登入唔可以經 `cmd /C start` 開網址：cmd.exe 會喺第一個 `&` 切斷 authorize 網址，瀏覽器收唔到 `code_challenge`，伺服器回 400，登入等到逾時。要用 opener 將成條網址交俾系統。loopback 回呼要等到 `/cb` 帶住 `code`（或者 `error`）先完；瀏覽器嘅 preconnect 空連線同 `/favicon.ico` 唔可以令登入失敗。
 
 401 顯示平靜「要登入 Kanban」加登入掣，唔當錯誤、唔當未有看板、唔進入 R-SY-08。錯咗嘅已存密碼同樣係呢句，唔好顯示 API_SERVER_KEY 嘅 401 字，而且要清走看板上面嘅舊卡。錯密碼唔好每 5 秒再 POST `/auth/password-login`；記住呢組帳號密碼已經被拒，直至 Devon 改咗鑰匙圈入面嘅帳號或密碼先再試一次。真正 404 先用 R-KB-04。9119 連唔到、逾時、或者條閒置連線被 `hermes serve` 關掉（大約 5 秒），都只顯示喺看板，唔好觸發 R-SY-08，亦唔好出 gateway 嗰粒「連唔到 Hermes」膠囊。HTTP pool 嘅 idle timeout 係 2 秒，短過 5 秒，避免重用已經被伺服器關掉嘅 socket。
 
-- 來源：Devon（2026-10-22，Hermes 0.22.2，`http://10.10.24.33:9119`）。8cf5af4 盒：錯密碼出 API_SERVER_KEY 401 而且每 5 秒再登入；needsLogin 留低舊卡；閒置 socket 閃「連唔到 Hermes」並觸發重連。
-- 驗收（單元，假 9119）：過期 access 加 refresh token，board GET 401 之後只 POST 一次 `/auth/native/refresh`，寫低新 access 同新 refresh，再 GET 一次就有欄同卡片；refresh 401 先係「要登入 Kanban」，第二次讀唔再 POST 該 refresh token，回應亦唔包含 token 字；密碼登入儲 cookie；錯密碼係登入狀態而且第二次讀唔再 POST 密碼；404 仍然係 R-KB-04；閂咗嘅埠係連線錯誤，看板文案唔含 Hermes gateway；登入狀態唔當 404。金鑰唔入 config.json。`get_kanban_board` 同 `get_kanban_task` 喺 secrets 有變時寫返鑰匙圈，而且唔 log token。
+- 來源：Devon（2026-10-22，Hermes 0.22.2，`http://10.10.24.33:9119`）。8cf5af4 盒：錯密碼出 API_SERVER_KEY 401 而且每 5 秒再登入；needsLogin 留低舊卡；閒置 socket 閃「連唔到 Hermes」並觸發重連。2026-10-30 盒（gated `hermes serve`，basic）：Linux 上 PKCE、bearer 讀板／卡／profiles、access 過期 refresh 全部過；Windows 用 `cmd /C start` 開 authorize 網址會喺 `&` 切斷，瀏覽器登入行唔到。
+- 驗收（單元，假 9119）：過期 access 加 refresh token，board GET 401 之後只 POST 一次 `/auth/native/refresh`，寫低新 access 同新 refresh，再 GET 一次就有欄同卡片；refresh 401 先係「要登入 Kanban」，第二次讀唔再 POST 該 refresh token，回應亦唔包含 token 字；密碼登入儲 cookie；錯密碼係登入狀態而且第二次讀唔再 POST 密碼；404 仍然係 R-KB-04；閂咗嘅埠係連線錯誤，看板文案唔含 Hermes gateway；登入狀態唔當 404。金鑰唔入 config.json。`get_kanban_board` 同 `get_kanban_task` 喺 secrets 有變時寫返鑰匙圈，而且唔 log token。authorize 網址唔經 cmd.exe（`open_system_browser` 用 `tauri_plugin_opener::open_url`）；loopback 先收一條空連線同 `/favicon.ico`，再收 `/cb?code=…&state=…`，仍然攞到正確 code 同 state。
 - 狀態：❓ / ❓。
 
 **R-KB-06** 看板唔再寫死 `board=default`。未有人手揀過嘅板時，`GET /api/plugins/kanban/board` 唔帶 `board` 參數，伺服器回 current board（Devon 部 Hermes 0.22.5 係 `mt4`；`default` 同 `deskrpg` 可以係空）。另外 `GET /api/plugins/kanban/boards`，用佢嘅 `current` 填 header 嘅細揀板器。清單入面伺服器 current 嗰項標「（目前）」，例如 `mt4（目前）`。`.kanban-board-pick` 用 `appearance: none` 同 overlay 箭咀，唔好用原生灰盒同黑箭。Linux WebKitGTK 打開嘅清單仍然係原生 GTK menu：`option` 樣式改唔到個 popup，自製 listbox 會掂命中區（R-CT），所以開住嘅清單保持原生。收起嗰陣嘅揀板器繼續用 overlay 樣式。只有用戶親手揀過先記住：記憶體即時用，並用 splice 寫 `kanban_board` 入 config.json。跟 current、開面板、輪詢、quiet roster 都唔寫呢個鍵；舊檔冇 `kanban_board` 就保持逐個位元組不變。DONE 欄用原有欄頭樣式，預設收起，欄頭有 chevron 同張數，表示撳開先展開卡片。archived 繼續隱藏，唔好傳 `include_archived`。呢啲讀全部 GET，唔好對 9119 看板路徑 POST。空狀態、登入、「連唔到 Kanban。」同 R-AD-03 嘅置中版面唔改。揀板同輪詢如果有重疊嘅讀，舊嘅或者已中止嘅結果要丟棄，唔好蓋過較新嘅 200，亦唔好因此顯示「連唔到 Kanban。」。
@@ -303,6 +339,60 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：Devon（2026-10-26，Hermes 0.22.5，`http://10.10.24.33:9119`，85 張卡全部喺 current board `mt4`：72 done、4 todo、3 triage、6 archived；`default` 同 `deskrpg` 係空）。
 - 驗收（單元，假 9119）：空 slug 嘅 board URL 冇 `?board=`，亦唔含 `default`；唔帶 query 回 `mt4` 嘅卡，`?board=default` 同 `?board=deskrpg` 係空板；`/boards` 嘅 `current` 係 `mt4`；archived 唔出現；done 欄在；`columnCollapsed("done", false)` 係收起，收起欄頭有 `▸` 同張數。`boardOptionLabel("mt4", "mt4")` 係 `mt4（目前）`。`.kanban-board-pick` 有 `appearance: none`。`store_kanban_board` 未呼叫、或者 slug 係空，config.json 位元組不變；揀咗 `mt4` 先多 `kanban_board`。`get_kanban_board` 唔寫呢個鍵。
 - 狀態：❓ / ❓。
+
+**R-KB-07** 拖卡改狀態打 Hermes Dashboard（9119）嘅看板 plugin：`PATCH /api/plugins/kanban/tasks/{id}`，帶 `?board=<畫面上嗰塊板>`（未揀過、伺服器回 `board: null` 就唔帶，跟 current board），body `{"status": …}`。拖去 done 要加 `result` 同 `summary`「Moved to done from overlay」，因為 0.22.5 冇證據會 400「completion blocked: … has no result or summary evidence」（舊 gateway proxy 用同一句）。`running` 由伺服器拒（400）。經 `HermesClient::patch_kanban_task`，用同對話一樣嘅 Dashboard 登入（401 續期一次），唔用每個 bot 嘅 API 金鑰，唔再打 8642 嘅 `/v1/overlay/kanban/tasks/{id}`。伺服器拒絕（400／404／409）就將張卡放返原位，顯示伺服器嘅 `detail`（例如「看板拒絕呢次移動：status transition to 'review' not valid from current state」）。看板讀取（board、boards、卡片）同登入（PKCE、密碼、refresh）亦都喺 `HermesClient`（`client/kanban.rs`），路徑喺 `client/endpoints.rs`（R-AR-01／02）。
+- 來源：todo 37（Devon 2026-11-02 准通宵做）。盒（0.22.5 `serve --isolated`，19119，basic 登入）：`PATCH` ready→blocked→ready→todo→triage 200；done 冇 result 400、有 result 200；`running` 400；壞 board 404；冇呢張卡 404；todo→review 409。見 kanban-9119/RESULTS.md。
+- 驗收（單元）：`a_card_move_patches_the_dashboard_plugin_on_the_board_shown`（`PATCH /api/plugins/kanban/tasks/t_1?board=mt4`、Bearer、done 帶 result；409 嘅 detail 原文顯示；冇 `/v1/overlay`）；`the_client_reads_the_board_and_keeps_a_refreshed_login`；`patch_body_sends_done_evidence_and_an_integer_priority`。CI：`kanban-on-dashboard`（假 dashboard log 有 `GET /api/plugins/kanban/board`，8642 冇 `/v1/overlay/kanban`）。盒：overlay 拖卡之後 `GET /api/plugins/kanban/tasks/{id}` 見到新狀態。
+- 狀態：見 kanban-9119/RESULTS.md；Win 未驗。
+
+**R-KB-08** 八欄（R-KB-05）喺預設 960px 看板面板入面全部睇得到，唔使橫捲：欄最窄 `--kanban-col-min` 112px（8 × 112 = 896px ≤ 面板 padding 入面嘅 928px），闊啲就平均分（`1fr`）。欄頭 24px 顯示字，最長嘅 SCHEDULED 都唔出欄；名太長用省略號，唔好出界。卡片 margin 6px、padding 8px，負責人同優先次序放唔落一行就摺行，唔好凸出卡邊。面板窄過 928px（細螢幕）先喺看板入面橫捲，`overflow: auto` 保留。 看板向下捲時欄頭（`.kanban-col-head`）`position: sticky; top: 0`，用近實色底（`rgb(247 248 248 / .96)`），卡喺下面滑過唔透出嚟；鈴清單（z-index 6）仍然喺欄頭上面（Devon t228u，淨 CSS）。
+- 來源：Devon 手提 637a7a1 看樣（2026-11-03，1920×1080）：REVIEW 切咗一半、DONE 睇唔到，要拉底部橫捲軸先見到。原因：140px 最窄值係六欄時代（2026-10-15）定，R-KB-05 加咗 scheduled 同 review 之後 8 × 140 = 1120px，大過 928px。
+- 驗收（單元）：`styles.test.js`「all eight kanban columns fit the 960px panel」：8 × `--kanban-col-min` ≤ 960 − 2 × 16；`.kanban` 仲有 `overflow: auto`；冇 `minmax(140px`。盒（1920×1080）：`scrollWidth == clientWidth`（928），八個欄頭全部喺面板入面。
+- 狀態：✅ 盒 / ❓ Win。
+
+**R-KB-09** 看板通知鈴（Devon 2026-11-03，YouTube 式）。之前每次輪詢只得一句 `kanbanChangeLine`，膠囊會蓋走上一句，未讀只係一個 `state.kanban.unread` 布林值，所以事件會被蓋或者唔見。而家：
+1. 每次真正有變就記事件：每張新增卡一條、每張改咗狀態嘅卡一條（時間、卡 id、標題、由邊個狀態去邊個狀態）；冇新增或移動但板有變，就一條「看板有更新」。只放記憶體，最多 50 條，最新排頭，**唔寫 config.json**。第一次快照、登入／未有看板狀態、轉去另一塊板都唔記。
+2. 看板光球用細數字章（`.kanban-count`，1–9，之後「9+」）取代淨係一粒點。數字章 `position: absolute`、`pointer-events: none`，命中區仍然係 `.morph-orb` 嘅 44px 光碟（R-CT），唔會因為數字章變大。
+3. 看板面板標題列「關閉」左邊有一粒 24px 鈴圖示掣（`#btn-kanban-bell`），tooltip／`aria-label`「看板通知」（有未讀時「看板通知（N 個未讀）」，掣角有同款細數字）。撳開一張清單（相對時間「啱啱」（**已取代**，見 R-KB-15：「1 分鐘內」）／「N 分鐘前」，一個鐘以上用 HH:MM；標題；狀態變化「todo → ready」／「新增 → triage」，**已取代**，見 R-KB-10：而家寫「TODO → READY」／「NEW → TRIAGE」）。打開清單即刻全部當已讀，清走光球同鈴嘅數字；未喺清單見過嘅條目今次仍然用粗體。撳一條就開嗰張卡嘅詳情（同撳卡一樣）；「看板有更新」冇卡，唔撳得。冇事件顯示「未有看板通知」。再撳鈴、Esc（最先收）或者關看板都會收起清單。
+4. 5 秒膠囊（R-KB-02）照舊，用返同一句 `kanbanChangeLine`。
+5. 未讀一定清（Devon t228u）：打開看板面板（撳光球、Ctrl+撳、撳緊膠囊、面板已開或者開緊時再撳＝raise）或者打開鈴清單，都即刻清走未讀旗、全部事件數字、光球嘅點／數字章同 `.orb-ping` 圈（`clearKanbanUnread`，直接改光球 class，唔等 `renderBots`）。面板開住、開緊（`data-opening="panel"`／`data-intent="open"`）或者鈴清單開住時到嘅變化（`kanbanSeen`）唔會設未讀、唔 ping，事件一入就當已讀；`backgroundBlocked` 時押後嘅 commit 記住到嗰陣係咪睇緊（`kanbanPendingSeen`），關咗面板先 flush 都唔會再亮點。收緊（`is-collapsing`）就當已經唔睇。`.orb-ping` 播完（`animationend`）自己移走。
+   - 根因：(a) `openKanban` 只係將 `state.kanban.unread` 設 false，光球嘅 `has-unread` class 要等 `renderBots` 重畫，而 `renderBots` 喺開面板動畫期間（`reason=morph`）同 `backgroundBlocked` 時一定押後，所以點最少留多 0.3–1 秒；盒上 18 次 Ctrl+撳開有 1 次押後嘅重畫一直冇落地，面板開住 8 秒點都仲喺度。(b) `toggleKanban` 嘅 raise 分支（面板已開／開緊）完全唔清未讀。(c) 鈴版本開面板唔清數字（上面第 2 點舊字）。(d) 押後嘅 commit 只睇 flush 嗰刻 `kanbanOpen`，開咗面板時到、關咗先 flush 嘅變化會當未讀。(e) `pingOrb` 加嘅 `.orb-ping` 冇人移走。
+- 來源：Devon t227u、t228u（2026-11-03）。
+- 驗收（單元）：`kanban-bell.test.js`（每卡一條、generic 一條、首快照／登入／未有看板／轉板唔記、50 上限最新排頭、已讀、9+、時間格式、唔寫 config、鈴掣 24px 有 tooltip、數字章唔影響命中、Esc 先收清單；`kanbanSeen` 真值表、`clearKanbanUnread` 即刻清 class／數字／ping、open／raise／鈴三條路都經 `clearKanbanUnread`、面板關住有變先亮、開住／開緊唔亮、押後 commit 記住 seen、ping 自己移走、欄頭 sticky）。盒：真 Hermes 0.22.5 看板加卡同拖卡之後，光球數字、鈴清單、撳一條開詳情、清單打開後數字清走、空清單。
+- 狀態：❓ / ✅(盒，next-637a7a1)。
+
+**R-KB-10** 鈴清單樣式（美術監督 72cba45 審查第 3 點，2026-11-03）。補充 R-KB-09 第 3 點：
+1. 清單頂有 32px 標題行（`.kanban-bell-head`）：左「看板通知」（Barlow Condensed 12px `#0000f2`），右「全部已讀」文字掣（12px `#0000f2`，冇框；冇未讀時 disabled，`#616191`）。撳「全部已讀」全部當已讀、清單唔收、清走數字（經 `clearKanbanUnread`）。
+2. 未讀行左邊 2px `#0000f2` 色條，卡名 600；已讀行冇色條（透明 2px 邊，唔會跳位），卡名 400 `#616191`。「未讀」＝今次打開清單之前未喺清單見過（`bellFresh`）；清單開住時新到嘅都當未讀；收清單之後全部當見過。72cba45 全部粗體係因為嗰次每一條都未見過，又冇已讀樣式對比。
+3. 清單喺鈴下面 6px（main.js 按鈴嘅位置設 `top`／`right`），最高 360px（原本 420px，所以命中區唔會大過以前，R-CT）。標題行唔捲；下面 `.kanban-bell-rows` 自己捲，底 padding 12px，下面仲有嘢先加 16px 底部漸隱遮罩（`has-more`）（**已取代**，見 R-KB-14：而家 48px，兩層遮罩）。
+4. 狀態變化用欄頭嘅寫法：「NEW → TRIAGE」、「TODO → READY」（大楷英文，同欄頭一樣），唔再「新增 → triage」咁中英混。卡名同狀態行係 Hermes 資料，唔譯（`NO_TRANSLATE`）。
+5. 英文：「全部已讀」Mark all read、「啱啱」Just now（**已取代**，見 R-KB-15：「1 分鐘內」Under 1 min）、「N 分鐘前」N min ago、「看板通知（N 個未讀）」Kanban notifications (N unread)、「卡片」Card。帶數字嘅句用 `EN_PATTERNS`：成句由頭到尾對中先換（regex 兩頭錨定），仍然係 R-LK-02 嘅「成句先換」。
+- 來源：美術監督 72cba45 審查（2026-11-03）。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-10 …」三項（欄名、今次未讀、全部已讀；DOM 標題行同已讀／未讀行；CSS 32px、12px、色條、字重、360px、12px 底、6px；漸隱改喺 R-KB-14 測）；`look.test.js`「R-KB-10 bell strings …」。盒：清單有未讀同已讀混合、捲動時底部漸隱、全部已讀之後全部變 400，截圖（繁、EN）。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
+**R-KB-11** 卡片上嘅細格（美術監督 72cba45 審查第 4 點，2026-11-03）。嗰格係 Hermes 卡嘅優先度（`priority`，Hermes 0.22.5 `kanban_db` 係 `INTEGER DEFAULT 0`，數字愈大 dispatcher 愈早攞；Hermes dashboard 自己都係大過 0 先顯示 `P{n}`）。0 或者空就唔顯示。有數就顯示 12px 線條圖示（旗）加數字，tooltip／`aria-label`「優先度 N：數字愈大，Hermes 愈早派」（EN：Priority N. Higher numbers are picked up first.）。舊式文字優先度（low／high）照顯示文字。詳情頁嘅「負責人 · 狀態 · 優先度」行都唔再顯示 0。卡片唔自動翻譯（`NO_TRANSLATE`），所以 tooltip 喺 main.js 按而家語言翻譯，轉語言時重畫一次板（拖緊或者開住詳情就唔重畫）。唔係留言數：`comment_count` 冇顯示喺卡上。
+- 根因：Hermes 回傳 `"priority": 0`（數字），Rust `json_string` 將數字變成字串 `"0"`，`kanbanCard` 見到非空字串就出格，所以每張卡都有個「0」。呢格原本係為咗 `low`／`high` 呢類文字優先度設計（測試同示範資料都係文字）。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-11 …」（0／空唔出、2 有圖示、數字、tooltip、EN tooltip、詳情唔出 0）。盒：有優先度同冇優先度嘅卡截圖。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
+**R-KB-12** 看板光球數字章（美術監督 72cba45 審查第 5 點，2026-11-03）。補充 R-KB-09 第 2 點：大細同位置唔改（藍底白字 16px）。加 1.5px `#fff` 外圈（`box-shadow: 0 0 0 1.5px #fff`，唔係 border，所以個盒唔變大），喺淺色牆紙同光暈上都分得開。1–9 係 16px 圓；「9+」用 pill（`.is-wide`，最闊 22px，圓角 8px）。仍然 `position: absolute`、`pointer-events: none`，命中區仍然係 44px 光碟（R-CT），唔量數字章。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-12 …」。盒：淺色牆紙上 3 同 9+ 嘅截圖；量度命中矩形同改之前一樣。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
+**R-KB-13** 卡詳情（美術監督 72cba45 審查第 7 點，次要）。標題左邊有同板上張卡一樣嘅 2px 色條（`--owner`，負責人顏色；冇對應 bot 就 `#616191`）。「返回」掣同標題之間 12px（掣 `display: block`，唔受行高影響）。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-13 …」。盒：量度「返回」底同標題頂相距 12px，截圖。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
+
+**R-KB-14** 鈴清單底部漸隱（美術監督 72cba45 第二輪審查第 1 點，2026-11-03，擋合併）。補充 R-KB-10 第 3 點：`.kanban-bell-rows` 下面仲有行先有 `has-more`，底部 48px（大約一行）由實漸變透明；捲到底（`scrollTop + clientHeight ≥ scrollHeight − 1`）即刻拎走 `has-more`，最尾一行唔會淡。遮罩係兩層：漸隱層蓋住除咗右邊 12px 嘅位，右邊 12px（捲軸 6px 加 4px padding）用實色層保持唔淡，所以捲軸唔會一齊淡走。`-webkit-mask-*` 同冇前綴嘅 `mask-*` 兩套都寫（WebKitGTK 同 WebView2／Chromium）。清單捲軸同設定一樣 6px（`::-webkit-scrollbar`、`scrollbar-width: thin`）。
+- 根因：唔係少咗前綴。72cba45／ad-fixes 已經兩套都有，盒上計算樣式兩個都係 `linear-gradient(rgb(0,0,0) calc(100% - 16px), rgba(0,0,0,0))`，WebKitGTK 都有畫（盒上逐點比較：底 16px 有遮同冇遮相差最多 220 灰階；換成 0→100% 嘅遮罩成張清單明顯淡落）。問題係 16px 太短：一行 47px，字只得大約 7–9px 高，16px 漸隱區通常落喺兩行中間嘅空白，最多切到下一行字頂，所以睇落似硬切。之前「捲動中」截圖同「混合」一模一樣，係因為嗰次得 5 行，全部擺得落 360px（`has-more` 係 false），`scrollTop = 40` 冇效果，捲唔郁。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-14 …」。盒：50 行，頂（有漸隱）、中間（有漸隱、scrollTop 喺中間）、到底（冇漸隱）三張截圖，逐點量底部 48px。
+- 狀態：❓ / ✅(盒，ad-72cba45 r2)。
+
+**R-KB-15** 鈴清單時間欄（美術監督 72cba45 第二輪審查第 3 點，2026-11-03）。時間欄（`time.kanban-bell-time`）只會顯示時間，而且一定有數字：一分鐘內「1 分鐘內」（EN：Under 1 min，取代 R-KB-09／R-KB-10 嘅「啱啱」／Just now）、一個鐘內「N 分鐘前」、再耐就 HH:MM（本地）；冇可用時間戳就留空，唔會放卡名、bot、負責人或者其他字。`kanbanEventTime` 只收數字（或者全數字字串）時間戳。時間欄用正文字體（`--font-body`，有 Noto Sans HK）12px、數字等寬（`tabular-nums`），唔再用 mono。
+- 根因：唔係 mock bot 名，亦唔係時間字串壞咗。DOM 入面係「啱啱」（U+5571 U+5571，`kanbanEventTime` 一分鐘內嘅字）。時間欄用 `--font-mono`（IBM Plex Mono），冇中文字，所以退去 CJK 後備字 11px；「啱」（口＋山＋石）筆畫密，縮到 11px 睇落似「啫」。盒上試過改用正文字體 12px，仍然似「啫」，所以改字：一分鐘內用「1 分鐘內」，時間欄永遠有數字。
+- 驗收（單元）：`kanban-bell.test.js`「R-KB-15 …」（輸出只會中 `KANBAN_EVENT_TIME_RE`；非時間戳留空；main.js 時間欄只由 `kanbanEventTime` 填；CSS 正文字體）。盒：放大截圖。
+- 狀態：❓ / ✅(盒，ad-72cba45 r2)。
 
 ---
 
@@ -322,7 +412,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 `POST /api/sessions/{id}/chat` 寫入唔係 `api_server`／`bot_room` 嘅 session 會 `permission_denied`。邊條開邊條仍然跟上面次序，`source` 唔影響揀邊條。只讀提示同發送失敗嘅說法見 R-SS-08。「只有 `tui` 時輸入同傳送停用」**已取代**（R-SS-08）。啟動同打開都**唔新建** session。「永遠唔開 0 訊息 `api_` 重複」**已取代**：mt-coder、mt-tester、mt-reviewer 嘅 `api_1792573589_*` 而家就係 Desktop 嘅 Bot Chat。
 
 - 來源：Devon（2026-10-22，SESSIONS-desktop）。Desktop：`CANONICAL_CHAT_TITLE`、`hidden=1`、`idx_sessions_title_unique`。標題查已經係最新 child。清單係 `GET /api/sessions?limit=200&title=Bot%20Chat&include_hidden=true&include_archived=true`，再同一般清單合併；兩條請求都不加 `include_children`。
-- 驗收（兩邊）：forex-forest 開 `20261001_013827_25b1eb`（tui，只讀）。ff-daily 開 `api_1792573589_0c14ed12`（config 係 `20261013_180130_88f994`，唔係 explicit，唔寫返檔）。mt-orch 開 explicit `20261015_011713_2242f9`，旗保留。mt-coder 開 `api_1792573589_f1c99a3b`。mt-tester 開 `api_1792573589_257658b2`。mt-reviewer 開 `api_1792573589_b1b8ccc5`。單元測試覆蓋：過時 archived config id、非 explicit 而且唔等於 Bot Chat 嘅 config id、explicit 贏、壓縮譜系、空 Bot Chat。gateway 返嚟之後 config 位元組同重連之前一樣。輸入同傳送停用見 R-SS-08。
+- 驗收（兩邊）：forex-forest 開 `20261001_013827_25b1eb`（tui，可以傳：經 Hermes 0.22.5 嘅 Bot Chat 入口；只有清單得一條 `Bot Chat` 先算）。ff-daily 開 `api_1792573589_0c14ed12`（config 係 `20261013_180130_88f994`，唔係 explicit，唔寫返檔）。mt-orch 開 explicit `20261015_011713_2242f9`，旗保留。mt-coder 開 `api_1792573589_f1c99a3b`。mt-tester 開 `api_1792573589_257658b2`。mt-reviewer 開 `api_1792573589_b1b8ccc5`。單元測試覆蓋：過時 archived config id、非 explicit 而且唔等於 Bot Chat 嘅 config id、explicit 贏、壓縮譜系、空 Bot Chat。gateway 返嚟之後 config 位元組同重連之前一樣。輸入同傳送停用見 R-SS-08。
 - 狀態：❓ / ❌(Win，11a150e：0 次建立，但開錯 session 同改寫 config）。單元測試已鎖呢條 Desktop 規則；手提未再驗。
 
 **R-SS-02** 自動路徑**唔改** config.json：啟動、打開或關閉面板、cron 更新 `last_active`、有新 session、gateway 重連，位元組都保持不變，包括 session id、explicit 旗、anchor。畫面喺記憶跟 R-SS-01 解析，所以一條非 explicit 嘅舊 id 可以顯示 Desktop 嘅 Bot Chat，但唔寫返檔。explicit 唔會被清走。手動 picker（R-SS-04）先可以改 id 同寫上 explicit；anchor 數字唔跟最新訊息時間改寫。「只有 config 未有 id 先寫入一次」**已取代**（v92 打開面板改寫 anchor）。
@@ -345,10 +435,10 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-SS-06** 就算 Hermes Desktop 冇開，都要收到 Hermes 主動發出嘅訊息。**（未解決）**
 - 來源：Devon。驗收（Windows）：閂 Hermes Desktop，觸發一個會主動發訊息嘅 cron，overlay 喺 ≤10s 內出膠囊。狀態：❓ / ❓。
 
-**R-SS-07** Bot Chat 以外嘅 session，每條用一粒 sub-orb 代表（將來做，見 R-SO）；主光球唔會用嚟顯示呢啲 session。
-- 來源：Devon（2026-10-21）。狀態：— / —（PR #3 唔包）。
+**R-SS-07** Bot Chat 以外嘅 session，每條用一粒 sub-orb 代表；主光球唔會用嚟顯示呢啲 session。細則見 R-SO-06 至 R-SO-09。啟動、打開主光球、重連都唔會因為子光球而改主光球嘅 Bot Chat 綁定，亦唔會 `POST /api/sessions`。
+- 來源：Devon（2026-10-21；2026-10-29 收窄做任務 session、釘選同已讀收起）。狀態：❓ / ❓（單元測試）。
 
-**R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢。撳下面就可以喺呢個 Bot 嘅 API 對話繼續。」同掣「喺 API 對話繼續」。兩句中間係「。」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），同一句同同一掣出現，狀態係「只可以睇」，唔出錯誤橫額、失敗氣泡或者原始錯誤，唔重試。呢個拒絕要記喺該 session id，今次開 app 期間歷史重載唔可以清走，拒絕嗰句要繼續睇到；`source` 推斷出嚟嘅只讀仍然有效。撳掣先至做：呢個 profile 已有另一條 `api_server` 或 `bot_room`（唔計而家呢條；未封存嘅 Bot Chat 優先）就轉去嗰條；冇先至 `POST /api/sessions`，`source` 係 `api_server`，標題 `Overlay`。啟動、打開、同發送都唔好自己建立。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。Session 選單要分得開同一標題嘅列：已封存加「（已封存）」；唔可以傳嘅 source 加「（Desktop／只可以睇）」呢類短後綴；標題已經以 `(CLI)` 呢類字尾結束就只加「（只可以睇）」，唔好再寫一次來源；可以傳嘅 `api_server`／`bot_room` 唔加。後端要把 `source` 同 `archived` 傳去前端（SS-08-c）。撳繼續掣要跳過每一條已經拒絕過嘅 session；可寫嘅都拒絕過先至建立 `Overlay`（SS-08-d）。被拒絕嘅打字標「未送出」，歷史重載都留低（SS-08-e）。
+**R-SS-08** 主面板開住嘅 session，如果 metadata `source` 唔係 `api_server` 或者 `bot_room`（包括 `oneshot`、`cli`、`tui`、`desktop`、空 source），輸入停用，並顯示「呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢。撳下面就可以喺呢個 Bot 嘅 API 對話繼續。」同掣「喺 API 對話繼續」。兩句中間係「。」。`api_server` 同 `bot_room` 可以傳。如果發送仍然收到 `permission_denied`（例如 `RuntimeStoreError('permission_denied')` 或者 `permission denied`），同一句同同一掣出現，狀態係「只可以睇」，唔出錯誤橫額、失敗氣泡或者原始錯誤，唔重試。呢個拒絕要記喺該 session id，今次開 app 期間歷史重載唔可以清走，拒絕嗰句要繼續睇到；`source` 推斷出嚟嘅只讀仍然有效。撳掣先至做：呢個 profile 已有另一條 `api_server` 或 `bot_room`（唔計而家呢條；未封存嘅 Bot Chat 優先）就轉去嗰條；冇先至 `POST /api/sessions`，`source` 係 `api_server`，標題 `Overlay`。啟動、打開、同發送都唔好自己建立。Bot Chat 揀邊條（R-SS-01）、config.json 位元組（R-SS-02）、啟動同打開唔 `POST /api/sessions`（R-SS-03）都保持不變。Session 選單要分得開同一標題嘅列：已封存加「（已封存）」；唔可以傳嘅 source 加「（Desktop／只可以睇）」呢類短後綴；標題已經以 `(CLI)` 呢類字尾結束就只加「（只可以睇）」，唔好再寫一次來源；可以傳嘅 `api_server`／`bot_room` 唔加。後端要把 `source` 同 `archived` 傳去前端（SS-08-c）。撳繼續掣要跳過每一條已經拒絕過嘅 session；可寫嘅都拒絕過先至建立 `Overlay`（SS-08-d）。被拒絕嘅打字標「未送出」，歷史重載都留低（SS-08-e）。 例外（2026-10-30，Devon OK）：主光球嘅 Desktop Bot Chat，即係清單入面唯一一條叫 `Bot Chat` 嘅列，source 係 `local`／`cli`／`tui`／`gui`／`desktop`／`oneshot`／`tool`／`acp` 都可以傳，因為 Hermes 0.22.5 嘅 Bot Chat 入口收呢種。伺服器答 `bot_chat_unbound` 就顯示「呢個 Bot Chat 未喺新版 Hermes 開過，伺服器未肯收。喺 Hermes Desktop 開一次呢個 Bot 嘅 Bot Chat，之後就可以喺度傳。」，答 `bot_chat_not_local` 就顯示「伺服器話呢個 Bot Chat 唔係本機對話，唔肯收。要喺擁有佢嘅 Hermes Desktop 開一次。」；打咗嘅字標「未送出」，唔鎖做只可以睇，唔自動重試。Bot Chat 入口只會一次過畀成段回覆：顯示「思考中…」，之後成段出；冇即時字就讀一次對話紀錄，唔可以停喺空白。`api_server` 嘅 Bot Chat 照舊可以傳；伺服器會改名嗰個問題由 Hermes 管家喺伺服器修，overlay 唔加攔截。其他 session 照上面規則。
 
 **SS-08-b** `permission_denied` 嘅只讀鎖跟 session id 留喺今次 app 運行，歷史重載唔好用 `source` 推斷嘅 `read_only` 清走。拒絕句同「只可以睇」保持可見。
 
@@ -363,17 +453,19 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（盒）：`oneshot`／`desktop`／`tui`／`cli`／空 source 係只讀而且 id 不變；`api_server`／`bot_room` 可寫；explicit desktop `20261015_011713_2242f9` 仍然開嗰條而且只讀；`failure_detail`／`explain` 見到 `RuntimeStoreError('permission_denied')` 只剩嗰句，而且唔出橫額；未撳掣唔建立 session；已有另一條 API Bot Chat 就轉去，冇先至建立標題 `Overlay`；`send_chat` 喺 `status: 404` 之前唔呼叫 `ensure_bot_chat`、`create_session`、`persist_pin`。呢條唔寫 config.json。SS-08-a：停用輸入撳字唔會入去；錯誤橫額嘅左右緣都喺面板入面。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
-**R-SS-09** 人手揀咗一條伺服器已經結束嘅對話（`ended_at` 或者 `end_reason`，例如 `tui_shutdown`）之後，傳送唔好當個 bot 仲忙，亦唔好把狀態寫成「連線錯誤」。Hermes 0.22.5 對呢種 id：`POST /v1/runs` 可以先 202，然後喺 `gateway/session.py` 把過期 route 拆走、開一條冇 parent 嘅新 session（標題可以係 `Continue previous conversation`），回覆因此唔喺原本嗰塊面板；下一句 409 body 係 `{"error":{"code":"admission_conflict"}}`（`gateway/session_api.py` 活 route 唔喺呢條譜系）。Overlay 要：
+**R-SS-09** 人手揀咗一條伺服器已經結束嘅對話（`ended_at` 或者 `end_reason`，例如 `tui_shutdown`）之後，傳送唔好當個 bot 仲忙，亦唔好把狀態寫成「連線錯誤」。Hermes 0.22.5 對呢種 id：`POST /v1/runs` 可以先 202，然後喺 `gateway/session.py` 把過期 route 拆走、開一條冇 parent 嘅新 session（標題可以係 `Continue previous conversation`），回覆因此唔喺原本嗰塊面板；下一句 409 body 係 `{"error":{"code":"admission_conflict"}}`（`gateway/session_api.py` 活 route 唔喺呢條譜系）。Overlay 要： 例外（2026-10-30）：主光球嘅 Desktop Bot Chat（清單唯一一條 `Bot Chat`）有 `ended_at`／`end_reason`（例如 Desktop 閂咗嘅 `tui_shutdown`）唔當已結束，照樣可以傳；Hermes 下一句會自己再開返佢。
 
-1. 送出 HTTP 409 要讀 `error.code`。只有忙碌或者租約衝突（`session_active_turn`、`queue_full`、`admission_started`、`busy`，或者 code 含 `lease`）先顯示「個 bot 仲忙，呢句未送出。」。`admission_conflict` 顯示「呢個對話已經喺伺服器關閉（admission_conflict），回覆唔會出現喺呢度。」，狀態係「對話已關閉」，並有掣「轉去新對話」。其他 409 顯示「伺服器拒絕咗呢句（code）。」，唔好把原始 JSON 倒入橫額。批准 409（「呢個批准已經過時」）、澄清 409、停止 409（`run_not_active`）、steer 409（`run_not_accepting_steer`／`steer_not_accepted`）保持原句。`permission_denied` 仍然係 R-SS-08 嗰句。
-2. 一輪完成之後，如果伺服器報嘅 `session_id`（202 body、事件或者 `GET /v1/runs/{id}`）唔等於送出嗰條，或者送出期間 session 清單剛好多咗一條未結束嘅新 id，就跟過去：面板改顯示嗰條，並且只用手動 explicit 嗰條寫法（`persist_pin`，只動呢個 profile 嘅 session id／explicit／原有 anchor）記住。跟唔到就出通知同「轉去新對話」，回覆唔可以靜靜消失。選單要即時列出跟去嗰條，唔使閂面板再開。
-3. Session 選單把 `ended_at` 或 `end_reason` 有值嘅列標「（已結束）」。揀中之後、以及撳傳送之前，都要講明呢個對話已經喺伺服器關閉，而且唔好把字送入去。掣轉去另一條未結束、可以傳嘅對話（Bot Chat 優先）。啟動仍然跟 R-SS-01：explicit 而且清單仲有呢條就開佢，唔好因為已結束就清走。
+1. 送出 HTTP 409 要讀 `error.code`。只有忙碌或者租約衝突（`session_active_turn`、`queue_full`、`admission_started`、`busy`，或者 code 含 `lease`）先顯示「個 bot 仲忙，呢句未送出。」。`admission_conflict` 顯示「呢個對話已經喺伺服器關閉（admission_conflict），回覆唔會出現喺呢度。」，狀態係「對話已關閉」，並有掣「轉去 Bot Chat」。其他 409 顯示「伺服器拒絕咗呢句（code）。」，唔好把原始 JSON 倒入橫額。批准 409（「呢個批准已經過時」）、澄清 409、停止 409（`run_not_active`）、steer 409（`run_not_accepting_steer`／`steer_not_accepted`）保持原句。`permission_denied` 仍然係 R-SS-08 嗰句。
+2. 一輪完成之後，如果伺服器報嘅 `session_id`（202 body、事件或者 `GET /v1/runs/{id}`）唔等於送出嗰條，或者送出期間 session 清單剛好多咗一條未結束嘅新 id，就跟過去：面板改顯示嗰條，並且只用手動 explicit 嗰條寫法（`persist_pin`，只動呢個 profile 嘅 session id／explicit／原有 anchor）記住。跟唔到就出通知同「轉去 Bot Chat」，回覆唔可以靜靜消失。選單要即時列出跟去嗰條，唔使閂面板再開。
+3. Session 選單把 `ended_at` 或 `end_reason` 有值嘅列標「（已結束）」。揀中之後、以及撳傳送之前，都要講明呢個對話已經喺伺服器關閉，而且唔好把字送入去。例外（2026-11-02）：`end_reason` 係 Hermes 會自己再開返嘅意外結束（`_RECOVERABLE_END_REASONS`，`hermes_state_common.py:190`：`agent_close`、`ws_orphan_reap`、`superseded_by_resume`、`startup_orphan_reap`，例如另一部機嘅 Desktop／TUI 視窗斷線後 20 秒被收走）唔當已結束：冇「（已結束）」、冇關閉橫額、照樣可以傳；Hermes 下一句會喺同一個 id 再開返（`gateway/session.py`、`hermes_state_gateway.py`）。`tui_shutdown`、`cli_close`、`cron_complete` 同其他原因，或者只有 `ended_at` 冇原因，仍然當已結束。Rust（`hermes.rs` `session_closed`）同前端（`sessions.js` `sessionEnded`）用同一張表。掣轉去另一條未結束、可以傳嘅對話：先揀呢個 profile 嘅主 Bot Chat（R-SS-09 例外同 R-SS-08 嘅本機 Bot Chat 例外都算，即係 `tui` 而且 `tui_shutdown` 嘅 Bot Chat 都揀得），冇先至揀其他標題 `Bot Chat` 嘅可傳列，再冇先至揀最近活躍嘅可傳列。主 Bot Chat 喺選單唔加「（隱藏）」「（已結束）」或者「（隱藏／已結束）」（Desktop 嘅 hidden 旗對 Devon 冇意思，而且佢照樣可以傳）；已封存仍然標「（已封存）」。啟動仍然跟 R-SS-01：explicit 而且清單仲有呢條就開佢，唔好因為已結束就清走。
 4. 跟去嘅新 session 如果標題係空或者係 gateway 預設 `Continue previous conversation`，跟 renew skill（`freezemusic/hermes-renew-skill`，`skills/renew/scripts/rollover.py`）改名：舊列先 `PATCH /api/sessions/{old}` 把標題改成 `<舊標題>_YYYYMMDDHHMM`（切換當下、本機時鐘，同 renew 預設 `_%Y%m%d%H%M`；個名已經有人用，或者 400 `invalid_title`，就再加秒，只多試一次），然後新列 `PATCH` 成舊標題原字（例如 `MT5 wrapper`），再 `PATCH {"archived": true}` 封存舊列。唔好在標題或選單加「（已閉）」。改名失敗就唔好封存、亦唔好改新列，並把舊標題還原；選單仍然用舊名標新列。`Bot Chat` 只改顯示，唔好 PATCH。新列已經有自己嘅名就留低。config.json 仍然只動 session id／explicit／原有 anchor。
 5. Session 選單每次打開（`mousedown`、`focus`，以及已有的 `pointerdown`／方向鍵）都用當時的清單重建選項。選單開住時清單變咗（包括 `visualQuiet` 期間），就地改每一項的標籤，選中的 session 跟 id。focused 的 `<select>` 同 `visualQuiet` 都要寫到選項。
 
 config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細節）。唔好因此 `POST /api/sessions`。
 - 來源：Devon 手提（2026-10-27，SA-CONN-ERROR）。mt-orch explicit `api_1793024902_e96976d4`（`end_reason=tui_shutdown`）第一句 202 寫入 `20261027_200326_8166f64d`，第二句 409 `admission_conflict`。
-- 驗收（盒）：開住嗰條已結束嘅 mt-orch 對話，選單見到「（已結束）」；撳傳送未出網路，橫額係關閉嗰句，狀態係「對話已關閉」，有「轉去新對話」，輸入區嘅字仲喺度。若果 gateway 仍然把一句寫入另一條 session，面板要跟過去而且睇到回覆，選單唔使重開就見到新條，標題係 `MT5 wrapper`。舊條標題係 `MT5 wrapper_YYYYMMDDHHMM`（撞名就再加秒）而且 archived。Gateway 拒絕改名時，選單仍然顯示 `MT5 wrapper`，標題同選單都冇「（已閉）」。選單開住時改名，舊項標籤變成 `MT5 wrapper_YYYYMMDDHHMM`，新項變成 `MT5 wrapper`，選中的 id 留在原項。config 只改咗呢個 profile 嘅 session id。再對住已結束 id 收到 409 `admission_conflict` 時，唔好出現「個 bot 仲忙，呢句未送出。」或者狀態「連線錯誤」。個 bot 真係忙（`session_active_turn` 或者租約）仍然係忙嗰句。批准、停止、steer 嘅 409 字眼不變。
+- 驗收（盒）：開住嗰條已結束嘅 mt-orch 對話，選單見到「（已結束）」；撳傳送未出網路，橫額係關閉嗰句，狀態係「對話已關閉」，有「轉去 Bot Chat」，輸入區嘅字仲喺度。若果 gateway 仍然把一句寫入另一條 session，面板要跟過去而且睇到回覆，選單唔使重開就見到新條，標題係 `MT5 wrapper`。舊條標題係 `MT5 wrapper_YYYYMMDDHHMM`（撞名就再加秒）而且 archived。Gateway 拒絕改名時，選單仍然顯示 `MT5 wrapper`，標題同選單都冇「（已閉）」。選單開住時改名，舊項標籤變成 `MT5 wrapper_YYYYMMDDHHMM`，新項變成 `MT5 wrapper`，選中的 id 留在原項。config 只改咗呢個 profile 嘅 session id。再對住已結束 id 收到 409 `admission_conflict` 時，唔好出現「個 bot 仲忙，呢句未送出。」或者狀態「連線錯誤」。個 bot 真係忙（`session_active_turn` 或者租約）仍然係忙嗰句。批准、停止、steer 嘅 409 字眼不變。
+- 來源（2026-11-02，「什麼已結束? 而且不能釘?」）：mt-orch explicit `api_1793297254_e36fa90f`「MT5 wrapper」被 `ws_orphan_reap` 收走（另一部機嘅 Desktop／TUI 斷線），overlay 標「（已結束）」兼唔俾傳；「轉去新對話」揀咗舊嘅 Bingo/Gemini，唔係 Bot Chat；Bot Chat 顯示「（隱藏／已結束）」。盒 e6（Hermes 0.22.5）：`ws_orphan_reap` 列再 `POST /v1/runs` 202，回覆喺同一個 id，`ended_at`／`end_reason` 清走；`tui_shutdown` 列分叉，下一句 409 `admission_conflict`。
+- 驗收（盒，2026-11-02 補）：`ws_orphan_reap` 列選單冇「（已結束）」、揀中冇關閉橫額、可以送出；`tui_shutdown` 列仍然係舊行為，「轉去 Bot Chat」去主 Bot Chat（包括 `tui` 隱藏、`tui_shutdown` 嘅 Bot Chat）；主 Bot Chat 選單標籤係「Bot Chat」。
 - 狀態：❓ / ❓（單元測試）；Win 未驗。
 
 ---
@@ -419,7 +511,7 @@ config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細�
 - 驗收（盒）：連續 5 次 `browser_exec` 加 `search_files` 係一行；進行中第二次開始唔加卡；`search_files` JSON 唔出現喺收起嘅行同第一層展開；第二層先見到結果而且可捲；設定預設關，展開旗唔寫入 config。
 - 狀態：❓ / ✅(盒，單元測試)；Win 未再驗。
 
-**R-MD-07** 每個 Bot 面板嘅 composer 旁邊有撰寫模式掣，循環「一般」（預設）、「Plan」、「旁問」。一般照原文送出。Plan 送成 `/plan <原文>`（Hermes 寫 markdown 計劃去 `.hermes/plans/`，唔執行）。旁問送成 `/btw <原文>`（就住而家嘅對話問一句，唔打斷）。唔設 Debug，亦唔會對應 `/yolo` 或批准。已經以 `/` 開頭嘅句子（包括 `/plan`、`/btw`、`/renew`、`/stop`）唔再加前綴。氣泡顯示原文加細標「Plan」或「旁問」。Shift+Tab 同撳掣都循環。唔係一般時，掣同輸入框用強調色（`#0000f2`、`var(--bot-10)`）。Gateway 有指令清單時，清單冇嘅指令就收起嗰個模式。每個 bot 各自記住，只喺用戶切換時寫入嗰個 bot 嘅 `compose_mode`，其他鍵同次序唔郁。Plan 忙緊時 steer／排隊都帶住 `/plan`。旁問忙緊時直接送 `/btw`，唔 steer、唔排隊。
+**R-MD-07** 每個 Bot 面板嘅 composer 旁邊有撰寫模式掣，循環「一般」（預設）、「Plan」、「旁問」。一般照原文送出。Plan 送成 `/plan <原文>`（Hermes 寫 markdown 計劃去 `.hermes/plans/`，唔執行）。旁問送成 `/btw <原文>`（就住而家嘅對話問一句，唔打斷）。唔設 Debug，亦唔會對應 `/yolo` 或批准。已經以 `/` 開頭嘅句子（包括 `/plan`、`/btw`、`/renew`、`/stop`）唔再加前綴。氣泡顯示原文加細標「Plan」或「旁問」。Shift+Tab 同撳掣都循環。唔係一般時，掣同輸入框用強調色（`#0000f2`、`var(--bot-10)`）。Gateway 有指令清單時，清單冇嘅指令就收起嗰個模式。每個 bot 各自記住，只喺用戶切換時寫入嗰個 bot 嘅 `compose_mode`，其他鍵同次序唔郁。子光球用同一個 bot 嘅 `compose_mode`，唔好另存（R-SO-09）。Plan 忙緊時 steer／排隊都帶住 `/plan`。旁問忙緊時直接送 `/btw`，唔 steer、唔排隊。
 - 來源：Devon（2026-10-27）。
 - 驗收（盒）：開一個 bot，掣顯示「一般」。Shift+Tab 去「Plan」，掣同輸入框有強調色。打一句普通話送出，氣泡係原文加「Plan」，請求 body 係 `/plan <原文>`。再送 `/plan 已有` 唔會變成 `/plan /plan`。再循環去「旁問」，送一句，body 係 `/btw <原文>`，氣泡加「旁問」。忙緊時旁問直接送出，唔出現排隊或 steer。送 `/stop` 或 `/renew` 唔加前綴，忙緊時 `/stop` 仍然停止。若伺服器指令清單冇 `/btw`，「旁問」唔出現。重開 overlay，呢個 bot 仍然係上次嘅模式，另一個 bot 係一般。config.json 只係嗰個 bot 多咗 `compose_mode`。返去一般之後嗰個鍵消失，其他鍵唔重寫。
 - 狀態：❓ / ❓（單元測試）；Win 未驗。
@@ -437,6 +529,20 @@ config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細�
 - 來源：美術監督 v20、PR3、PR3b；SPEC §10。驗收（盒）：1:1 截圖同 computed style。狀態：❓ / ❓。
 
 ---
+
+## 10a. 文字大小同介面語言（R-LK）
+
+**R-LK-01** 文字大小（todo 31，Devon 2026-10-28）。設定入面「外觀」有一行「文字大小」，四粒 24px 見方嘅圖示掣（「A」由細到大），tooltip 同 `aria-label`：「細字」0.9×、「標準字」1×（預設）、「大字」1.15×、「特大字」1.3×（tooltip 字**已取代**，見 R-LK-03：而家係「細／標準／大／特大」；倍數唔變）。撳即刻試睇；撳「儲存」先經正常設定儲存（`save_settings`）寫入 config.json 嘅 `text_size`（`s`／`l`／`xl`）；揀返標準就唔寫呢個鍵（舊檔逐個位元組不變）；唔儲存就關設定，返返已儲存嗰個。冇呢個鍵、空值或者唔認得嘅值都當標準。舊前端唔送呢個欄（`None`）就保留檔案原本嘅值。範圍：面板入面嘅字（對話、計劃、看板、排程、設定、批准／澄清卡、session 選單、橫額），經 `<html data-text-size>` 同 `--text-scale`。光球、光球字、光球名、預覽膠囊同面板尺寸唔變，所以命中區同變形唔郁（R-OB-01、R-CT）。標準大小冇 `data-text-size`，所有 px 同今日一樣。
+- 驗收（單元）：`look.test.js`（四級、預設、只存非預設、`applyTextSize`、CSS 只喺 `html[data-text-size]` 生效、光球唔跟）；`config.rs` `text_size_and_language_keep_only_non_default_values`、`an_old_file_gains_no_look_keys_and_a_picked_look_round_trips`；`lib.rs` `settings_save_keeps_the_file_look_when_an_older_form_sends_none`。盒：四級截圖，揀咗唔儲存關設定會返原本，儲存之後 config.json 只多 `text_size`。
+- 狀態：❓ / ✅(盒，next-637a7a1)。
+
+**R-LK-02** 介面語言（todo 31，Devon 2026-10-28 想要英文、繁中、簡中、日文，之後可能更多）。設定「外觀」有一行「介面語言」，兩粒 24px 圖示掣：「繁」（繁體中文（香港），預設）同「EN」（English），tooltip 係語言全名。同 R-LK-01 一樣：即刻試睇，「儲存」先寫 `ui_language`（`en`；zh-HK 唔寫鍵），唔儲存就關會返原本。程式嘅原文仍然係 zh-HK；英文係 `src/look.js` 一張逐句對照表，只換成句完全一樣嘅介面字（掣、標籤、tooltip、placeholder、狀態），唔會改一句入面嘅一部分。對話、計劃、看板卡片同詳情、session 標題、Bot 名、橫額、`code`／`pre` 永遠唔譯。只有揀咗英文先開 MutationObserver，zh-HK 嘅行為同今日完全一樣。`<html lang>` 跟住語言，所以英文用返現成嘅 `:lang(en)` 字距。今次只做 zh-HK 同 English；簡中、日文之後加入同一張表。對照表冇嘅字（長說明、少見錯誤訊息）暫時保持 zh-HK。
+- 驗收（單元）：`look.test.js`（換字、data 唔譯、新加嘅字即時換、返 zh-HK 全部還原、app 改過嘅字唔會被蓋、zh-HK 唔開 observer、表入面冇中文值、掣有 tooltip）。盒：英文設定同對話面板截圖，切返繁中還原。
+- 狀態：❓ / ✅(盒，next-637a7a1)。
+
+**R-LK-03** 文字大小掣（美術監督 72cba45 審查第 6 點，2026-11-03）。四粒 24px 掣嘅「A」由 10／12／15／18px 改做 12／14／16／18px：最細嗰粒讀得到，仍然逐級變大。tooltip 同 `aria-label` 一樣：「細」「標準」「大」「特大」；EN 係 Small、Default、Large、Extra large（`look.js` 對照表）。揀中嗰粒仍然實心 `#0000f2` 白字。繁／EN 掣唔改。
+- 驗收（單元）：`look.test.js`「R-LK-03 …」。盒：設定外觀行截圖（繁、EN），hover tooltip。
+- 狀態：❓ / ✅(盒，ad-72cba45)。
 
 ## 11. 系統、安全、部署（R-SY）
 
@@ -466,37 +572,143 @@ config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細�
 - 驗收：停掉假 gateway，面板出重試狀態；再開 gateway，喺退避窗口加 1 秒內看板同 Bot 自己出現；全程 0 次建立 session。CI／單元測試覆蓋假 gateway 由落到起。重試膠囊經 `placeKeyBanner` 放喺面板外 12px、畫面中心嗰一側，而且唔好疊住光球或者佢 34px 光暈。
 - 狀態：❓ / ❓。
 
-**R-SY-09** 連住 Hermes 時，大約每 60 秒（上下 20%）靜靜對一次 profile 名單，唔使重開程式。用 `claimProfiles(["roster"])`，同看板、排程、其他 Bot 嘅探測唔重疊。Gateway 落咗就跳過呢一輪，交給 R-SY-08。
+**R-SY-09** （2026-11-03：唔再讀 gateway `GET /health` 嘅 `profiles`；Kanban origin 留空係 config 預設 `http://127.0.0.1:9119`，唔再用 gateway host；冇金鑰提示。見 R-AR-06。下面提到嘅 gateway `/health`、「gateway host 埠 9119」同金鑰提示**已取代**。）連住 Hermes 時，大約每 60 秒（上下 20%）靜靜對一次 profile 名單，唔使重開程式。用 `claimProfiles(["roster"])`，同看板、排程、其他 Bot 嘅探測唔重疊。Gateway 落咗就跳過呢一輪，交給 R-SY-08。
 
 遠端機冇本機 `~/.hermes`、gateway `GET /health` 又冇 `profiles` 陣列、亦冇 dashboard session token 時，用 Kanban 同一個 origin（設咗嘅 Kanban 位址，否則 gateway host 埠 9119）打 `GET /api/profiles`。認證係鑰匙圈入面嘅 Kanban native access token，`Authorization: Bearer`（Hermes 0.22.5 gated dashboard middleware 收呢種 bearer；唔係 `X-Hermes-Session-Token`）。GET 回 401 就用同一條 refresh token `POST /auth/native/refresh` 一次，寫返新 access 同新 refresh，然後同一個 GET 再試一次。已拒嘅 refresh 唔好每個輪詢再 POST。呢下對 `/api/profiles` 只可以 GET。已經喺名單入面嘅 `enabled` 唔改。`description`（冇就用 `detail`）抄入名單嘅詳情：新列直接寫，已有列只喺詳情仍然空白時先填，已寫嘅詳情唔改。
 
 新 profile 出光球，然後用現有 `profilesNeedingKeys` 提示 Devon 自己填金鑰。唔自動填金鑰，唔改共用鑰匙圈項目。對 Hermes 只讀，唔建立 session。
 
-config.json 只有名單真係多咗 profile，或者空白詳情抄到 description，先寫。冇變動嘅每一輪，檔案位元組保持一樣。已有 Bot 嘅 sessionId、enabled、顏色、次序、名稱，同已寫嘅詳情都唔改。計時器唔刪走消失或者隱藏嘅 profile，亦唔因為今次搵唔到就標做不可用（一次讀取失敗唔可以隱藏晒所有人）。
+config.json 只有名單真係多咗 profile，或者空白詳情抄到 description，先寫。冇變動嘅每一輪，檔案位元組保持一樣。已有 Bot 嘅 sessionId、enabled、顏色、次序、名稱，同已寫嘅詳情都唔改。計時器唔刪走 config.json 入面消失或者隱藏嘅 profile，亦唔因為今次搵唔到就標做不可用（一次讀取失敗唔可以隱藏晒所有人）。2026-10-30（Devon：bot 加或者減都唔使重開）：遠端名單（gateway `/health` 嘅 `profiles`、dashboard 或者 9119 `GET /api/profiles`）真係答咗，而且連續兩次都冇某個 profile，先喺記憶體收起佢嘅光球同未釘子光球；第一次冇咗之後約 5 秒再讀一次確認，所以大約 60–80 秒內消失。淨係本機 `~/.hermes` 唔算遠端名單；讀唔到、或者名單一個現有 profile 都冇，當讀壞，乜都唔收。有自己 base_url 嘅列唔算 gateway profile，唔收。嗰個 Bot 面板、子光球面板開住或者行緊，等佢閂咗先收。收起唔寫 config.json：sessionId、enabled、顏色、次序、名稱、詳情、模式同 `suborb_pins` 全部原封不動；設定名單照列。佢返到名單就即刻再出，用返原本設定，唔再出金鑰提示。
 
 每次同步都要為新 profile 出一次金鑰提示，包括啟動 `connectHermes`、`recoverGateway` 同靜態計時。已經喺名單入面嘅唔再提示。提示用 sticky kind `keys`：第一次載入歷史、`clearConnectionBanner()`、同 4 秒計時都唔好清走。Gateway 膠囊顯示期間記住呢句，膠囊收起之後再出，而且要更新 hit rect。金鑰橫額跟面板：平常點擊打開設定；揸住 Ctrl 就穿透，同其他面板一樣。打開設定先收起橫額，名單留住。儲存之後只留仍然未有金鑰嘅 profile，再出橫額。金鑰橫額預設停喺 top 96px。打開咗嘅面板（主面板同貼住嘅計劃，包括 `.plan-hit-host`）外緣 12px 之內，就改放喺面板外 12px、畫面中心嗰一側；嗰側放唔落先試其餘邊，再退到該面板 header 行入面。唔好逐行內容向下推。橫額唔好壓住計劃步驟、Bot Chat 下拉、看板內容，亦唔好疊住面板、光球或者光球 34px 光暈。
 
 頭四粒光球用經典邊位（一粒喺頂邊 t=0.21；四粒係頂、右、底、左），加 profile 唔好郁呢四粒。第五粒起放入空位：中心距要大過光碟直徑加兩個 72px 淡出半徑，72px 淡出先唔會同時捉到兩粒；新位亦唔好落入打開咗嘅看板面板。6 粒或以上唔好疊到看板、排程、設定光球。`profiles/` 入面以點開頭嘅目錄（例如 `.deleted`）唔算 profile。
 
 - 來源：Devon。8cf5af4 盒：恢復先跑同步，3 個新 profile 有 2 個冇金鑰提示；加光球會重排，6 粒時 researcher 疊住 cron；`.deleted` 被當成 profile。f1ebd03 盒：金鑰提示約 60ms／340ms 就被歷史載入或 gateway 膠囊清走；穩定槽把原有四粒推去角落，新粒相距約 70px 一齊淡，打開看板蓋住預設光球。afb21e2 盒：平常點擊橫額開到設定；Ctrl+click 穿透係面板規則，`interaction.rs` 維持只放行光球同 `pill:`。eafdd1e 盒：計劃打開之後 Goal 行搬入 `.plan-hit-host`，橫額 y 109–142 仍然蓋住 Goal y 110–118。fbcb44c 盒：橫額 y=133 蓋住計劃步驟 1 同 Bot Chat 下拉右緣；已登入看板橫額 top y=794 疊住面板底邊 y=801 約 7px。
-- 驗收（單元）：冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；`GET /api/profiles` 帶 `Authorization: Bearer`，401 只 `POST /auth/native/refresh` 一次然後再 GET 一次，`/api/profiles` 冇 POST，已有列嘅 `enabled` 保持原值，空白詳情抄 `description`，已有詳情保持原值；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額預設 top 96px，打開面板就放喺外緣外面至少 12px（優先畫面中心嗰側），光暈擋住就換邊，放唔落先用 header 行，唔好壓住計劃步驟、Bot Chat 下拉、看板底邊或者光球光暈；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
+- 驗收（單元）：遠端名單連續兩次冇咗先收起，讀唔到或者全部唔見唔收，返嚟即刻出，收起唔寫檔；冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；`GET /api/profiles` 帶 `Authorization: Bearer`，401 只 `POST /auth/native/refresh` 一次然後再 GET 一次，`/api/profiles` 冇 POST，已有列嘅 `enabled` 保持原值，空白詳情抄 `description`，已有詳情保持原值；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額預設 top 96px，打開面板就放喺外緣外面至少 12px（優先畫面中心嗰側），光暈擋住就換邊，放唔落先用 header 行，唔好壓住計劃步驟、Bot Chat 下拉、看板底邊或者光球光暈；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
 - 狀態：❓ / ❓。
 
 ---
 
-## 12. 將來／唔包喺 PR #3（R-SO）
+## 12. 子光球（R-SO）
 
-PR #3 過咗先開新 branch，跟 `SUBORB-SPEC.md` v1（美術監督）。
+R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收細則，同草稿撞嘅地方以新條文為準。R-SO-02 喺 2026-11-04 改寫做扇形（美術監督＋Devon），R-SO-06、R-SO-08 跟住改咗數量同命中圈。PR #3 仍然唔包含呢節嘅實作。
 
-**R-SO-01** Bot Chat 以外嘅 session 每條一粒 sub-orb（Devon 2026-10-21）。每個 Task session 自動出一粒臨時 sub-orb（虛線圈）；Devon 釘選咗先一直留住（實線圈）；未釘選嘅喺完成兼睇完之後 3s 收起。
-**R-SO-02** 沿主球所在嗰條邊排成一行；直徑 = 主球 0.45 倍（最細 14px）；最多 5 粒，第 6 個位係「+N」；按釘選／建立時間排，唔因狀態跳位。
-**R-SO-03** 兩條狀態通道：活動（閒置 .45、思考中 1.2s 弧）同角標（失敗 > Plan > 未讀，一次只出一個）。
-**R-SO-04** sub-orb 用同一套 morph、同一條 Ctrl 規則；session 面板 header 用 breadcrumb `BOTNAME / session 標題` 加實心釘。
-**R-SO-05** 閒置冇持續動畫；只動 transform、opacity、clip-path。
-- 驗收：開新 branch 時逐條寫細（盒錄影＋Windows 真點擊），而且**本檔全部 PR #3 項目照樣要過**。
-- 狀態：— / —。
+**R-SO-01** Bot Chat 以外嘅 session 每條一粒 sub-orb（Devon 2026-10-21）。每個 Task session 自動出一粒臨時 sub-orb（虛線圈）；Devon 釘選咗先一直留住（實線圈）；未釘選嘅喺完成兼睇完之後 3s 收起。細則見 R-SO-06、R-SO-07。
+**R-SO-02** 子光球扇形排（美術監督 2026-11-04 提議，第二輪 9/10 接受；Devon 2026-11-04 OK，取代舊「沿主球所在嗰條邊排成一行、最多 5 粒」）。
+1. **位置**：子光球排喺主光球向工作區中心嗰邊，成一條弧。方向 = 主光球中心指向工作區中心。軌道半徑（主光球中心到子光球中心）= 主光球半徑 + 10px + 子光球半徑；44px 主光球即係 41.9px。
+2. **間距**：相鄰兩粒嘅 24px 命中圈之間最少留 2px。要嘅弧闊過 120° 嘅話，就收窄每格角度，將軌道推出去（5 個位：每格 30°，半徑 50.2px）。
+3. **次序**：由弧嘅逆時針一端開始，順時針排。次序同今日一樣：釘選先，然後按建立時間，狀態唔會令佢哋跳位（R-SO-06）。右邊嘅主光球就係由下面排上去，左邊就由上面排落嚟。
+4. **數量**：最多 4 粒，第 5 個位係「+N」，Ctrl+撳開該 bot 嘅 session picker。
+5. **大小同命中**：直徑係主光球 0.45 倍（最細 14px；44px 主光球即係 19.8px）。命中圈 24px，同圓心，唔會細過光碟。命中區唔好重疊，一點同時喺幾個圈入面就照舊細粒先中（R-SO-08）。
+6. **太擠就收埋**：先試弧形唔轉，再試轉 ±15°、±30°。如果每個角度都有一粒會出工作區（留 4px），或者光碟邊離隔籬任何主光球或者功能光球嘅**光碟**少過 12px（光暈可以重疊），就收埋做一粒數字章。數字章放喺弧中間，寫總數。平時只見數字章；揸住 Ctrl 先展開，用離隔籬最遠嗰個角度；放手就收返。收埋咗嘅子光球冇命中、冇名牌。
+7. **樣**：子光球冇自己嘅光暈，亦冇字影。只有主光球有光暈，光暈外邊就係子光球開始嘅位置（軌道減子光球半徑：4 個位或以下係 32px，5 個位係 40.3px，平均約主光球直徑 1.6 倍）。光碟係實心玻璃 `rgba(248,248,252,.92)`，加固定陰影 `0 1px 2px rgba(20,20,43,.18)`；外圈係 CSS border 1.5px，用 bot 色（釘咗實線、未釘虛線），WebView2／WebKitGTK 可以捨入做整數 px，唔使改用 SVG。字用 Noto Sans HK 11px `#14142b`。「+N」同太擠嘅數字章用同一款光碟，外圈虛線 `#616191`，字用 Barlow Condensed 600 11px `#14142b`。揸住 Ctrl 時可以見到 1px 軌道弧，bot 色 .35，冇命中。
+8. **狀態點**：6px，外圈 1.5px `#fff`，再加一圈 0.5px `rgba(20,20,43,.25)`，放喺光碟邊 45° 位（右上）。只跟 R-SO-03 嘅角標通道：完成未讀係黃點（`--nous-yellow`），有計劃係 bot 色點，等你答用批准角標，失敗係光碟入面 1.5px `#e5484d` 圈；閒置（冇角標）就冇點。運行中只係轉弧，唔加點。
+9. **面板打開時**：主光球個面板開住嗰陣，子光球會收埋，冇命中、冇名牌，變成面板標題列入面嘅細 tab：16px 圓點加首字，虛線係未釘，實線係已釘，「+N」開 session picker。撳 tab 唔使 Ctrl（面板本身收到點擊），會開嗰粒子光球嘅面板（R-SO-09）。
+10. **動畫**：只郁 opacity 同 transform，200ms `cubic-bezier(.2,.8,.2,1)`。用喺排位改變、展開、收埋、收入標題列。閒置時冇任何動畫（R-SO-05）。近距淡出照用 R-PL-04 嘅 280ms `cubic-bezier(.3,.6,.2,1)` 同 0.18 地板（R-SO-08）。
+11. **照舊唔變**：唔揸 Ctrl 就穿透（R-CT），主光球光暈唔可以被裁切（R-SO-08），顏色用該 bot 自己嘅色，角標一次只出一個。
+- 來源：美術監督 2026-11-04（第一輪 5 個偏差接受；第二輪 9/10）；Devon 2026-11-04。
+- 驗收（單元）：`suborb-fan.test.js`。盒：四條邊各一張 4 粒加「+N」；太擠收埋做數字章、揸住 Ctrl 展開；揸住 Ctrl 見軌道弧（淺色同深色牆紙）；面板打開變標題列 tab；量度相鄰命中圈最少 2px、命中圈同主光球之間有空位、光碟離隔籬主光球光碟最少 12px；閒置時 `document.getAnimations()` 冇子光球動畫；閒置子光球冇狀態點。Windows 125% 實機截圖未影。
+- 狀態：❓ / ✅(盒，fan-suborbs r3)。
+
+**R-SO-03** 兩條狀態通道：活動（閒置圈 .45、思考中 1.2s 弧）同角標（等緊答 > 失敗 > Plan > 未讀，一次只出一個）。光碟本體嘅遠近透明度見 R-SO-08，唔再用 .45 做整粒光球嘅靜止透明度。
+**R-SO-04** sub-orb 面板用同一套 Ctrl 規則同同一塊 bot 面板（composer、撰寫模式、工具摺疊、批准／澄清卡、停止、排隊）。Header 係 breadcrumb `BOTNAME / session 標題`，加「釘住」／「取消釘住」。
+**R-SO-05** 閒置冇持續動畫；子光球只動 transform、opacity、clip-path。思考弧只喺 running 時先轉。
+
+**R-SO-06** 子光球發現。Devon 一個任務一條 Hermes session。主光球永遠開該 bot 嘅 Desktop Bot Chat（R-SS-01），程式唔會自動把主面板轉去另一條 session，啟動亦唔建立 session。Bot Chat、主光球而家綁住嗰條、已封存、以及標題以 `_YYYYMMDDHHMM` 或 `_YYYYMMDDHHMMSS` 結尾（renew 封存名）嘅列，永遠唔做子光球。第一次 session 清單係基準：當時已存在、又未釘住嘅列唔出子光球。之後新出現嘅任務列，或者 `message_count`／`last_active` 相對基準有變嘅列，先自動出一粒未釘住嘅子光球。發現沿用而家嘅平價輪詢：只比較清單上嘅 `message_count` 同 `last_active`；有變先攞該列尾頁（最多 40 行），唔好為子光球加全對話輪詢。頁面準備好之後要再播一次而家嘅清單（唔下載全文），等啟動之後第一條外面開嘅任務唔會被當成基準，釘住嘅子光球亦唔使等下一次清單變化先出現。可見子光球最多 4 粒（R-SO-02）；再多就第 5 個位係「+N」，Ctrl+撳開該 bot 嘅 session picker。啱啱建立或者打開嘅 session 一定佔一粒可見光碟並打開面板；讓位俾最舊嗰粒未釘、未活動嘅子光球入「+N」。4 粒都釘住時仍然顯示新嗰粒。次序係釘選先，然後按建立時間，狀態唔好令佢哋跳位。已封存嘅列（清單標咗封存，或者之前喺清單出現過而家冇咗）要收起未釘同釘住嘅子光球。只有呢種情況先從 config 刪走個 pin。第一份清單未到、或者啱啱建立而下一份清單未包括，都唔好刪 pin。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：模擬清單第一次唔出舊任務；新 id 出一粒；封存同 `標題_202610271200` 唔出；`message_count` 冇變就唔再取訊息；多過 4 粒先出「+N」。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-SO-07** 釘選。Ctrl+右撳子光球（穿透規則同主光球，見 R-CT-02）出「釘住」或「取消釘住」。面板 header 同一個掣。只有釘選、取消釘選，同埋該 session 被封存，先寫 config.json 頂層 `suborb_pins`（profile → session id 陣列），用 splice，唔改 session id、explicit、anchor 同其他鍵。取消到空就刪走個鍵，檔案返到未釘之前嘅位元組。未釘選嘅子光球，只可以喺面板已經收起、任務完成（唔再思考、唔再等答，而且尾頁已 settle 或 session 已結束）兼 Devon 已讀（面板打開過）之後，再過 3000ms 先收起。3000ms 由收起面板嗰下開始計。面板開住、輸入框有焦點、或者輸入框有字，都唔好收。3 秒到就要再算一次，唔好等下一次清單變化。尾頁最後一行仲係用戶、bot 未答完，子光球保持運行弧。釘住嘅留低，即使已讀同完成。已讀之後再有新 `message_count` 就當未讀，子光球再出。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：釘一次 config 只多 `suborb_pins`；取消釘選之後個鍵消失，session id 不變；面板開住唔好收；收起面板 3 秒後未釘嘅子光球消失，釘住嘅仲喺。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-SO-08** 子光球點擊同外觀。預設實色、穿透（平時透明度跟主光球同一個設定，R-OB-07）；游標行近先淡，地板 `min_opacity` 0.18（目標 `min(0.18, 平時)`）；Ctrl 揸住先收到點擊；命中圈 24px，同光碟同圓心（R-SO-02），主光球照舊用自己嘅命中邊。淡出時間係 R-PL-04 嗰條 280ms `cubic-bezier(.3,.6,.2,1)`，唔好改計劃揭示曲線本身。顏色用該 bot 自己嘅色。未釘係虛線圈，釘咗係實線圈。活動：思考／運行中先轉 1.2s 弧；閒置唔轉。角標一次一個：等你答（澄清或批准）> 失敗 > 有計劃 > 完成未讀；閒置冇角標就冇狀態點（R-SO-02 第 8 點）。主面板 dock 或者 undock 之後要按而家嘅主光球再排子光球。命中區唔好重疊；一個點同時喺多粒光球入面，細粒先中，一樣大就最上面嗰粒先中。收起咗嘅子光球面闆、計劃同描邊唔好畫任何邊，亦唔好裁切或者蓋住主光球嘅光暈（子光球自己冇光暈，R-SO-02）。光暈唔好被殼、clip 或者任何容器邊界切成直線。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：冇 Ctrl 撳子光球，後面收到；Ctrl+撳開該 session 面板；近距目標透明度係 0.18，遠距係平時透明度（預設 1）；主光球淡出仍然係 R-OB-05 嘅 160ms。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-SO-09** 子光球面闆。Ctrl+撳子光球開嘅面板同普通 bot 面板一樣可以打字、循環「一般／Plan／旁問」、摺疊工具、出批准卡同澄清卡、停止、steer／排隊。撰寫模式就係該 bot 嘅 `compose_mode`（R-MD-07）：子光球同 Bot Chat 顯示同一個模式，切換只走現有嘅 `set_compose_mode` splice，唔好另寫一個鍵。送出打去該 session，唔寫主光球 pin，唔切斷主光球嗰條串流。批准仍然只得「批准（一次）」同「拒絕」，唔自動批准，唔對應 `/yolo`。多過一個子光球面闆要喺工作區入面錯開（唔好伸入工作列），保持完整面板高度（工作區矮過嗰個高度就用工作區高度）。下一步會推出工作區或者壓矮張卡，就返到頂或者轉去左邊再排。開住嘅面板要畫喺光球上面。每塊子光球面闆自己嗰粒收埋咗嘅標題光球唔好蓋住「關閉」。新開嘅子光球面闆要逐塊移 36px，唔好疊喺同一個座標。成串都由第一塊開住嘅子光球面闆嘅位置起計（唔係每塊自己粒光球嘅位置），所以轉欄之後一樣係完整 36px；一邊排完就喺起點另一邊繼續（S23：轉欄後只移約 10px）。Esc 先收起有焦點嘅面板；冇焦點就收起最上面嗰塊，包括仍然開住嘅主面板。已經收起嘅子光球唔好再食呢下。子光球收起時要一齊拆走計劃預覽、面板同 hit，包括搬咗出去嘅 `plan-hit-host`。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：子光球送出嘅 profile 同 session 係該任務；config 嘅 session id 不變；主光球 Bot Chat 嘅串流唔會因為子光球停止而被 abort。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-SO-10** 拎舊 session 出嚟做子光球（Devon 2026-10-30；2026-11-02 改做一張合併清單）。主面板嘅 session 揀選器係一張自己畫嘅下拉清單（原生 `<select>` 嘅 option 放唔入掣，所以佢只係留喺背後做值），樣同高度同以前一樣，旁邊仍然有「＋」開新 session；冇另外嘅拎出掣。清單浮喺對話上面、唔出面板外，命中區跟面板；現時嗰條有標記（粗字加左邊藍線）。撳一行或者用 ↑／↓／Home／End 揀再撳 Enter，就同以前揀 session 一樣（`select_session`）；Esc、Tab 或者焦點離開就收起。合資格嘅行喺右邊有一粒細 icon 掣，冇字，tooltip「拎出做子光球」，aria-label「拎出做子光球：標題」（→ 鍵可以移去粒掣）。合資格跟 R-SO-06：唔係 Bot Chat、唔係主光球而家綁住嗰條、未封存、唔係 `_YYYYMMDDHHMM`／`_YYYYMMDDHHMMSS` 結尾嘅 renew 封存列。撳 icon 唔會同時揀嗰行：佢用 R-SO-06「啱啱建立或者打開嘅 session 一定佔一粒可見光碟並打開面板」嗰條路，開一粒未釘嘅子光球同佢嘅面板。主面板留喺 Bot Chat：唔叫 `select_session`，config.json 嘅 `session_id`、explicit、anchor 位元組唔變；唔 POST `/api/sessions`；唔寫 config，除非之後 Devon 自己釘住（R-SO-07）。清單太長就喺 240px 入面捲，每行保持一行高（26px），唔壓扁。子光球面板冇呢張清單。
+- 來源：Devon 2026-10-30 17:25（倫敦）：而家冇辦法將一條靜咗嘅舊 session 變子光球；揀選器只會切主面板，啟動時已有嘅 session 當基準，永遠唔出光球。
+- 驗收（單元＋盒）：清單唔包 Bot Chat／綁住列／封存／renew 名；撳一行之後出未釘子光球同面板，主面板 session 唔變，冇 `select_session`、冇 POST，config 位元組一樣；掣冇字、24px、唔令 header 變高。
+- 狀態：❓ / ❓。
+
+**R-NS-01** 每個 bot 面板同子光球面闆有一粒細嘅「＋」圖示掣（24px 見方，同標題列其他控制一樣嘅框同字色），tooltip（`title`）同 `aria-label` 都係「開新 session」。主面板放喺 session 選單隔籬同一行；子光球面闆冇選單，就放喺標題列「釘住」左邊。唔可以用成行闊嘅文字掣，亦唔可以令標題列或者選單嗰行變高。鍵盤 Tab 去到，Enter／Space 撳得；撳咗喺 composer 頂出標題表格（`aria-expanded` 跟住變），焦點去標題輸入。**通則：面板入面嘅控制一律係細圖示掣加 tooltip，唔好用大文字掣。** 撳咗可以打可選標題；留空就用 `<bot 名> 任務 YYYY-MM-DD HH:MM:SS`。同一秒再建立就加 ` (2)`。經 gateway `POST /api/sessions`（`source: api_server`，Hermes 0.22.5 已有呢條，同 session picker 嘅建立路徑一樣）開一條新 session，然後開做未釘住嘅子光球面闆。Devon 可以之後先釘。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：「＋」同 session 選單同一行，標題列高度同改之前一樣；撳掣之後 gateway 收到一次建立；新子光球出現而且未釘；config 冇 `suborb_pins` 呢條，主光球 session id 不變。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-NS-02** 開新 session 唔好改主光球嘅 Bot Chat 綁定，唔好把主面板轉去新列。主面板打 `/new`（可帶標題）同撳「開新 session」係同一條路：開一條未釘住嘅子光球並打開佢個面板，唔好再 pin 主光球。Bot Chat 已經結束都要行到 `/new` 同其他 client 指令，唔好先被「已結束」擋住。淨係 `/new`、後面冇標題，撳一次 Enter 就建立。標題同選單唔好顯示 `Continue previous conversation`，亦唔好加「（已閂）」。建立失敗一定出一句錯誤（橫額，同埋發起嗰塊面板嘅一句說明），唔好靜靜失敗，亦唔好寫入金鑰或者 body。
+- 來源：Devon（2026-10-29）。
+- 驗收（盒）：建立前後主光球 `session_id`／`session_explicit`／`session_anchor` 位元組不變；畫面冇 `Continue previous conversation`，亦冇「（已閂）」。主面板打 `/new 標題` 之後主光球仍然係 Bot Chat，新標題出現喺未釘住嘅子光球。
+- 狀態：❓ / ❓（單元測試）。
+
+- 驗收：盒錄影＋Windows 真點擊仍要另做。**本檔 §1–§11 全部項目照樣要過。**
+- 狀態：❓ / ❓。
 
 ---
+
+## 12a. 架構（R-AR）
+
+**R-AR-01** 所有 Hermes 網絡（REST、WebSocket、登入續期、重連）只可以經 `HermesClient`（`src-tauri/src/client/mod.rs`）。`lib.rs` 同 Tauri 指令只叫 client 嘅有型別方法，唔自己砌 URL、唔直接用 `reqwest` 打 Hermes、唔自己開 WebSocket。
+**R-AR-02** 每條路徑、RPC 方法名、伺服器請求名同事件名只寫喺 `client/endpoints.rs` 一個地方。
+**R-AR-03** 埠號只喺 config 預設（`config::DEFAULT_DASHBOARD_PORT` = 9119，同 config 預設地址）出現；client 同指令唔可以 hard-code 埠或主機。
+**R-AR-04** Overlay 完全唔再打舊 gateway（8642）：對話、看板、拖卡、profile 名單、setup 都唔打，連 `GET /health` 都冇（2026-11-03）。`gateway_legacy.rs` 已刪。`hermes.rs` 剩低嘅舊 8642 HTTP 函數（`/v1/runs`、`/p/<profile>/api/…`、`/health`）全部係 `#[cfg(test)]`，唔會入 build 出嚟嘅程式，只係俾共用 parser 做測試。`client/` 以外嘅程式碼唔發任何網絡請求。舊句「仲要用舊 gateway 嘅嘢只可以放喺 `gateway_legacy.rs`……剩低只有 setup 搵 profile 嘅 `/health` 提示」**已取代**。
+**R-AR-05** 示範模式（假 Bot、唔連伺服器）只可以用啟動參數開：`hermes-overlay --demo`，或者環境變數 `HERMES_OVERLAY_DEMO=1`（`true`／`yes`／`on` 都得）。設定冇示範開關，config.json 冇任何值會開示範；舊規則「Gateway 位址留空（或者填 demo）就係示範」**已取代**。冇 config.json 嘅第一次啟動唔再跌入示範：照連 Dashboard，再打開設定出 setup 橫額。示範期間「示範模式（--demo）」橫額一直留住，唔會好似其他 info 橫額咁自己收起。
+- 來源：Devon（2026-11-03，「示範模式冇得用 CLI 搞掂咩? 點解要放界面?」「岩」）。
+- 驗收：單元 `demo_mode_is_only_the_launch_flag`；盒：`--demo` 開到示範（橫額「示範模式（--demo）」，假 Bot），唔帶參數就係正常 9119。
+**R-AR-06** 設定冇「Gateway 位址」、每個 Bot 嘅「專用位址」同「API 金鑰」格。「Kanban server」（`kanban_base_url`）就係對話、看板同名單嘅 Dashboard 地址；留空就用 config 預設 `http://127.0.0.1:9119`（`config::default_dashboard_origin`），唔再由 gateway host 加 9119 推（舊句「預設用 gateway 嘅 host 加埠 9119」**已取代**）。Profile 名只由 9119 經 `HermesClient` 讀：用 Dashboard 登入嘅 `GET /api/profiles`（`native_profiles`：native token 用 Bearer；帳號密碼登入用 session cookie，cookie 過期就用已存密碼重新登入一次），或者已存 dashboard session token（`session_token_profiles`，即係以前嘅 `hermes::list_dashboard_profiles`，已搬入 `client/kanban.rs`），加本機 `~/.hermes`。每個 bot 嘅 API 金鑰唔再讀亦唔再寫；移除 Bot 仍然刪佢舊嘅鑰匙圈項目。舊 config.json 嘅 `gateway_base_url` 同每個 bot 嘅 `base_url` 照讀、唔用、唔報錯，儲存時原樣寫返（冇改嘅儲存位元組一樣）；新檔唔會有呢兩個鍵。R-PF-01 嘅「未有 API 金鑰」提示、R-PF-02／SPEC §4.4–4.6 嘅「隱藏唔刪 key」、R-AD-07 嘅 `.key-missing` 同 R-SY-09 嘅金鑰提示都**已取代**（冇金鑰格）。
+- 來源：Devon（2026-11-03，「乜野格???」之後揀拎走兩格同 `/health`）。
+- 驗收：單元 `the_app_makes_no_gateway_calls`、`old_gateway_and_bot_address_keys_load_and_save_unchanged`、`origin_is_the_field_or_the_config_default_never_the_gateway`、setup.test.js「settings have no gateway address, per-bot address or API key, and no demo switch」；CI `no-gateway-calls`（windows-clickthrough 嘅 8642 假伺服器一個請求都冇收到）；盒：設定頁冇兩格，正常 9119 登入同對話照行，8642 stand-in 0 請求。
+- 一次性搬遷（2026-11-03，Devon 揀）：讀 config 時，如果「Kanban server」（`kanban_base_url`）係空，而舊 `gateway_base_url`（冇就用第一個有值嘅 bot `base_url`）有值又唔係 `demo`，就攞舊 gateway 嘅 scheme 同 host，配 config 預設 dashboard 埠（`DEFAULT_DASHBOARD_PORT`，9119，唔寫死 IP），經正常 config 儲存寫入一次，同時寫標記 `"kanban_base_url_from_gateway": true`。之後永遠唔再搬（欄位已經有值；就算之後清空，標記都擋住）。有值嘅欄位唔會改；舊鍵原樣保留；冇舊 gateway 就保持空（即 `127.0.0.1:9119`）；`--demo` 唔寫 config；冇 config.json 唔會開新檔。例：Devon 部手提 `http://10.10.24.33:8642` → `http://10.10.24.33:9119`。舊句「升級之後要喺 Kanban server 填一次 9119 地址」**已取代**。
+- 驗收：`config::dashboard_from_legacy_gateway`／`migrate_legacy_gateway`／`load_and_migrate` 單元測試：手提形狀 → 正好 `http://10.10.24.33:9119`；有值唔郁、檔案位元組唔變；冇舊鍵（或者 `demo`、壞位址）保持空、檔案唔變；行兩次第二次位元組一樣，之後冇改嘅儲存都一樣。
+- 來源：Devon（2026-11-02，「你地冇寫 class for network handling 嗎? 你地 hardcode 的嗎?」「點解可以冇 system architect」）。
+- 驗收：單元測試 `the_client_module_has_no_gateway_paths`（client 代碼冇 `/v1/runs`、`8642`、`:9119`）同 `the_app_makes_no_gateway_calls`（`client/` 以外冇 `.send()`、`8642`、`/v1/`、`"/health"`，冇 `gateway_legacy.rs`，舊鍵只喺儲存原樣帶過）；review 時新增 Hermes 呼叫要經 client。
+- 看板讀取、拖卡、登入（PKCE、密碼、refresh）同用 Kanban 登入讀 profile 清單已經搬入 client（`client/kanban.rs`，todo 37，R-KB-07）。舊句「已知未搬：看板讀取、登入、Dashboard profile 清單仍經 `kanban_server`／`hermes`」**已取代**。
+- 2026-11-03：Dashboard session token 嗰條 profile 清單已搬入 client（`HermesClient::session_token_profiles`）；gateway `/health` 提示已刪，`gateway_legacy.rs` 已刪（R-AR-04、R-AR-06）。舊句「仲未搬：……`hermes::list_dashboard_profiles`……仍喺 `hermes.rs`」**已取代**。
+- 狀態：✅(盒)；Win 未驗。
+
+## 12b. 連線（R-CL，只行 9119）
+
+**R-CL-01** 所有對話只經 Hermes Dashboard（`hermes serve`，預設埠 9119）：送出、串流、停止、批准、澄清、session 清單同歷史、Bot Chat 監察、新對話、子光球、斜線選單、模型、排程清單。用 REST（`/api/sessions…`、`/api/cron/jobs`、`/api/health`）同 `/api/ws` JSON-RPC。所有網絡經一個 `HermesClient`（`src-tauri/src/client/`）：一個共用 HTTP client、一條 WebSocket、地址、登入續期、斷線重連、按 profile 路由。路徑只寫喺 `client/endpoints.rs`；埠號只喺 config 預設（`config::DEFAULT_DASHBOARD_PORT`）。對話唔再要每個 bot 嘅 API 金鑰，只要 Dashboard 登入；冇金鑰唔出橫額。冇 8642 後備，亦冇任何 8642 呼叫（R-AR-04）。
+- 來源：Devon（2026-11-02，「不對, 只行9119」「你地冇寫 class for network handling 嗎」）。
+- 驗收（盒）：單元測試 `the_client_module_has_no_gateway_paths`；盒上真 0.22.5 serve（19119，有登入閘）、冇 8642 金鑰：送出、串流、停止、批准、澄清、手機同 overlay 同一對話都行。未登入時狀態行同氣泡寫「要登入 Hermes Dashboard（設定 → 登入）」。
+- 狀態：✅(盒)；Win 未驗。
+
+**R-CL-02** 普通送出用 `prompt.submit` 加 `queued: true`，另一部機行緊嗰輪唔會被打斷（Hermes 預設 `busy_input_mode` 係 interrupt）。回應 `queued` 時狀態行顯示「手機嗰邊行緊，排緊隊」（R-ST-05），我哋嗰輪 `message.start` 一到就變返「思考中…」。插話（steer）先至唔加 `queued`。
+- 驗收（盒）：手機（第二個 WS client）行緊 40 字慢回覆時 overlay 送出：出排隊句，手機回覆完整（w1…w40），之後我哋嗰句有回覆，最後「閒置」。
+- 狀態：✅(盒)。
+
+**R-CL-03** 面板開住嘅對話，如果另一部機開始一輪，回覆即時流入一個臨時氣泡；嗰輪完咗就收走，下一次監察（≤3 秒）畫返伺服器存嘅行。唔加通知、唔寫 config.json。
+- 驗收（盒）：手機送出後 15 秒內 overlay 面板見到 w1…；完咗冇重複氣泡。
+- 狀態：✅(盒)。
+
+**R-CL-04** 9119 斷咗：狀態行用平常話講「連唔到 Hermes Dashboard，等陣自動再試」，唔提 8642、唔出原始錯誤；自動重連，間隔 1、5、10、20、60 秒；有人要送嘢就即刻再試（最少隔 1 秒）。回覆中途斷線：「同 Hermes 嘅連線斷咗，回覆中斷咗。」。返嚟之後狀態變返「閒置」，可以再送。
+- 驗收（盒）：停 serve → 狀態行出上面句；再開 → 閒置，送出有回覆。
+- 狀態：見 RESULTS.md。
+
+**R-CL-05** Dashboard 上每個 session（CLI、TUI、手機、Desktop）都可以送，冇「只可以睇」。取代 R-SS-08 嘅只讀同「喺 API 對話繼續」。
+- 驗收：單元測試 `r_cl_05_every_source_takes_a_send_on_the_dashboard`；盒上 `tui` 來源嘅對話送出有回覆。
+- 狀態：✅(盒，單元測試)。
+
+**R-CL-06** 批准同澄清經同一條 WebSocket：伺服器發 `approval`／`clarify` 請求，overlay 出卡（批准（一次）／拒絕；選項），答案經 WS 返（`clarify.lock`）。`client.capabilities` 要喺 `gateway.ready` 之後先發，否則 0.22.5 唔記錄，請求會被收回。永遠唔自動批准。
+- 驗收（盒）：APPROVE-ME → 卡 → 拒絕 → Hermes 記「denied by user」；CLARIFY-ME → 卡 → Banana → 工具結果 `user_response: Banana`。
+- 狀態：✅(盒)。
+
+**R-CL-08** 斜線指令唔可以當普通字送。`prompt.submit` 唔識讀斜線（盒 p10：`/plan …`、`/btw …` 原文入咗模型）。旁問 `/btw` 用 `prompt.btw`，答案喺 `btw.complete`，唔寫入對話；Plan `/plan` 同其他指令用 `command.dispatch`（4018 就改用 `slash.exec`），`send` 類就送出佢返嘅訊息，其他類顯示輸出。插話用 `session.steer`（唔用 `prompt.submit`，否則會打斷嗰輪）。分支用 `session.branch_stored`，參數 `parent_session_id`（0.22.5 `methods_session.py` `_create_session`）；佢唔收 `title`（`extra="forbid"`，送咗會 4000），標題之後用 `session.title`。`/title` 用 `session.title`（live session），封存用 `session.archive`；0.22.5 嘅 `PATCH /api/sessions/{id}` 要 revision fence，冇就 409 `client_upgrade_required`。`/new`、`/reset`、`/title`、`/branch`、`/fork`、`/model`、`/stop` 喺 `complete.slash` 目錄入面標 `kind: client`，由 overlay 自己做（R-SL）。斜線選單完全同名排先，然後係開頭相同、模糊、描述（9119 目錄長，`/model` 唔可以變 `/moa`）。Hermes 喺歷史插入嘅換模型提示（`display_kind: model_switch`，`[System: The active model …`）唔顯示做用戶訊息。
+- 驗收（盒）：見 RESULTS（Plan 模型收到 plan-mode 提示；旁問答案出現而且唔入歷史；插話只見用戶氣泡（冇「已加入呢一輪」）而模型收到 out-of-band 訊息；`/branch 名` 開新 session 帶住個名；`/title` 改名喺選單見到；`/model scripted` 顯示「已切換模型」、冇 `[System:` 用戶行）。
+- 狀態：見 RESULTS.md。
+
+**R-CL-07** Dashboard 唔會自己開 Bot Chat。一個 profile 完全冇 `Bot Chat` 時，第一次送出開一條（`session.create`，標題 `Bot Chat`），之後一直用佢。啟動同打開都唔開。
+- 驗收（盒）：scripted profile 冇 Bot Chat，第一次送出開 `Bot Chat`，面板轉去嗰條。
+- 狀態：✅(盒)。Devon（2026-11-02 18:24）：保持，面板跳去新 Bot Chat。
 
 ## 13. 回歸規則（Regression rules）
 

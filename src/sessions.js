@@ -31,6 +31,53 @@ export function sessionReadOnly(source) {
   return !sessionAcceptsSend(source);
 }
 
+/** Sources Hermes 0.22.5 keeps as a local chat. A bound row reads `local`. */
+export function isLocalChatSource(source) {
+  const value = String(source || "").trim().toLowerCase();
+  return ["local", "cli", "tui", "gui", "desktop", "oneshot", "tool", "acp"].includes(value);
+}
+
+/**
+ * `session` is this profile's Desktop Bot Chat and the only row titled
+ * "Bot Chat" (Hermes' unique title index allows one).
+ */
+export function isMainBotChat(session, sessions) {
+  const titled = (sessions || []).filter((row) => row && isBotChat(row) && sessionRouteMatches(row));
+  if (titled.length !== 1) return false;
+  const chat = canonicalBotChat(sessions);
+  return !!chat && !!session && chat.id === session.id;
+}
+
+/**
+ * Read-only with the list in hand. Hermes' Bot Chat door takes a send into
+ * the Desktop Bot Chat when its source is local. Other rows keep R-SS-08.
+ */
+export function sessionReadOnlyIn(session, sessions) {
+  if (isMainBotChat(session, sessions) && isLocalChatSource(session?.source)) return false;
+  return sessionReadOnly(session?.source);
+}
+
+/** Hermes reopens its Bot Chat on the next turn, so only other rows are closed for a send. */
+export function sessionSendClosed(session, sessions) {
+  return sessionEnded(session) && !isMainBotChat(session, sessions);
+}
+
+/** Hermes 0.22.5 moves an `api_server` Bot Chat aside on the next Bot Chat turn. */
+export function botChatSendDisplaces(session, sessions) {
+  const value = String(session?.source || "").trim().toLowerCase();
+  return isMainBotChat(session, sessions) && (value === "api_server" || value === "" || value === "bot_peer_dm");
+}
+
+export const BOT_CHAT_UNBOUND_LINE = "呢個 Bot Chat 未喺新版 Hermes 開過，伺服器未肯收。喺 Hermes Desktop 開一次呢個 Bot 嘅 Bot Chat，之後就可以喺度傳。";
+export const BOT_CHAT_NOT_LOCAL_LINE = "伺服器話呢個 Bot Chat 唔係本機對話，唔肯收。要喺擁有佢嘅 Hermes Desktop 開一次。";
+
+export function botChatRefusalLine(text) {
+  const value = String(text || "").toLowerCase();
+  if (value.includes("bot_chat_unbound")) return BOT_CHAT_UNBOUND_LINE;
+  if (value.includes("bot_chat_not_local")) return BOT_CHAT_NOT_LOCAL_LINE;
+  return "";
+}
+
 export const SESSION_READ_ONLY_REASON = "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢";
 
 export const CONTINUE_API_LABEL = "喺 API 對話繼續";
@@ -171,7 +218,7 @@ export function resolveSession(sessions, pin = {}) {
       explicit: true,
       anchor,
       source: saved.source || "",
-      readOnly: sessionReadOnly(saved.source),
+      readOnly: sessionReadOnlyIn(saved, sessions),
     };
   }
   const preferred = canonicalBotChat(sessions);
@@ -181,7 +228,7 @@ export function resolveSession(sessions, pin = {}) {
       explicit: false,
       anchor: preferred.id === remembered ? anchor : (Number(preferred.last_active) || 0),
       source: preferred.source || "",
-      readOnly: sessionReadOnly(preferred.source),
+      readOnly: sessionReadOnlyIn(preferred, sessions),
     };
   }
   if (saved && !retiredBotChat(saved)) {
@@ -190,7 +237,7 @@ export function resolveSession(sessions, pin = {}) {
       explicit: false,
       anchor,
       source: saved.source || "",
-      readOnly: sessionReadOnly(saved.source),
+      readOnly: sessionReadOnlyIn(saved, sessions),
     };
   }
   return null;
@@ -217,11 +264,28 @@ export function sessionRouteMatches(session) {
   return last === id;
 }
 
-/** The server closed this row (`ended_at` or `end_reason`, including `tui_shutdown`). */
+/**
+ * End reasons Hermes 0.22.5 reopens on the next turn in the same session id
+ * (`_RECOVERABLE_END_REASONS`, hermes_state_common.py:190). Mirrors
+ * `RECOVERABLE_END_REASONS` in hermes.rs.
+ */
+export const RECOVERABLE_END_REASONS = Object.freeze(["agent_close", "ws_orphan_reap", "superseded_by_resume", "startup_orphan_reap"]);
+
+export function endReasonRecoverable(reason) {
+  const value = String(reason || "").trim().toLowerCase();
+  return !!value && RECOVERABLE_END_REASONS.includes(value);
+}
+
+/**
+ * The server closed this row (`ended_at` or `end_reason`, including `tui_shutdown`).
+ * A recoverable end (for example `ws_orphan_reap`, a Desktop window that went
+ * away) is not closed: Hermes reopens the same row on the next send (R-SS-09.3).
+ */
 export function sessionEnded(session) {
   if (!session) return false;
-  if (session.ended === true) return true;
   const reason = String(session.end_reason || session.endReason || "").trim();
+  if (endReasonRecoverable(reason)) return false;
+  if (session.ended === true) return true;
   if (reason) return true;
   const at = session.ended_at ?? session.endedAt;
   if (typeof at === "number") return at > 0;
@@ -265,24 +329,36 @@ export function isClosedSendText(text) {
   return String(text || "").includes("已經喺伺服器關閉");
 }
 
-/** A live writable chat to open after a closed one. Bot Chat wins. */
+/**
+ * A live writable chat to open after a closed one. This profile's main Bot
+ * Chat wins, with the same send rules the panel uses (`sessionSendClosed`,
+ * `sessionReadOnlyIn`), so a local or `tui_shutdown` Bot Chat still counts.
+ */
 export function closedSwitchTarget(sessions, currentId) {
+  const list = sessions || [];
   const current = String(currentId || "");
-  const rows = (sessions || []).filter((session) => (
+  const rows = list.filter((session) => (
     session
     && session.id
     && sessionRouteMatches(session)
     && session.id !== current
-    && !sessionEnded(session)
+    && !sessionSendClosed(session, list)
     && session.archived !== true
-    && !sessionReadOnly(session.source)
+    && !sessionReadOnlyIn(session, list)
   ));
-  return rows.find(isBotChat) || rows.slice().sort(byRecent)[0] || null;
+  return rows.find((session) => isMainBotChat(session, list))
+    || rows.find(isBotChat)
+    || rows.slice().sort(byRecent)[0]
+    || null;
 }
 
-/** Hidden wins, then archived, then a source the gateway will not accept. */
-export function sessionLabel(session) {
-  return `${sessionTitleText(session)}${sessionSuffix(session)}`;
+/**
+ * Hidden wins, then archived, then a source the gateway will not accept.
+ * With the list, the main Bot Chat gets no 隱藏／已結束 suffix: Desktop hides
+ * it and Hermes reopens it, and the panel sends to it (R-SS-08, R-SS-09).
+ */
+export function sessionLabel(session, sessions) {
+  return `${sessionTitleText(session)}${sessionSuffix(session, sessions)}`;
 }
 
 /** Same visible label twice becomes `title · id`, so two rows named notes stay distinct. */
@@ -334,7 +410,7 @@ export function sessionMenuKey(activeId, sessions) {
 export function writeSessionMenu(select, sessions, activeId, { rebuild = false, menuOpen = false } = {}) {
   const labels = disambiguateSessionLabels(sessionMenuRows(sessions, activeId).map((session) => ({
     id: String(session.id || ""),
-    label: sessionLabel(session),
+    label: sessionLabel(session, sessions),
   })));
   const previous = String(select.value || "");
   const active = String(activeId || "");
@@ -402,10 +478,17 @@ function titleEndsWithSource(title, name) {
   return folded.endsWith(`(${name.toLowerCase()})`) || folded.endsWith(`（${name.toLowerCase()}）`);
 }
 
-function sessionSuffix(session) {
+function sessionSuffix(session, sessions) {
+  if (sessions && isMainBotChat(session, sessions) && session?.archived !== true) {
+    return sessionReadOnlyIn(session, sessions) ? sourceSuffix(session, "") : "";
+  }
   const closed = sessionEnded(session) ? "（已結束）" : "";
   if (session?.hidden) return closed ? "（隱藏／已結束）" : "（隱藏）";
   if (session?.archived === true) return `（已封存）${closed}`;
+  return sourceSuffix(session, closed);
+}
+
+function sourceSuffix(session, closed) {
   const source = String(session?.source || "").trim().toLowerCase();
   if (!source || sessionAcceptsSend(source)) return closed;
   const name = sourceWord(source);
@@ -1285,6 +1368,19 @@ function attachOpenCards(previous, next) {
     if (!same) out.push(card);
   }
   return out;
+}
+
+/**
+ * S20: the watcher can read our own user line after the run ended but before
+ * the reply row is stored. Hold that tail like a live one, so the reply that
+ * follows replaces the turn instead of both rows being appended.
+ */
+export function holdsOwnTurnUser(incoming, ownTurn) {
+  const userText = String(ownTurn?.userText || "").trim();
+  if (!ownTurn?.awaitTail || !userText) return false;
+  const rows = (incoming || []).filter((message) => message && message.role);
+  if (!rows.length || rows.some((message) => message.role !== "user" || isSideMessage(message))) return false;
+  return rows.some((message) => String(message.text || "").trim() === userText);
 }
 
 /**

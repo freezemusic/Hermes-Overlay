@@ -9,12 +9,15 @@ import {
   CLARIFY_TIMEOUT,
   CLARIFY_TIMEOUT_S,
   CLARIFY_WAIT_LABEL,
+  CLARIFY_OTHER,
   clarifyAnswerValue,
   clarifyBudget,
   clarifyCardFromControl,
   clarifyFailure,
   clarifyKept,
   clarifyPost,
+  clarifyRequestId,
+  clarifyResultText,
   clarifyTick,
   mergePendingControls,
   renderClarifyCard,
@@ -142,7 +145,7 @@ test("the countdown reaches timeout and does not build a post", () => {
   assert.doesNotMatch(clock, /respond_clarify|clarifyPost/);
 });
 
-test("settled and recovery keep one card and the same pin as approvals", () => {
+test("settled and recovery keep every pending card and the same pin as approvals", () => {
   const now = 50_000;
   const pending = clarifyCardFromControl({
     kind: "clarify",
@@ -159,9 +162,22 @@ test("settled and recovery keep one card and the same pin as approvals", () => {
     "run_abc",
     { dropMissing: true, now },
   );
+  // dropMissing retires p1 (absent from snapshot); p2 is added. Batch siblings stay.
   assert.equal(replaced.some((message) => message.promptId === "p1"), false);
   assert.equal(replaced.filter((message) => message.role === "clarify").length, 1);
   assert.equal(replaced.find((message) => message.role === "clarify").promptId, "p2");
+  const batch = mergePendingControls(
+    [],
+    [
+      { kind: "clarify", prompt_id: "srq-1~q0", question: "一", choices: ["A"], execution_generation: 1 },
+      { kind: "clarify", prompt_id: "srq-1~q1", question: "二", choices: ["B"], execution_generation: 1 },
+      { kind: "clarify", prompt_id: "srq-1~q2", question: "三", choices: ["C"], execution_generation: 1 },
+    ],
+    "run_abc",
+    { dropMissing: true, now },
+  );
+  assert.equal(batch.filter((message) => message.role === "clarify").length, 3);
+  assert.equal(clarifyRequestId("srq-1~q2"), "srq-1");
   const kept = mergePendingControls(
     [{ role: "clarify", promptId: "p9", status: "sending", question: "等" }],
     [],
@@ -196,4 +212,47 @@ test("settled and recovery keep one card and the same pin as approvals", () => {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
     assert.doesNotMatch(source, /unattended_mode/);
   }
+});
+
+test("a choice card offers 其他 free text and keeps the typed answer on the settled card", () => {
+  const message = {
+    question: "出生地？",
+    choices: ["香港", "廣州"],
+    status: "pending",
+    draft: "",
+    timeoutS: 0,
+  };
+  let posted = "";
+  const card = renderClarifyCard(document, message, {
+    onDraft(value) {
+      message.draft = value;
+    },
+    onAnswer(answer) {
+      posted = answer;
+    },
+  });
+  assert.equal(card.querySelector(".clarify-other-label").textContent, CLARIFY_OTHER);
+  const field = card.querySelector("textarea.clarify-other");
+  const send = card.querySelector(".clarify-other-send");
+  assert.equal(send.disabled, true);
+  field.value = "台北";
+  field.dispatchEvent(new document.defaultView.Event("input"));
+  assert.equal(message.draft, "台北");
+  assert.equal(send.disabled, false);
+  send.click();
+  assert.equal(posted, "台北");
+  assert.equal(clarifyResultText({ status: "answered", postedAnswer: "台北" }), "已答：台北");
+  assert.equal(clarifyResultText({ status: "answered", postedAnswer: "" }), "已答");
+});
+
+test("main.js keeps batch clarify siblings and routes composer text to the open card", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const close = main.slice(main.indexOf("function closeOtherClarifies"), main.indexOf("async function answerApproval"));
+  assert.match(close, /clarifyRequestId/);
+  assert.doesNotMatch(close, /message\.promptId !== promptId && \(clarifyPending/);
+  const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
+  assert.match(send, /pendingClarify/);
+  assert.match(send, /answerClarify\(id, pendingClarify/);
+  const mergeSrc = readFileSync(new URL("./clarify.js", import.meta.url), "utf8");
+  assert.doesNotMatch(mergeSrc, /seenPending/);
 });

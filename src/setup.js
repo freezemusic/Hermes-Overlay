@@ -1,19 +1,17 @@
-export const SETUP_BANNER = "未設定 gateway。撳呢度填 Gateway 位址同 API 金鑰。";
+export const SETUP_BANNER = "未設定。撳呢度喺設定填 Kanban server 同登入 Hermes Dashboard。";
 
 export const SETUP_HINT =
-  "第一次用：Gateway 位址填 http://127.0.0.1:8642，每個 Bot 填 API 金鑰，然後儲存。";
+  "第一次用：Kanban server 填 hermes serve 嘅位址（留空就係 http://127.0.0.1:9119），登入，然後儲存。";
 
-/** No config file yet. A saved empty gateway stays in demo mode without reopening Settings. */
+/** Shown while the offline demo runs. Demo is only the `--demo` launch flag. */
+export const DEMO_BANNER = "示範模式（--demo）：假 Bot，冇連 Hermes。";
+
+/** No config file yet. */
 export function shouldAutoOpenSettings(settings) {
   return settings?.needs_setup === true;
 }
 
-/** Empty gateway: the banner is a button that opens Settings. */
-export function bannerOpensSettings(settings) {
-  if (!settings || settings.mode !== "mock") return false;
-  return !String(settings.gateway_base_url || "").trim();
-}
-
-export function setupHintVisible(gatewayUrl) {
-  return !String(gatewayUrl || "").trim();
+/** The first-run hint shows only while there is no config file. */
+export function setupHintVisible(settings) {
+  return settings?.needs_setup === true;
 }

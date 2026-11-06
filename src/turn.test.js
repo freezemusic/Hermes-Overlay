@@ -12,12 +12,21 @@ test("a busy send steers, and a rejected steer is queued out loud", () => {
   assert.match(send, /sendWhileBusy/);
   const busy = main.slice(main.indexOf("async function sendWhileBusy"), main.indexOf("async function stopActive"));
   assert.match(busy, /steer_run/);
-  assert.match(busy, /已加入呢一輪/);
+  assert.match(busy, /appendMessage\(id, shown\)/);
+  assert.doesNotMatch(busy, /role:\s*"commentary",[\s\S]{0,40}已加入呢一輪/);
   assert.match(busy, /排隊中，等佢講完就會行/);
   assert.match(busy, /send_chat/);
   assert.match(busy, /queue: true/);
   assert.match(busy, /lockIfPermissionDenied/);
   assert.doesNotMatch(busy, /create_session|create_bot_chat/);
+});
+
+
+test("a busy sub-orb send steers without the joined commentary", () => {
+  const busy = main.slice(main.indexOf("async function sendSuborbBusy"), main.indexOf("async function postSuborb"));
+  assert.match(busy, /steer_run/);
+  assert.doesNotMatch(busy, /role:\s*"commentary",[\s\S]{0,40}已加入呢一輪/);
+  assert.match(busy, /排隊中，等佢講完就會行/);
 });
 
 test("stop waits for the gateway and a reopened panel still catches up", () => {

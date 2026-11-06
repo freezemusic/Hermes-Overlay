@@ -16,6 +16,7 @@ import {
   resolveClient,
   sendBlockedWhileBusy,
   shouldRefreshCatalog,
+  bareNewSubmits,
   slashEnterSubmits,
   slashFilterQuery,
 } from "./slash.js";
@@ -100,6 +101,10 @@ test("empty args submit on enter and hints sit after the command", () => {
   assert.equal(slashEnterSubmits({ name: "/new", args_hint: "  ", enabled: true }), true);
   assert.equal(slashEnterSubmits({ name: "/plan", args_hint: "[task]", enabled: true }), false);
   assert.equal(slashEnterSubmits({ name: "/voice", args_hint: "", enabled: false }), false);
+  assert.equal(bareNewSubmits({ name: "/new", args_hint: "[name]", enabled: true }, "/new"), true);
+  assert.equal(bareNewSubmits({ name: "/new", args_hint: "[name]", enabled: true }, "/new "), true);
+  assert.equal(bareNewSubmits({ name: "/new", args_hint: "[name]", enabled: true }, "/new 標題"), false);
+  assert.equal(bareNewSubmits({ name: "/plan", args_hint: "[task]", enabled: true }, "/plan"), false);
   assert.equal(inlineArgsHint("/plan ", "[task]"), "[task]");
   assert.equal(inlineArgsHint("/plan add", "[task]"), "");
   assert.equal(inlineArgsHint("/stop ", ""), "");
@@ -133,4 +138,16 @@ test("gateway retry backs off from 5 seconds and ignores a rejected key", () => 
   assert.equal(gatewayDown("Hermes gateway 逾時。請確認 gateway 已開。"), true);
   assert.equal(gatewayDown("hermes gateway timeout"), true);
   assert.equal(gatewayDown("Gateway 拒絕金鑰（401）。"), false);
+});
+
+test("exact and prefix matches rank before fuzzy ones in a long 9119 catalogue", () => {
+  const commands = [
+    { name: "moa", description: "Mixture of agents" },
+    { name: "memo", description: "note" },
+    { name: "model", description: "Switch model" },
+    { name: "models-list", description: "list" },
+  ];
+  assert.deepEqual(filterCommands(commands, "model").map((c) => c.name), ["model", "models-list"]);
+  assert.deepEqual(filterCommands(commands, "mo").map((c) => c.name), ["moa", "model", "models-list", "memo"]);
+  assert.equal(filterCommands(commands, "").length, 4);
 });

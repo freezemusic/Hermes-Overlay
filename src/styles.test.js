@@ -4,6 +4,7 @@ import test from "node:test";
 import { JSDOM } from "jsdom";
 import { clipPath, insetsFor, ORB, orbHaloInsets, restoreIdleOrbClip, seamClipStillClosed } from "./morph.js";
 import { applyOrbFadeFrame, opacityFramesMonotonic, opacityFramesToward, orbDiscHit } from "./proximity.js";
+import { KANBAN_STATUSES } from "./kanban.js";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -148,7 +149,9 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClip, /const duration = PLAN_GROW_MS/);
   assert.match(seamClip, /alignSeamClock\(anim/);
   assert.match(seamClip, /warmPresented/);
-  assert.match(seamClip, /pumpSeamPresent\(shell, duration\)/);
+  // R-PL-04: the pump must outlive a reveal that ends late.
+  assert.match(seamClip, /pumpSeamPresent\(shell, duration \* SEAM_PUMP_SPAN\)/);
+  assert.match(mainSrc, /const SEAM_PUMP_SPAN = 3;/);
   assert.match(seamClip, /shell\.style\.clipPath = from/);
   assert.doesNotMatch(seamClip, /drivePresentedSeam|__hermesSeamFrame|transition = "none"/);
   assert.doesNotMatch(seamClip, /\.pause\(\)|startTime|setKeyframes|updateTiming|PLAN_GROW_MS - 12/);
@@ -413,6 +416,11 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(seamClock, /seamFrameStep/);
   assert.match(seamClock, /seamVisibleMs/);
   assert.match(seamClock, /seamAdvanceMs/);
+  // R-PL-04: cadence is re-measured every frame and the wall clock is passed,
+  // not a frameMs learned once from the first (possibly doubled) gap.
+  assert.match(seamClock, /seamCadenceMs\(gaps\)/);
+  assert.match(seamClock, /wallMs: wallStamp/);
+  assert.doesNotMatch(seamClock, /!frameMs && gap >= 8/);
   assert.match(seamClock, /currentTime = 20/);
   assert.match(seamClock, /currentTime = 45/);
   assert.match(seamClock, /shownMs <= 20\.5/);
@@ -544,7 +552,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.settings-panel \.bot-row input\[type="checkbox"\] \{[^}]*width:\s*14px/s);
   assert.doesNotMatch(css, /\.bot-row input\[type="checkbox"\] \{[^}]*width:\s*16px/s);
   assert.match(css, /\.alt-warning::before \{[^}]*background:\s*var\(--nous-orange\)/s);
-  assert.match(css, /\.morph\[data-header="bottom"\] \.settings-head \{\s*position:\s*static;/);
+  // R-AD-08: sticky inside the non-scrolling form (overflow hidden), never inside .settings-scroll.
+  assert.match(css, /\.morph\[data-header="bottom"\] \.settings-head \{\s*position:\s*sticky;\s*bottom:\s*0;/);
   assert.match(html, /<div class="settings-scroll">/);
   const scrollAt = html.indexOf('<div class="settings-scroll">');
   const closeAt = html.indexOf('id="btn-settings-close"');
@@ -757,7 +766,13 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(heldPaint, /data-state="panel"/);
   assert.match(heldPaint, /style\.opacity/);
   assert.match(heldPaint, /planNode\(shell\)/);
-  assert.match(heldPaint, /paintLayerOpacity\(plan, "1"\)/);
+  // In-shell plan stays 1 (it takes the shell's opacity); a hosted plan gets the
+  // same value as the shell, so it fades with the panel while Ctrl is held (R-CT-05).
+  assert.match(heldPaint, /paintLayerOpacity\(plan, shell\.contains\(plan\) \? "1" : next\)/);
+  assert.doesNotMatch(heldPaint, /String\(panelRestOpacity\(\)\)\)/);
+  // CI reads the drawn plan opacity from the opt-in debug log only.
+  assert.match(edge, /if \(debugFile\.enabled\) logPlanLook\(/);
+  assert.match(mainSrc, /function logPlanLook[\s\S]*?debugLog\("plan-look", `down=\$\{down\} held=\$\{held\}[^`]*hosted=[^`]*opacity=/);
   assert.match(mainSrc, /function planNode\(shell\)[\s\S]*?\.plan-window/);
   assert.doesNotMatch(heldPaint, /requestAnimationFrame/);
   assert.doesNotMatch(heldPaint, /setProperty\("--hit-opacity"/);
@@ -869,7 +884,7 @@ test("chat is the primary panel and the hover label does not stick", () => {
   assert.match(html, /<span>Dashboard session token<\/span>/);
   assert.doesNotMatch(html, /Dashboard session token（可留空）/);
   assert.match(main, /placeholder="詳情（可留空）"/);
-  assert.match(main, /placeholder="專用位址（可留空）"/);
+  assert.doesNotMatch(main, /placeholder="專用位址（可留空）"/);
   assert.match(css, /\.settings-panel \.bot-row \.key-missing \{[^}]*#e5484d/s);
   assert.match(css, /\.settings-panel \.bot-row \.key-missing \{[^}]*12px\/1\.5/s);
 });
@@ -893,13 +908,14 @@ test("bot panels own SOUL and the settings orb owns the gateway", () => {
   const settings = html.slice(html.indexOf('id="settings"'), html.indexOf('id="kanban-panel"'));
   assert.doesNotMatch(settings, /data-role="plan"/);
   assert.doesNotMatch(template, /Gateway/);
-  assert.match(html, /Gateway 位址/);
+  assert.doesNotMatch(html, /Gateway 位址/);
+  assert.match(html, /<span>Kanban server<\/span>/);
   assert.match(html, /id="settings"/);
   assert.doesNotMatch(html, /data-tauri-drag-region/);
   assert.doesNotMatch(html, /游標靠近時淡出/);
   assert.match(html, /id="orb-menu"/);
   assert.match(html, /隱藏呢個 Bot/);
-  assert.match(html, /隱藏保留金鑰/);
+  assert.doesNotMatch(html, /隱藏保留金鑰/);
   assert.match(css, /\.orb-menu-btn \{[^}]*text-transform:\s*none/s);
 });
 
@@ -1014,7 +1030,8 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.doesNotMatch(main, /seatOpenPlan|unseatOpenPlan|planSeat/);
   const idleOpacity = main.slice(main.indexOf("function idleOrbOpacity"), main.indexOf("function planWidthPx"));
   assert.doesNotMatch(idleOpacity, /0\.55/);
-  assert.match(idleOpacity, /return 1/);
+  // Solid by default: restOpacity(0) is 1 (proximity.test.js, R-OB-07).
+  assert.match(idleOpacity, /return orbRestOpacity\(\);/);
   assert.match(main, /上次 /);
   assert.doesNotMatch(main.slice(main.indexOf("function closeKanban"), main.indexOf("function startKanbanPoll")), /stopKanbanPoll/);
   const hermes = readFileSync(new URL("../src-tauri/src/hermes.rs", import.meta.url), "utf8");
@@ -1484,4 +1501,129 @@ test("open then close restores the same idle orb halo", () => {
     assert.equal(dim.playState, "finished", gesture);
     assert.deepEqual(snap(), idle, gesture);
   }
+});
+
+test("plan rehearsal restore keeps the orb's latest fade sample (R-OB-07)", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const body = main.slice(main.indexOf("delete shell._rehearsalHit;"), main.indexOf("if (saved?.pointer) shell.style.pointerEvents"));
+  assert.match(body, /shell\.dataset\.state === "orb" \? shell\.dataset\.orbFade/);
+  assert.ok(body.indexOf("if (faded) shell.style.opacity = faded") < body.indexOf("saved.opacity"));
+});
+
+test("session menu rows keep one line height when the list scrolls (R-SO-10)", () => {
+  // jsdom has no layout, so read the cascade: a column flex item with
+  // overflow:hidden has min-height 0 and shrinks to its padding unless
+  // flex-shrink is 0. Devon 2026-11-02: a long list painted as blank slivers.
+  const list = css.match(/\.session-menu\s*\{([^}]*)\}/);
+  assert.ok(list, ".session-menu rule");
+  assert.match(list[1], /display:\s*flex/);
+  assert.match(list[1], /flex-direction:\s*column/);
+  assert.match(list[1], /max-height:\s*240px/);
+  assert.match(list[1], /overflow-y:\s*auto/);
+  assert.match(css, /html\.platform-linux \.session-menu \{ padding-right: 22px; \}/, "rows stay clear of the GTK overlay scrollbar");
+  const dom = new JSDOM(`<style>${css}</style><div class="chat-head"><div class="session-menu" role="listbox"><div class="session-menu-row" role="option"><span class="session-menu-label">a</span></div><p class="session-menu-empty">b</p></div></div>`);
+  const { document, getComputedStyle } = dom.window;
+  for (const sel of [".session-menu-row", ".session-menu-empty"]) {
+    const style = getComputedStyle(document.querySelector(sel));
+    const shrink = style.flexShrink || (style.flex === "none" ? "0" : "");
+    assert.equal(shrink, "0", `${sel} must not shrink (flex ${style.flex} / shrink ${style.flexShrink})`);
+  }
+  assert.equal(getComputedStyle(document.querySelector(".session-menu-row")).height, "26px");
+  for (const rule of css.matchAll(/([^{}]*\.session-menu-(?:row|empty)[^{}]*)\{([^}]*)\}/g)) {
+    assert.doesNotMatch(rule[2], /flex(?:-shrink)?:\s*(?:1|auto|0 1)/, `${rule[1].trim()} brings shrinking back`);
+  }
+});
+
+test("all eight kanban columns fit the 960px panel; a narrower panel scrolls sideways (R-KB-08)", () => {
+  const rule = (sel) => {
+    const m = css.match(new RegExp("(?:^|\\n)" + sel.replace(/[.[\]()]/g, "\\$&") + " \\{([^}]*)\\}"));
+    assert.ok(m, `${sel} rule`);
+    return m[1];
+  };
+  const board = rule(".kanban");
+  const min = Number(board.match(/--kanban-col-min:\s*(\d+)px/)?.[1]);
+  assert.ok(min > 0, "--kanban-col-min in px");
+  assert.match(board, /grid-auto-columns:\s*minmax\(var\(--kanban-col-min\), 1fr\)/);
+  assert.match(board, /overflow:\s*auto/);
+  assert.doesNotMatch(board, /minmax\(140px/);
+  const panelMax = Number(rule(".kanban-panel").match(/width:\s*min\((\d+)px/)[1]);
+  const pad = Number(css.match(/--sp-4:\s*(\d+)px/)[1]);
+  assert.equal(rule(".center-panel").match(/padding:\s*([^;]+);/)[1].trim(), "var(--sp-4)");
+  assert.equal(KANBAN_STATUSES.length, 8);
+  assert.ok(KANBAN_STATUSES.length * min <= panelMax - 2 * pad,
+    `${KANBAN_STATUSES.length} x ${min}px must fit ${panelMax - 2 * pad}px`);
+  assert.match(rule(".kanban-col"), /min-width:\s*0/);
+  const head = rule(".kanban-col-head");
+  assert.match(head, /font:\s*500 24px\/1 var\(--font-display\)/);
+  assert.match(rule(".kanban-col-head > span:not(.kanban-done-chevron)"), /text-overflow:\s*ellipsis/);
+  assert.match(rule(".kanban-meta"), /flex-wrap:\s*wrap/);
+});
+
+/** Every block for exactly this selector, joined (a selector can appear in more than one rule). */
+function ruleBody(selector) {
+  const out = [];
+  let at = css.indexOf(`\n${selector} {`);
+  while (at >= 0) {
+    out.push(css.slice(at, css.indexOf("}", at)));
+    at = css.indexOf(`\n${selector} {`, at + 1);
+  }
+  assert.ok(out.length, `rule ${selector}`);
+  return out.join("\n");
+}
+
+test("R-AD-08 settings footer is its own sticky bar and the action row ends 16px above it", () => {
+  const head = ruleBody('.morph[data-header="bottom"] .settings-head');
+  assert.match(head, /position:\s*sticky/);
+  assert.match(head, /bottom:\s*0/);
+  assert.match(head, /background:\s*#f8f8fc/);
+  assert.match(head, /border-top:\s*1px solid/);
+  // The content area is the only scroller; the form itself never scrolls.
+  assert.match(ruleBody(".settings-scroll"), /overflow:\s*auto/);
+  assert.match(ruleBody('.morph[data-header="bottom"] #settings-form'), /overflow:\s*hidden/);
+  const spacer = ruleBody('.morph[data-header="bottom"] .settings-scroll::after');
+  assert.match(spacer, /display:\s*block/);
+  const gap = Number(/height:\s*(\d+)px/.exec(spacer)?.[1]);
+  assert.ok(gap >= 16, `gap ${gap}`);
+  // The head is a sibling before the scroller; the action row is the scroller's last child.
+  const scrollAt = html.indexOf('<div class="settings-scroll">');
+  const headAt = html.indexOf('<header class="settings-head">');
+  const actionsAt = html.indexOf('<div class="settings-actions">');
+  assert.ok(headAt > 0 && headAt < scrollAt && actionsAt > scrollAt);
+  const tail = html.slice(actionsAt, html.indexOf("</form>"));
+  assert.equal((tail.match(/<div\b/g) || []).length, 2, "settings-actions + settings-actions-main only");
+});
+
+test("R-AD-09 show-names and tool-detail rows: 14px custom box, 13px #14142b label, 1.5, 8px between, 16px above", () => {
+  for (const id of ["show-bot-names", "show-tool-detail"]) {
+    assert.match(html, new RegExp(`<label class="show-toggle settings-toggle" for="${id}">\\s*<input id="${id}" type="checkbox" />`));
+  }
+  const row = ruleBody(".settings-panel .settings-toggle");
+  assert.match(row, /display:\s*flex/);
+  assert.match(row, /gap:\s*8px/);
+  assert.match(row, /color:\s*#14142b/);
+  assert.match(row, /font:\s*400 13px\/1\.5 var\(--font-body\)/);
+  assert.match(ruleBody(".settings-panel :not(.settings-toggle) + .settings-toggle"), /margin-top:\s*16px/);
+  assert.match(ruleBody(".settings-panel .settings-toggle + .settings-toggle"), /margin-top:\s*8px/);
+  const box = ruleBody('.settings-panel .settings-toggle input[type="checkbox"]');
+  assert.match(box, /width:\s*14px/);
+  assert.match(box, /height:\s*14px/);
+  // The shared custom checkbox (R-AD-04) still applies: appearance none, 1px blue border, radius 2px.
+  const shared = ruleBody('.settings-panel input[type="checkbox"]');
+  assert.match(shared, /appearance:\s*none/);
+  assert.match(shared, /border:\s*1px solid rgba\(0, 0, 242, \.4\)/);
+  assert.match(shared, /border-radius:\s*2px/);
+  // Text size scales the label from 13px and outranks the generic 12px .show-toggle rule.
+  assert.match(css, /html\[data-text-size\] \.settings-panel \.settings-toggle \{ font-size: calc\(13px \* var\(--text-scale, 1\)\); \}/);
+  // The bot-row 「顯示」 keeps the old compact toggle.
+  assert.match(ruleBody(".show-toggle"), /font:\s*400 12px\/1 var\(--font-body\)/);
+});
+
+test("R-AD-10 settings scrollbar sits in a 12px gutter clear of the 儲存 button", () => {
+  const body = ruleBody(".settings-scroll");
+  assert.match(body, /scrollbar-gutter:\s*stable/);
+  assert.match(body, /margin-right:\s*-12px/);
+  assert.match(body, /padding-right:\s*18px/);
+  // The gutter reaches into the form's 16px padding, not past the card edge.
+  assert.match(ruleBody("#settings-form"), /padding:\s*var\(--sp-4\)/);
+  assert.match(css, /--sp-4:\s*16px/);
 });

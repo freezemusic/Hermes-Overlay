@@ -1,8 +1,33 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 pub const BOT_CHAT_TITLE: &str = "Bot Chat";
+
+/// `hermes serve` (the dashboard server). All chat and Kanban go here (R-CL-01).
+pub const DEFAULT_DASHBOARD_PORT: u16 = 9119;
+
+pub fn default_dashboard_origin() -> String {
+    format!("http://127.0.0.1:{DEFAULT_DASHBOARD_PORT}")
+}
+
+/// Launch flag for the offline demo (fake bots, no server). Not a setting.
+pub const DEMO_FLAG: &str = "--demo";
+/// Same switch as an environment variable (`1`, `true`, `yes`, `on`).
+pub const DEMO_ENV: &str = "HERMES_OVERLAY_DEMO";
+
+/// True when the overlay was started with `--demo` or `HERMES_OVERLAY_DEMO=1`.
+/// Nothing in config.json turns the demo on.
+pub fn demo_requested<I: IntoIterator<Item = String>>(args: I, env: Option<String>) -> bool {
+    if args.into_iter().skip(1).any(|arg| arg == DEMO_FLAG) {
+        return true;
+    }
+    matches!(
+        env.as_deref().map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BotConfig {
@@ -10,10 +35,11 @@ pub struct BotConfig {
     pub display_name: String,
     #[serde(default)]
     pub color: String,
-    /// Dedicated API-server origin for this profile.
-    /// Empty uses the shared gateway and `/p/<profile>/` (unprefixed for `default`).
-    #[serde(default)]
-    pub base_url: String,
+    /// Old per-bot gateway address (`base_url`, R-AR-04 retired 2026-11-03).
+    /// Nothing reads it. Kept verbatim when an old file has it, so a save
+    /// does not drop the key; new bots never gain it.
+    #[serde(rename = "base_url", default, skip_serializing_if = "Option::is_none")]
+    pub legacy_base_url: Option<String>,
     #[serde(default)]
     pub detail: String,
     /// Last session id written for this profile. Main-orb open ignores it.
@@ -54,6 +80,25 @@ pub struct InteractionConfig {
     pub fade_distance: f64,
     #[serde(default = "default_min_opacity")]
     pub min_opacity: f64,
+    /// Resting see-through of every orb and sub-orb, 0 = solid (R-OB-07).
+    /// Omitted from the file while it is 0, so old files never gain it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub orb_rest_transparency: f64,
+    /// Resting see-through of every open panel, 0 = solid (R-CT-11).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub panel_rest_transparency: f64,
+}
+
+impl InteractionConfig {
+    /// Orb opacity with the cursor away and the modifier up (R-OB-07).
+    pub fn orb_rest_opacity(&self) -> f64 {
+        1.0 - normalize_rest_transparency(self.orb_rest_transparency)
+    }
+
+    /// Panel opacity with the modifier up (R-CT-11).
+    pub fn panel_rest_opacity(&self) -> f64 {
+        1.0 - normalize_rest_transparency(self.panel_rest_transparency)
+    }
 }
 
 impl Default for InteractionConfig {
@@ -63,6 +108,8 @@ impl Default for InteractionConfig {
             fade_enabled: default_true(),
             fade_distance: default_fade_distance(),
             min_opacity: default_min_opacity(),
+            orb_rest_transparency: 0.0,
+            panel_rest_transparency: 0.0,
         }
     }
 }
@@ -71,11 +118,15 @@ impl Default for InteractionConfig {
 pub struct AppConfig {
     #[serde(default = "one")]
     pub version: u32,
-    #[serde(default)]
-    pub gateway_base_url: String,
+    /// Old gateway address (`gateway_base_url`, port 8642). Nothing reads it:
+    /// chat, Kanban and profiles all use the dashboard (R-CL-01, R-AR-04).
+    /// Kept verbatim when an old file has it; a new file never gains it.
+    #[serde(rename = "gateway_base_url", default, skip_serializing_if = "Option::is_none")]
+    pub legacy_gateway_base_url: Option<String>,
     #[serde(default = "default_dashboard")]
     pub dashboard_base_url: String,
-    /// Empty means the gateway host on port 9119. Not a secret.
+    /// The dashboard (`hermes serve`) for chat, Kanban and profiles.
+    /// Empty means the config default, [`default_dashboard_origin`]. Not a secret.
     #[serde(default)]
     pub kanban_base_url: String,
     /// Empty follows the server's current kanban board.
@@ -94,10 +145,53 @@ pub struct AppConfig {
     /// Per-run expand flags are not stored here.
     #[serde(default, skip_serializing_if = "skip_false")]
     pub show_tool_detail: bool,
+    /// R-SO-07. Pinned sub-orb session ids, keyed by profile.
+    /// Omitted while empty so an untouched config.json stays byte-identical.
+    /// Written only by an explicit 釘住 / 取消釘住.
+    #[serde(default, skip_serializing_if = "skip_empty_pins")]
+    pub suborb_pins: BTreeMap<String, Vec<String>>,
+    /// Marker for the one-time move of the old gateway host into
+    /// `kanban_base_url` (R-AR-06). Written once with that value, then
+    /// carried through every save so the move never runs again.
+    /// Omitted while false so files that never migrated stay byte-identical.
+    #[serde(default, skip_serializing_if = "skip_false")]
+    pub kanban_base_url_from_gateway: bool,
+    /// R-LK-01 text size: "s", "l" or "xl". Empty is the standard size and is
+    /// omitted, so an untouched config.json stays byte-identical.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text_size: String,
+    /// R-LK-02 interface language: "en". Empty is zh-HK and is omitted.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ui_language: String,
+}
+
+/// R-LK-01. Only the non-standard steps are stored; "m", blank and unknown
+/// values are the standard size (stored as "").
+pub fn normalize_text_size(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "s" => "s".into(),
+        "l" => "l".into(),
+        "xl" => "xl".into(),
+        _ => String::new(),
+    }
+}
+
+/// R-LK-02. Only English is stored; zh-HK, blank and unknown values are "".
+pub fn normalize_ui_language(raw: &str) -> String {
+    let text = raw.trim().to_ascii_lowercase();
+    if text == "en" || text.starts_with("en-") || text.starts_with("en_") || text == "english" {
+        "en".into()
+    } else {
+        String::new()
+    }
 }
 
 fn skip_false(value: &bool) -> bool {
     !*value
+}
+
+fn skip_empty_pins(pins: &BTreeMap<String, Vec<String>>) -> bool {
+    pins.is_empty()
 }
 
 fn one() -> u32 {
@@ -105,7 +199,7 @@ fn one() -> u32 {
 }
 
 fn default_dashboard() -> String {
-    "http://127.0.0.1:9119".into()
+    default_dashboard_origin()
 }
 
 fn default_modifier() -> String {
@@ -139,6 +233,22 @@ pub fn normalize_fade_distance(value: f64) -> f64 {
     value.clamp(24.0, 480.0)
 }
 
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
+}
+
+/// Most see-through a resting orb or panel may be. 80% keeps panel text
+/// readable and leaves a 20% disc to find (R-OB-07, R-CT-11).
+pub const REST_TRANSPARENCY_MAX: f64 = 0.8;
+
+/// 0 = solid. Unknown values fall back to solid, never to see-through.
+pub fn normalize_rest_transparency(value: f64) -> f64 {
+    if !value.is_finite() {
+        return 0.0;
+    }
+    value.clamp(0.0, REST_TRANSPARENCY_MAX)
+}
+
 pub fn normalize_min_opacity(value: f64) -> f64 {
     if !value.is_finite() {
         return default_min_opacity();
@@ -150,7 +260,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             version: 1,
-            gateway_base_url: String::new(),
+            legacy_gateway_base_url: None,
             dashboard_base_url: default_dashboard(),
             kanban_base_url: String::new(),
             kanban_board: String::new(),
@@ -158,20 +268,15 @@ impl Default for AppConfig {
             interaction: InteractionConfig::default(),
             show_bot_names: false,
             show_tool_detail: false,
+            suborb_pins: BTreeMap::new(),
+            kanban_base_url_from_gateway: false,
+            text_size: String::new(),
+            ui_language: String::new(),
         }
     }
 }
 
 impl AppConfig {
-    /// A blank gateway URL is the offline mock fallback.
-    pub fn mode(&self) -> &'static str {
-        if self.gateway_base_url.trim().is_empty() {
-            "mock"
-        } else {
-            "hermes"
-        }
-    }
-
     pub fn bot(&self, profile: &str) -> Option<&BotConfig> {
         self.bots.iter().find(|b| b.profile == profile)
     }
@@ -207,6 +312,64 @@ pub fn load(path: &Path) -> Result<AppConfig, String> {
     }
     let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))
+}
+
+/// The dashboard origin an old config pointed at through its gateway:
+/// the old gateway's scheme and host with the config default dashboard
+/// port ([`DEFAULT_DASHBOARD_PORT`]). `gateway_base_url` first, then the
+/// first per-bot `base_url`. Blank, `demo` and unparseable values are skipped.
+/// `http://10.10.24.33:8642` gives `http://10.10.24.33:9119`.
+pub fn dashboard_from_legacy_gateway(cfg: &AppConfig) -> Option<String> {
+    let candidates = cfg
+        .legacy_gateway_base_url
+        .iter()
+        .chain(cfg.bots.iter().filter_map(|bot| bot.legacy_base_url.as_ref()));
+    for raw in candidates {
+        let raw = raw.trim();
+        if raw.is_empty() || raw.eq_ignore_ascii_case("demo") {
+            continue;
+        }
+        let Ok(url) = reqwest::Url::parse(raw) else {
+            continue;
+        };
+        if url.scheme() != "http" && url.scheme() != "https" {
+            continue;
+        }
+        let Some(host) = url.host_str() else {
+            continue;
+        };
+        if host.is_empty() {
+            continue;
+        }
+        return Some(format!("{}://{host}:{DEFAULT_DASHBOARD_PORT}", url.scheme()));
+    }
+    None
+}
+
+/// One-time move (R-AR-06): a blank Kanban server plus an old gateway
+/// address gets the gateway's host on the dashboard port, and the marker.
+/// Never touches a non-blank field, the old keys, or an already-migrated
+/// config. True when `cfg` changed and needs one save.
+pub fn migrate_legacy_gateway(cfg: &mut AppConfig) -> bool {
+    if cfg.kanban_base_url_from_gateway || !cfg.kanban_base_url.trim().is_empty() {
+        return false;
+    }
+    let Some(origin) = dashboard_from_legacy_gateway(cfg) else {
+        return false;
+    };
+    cfg.kanban_base_url = origin;
+    cfg.kanban_base_url_from_gateway = true;
+    true
+}
+
+/// [`load`], then the one-time gateway move written once through [`save`].
+/// A missing file is never created here.
+pub fn load_and_migrate(path: &Path) -> Result<AppConfig, String> {
+    let mut cfg = load(path)?;
+    if path.exists() && migrate_legacy_gateway(&mut cfg) {
+        save(path, &cfg)?;
+    }
+    Ok(cfg)
 }
 
 pub fn save(path: &Path, cfg: &AppConfig) -> Result<(), String> {
@@ -270,7 +433,7 @@ pub fn normalize_http_base(raw: &str, allow_empty: bool) -> Result<String, Strin
         return if allow_empty {
             Ok(String::new())
         } else {
-            Err("要填 gateway 位址".into())
+            Err("要填位址".into())
         };
     }
     let url = reqwest::Url::parse(raw).map_err(|_| format!("位址唔合法：{raw}"))?;
@@ -374,7 +537,7 @@ pub fn merge_discovered_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint
             profile: hint.profile.clone(),
             display_name,
             color: parse_hermes_color(&hint.color).unwrap_or_else(|| color_for(&hint.profile)),
-            base_url: String::new(),
+            legacy_base_url: None,
             detail: hint.detail.trim().to_string(),
             session_id: String::new(),
             session_explicit: false,
@@ -407,7 +570,7 @@ pub fn append_new_profiles(bots: &mut Vec<BotConfig>, found: &[ProfileHint]) -> 
             profile: hint.profile.clone(),
             display_name,
             color: parse_hermes_color(&hint.color).unwrap_or_else(|| color_for(&hint.profile)),
-            base_url: String::new(),
+            legacy_base_url: None,
             detail: hint.detail.trim().to_string(),
             session_id: String::new(),
             session_explicit: false,
@@ -808,6 +971,125 @@ pub fn store_show_tool_detail(path: &Path, enabled: bool) -> Result<bool, String
             .ok_or_else(|| "設定檔格式唔啱".to_string())?;
         remove_top_level_field(&text, &span)
     };
+    write_config_text(path, &patched)?;
+    Ok(true)
+}
+
+fn valid_suborb_session(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn read_suborb_pins(value: &serde_json::Value) -> BTreeMap<String, Vec<String>> {
+    let mut out = BTreeMap::new();
+    let Some(object) = value.get("suborb_pins").and_then(|item| item.as_object()) else {
+        return out;
+    };
+    for (profile, ids) in object {
+        let Some(list) = ids.as_array() else { continue };
+        let mut rows = Vec::new();
+        for id in list {
+            let Some(text) = id.as_str() else { continue };
+            let text = text.trim();
+            if valid_suborb_session(text) && !rows.iter().any(|have: &String| have == text) {
+                rows.push(text.to_string());
+            }
+        }
+        if !rows.is_empty() && validate_profile(profile).is_ok() {
+            out.insert(profile.clone(), rows);
+        }
+    }
+    out
+}
+
+fn insert_suborb_pins(text: &str, body: &str) -> Result<String, String> {
+    let bytes = text.as_bytes();
+    let close = root_object_close(bytes).ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    let mut j = close;
+    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    let field = format!("\n  \"suborb_pins\": {body}\n");
+    let mut out = String::with_capacity(text.len() + field.len() + 1);
+    if j > 0 && bytes[j - 1] == b'{' {
+        out.push_str(&text[..j]);
+        out.push_str(&field);
+        out.push_str(&text[close..]);
+        return Ok(out);
+    }
+    out.push_str(&text[..j]);
+    out.push(',');
+    out.push_str(&field);
+    out.push_str(&text[close..]);
+    Ok(out)
+}
+
+/// Writes one profile's pinned sub-orb session id.
+/// Splices only `suborb_pins`. Session id, explicit, anchor, and every other key stay put.
+/// An empty map removes the key so a file that never pinned stays byte-identical.
+pub fn store_suborb_pin(
+    path: &Path,
+    profile: &str,
+    session_id: &str,
+    pinned: bool,
+) -> Result<bool, String> {
+    let profile = profile.trim();
+    validate_profile(profile)?;
+    let session_id = session_id.trim();
+    if !valid_suborb_session(session_id) {
+        return Err("session 唔合法".into());
+    }
+    if !path.exists() {
+        return Err(format!("名單冇 profile「{profile}」"));
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    let bots = value
+        .get("bots")
+        .and_then(|item| item.as_array())
+        .ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    if !bots.iter().any(|bot| bot.get("profile").and_then(|item| item.as_str()) == Some(profile)) {
+        return Err(format!("名單冇 profile「{profile}」"));
+    }
+    let mut pins = read_suborb_pins(&value);
+    let list = pins.entry(profile.to_string()).or_default();
+    let had = list.iter().any(|id| id == session_id);
+    if pinned {
+        if had {
+            return Ok(false);
+        }
+        list.push(session_id.to_string());
+    } else if had {
+        list.retain(|id| id != session_id);
+        if list.is_empty() {
+            pins.remove(profile);
+        }
+    } else {
+        return Ok(false);
+    }
+    let patched = if pins.is_empty() {
+        match top_level_field(&text, "suborb_pins") {
+            Some(span) => remove_top_level_field(&text, &span),
+            None => text.clone(),
+        }
+    } else if let Some(span) = top_level_field(&text, "suborb_pins") {
+        let body = serde_json::to_string(&pins).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+        let mut out = String::with_capacity(text.len() + body.len());
+        out.push_str(&text[..span.value_start]);
+        out.push_str(&body);
+        out.push_str(&text[span.value_end..]);
+        out
+    } else {
+        let body = serde_json::to_string(&pins).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+        insert_suborb_pins(&text, &body)?
+    };
+    if patched == text {
+        return Ok(false);
+    }
     write_config_text(path, &patched)?;
     Ok(true)
 }
@@ -1220,11 +1502,227 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_gateway_is_mock() {
-        assert_eq!(AppConfig::default().mode(), "mock");
-        let mut cfg = AppConfig::default();
-        cfg.gateway_base_url = "http://127.0.0.1:8642".into();
-        assert_eq!(cfg.mode(), "hermes");
+    fn demo_mode_is_only_the_launch_flag() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!demo_requested(args(&["hermes-overlay"]), None));
+        assert!(demo_requested(args(&["hermes-overlay", "--demo"]), None));
+        assert!(!demo_requested(args(&["hermes-overlay", "--demos"]), None));
+        assert!(!demo_requested(args(&["hermes-overlay", "demo"]), None));
+        assert!(demo_requested(args(&["hermes-overlay"]), Some("1".into())));
+        assert!(demo_requested(args(&["hermes-overlay"]), Some(" true ".into())));
+        assert!(!demo_requested(args(&["hermes-overlay"]), Some("0".into())));
+        assert!(!demo_requested(args(&["hermes-overlay"]), Some(String::new())));
+        // The old trigger (a blank or "demo" gateway address) no longer exists.
+        let blank: AppConfig = serde_json::from_str(r#"{"gateway_base_url":""}"#).unwrap();
+        let word: AppConfig = serde_json::from_str(r#"{"gateway_base_url":"demo"}"#).unwrap();
+        assert_eq!(blank.legacy_gateway_base_url.as_deref(), Some(""));
+        assert_eq!(word.legacy_gateway_base_url.as_deref(), Some("demo"));
+        assert_eq!(AppConfig::default().legacy_gateway_base_url, None);
+    }
+
+    fn migration_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-migrate-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Shaped like Devon's laptop file: no kanban_base_url, old gateway on 8642.
+    const LAPTOP_SHAPED: &str = r##"{
+  "version": 1,
+  "gateway_base_url": "http://10.10.24.33:8642",
+  "dashboard_base_url": "http://127.0.0.1:9119",
+  "bots": [
+    {
+      "profile": "default",
+      "display_name": "default",
+      "color": "#0000f2",
+      "base_url": "",
+      "detail": "",
+      "session_id": "",
+      "session_explicit": false,
+      "session_anchor": 0.0,
+      "enabled": true
+    }
+  ]
+}"##;
+
+    #[test]
+    fn the_laptop_gateway_becomes_exactly_10_10_24_33_9119() {
+        let cfg: AppConfig = serde_json::from_str(LAPTOP_SHAPED).unwrap();
+        assert_eq!(
+            dashboard_from_legacy_gateway(&cfg).as_deref(),
+            Some("http://10.10.24.33:9119")
+        );
+        // The port is the config default, not a literal.
+        assert_eq!(
+            dashboard_from_legacy_gateway(&cfg).unwrap(),
+            format!("http://10.10.24.33:{DEFAULT_DASHBOARD_PORT}")
+        );
+    }
+
+    #[test]
+    fn a_blank_kanban_server_with_an_old_gateway_is_filled_once() {
+        let dir = migration_dir("fill");
+        let path = dir.join("config.json");
+        fs::write(&path, LAPTOP_SHAPED).unwrap();
+        let cfg = load_and_migrate(&path).unwrap();
+        assert_eq!(cfg.kanban_base_url, "http://10.10.24.33:9119");
+        assert!(cfg.kanban_base_url_from_gateway);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"kanban_base_url\": \"http://10.10.24.33:9119\""), "{text}");
+        assert!(text.contains("\"kanban_base_url_from_gateway\": true"), "{text}");
+        // Old keys kept verbatim.
+        assert!(text.contains("\"gateway_base_url\": \"http://10.10.24.33:8642\""), "{text}");
+        assert!(text.contains("\"base_url\": \"\""), "{text}");
+        assert!(text.contains("\"dashboard_base_url\": \"http://127.0.0.1:9119\""), "{text}");
+
+        // A per-bot address alone is enough too; `demo` never counts.
+        let mut only_bot: AppConfig = serde_json::from_str(LAPTOP_SHAPED).unwrap();
+        only_bot.legacy_gateway_base_url = Some(" demo ".into());
+        only_bot.bots[0].legacy_base_url = Some("https://gw.example:8643/".into());
+        assert!(migrate_legacy_gateway(&mut only_bot));
+        assert_eq!(only_bot.kanban_base_url, "https://gw.example:9119");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_non_blank_kanban_server_is_never_overwritten() {
+        let dir = migration_dir("keep");
+        let path = dir.join("config.json");
+        let text = LAPTOP_SHAPED.replacen(
+            "  \"dashboard_base_url\"",
+            "  \"kanban_base_url\": \"http://192.0.2.7:9119\",\n  \"dashboard_base_url\"",
+            1,
+        );
+        fs::write(&path, &text).unwrap();
+        let cfg = load_and_migrate(&path).unwrap();
+        assert_eq!(cfg.kanban_base_url, "http://192.0.2.7:9119");
+        assert!(!cfg.kanban_base_url_from_gateway);
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_old_gateway_leaves_the_field_blank_and_the_file_alone() {
+        let dir = migration_dir("none");
+        let path = dir.join("config.json");
+        for gateway in ["", "demo", "DEMO", "not a url"] {
+            let text = LAPTOP_SHAPED.replace("http://10.10.24.33:8642", gateway);
+            fs::write(&path, &text).unwrap();
+            let cfg = load_and_migrate(&path).unwrap();
+            assert_eq!(cfg.kanban_base_url, "", "{gateway}");
+            assert!(!cfg.kanban_base_url_from_gateway);
+            assert_eq!(crate::kanban::origin(&cfg.kanban_base_url), default_dashboard_origin());
+            assert_eq!(fs::read_to_string(&path).unwrap(), text, "{gateway}");
+        }
+        let text = LAPTOP_SHAPED.replace("  \"gateway_base_url\": \"http://10.10.24.33:8642\",\n", "");
+        fs::write(&path, &text).unwrap();
+        assert_eq!(load_and_migrate(&path).unwrap().kanban_base_url, "");
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        // A missing file is not created.
+        let missing = dir.join("missing.json");
+        assert_eq!(load_and_migrate(&missing).unwrap().kanban_base_url, "");
+        assert!(!missing.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_migration_runs_once_and_later_saves_are_byte_identical() {
+        let dir = migration_dir("twice");
+        let path = dir.join("config.json");
+        fs::write(&path, LAPTOP_SHAPED).unwrap();
+        let first = load_and_migrate(&path).unwrap();
+        let after_first = fs::read(&path).unwrap();
+        let second = load_and_migrate(&path).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(fs::read(&path).unwrap(), after_first);
+        // A no-change save after migration is byte-identical.
+        save(&path, &second).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), after_first);
+        // The marker stops it even if the field is blanked later.
+        let mut blanked = second.clone();
+        blanked.kanban_base_url.clear();
+        assert!(!migrate_legacy_gateway(&mut blanked));
+        assert_eq!(blanked.kanban_base_url, "");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_gateway_and_bot_address_keys_load_and_save_unchanged() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-legacy-keys-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let cfg = AppConfig {
+            legacy_gateway_base_url: Some("http://10.10.24.33:8642".into()),
+            bots: vec![
+                BotConfig {
+                    profile: "alpha".into(),
+                    display_name: "Alpha".into(),
+                    color: "#112233".into(),
+                    legacy_base_url: Some(String::new()),
+                    detail: String::new(),
+                    session_id: "api_alpha".into(),
+                    session_explicit: false,
+                    session_anchor: 0.0,
+                    enabled: true,
+                    compose_mode: String::new(),
+                },
+                BotConfig {
+                    profile: "beta".into(),
+                    display_name: "Beta".into(),
+                    color: "#445566".into(),
+                    legacy_base_url: Some("http://10.10.24.33:8643".into()),
+                    detail: String::new(),
+                    session_id: String::new(),
+                    session_explicit: false,
+                    session_anchor: 0.0,
+                    enabled: true,
+                    compose_mode: String::new(),
+                },
+            ],
+            ..AppConfig::default()
+        };
+        save(&path, &cfg).unwrap();
+        let before = fs::read(&path).unwrap();
+        let text = String::from_utf8(before.clone()).unwrap();
+        assert!(text.contains("\"gateway_base_url\": \"http://10.10.24.33:8642\""));
+        assert_eq!(text.matches("\"base_url\"").count(), 2);
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded, cfg);
+        save(&path, &loaded).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before, "a no-change save keeps every byte");
+
+        // A new file never gains the retired keys.
+        let fresh = dir.join("fresh.json");
+        let mut new_cfg = AppConfig::default();
+        let hint = ProfileHint {
+            profile: "gamma".into(),
+            display_name: "Gamma".into(),
+            detail: String::new(),
+            color: String::new(),
+        };
+        merge_discovered_profiles(&mut new_cfg.bots, &[hint]);
+        save(&fresh, &new_cfg).unwrap();
+        let fresh_text = fs::read_to_string(&fresh).unwrap();
+        assert!(!fresh_text.contains("gateway_base_url"), "{fresh_text}");
+        assert!(!fresh_text.contains("\"base_url\""), "{fresh_text}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1244,7 +1742,7 @@ mod tests {
                 profile: "alice".into(),
                 display_name: "Alice".into(),
                 color: "#5b6cff".into(),
-                base_url: String::new(),
+                legacy_base_url: None,
                 detail: String::new(),
                 session_id: String::new(),
                 session_explicit: false,
@@ -1269,6 +1767,34 @@ mod tests {
         assert_eq!(normalize_modifier("ALT"), "alt");
         assert_eq!(normalize_fade_distance(8.0), 24.0);
         assert_eq!(normalize_min_opacity(0.9), 0.6);
+        assert_eq!(cfg.interaction.orb_rest_transparency, 0.0);
+        assert_eq!(cfg.interaction.panel_rest_transparency, 0.0);
+        assert_eq!(cfg.interaction.orb_rest_opacity(), 1.0);
+        assert_eq!(cfg.interaction.panel_rest_opacity(), 1.0);
+    }
+
+    #[test]
+    fn rest_transparency_is_bounded_and_omitted_while_solid() {
+        assert_eq!(normalize_rest_transparency(-0.2), 0.0);
+        assert_eq!(normalize_rest_transparency(0.4), 0.4);
+        assert_eq!(normalize_rest_transparency(0.95), REST_TRANSPARENCY_MAX);
+        assert_eq!(normalize_rest_transparency(f64::NAN), 0.0);
+        let old = r#"{"interaction":{"modifier":"ctrl","fade_enabled":true,"fade_distance":120.0,"min_opacity":0.6}}"#;
+        let cfg: AppConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(cfg.interaction.min_opacity, 0.6);
+        assert_eq!(cfg.interaction.orb_rest_opacity(), 1.0);
+        assert_eq!(cfg.interaction.panel_rest_opacity(), 1.0);
+        let text = serde_json::to_string(&cfg.interaction).unwrap();
+        assert!(!text.contains("rest_transparency"));
+        let mut seen = cfg.interaction.clone();
+        seen.orb_rest_transparency = 0.4;
+        seen.panel_rest_transparency = 2.0;
+        assert!((seen.orb_rest_opacity() - 0.6).abs() < 1e-9);
+        assert!((seen.panel_rest_opacity() - 0.2).abs() < 1e-9);
+        let text = serde_json::to_string(&seen).unwrap();
+        assert!(text.contains("\"orb_rest_transparency\":0.4"));
+        let back: InteractionConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.orb_rest_transparency, 0.4);
     }
 
     #[test]
@@ -1344,7 +1870,7 @@ mod tests {
                 profile: "planner".into(),
                 display_name: "我的計劃".into(),
                 color: "#00f2f2".into(),
-                base_url: "http://127.0.0.1:9000".into(),
+                legacy_base_url: Some("http://127.0.0.1:9000".into()),
                 detail: "自訂".into(),
                 session_id: "sess".into(),
                 session_explicit: true,
@@ -1356,7 +1882,7 @@ mod tests {
                 profile: "remote".into(),
                 display_name: "remote".into(),
                 color: "#f20000".into(),
-                base_url: String::new(),
+                legacy_base_url: None,
                 detail: String::new(),
                 session_id: String::new(),
                 session_explicit: false,
@@ -1399,7 +1925,7 @@ mod tests {
         assert!(bots[2].enabled);
         assert_eq!(bots[2].display_name, "碼");
         assert_eq!(bots[2].color, color_for("coder"));
-        assert!(bots[2].base_url.is_empty());
+        assert!(bots[2].legacy_base_url.is_none());
         let text = serde_json::to_string(&bots[2]).unwrap();
         assert!(!text.contains("key"));
         set_bot_enabled(&mut bots, "coder", false).unwrap();
@@ -1446,7 +1972,7 @@ other:
             profile: "planner".into(),
             display_name: "我的計劃".into(),
             color: "#00f2f2".into(),
-            base_url: String::new(),
+            legacy_base_url: None,
             detail: String::new(),
             session_id: String::new(),
             session_explicit: false,
@@ -1504,7 +2030,7 @@ other:
                 profile: "forex-forest".into(),
                 display_name: "Forest".into(),
                 color: "#112233".into(),
-                base_url: String::new(),
+                legacy_base_url: None,
                 detail: "keep".into(),
                 session_id: "20261001_013827_25b1eb".into(),
                 session_explicit: true,
@@ -1512,7 +2038,7 @@ other:
                 enabled: false,
                 compose_mode: String::new(),
             }],
-            gateway_base_url: "http://10.10.24.33:8642".into(),
+            legacy_gateway_base_url: Some("http://10.10.24.33:8642".into()),
             ..AppConfig::default()
         };
         save(&path, &cfg).unwrap();
@@ -1585,7 +2111,7 @@ other:
                 profile: "joyce".into(),
                 display_name: "Joyce".into(),
                 color: "#f20079".into(),
-                base_url: String::new(),
+                legacy_base_url: None,
                 detail: String::new(),
                 session_id: "keep-session".into(),
                 session_explicit: true,
@@ -1642,7 +2168,7 @@ other:
                 profile: "mt-coder".into(),
                 display_name: "Coder".into(),
                 color: "#112233".into(),
-                base_url: String::new(),
+                legacy_base_url: None,
                 detail: String::new(),
                 session_id: "api_1792573589_f1c99a3b".into(),
                 session_explicit: false,
@@ -1732,7 +2258,7 @@ other:
             turned_off.find("\"version\"").unwrap()
                 < turned_off.find("\"gateway_base_url\"").unwrap()
         );
-        assert!(load(&ordered).unwrap().gateway_base_url.contains("8642"));
+        assert!(load(&ordered).unwrap().legacy_gateway_base_url.unwrap().contains("8642"));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1754,7 +2280,7 @@ other:
                 profile: "mt-coder".into(),
                 display_name: "Coder".into(),
                 color: "#112233".into(),
-                base_url: String::new(),
+                legacy_base_url: None,
                 detail: String::new(),
                 session_id: "api_1792573589_f1c99a3b".into(),
                 session_explicit: false,
@@ -1802,7 +2328,7 @@ other:
                 profile: "mt-coder".into(),
                 display_name: "Coder".into(),
                 color: "#112233".into(),
-                base_url: String::new(),
+                legacy_base_url: None,
                 detail: String::new(),
                 session_id: "api_1792573589_f1c99a3b".into(),
                 session_explicit: false,
@@ -1810,7 +2336,7 @@ other:
                 enabled: true,
                 compose_mode: String::new(),
             }],
-            gateway_base_url: "http://10.10.24.33:8642".into(),
+            legacy_gateway_base_url: Some("http://10.10.24.33:8642".into()),
             ..AppConfig::default()
         };
         save(&path, &cfg).unwrap();
@@ -1885,7 +2411,7 @@ other:
         assert!(!saved.contains("kanban_base_url"), "{saved}");
         serde_json::from_str::<serde_json::Value>(&saved).unwrap();
         let loaded = load(&path).unwrap();
-        assert_eq!(loaded.gateway_base_url, "http://10.10.24.33:8642");
+        assert_eq!(loaded.legacy_gateway_base_url.as_deref(), Some("http://10.10.24.33:8642"));
         assert_eq!(loaded.bots[0].session_id, "api_1792573589_f1c99a3b");
         assert_eq!(loaded.bots[0].color, "#112233");
 
@@ -2031,6 +2557,98 @@ other:
         let (start, end) = bot_object_bounds(&flipped, "beta").unwrap();
         assert_eq!(&flipped[start..end], beta_on);
         assert_eq!(load(&path).unwrap().bots[1].compose_mode, "btw");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn suborb_pin_splices_only_that_map() {
+        let dir = std::env::temp_dir().join(format!("hermes-overlay-suborb-pin-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let before = r##"{
+  "version": 1,
+  "bots": [
+    {
+      "profile": "mt-coder",
+      "display_name": "Coder",
+      "session_id": "api_bot",
+      "session_explicit": true,
+      "session_anchor": 4.0,
+      "enabled": true
+    }
+  ]
+}"##;
+        fs::write(&path, before).unwrap();
+        assert_eq!(store_suborb_pin(&path, "mt-coder", "task_1", true).unwrap(), true);
+        let pinned = fs::read_to_string(&path).unwrap();
+        assert!(
+            pinned.contains("\"suborb_pins\"") && pinned.contains("task_1"),
+            "{pinned}"
+        );
+        assert!(pinned.contains("\"session_id\": \"api_bot\""));
+        assert!(pinned.contains("\"session_explicit\": true"));
+        assert_eq!(store_suborb_pin(&path, "mt-coder", "task_1", true).unwrap(), false);
+        assert_eq!(fs::read(&path).unwrap(), pinned.as_bytes());
+        assert_eq!(store_suborb_pin(&path, "mt-coder", "task_1", false).unwrap(), true);
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        assert!(store_suborb_pin(&path, "mt-coder", "bad id", true).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn text_size_and_language_keep_only_non_default_values() {
+        assert_eq!(normalize_text_size("m"), "");
+        assert_eq!(normalize_text_size(""), "");
+        assert_eq!(normalize_text_size("huge"), "");
+        assert_eq!(normalize_text_size(" XL "), "xl");
+        assert_eq!(normalize_text_size("s"), "s");
+        assert_eq!(normalize_text_size("l"), "l");
+        assert_eq!(normalize_ui_language("zh-HK"), "");
+        assert_eq!(normalize_ui_language(""), "");
+        assert_eq!(normalize_ui_language("ja"), "");
+        assert_eq!(normalize_ui_language("en"), "en");
+        assert_eq!(normalize_ui_language("en-GB"), "en");
+    }
+
+    #[test]
+    fn an_old_file_gains_no_look_keys_and_a_picked_look_round_trips() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-look-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let old = "{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"kanban_base_url\": \"http://10.10.24.33:9119\",\n  \"bots\": []\n}";
+        fs::write(&path, old).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.text_size, "");
+        assert_eq!(loaded.ui_language, "");
+        save(&path, &loaded).unwrap();
+        let plain = fs::read_to_string(&path).unwrap();
+        assert!(!plain.contains("text_size"));
+        assert!(!plain.contains("ui_language"));
+        let mut picked = load(&path).unwrap();
+        picked.text_size = normalize_text_size("l");
+        picked.ui_language = normalize_ui_language("en");
+        save(&path, &picked).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"text_size\": \"l\""));
+        assert!(text.contains("\"ui_language\": \"en\""));
+        let back = load(&path).unwrap();
+        assert_eq!(back.text_size, "l");
+        assert_eq!(back.ui_language, "en");
+        let mut standard = back.clone();
+        standard.text_size = normalize_text_size("m");
+        standard.ui_language = normalize_ui_language("zh-HK");
+        save(&path, &standard).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), plain);
         let _ = fs::remove_dir_all(&dir);
     }
 }

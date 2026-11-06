@@ -112,3 +112,16 @@ test("name ink clears 4.5 on the chip and is not a light bot colour", () => {
   assert.doesNotMatch(form, /fade_enabled:\s*false/);
   assert.match(form, /fadeEnabled/);
 });
+
+test("R-OB-06 sub-orb plates use the task title and paint when sub-orbs render", () => {
+  const main = fs.readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const disc = main.slice(main.indexOf("function paintSuborbDisc"), main.indexOf("function releaseSuborbGlow"));
+  assert.match(disc, /dataset\.orbName = label/);
+  assert.match(disc, /已釘住/);
+  const render = main.slice(main.indexOf("function renderSuborbs"), main.indexOf("function layoutSuborbOrbs"));
+  assert.match(render, /if \(state\.showBotNames\) paintOrbNames\(\)/);
+  const paint = main.slice(main.indexOf("function paintOrbNames"), main.indexOf("let showBotNamesWrite"));
+  assert.match(paint, /dataset\.orbName \|\| btn\?\.getAttribute\("aria-label"\)/);
+  const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /id="show-bot-names"[^>]*checked/);
+});

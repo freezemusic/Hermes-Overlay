@@ -4,6 +4,7 @@ export const CLARIFY_HEADING = "要你答";
 export const CLARIFY_RECOMMENDED = "推薦";
 export const CLARIFY_SKIP = "跳過";
 export const CLARIFY_SEND = "送出";
+export const CLARIFY_OTHER = "其他（自己打）";
 export const CLARIFY_STALE = "呢條問題已經過時";
 export const CLARIFY_TIMEOUT = "時間到，個 bot 會自己繼續";
 export const CLARIFY_WAIT_LABEL = "等你答";
@@ -84,7 +85,10 @@ export function clarifyResultText(message) {
   if (message?.status === "timeout") return CLARIFY_TIMEOUT;
   if (message?.status === "skipped") return CLARIFY_SKIPPED;
   if (message?.status === "error") return message.notice || CLARIFY_SEND_FAIL;
-  if (message?.status === "answered") return CLARIFY_ANSWERED;
+  if (message?.status === "answered") {
+    const answer = String(message.postedAnswer ?? "").trim();
+    return answer ? `${CLARIFY_ANSWERED}：${answer}` : CLARIFY_ANSWERED;
+  }
   return "";
 }
 
@@ -186,6 +190,35 @@ export function renderClarifyCard(doc, message, handlers) {
       actions.appendChild(button);
     });
   }
+  // Hermes always offers an "Other" free-text row when there are choices.
+  if (open && choices.length > 0) {
+    const label = doc.createElement("p");
+    label.className = "clarify-other-label";
+    label.textContent = CLARIFY_OTHER;
+    actions.appendChild(label);
+    const field = doc.createElement("textarea");
+    field.className = "clarify-text clarify-other";
+    field.value = message?.draft || "";
+    field.disabled = message.status !== "pending";
+    field.addEventListener("input", () => {
+      onDraft(field.value);
+      const sendOther = actions.querySelector(".clarify-other-send");
+      if (sendOther) sendOther.disabled = message.status !== "pending" || !String(field.value || "").trim();
+    });
+    actions.appendChild(field);
+    const sendOther = doc.createElement("button");
+    sendOther.type = "button";
+    sendOther.className = "clarify-primary clarify-other-send";
+    sendOther.textContent = CLARIFY_SEND;
+    sendOther.disabled = message.status !== "pending" || !String(message?.draft || "").trim();
+    sendOther.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (sendOther.disabled) return;
+      onAnswer(String(message.draft || "").trim());
+    });
+    actions.appendChild(sendOther);
+  }
   if (open) {
     const skip = doc.createElement("button");
     skip.type = "button";
@@ -210,6 +243,13 @@ export function renderClarifyCard(doc, message, handlers) {
   }
   root.appendChild(actions);
   return root;
+}
+
+/** Server request id for a batch clarify prompt (`srq-…~q0` → `srq-…`). */
+export function clarifyRequestId(promptId) {
+  const text = String(promptId || "");
+  const at = text.indexOf("~");
+  return at === -1 ? text : text.slice(0, at);
 }
 
 export function controlPromptId(item) {
@@ -273,12 +313,7 @@ export function mergePendingControls(messages, controls, runId, { dropMissing = 
       out.push(approvalCardFromControl(item, runId));
     }
   }
-  let seenPending = false;
-  for (let i = out.length - 1; i >= 0; i -= 1) {
-    const message = out[i];
-    if (message.role !== "clarify" || !clarifyPending(message)) continue;
-    if (seenPending) out.splice(i, 1);
-    else seenPending = true;
-  }
+  // Keep every pending clarify card. A 9119 batch sends 1–5 questions in one
+  // server request; each qid is its own card and every one must be locked.
   return out;
 }

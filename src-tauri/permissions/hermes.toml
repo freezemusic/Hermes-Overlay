@@ -84,6 +84,41 @@ description = "Run a client slash command against the Hermes session API."
 commands.allow = ["client_command"]
 
 [[permission]]
+identifier = "allow-create-task-session"
+description = "Create a Hermes session without changing the main orb pin."
+commands.allow = ["create_task_session"]
+
+[[permission]]
+identifier = "allow-open-suborb"
+description = "Load one task session for a sub-orb panel."
+commands.allow = ["open_suborb"]
+
+[[permission]]
+identifier = "allow-peek-session-tail"
+description = "Read the tail of a session whose list stamp changed."
+commands.allow = ["peek_session_tail"]
+
+[[permission]]
+identifier = "allow-send-suborb"
+description = "Send a turn on a sub-orb session."
+commands.allow = ["send_suborb"]
+
+[[permission]]
+identifier = "allow-stop-suborb"
+description = "Stop a sub-orb run without touching the main orb stream."
+commands.allow = ["stop_suborb"]
+
+[[permission]]
+identifier = "allow-set-suborb-pin"
+description = "Pin or unpin one sub-orb session in config.json."
+commands.allow = ["set_suborb_pin"]
+
+[[permission]]
+identifier = "allow-seed-session-lists"
+description = "Re-emit session lists once the overlay page is ready."
+commands.allow = ["seed_session_lists"]
+
+[[permission]]
 identifier = "allow-get-kanban-board"
 description = "Read the kanban board from hermes serve on port 9119."
 commands.allow = ["get_kanban_board"]

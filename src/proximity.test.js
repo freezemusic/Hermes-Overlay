@@ -12,6 +12,10 @@ import {
   ORB_FADE_EASE,
   orbNearOpacity,
   orbProximityOpacity,
+  normalizeRestTransparency,
+  panelOpacity,
+  REST_TRANSPARENCY_MAX,
+  restOpacity,
   orbFadeOpacity,
   playOrbFade,
   opacityFramesMonotonic,
@@ -916,4 +920,77 @@ test("invoke failures name the action for the error banner", () => {
   assert.equal(invokeFailureMessage("結束程式", "command not allowed"), "結束程式失敗：command not allowed");
   const denied = new Error("denied");
   assert.equal(invokeFailureMessage("置頂保護", denied), "置頂保護失敗：denied");
+});
+
+test("resting see-through defaults to solid and is bounded (R-OB-07, R-CT-11)", () => {
+  assert.equal(REST_TRANSPARENCY_MAX, 0.8);
+  assert.equal(restOpacity(undefined), 1);
+  assert.equal(restOpacity(0), 1);
+  assert.equal(restOpacity(0.4), 0.6);
+  assert.equal(restOpacity(0.8), 0.2);
+  assert.equal(restOpacity(3), 0.2);
+  assert.equal(restOpacity(-1), 1);
+  assert.equal(restOpacity("x"), 1);
+  assert.equal(normalizeRestTransparency(NaN), 0);
+});
+
+test("resting orbs: far at rest, near never brighter than rest, Ctrl near solid", () => {
+  // Default keeps today's look.
+  assert.equal(orbProximityOpacity(200, { minOpacity: 0.6 }), 1);
+  assert.equal(orbProximityOpacity(10, { minOpacity: 0.6 }), 0.3);
+  // 40% see-through.
+  assert.equal(orbProximityOpacity(200, { minOpacity: 0.18, rest: 0.6 }), 0.6);
+  assert.equal(orbProximityOpacity(Number.NaN, { minOpacity: 0.18, rest: 0.6 }), 0.6);
+  assert.equal(orbProximityOpacity(10, { minOpacity: 0.18, rest: 0.6 }), 0.18);
+  assert.equal(orbProximityOpacity(10, { held: true, minOpacity: 0.18, rest: 0.6 }), 1);
+  // Max: the near fade does not brighten a dimmer resting orb.
+  assert.equal(orbProximityOpacity(10, { minOpacity: 0.25, rest: 0.2 }), 0.2);
+  // A bad rest never makes an orb vanish.
+  assert.equal(orbProximityOpacity(200, { rest: 0 }), 0.2);
+});
+
+test("resting panels: rest when up, the Ctrl value (never less see-through) when held", () => {
+  assert.equal(panelOpacity(false, { minOpacity: 0.18 }), 1);
+  assert.equal(panelOpacity(true, { minOpacity: 0.18 }), 0.18);
+  assert.equal(panelOpacity(false, { minOpacity: 0.18, rest: 0.6 }), 0.6);
+  assert.equal(panelOpacity(true, { minOpacity: 0.18, rest: 0.6 }), 0.18);
+  assert.equal(panelOpacity(true, { minOpacity: 0.6, rest: 0.2 }), 0.2);
+});
+
+test("elementStates applies resting see-through without changing capture", () => {
+  const rects = [
+    { id: "bot:a", x: 0, y: 0, w: 44, h: 44, z: 1, round: true },
+    { id: "center", x: 0, y: 200, w: 300, h: 300, z: 2 },
+    { id: "close:center", x: 280, y: 200, w: 20, h: 20, z: 3 },
+  ];
+  const by = (list, id) => list.find((f) => f.id === id);
+  const solid = elementStates({ cursor: { x: 100, y: 300 }, rects, minOpacity: 0.18 });
+  const dim = elementStates({ cursor: { x: 100, y: 300 }, rects, minOpacity: 0.18, orbRest: 0.6, panelRest: 0.6 });
+  assert.equal(by(solid, "bot:a").opacity, 1);
+  assert.equal(by(solid, "center").opacity, 1);
+  assert.equal(by(dim, "bot:a").opacity, 0.6);
+  assert.equal(by(dim, "center").opacity, 0.6);
+  assert.equal(by(dim, "close:center").opacity, 1);
+  for (const id of ["bot:a", "center", "close:center"]) {
+    assert.equal(by(dim, id).capture, by(solid, id).capture, id);
+  }
+  assert.equal(by(dim, "center").capture, true);
+  const held = elementStates({ held: true, cursor: { x: 22, y: 22 }, rects, minOpacity: 0.18, orbRest: 0.6, panelRest: 0.6 });
+  assert.equal(by(held, "center").opacity, 0.18);
+  assert.equal(by(held, "center").capture, false);
+  assert.equal(by(held, "bot:a").opacity, 1);
+  assert.equal(by(held, "bot:a").capture, true);
+});
+
+test("settings show three see-through fields that read the same way", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  assert.match(html, /光球平時透明度（%），數字愈大愈透[\s\S]*id="interaction-orb-rest" type="number" min="0" max="80"/);
+  assert.match(html, /面板平時透明度（%），數字愈大愈透[\s\S]*id="interaction-panel-rest" type="number" min="0" max="80"/);
+  assert.match(html, /揸住 Ctrl 時面板透明度（%），數字愈大愈透[\s\S]*id="interaction-min-opacity" type="number" min="40" max="95"/);
+  assert.doesNotMatch(html, /亦係光球平時嘅透明度/);
+  // Ctrl field shows see-through; the file keeps min_opacity as opacity.
+  assert.match(main, /\$\("#interaction-min-opacity"\)\.value = String\(100 - Math\.round\(Number\(min\) \* 100\)\)/);
+  assert.match(main, /orb_rest_transparency: percentToTransparency/);
+  assert.match(main, /panel_rest_transparency: percentToTransparency/);
 });

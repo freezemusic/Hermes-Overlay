@@ -207,3 +207,132 @@ export function ownerColor(assignee, bots, fallback = "#616191") {
   });
   return bot?.color || fallback;
 }
+
+/* R-KB-09: notification bell. Events live in memory only (never config.json). */
+
+export const KANBAN_EVENT_CAP = 50;
+export const KANBAN_UPDATED = "看板有更新";
+export const KANBAN_BELL_EMPTY = "未有看板通知";
+export const KANBAN_BELL_TIP = "看板通知";
+
+let eventSeq = 0;
+
+/**
+ * One entry per added card and per moved card, else one generic
+ * 「看板有更新」 when the board changed some other way. The first snapshot,
+ * login / unavailable states and a switch to another board stay quiet.
+ */
+export function kanbanEvents(previous, next, at = Date.now()) {
+  if (!previous || !next) return [];
+  if (previous.unavailable || next.unavailable || previous.needsLogin || next.needsLogin) return [];
+  if (kanbanRequestSlug(previous.board) !== kanbanRequestSlug(next.board)) return [];
+  const before = new Map(tasksOf(previous).map((task) => [task.id, task]));
+  const out = [];
+  for (const task of tasksOf(next)) {
+    const old = before.get(task.id);
+    if (!old) {
+      out.push({ kind: "added", taskId: task.id, title: task.title, from: "", to: task.status });
+    } else if (old.status !== task.status) {
+      out.push({ kind: "moved", taskId: task.id, title: task.title, from: old.status, to: task.status });
+    }
+  }
+  if (!out.length && boardFingerprint(previous) !== boardFingerprint(next)) {
+    out.push({ kind: "updated", taskId: "", title: KANBAN_UPDATED, from: "", to: "" });
+  }
+  return out.map((entry) => ({ ...entry, at, id: `kb-${at}-${(eventSeq += 1)}`, read: false }));
+}
+
+/** Newest first, capped. `fresh` is in board order; it lands on top. */
+export function pushKanbanEvents(list, fresh, cap = KANBAN_EVENT_CAP) {
+  const added = [...(fresh || [])].reverse();
+  return [...added, ...(list || [])].slice(0, Math.max(0, cap));
+}
+
+export function unreadKanbanCount(list) {
+  return (list || []).filter((entry) => !entry.read).length;
+}
+
+/** Opening the list reads everything. */
+export function markKanbanEventsRead(list) {
+  return (list || []).map((entry) => (entry.read ? entry : { ...entry, read: true }));
+}
+
+/** True while Devon can see the board: the panel is open or on its way open
+ *  (a Ctrl+click on the capsule mid-morph), or the bell list is up. A panel
+ *  that is collapsing after 關閉 is not seen any more. A change that lands
+ *  while this is true never sets the orb's unread mark (R-KB-09). */
+export function kanbanSeen({ open = false, bell = false, opening = "", intent = "", collapsing = false } = {}) {
+  if (bell) return true;
+  if (collapsing) return false;
+  return !!open || opening === "panel" || intent === "open";
+}
+
+/** Orb / bell badge text: "" for none, 1–9, then "9+". */
+export function kanbanBadgeText(count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (!n) return "";
+  return n > 9 ? "9+" : String(n);
+}
+
+/** R-KB-15: under a minute. Digits, not 「啱啱」 (which read as 「啫啫」 at 11–12px). */
+export const KANBAN_TIME_JUST_NOW = "1 分鐘內";
+
+/** R-KB-15: the bell row's time slot. Only ever a time: 「1 分鐘內」 under a
+ *  minute, 「N 分鐘前」 under an hour, else HH:MM (local); "" when the event
+ *  has no usable timestamp (never a title, bot or assignee). */
+export function kanbanEventTime(at, now = Date.now()) {
+  const t = typeof at === "number" ? at : typeof at === "string" && /^\d+$/.test(at.trim()) ? Number(at) : NaN;
+  if (!Number.isFinite(t) || t <= 0) return "";
+  const age = Math.max(0, Number(now) - t);
+  if (age < 60_000) return KANBAN_TIME_JUST_NOW;
+  if (age < 3_600_000) return `${Math.floor(age / 60_000)} 分鐘前`;
+  const d = new Date(t);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** R-KB-15: every string kanbanEventTime can return. */
+export const KANBAN_EVENT_TIME_RE = /^(|1 分鐘內|[1-5]?\d 分鐘前|[0-2]\d:[0-5]\d)$/;
+
+export const KANBAN_BELL_READ_ALL = "全部已讀";
+
+/** A status as its column head reads it: TRIAGE, TODO, … (R-KB-10). */
+export function kanbanColumnLabel(status) {
+  return String(status || "?").trim().toUpperCase() || "?";
+}
+
+/** The status part of a row in column-head words, never mixed with Chinese:
+ *  「NEW → TRIAGE」, 「TODO → READY」, or "" (R-KB-10). */
+export function kanbanEventChange(entry) {
+  if (entry?.kind === "added") return `NEW → ${kanbanColumnLabel(entry.to)}`;
+  if (entry?.kind === "moved") return `${kanbanColumnLabel(entry.from)} → ${kanbanColumnLabel(entry.to)}`;
+  return "";
+}
+
+/** Bold / bar for a row: not seen in the list before this showing (R-KB-10). */
+export function kanbanEventUnread(entry, fresh) {
+  if (!entry) return false;
+  return !entry.listed || !!fresh?.has?.(entry.id);
+}
+
+/** 全部已讀: every entry read and listed, nothing left bold. */
+export function markKanbanEventsListed(list) {
+  return (list || []).map((entry) => (entry.read && entry.listed ? entry : { ...entry, read: true, listed: true }));
+}
+
+/**
+ * R-KB-11: the small chip on a card is the Hermes task priority (kanban_db
+ * `priority INTEGER DEFAULT 0`; higher is claimed first by the dispatcher).
+ * 0 / blank is the default and shows nothing, the same as the Hermes dashboard
+ * (which only shows `P{n}` when n > 0). A number shows as itself; an old text
+ * priority (low / high) shows as its text.
+ */
+export function kanbanPriority(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  if (/^-?\d+(\.\d+)?$/.test(text)) {
+    const n = Number(text);
+    if (!n) return null;
+    return { text: String(n), tip: `優先度 ${n}：數字愈大，Hermes 愈早派` };
+  }
+  return { text, tip: `優先度：${text}` };
+}

@@ -1,133 +1,284 @@
 # Hermes Overlay
 
-跨平台（Windows / macOS / Linux）**透明、無邊框、長期置頂** 嘅桌面 Overlay，用嚟同自架 [Hermes Agent](https://hermes-agent.nousresearch.com/) gateway 上面嘅 Bot 傾偈。
+> 狀態：**v0.3.0，開發中，尚未發佈。** 相容性：已用 Hermes Agent v0.22.5 stable（`bf0203a`）實測；v0.23.0 還沒測。
 
-技術棧：**Tauri 2 + Vite + Vanilla HTML/CSS/JS**，HTTP 喺 Rust（reqwest）。介面文案用 **繁體中文（香港）zh-HK**。
+Hermes Overlay 是一個跨平台（Windows／macOS／Linux）的桌面 Overlay。它是**透明、無邊框、永遠置頂**的視窗，用來和自架 [Hermes Agent](https://hermes-agent.nousresearch.com/) 伺服器上的 Bot 對話。
 
-未填 gateway 位址時，畫面用內置 mock Bot，可以離線睇版面。填咗位址就改由名單上嘅 profile 排邊框頭像；連唔到會顯示錯誤，唔會靜靜雞退返去 mock。
+這是**非官方的社群用戶端**，和 Nous Research 沒有關係，也沒有得到 Nous Research 的背書或認可。本專案不使用 Nous Research 或 Hermes 的標誌。
 
-需求以根目錄 [SPEC.md](SPEC.md) 為準。改程式之前先讀，並逐條核對受影響嘅條文。見 [AGENTS.md](AGENTS.md)。
+- **技術**：Tauri 2 + Vite + 原生 HTML/CSS/JS。網路請求都在 Rust 端（reqwest）。
+- **介面語言**：預設是繁體中文（香港），設定裡可以改成英文。本文件引用介面文字時照抄原文，所以會看到香港用語。
+- **連線**：所有對話、看板和 Bot 名單都走 Hermes Dashboard（`hermes serve`，預設埠 9119）。v0.3 起不再使用舊的 gateway API server（8642），也不需要每個 Bot 各自的 API 金鑰。
+- **示範模式**：想在不連伺服器的情況下看版面（假 Bot），用啟動參數開示範模式：`hermes-overlay --demo`，或設定環境變數 `HERMES_OVERLAY_DEMO=1`。設定頁裡沒有示範模式的開關。
+- **規格**：驗收以根目錄的 [REQUIREMENTS.md](REQUIREMENTS.md) 為準，實作細節寫在 [SPEC.md](SPEC.md)；兩者衝突時以 REQUIREMENTS.md 為準。改程式前請先看 [AGENTS.md](AGENTS.md)。
 
-## 安裝 / Install
+## 長期目標
 
-由 [GitHub Releases](https://github.com/freezemusic/Hermes-Overlay/releases) 下載草稿或已發佈嘅安裝檔。而家嘅 build **未簽名**。`macOSPrivateApi` 開住先至透明，所以呢個 app **入唔到 Mac App Store**。
+長期目標是**完全取代 Hermes Desktop**：平常用 Hermes，只開 Overlay 就夠，不必再開 Desktop。做到這一點才算 v1.0。
 
-Download a draft or published build from [GitHub Releases](https://github.com/freezemusic/Hermes-Overlay/releases). Current builds are **unsigned**. `macOSPrivateApi` is on so the window can be transparent, which means this app **cannot ship on the Mac App Store**.
+目前的 v0.3.0 大約涵蓋 Desktop 四成的功能面向（見下面的〈和 Hermes Desktop 比較〉）。送出、串流、批准、停止、切換 session 這些基本流程已經可以用。還缺的主要是附件、語音這類輸入方式，以及設定、profile、技能這些管理功能。
+
+## 目前版本：v0.3.0（開發中，尚未發佈）
+
+| 項目 | 現況 |
+|------|------|
+| 程式碼 | [PR #4](https://github.com/freezemusic/Hermes-Overlay/pull/4)（草稿），分支 `cursor/suborbs-new-session-5d9a` |
+| 已發佈 | 只有 tag `v0.1.0`（2026-10-15，`563c913`）。之後沒有再打 tag，也沒有發 Release |
+| 相容的 Hermes | Hermes Agent v0.22.5 stable（`bf0203a`），連 Hermes Dashboard（`hermes serve`，預設埠 9119）。v0.23.0 還沒測，它新增的路由在 v0.22.5 上沒有 |
+| 平台 | Windows 是主要使用環境，在 Devon 的筆電上實測。Linux（X11）在測試機上驗證。macOS 只有打包設定，沒有實測 |
+| 簽章 | 安裝檔沒有簽章 |
+
+### 版本怎麼算
+
+| 版本 | 內容 | 狀態 |
+|------|------|------|
+| v0.1 | 第一次連上自架的 Hermes gateway（8642）。包含螢幕邊緣的 Bot 光球、對話面板、串流回覆，以及 overlay-slash plugin | 已打 tag（2026-10-15） |
+| v0.2 | 可以每天使用。包含 Ctrl 穿透規則、批准卡和提問卡、停止和插話、計劃視窗、看板和排程光球、工具呼叫收成一行、一般／Plan／旁問三種模式、斷線自動重連 | [PR #3](https://github.com/freezemusic/Hermes-Overlay/pull/3)（`2a50abd`，2026-10-29） |
+| **v0.3** | 只走 Hermes Dashboard（9119）：拿掉 8642，也拿掉「Gateway 位址」和每個 Bot 的「API 金鑰」欄位。新增子光球和「開新 session」，看板拖卡改走 9119 並加上通知鈴，加入文字大小和英文介面，以及一次多題的提問卡 | PR #4，**目前版本** |
+| v0.4–v0.8 | 見下面的〈路線圖〉 | 規劃中 |
+| v1.0 | 可以不開 Hermes Desktop | 長期目標 |
+
+v0.3 拿掉了舊的設定欄位，舊版設定檔會自動搬一次（舊 gateway 的主機配上 9119 埠），所以算一個小版本，而不是修補版。
+
+## 已經能做的事
+
+- **對話**：串流回覆、Markdown、程式碼一鍵複製，連結用系統瀏覽器開啟。工具呼叫收成一行，點開才看得到細節。
+- **一般／Plan／旁問**：用 Shift+Tab 切換。Plan 會開計劃視窗，貼在面板旁邊。
+- **批准和提問**：只有「批准（一次）」和「拒絕」兩個選項，永遠不會自動批准。一次多題的提問會每題各出一張卡，可以選選項，也可以自己打字回答。
+- **停止、插話、排隊**：Bot 回覆時可以插話，和 Desktop 一樣只留下你的訊息。另一台裝置（手機、Desktop）正在執行時，會顯示「手機嗰邊行緊，排緊隊」。
+- **Session**：預設開啟 Desktop 的 Bot Chat，也可以手動切換。`/new` 和「＋」會開一個新的子光球，不會改動主光球。也支援 `/title`、`/branch`、`/model`、`/stop`。
+- **看板**：讀取 9119 的看板，可以切換看板、看卡片內容、拖卡改狀態，另外有通知鈴和未讀數字。
+- **排程**：排程光球會顯示執行中、完成或失敗，面板會標出哪個工作失敗。目前只能看，開關排程還是要在 Hermes 裡改。
+- **穿透**：光球平常不擋滑鼠，按住 Ctrl 才能點。面板平常可以點，按住 Ctrl 就會變透明，可以點到後面的視窗。
+- **外觀**：文字大小有四段可選。介面有繁中（香港）和英文。光球和面板的透明度都可以調。
+- **連線**：斷線會自動重試，重試時不會自己建立 session。
+
+## 和 Hermes Desktop 比較
+
+對照 Hermes Agent v0.22.5 的 Desktop 原始碼（`bf0203a`）。✅ 已有，⚠️ 部分有，❌ 還沒有。逐項的查證結果（Desktop 怎麼做、9119 有沒有對應的 API、需要多少工作量）整理在 [docs/ROADMAP.md](docs/ROADMAP.md)。
+
+| 功能 | Overlay |
+|------|---------|
+| 串流對話、工具活動、Markdown | ✅ |
+| 批准卡、提問卡 | ✅ |
+| 停止、插話、排隊 | ⚠️ 沒有 Desktop 那種可以編輯、刪除、立刻送出的排隊面板 |
+| 切換、新增、分支、改名 session | ✅ |
+| 搜尋 session | ❌ |
+| Plan／旁問、斜線選單 | ✅ |
+| 換模型 | ⚠️ 只有 `/model` 指令，沒有選單，也不能調整思考程度 |
+| 附件、圖片、長文貼上 | ❌ |
+| 語音 | ❌ |
+| 回到前一步（rewind） | ❌ |
+| 手機和 Desktop 同時用同一個對話 | ⚠️ 可以即時看到，但自己的訊息還在排隊時，看不到對方的即時回覆 |
+| Desktop 關著時也收得到 Bot 主動發的訊息 | ⚠️ 程式已經寫好，Windows 上還沒驗證 |
+| 看板 | ⚠️ 可以看、可以拖卡，不能新增或編輯卡片 |
+| 排程 | ⚠️ 只能看（目前的規則就是只能看） |
+| 管理 profile（新增、改名、刪除） | ❌ |
+| 設定 provider、模型、金鑰、記憶 | ❌ |
+| 技能、工具組、MCP、plugin | ❌ |
+| 訊息平台、webhook | ❌ |
+| 檔案瀏覽、預覽、artifacts、終端機 | ❌ |
+| 系統通知 | ⚠️ 只有光球旁的預覽和看板通知鈴 |
+| 介面語言 | ⚠️ 只有繁中（香港）和英文；Desktop 有九種語言，包括簡中和日文 |
+| 文字大小 | ⚠️ 看板欄頭不會跟著變 |
+| 自動更新、簽章安裝檔 | ❌ |
+| 第一次使用的設定流程 | ⚠️ 只有設定頁和提示橫幅 |
+| 透明、置頂、滑鼠穿透 | ✅ 這是 Overlay 的本行 |
+
+25 項中，5 項已齊、10 項部分有、10 項還沒有，大約四成。
+
+查證時也確認了一件事：Desktop 用到的伺服器 API，v0.22.5 的 9119 幾乎都有。所以要補齊的主要是 Overlay 自己的程式，不太需要等伺服器改版。
+
+## 路線圖
+
+以下路線圖已經由 Devon 核准（2026-11-06）。每一項都歡迎在 [Issues](https://github.com/freezemusic/Hermes-Overlay/issues) 討論，順序也可以依大家的回饋調整。
+
+### v0.4：把對話打磨好，並在 Windows 實測
+
+- [ ] 排隊面板（參考 Desktop）：可以編輯、刪除、立刻送出，或改成插話
+- [ ] 自己的訊息在排隊時，也要即時顯示手機那邊的回覆（目前要等排完才出現）
+- [ ] 空白對話加上提示（目前是一片空白）
+- [ ] `/branch` 不帶名稱時，新 session 會沿用 Hermes 複製的標題（例如 `Bot Chat #2`），要改成看得懂的名字
+- [ ] 斜線選單加上快取（目前每次打 `/` 都會重新抓整份清單）
+- [ ] 搜尋 session
+- [ ] 系統通知（Windows 通知中心）
+- [ ] 連不上伺服器時，`/` 選單和看板還會顯示舊的「未裝 overlay-slash」提示，要改成連線錯誤的說明
+- [ ] 部分指令改走 `slash.exec` 時出現「slash worker closed pipe」：先在測試機重現，再確認是不是伺服器端的問題
+- [ ] 看板通知鈴的清單可以用方向鍵選擇
+- [ ] 關閉程式時偶爾會當掉（結束時 tao 重複釋放記憶體），不會遺失資料
+- [ ] Hermes Desktop 關著時也能收到 Bot 主動發的訊息（R-SS-06）：在 Windows 實測，並確認 10 秒內出現
+- [ ] 在 Windows 實機補驗 REQUIREMENTS 中標示「Win 未驗」的項目
+- [ ] 美術監督剩下的意見：英文介面下的示範橫幅沒有翻譯、英文按鈕全部大寫、看板欄頭不跟著文字大小變
+
+### v0.5：輸入與操作
+
+- [ ] 圖片和檔案附件：從檔案選擇、拖曳進來、從剪貼簿貼上
+- [ ] 換模型的選單，可以調整思考程度
+- [ ] 回到前一步（rewind）、編輯後重送
+- [ ] 新增、編輯看板卡片，以及留言
+- [ ] 排程：新增、暫停、手動執行（目前規則是只能看，要先由 Devon 決定）
+- [ ] 顯示用量和 context 使用量
+- [ ] 匯出 session
+
+### v0.6：管理功能
+
+- [ ] 新增、改名、刪除 profile，並設定每個 Bot 的模型
+- [ ] 設定 provider、模型、金鑰，以及第一次使用的設定流程
+- [ ] 技能、工具組、MCP、plugin 的開關
+- [ ] 記憶設定
+- [ ] 訊息平台和 webhook（有人用到才做）
+- [ ] 介面語言加上簡中和日文
+
+### v0.7：工作區
+
+- [ ] 瀏覽和預覽伺服器上的檔案、artifacts
+- [ ] 終端機（要先決定開在哪一台機器上，見〈不做或待決定〉）
+- [ ] 語音輸入和朗讀
+- [ ] 快速輸入視窗、命令面板
+- [ ] 維運頁面：doctor、備份、log
+
+### v0.8（可選）
+
+- [ ] Bot 群組聊天（@ 其他 Bot）
+- [ ] Git review、worktree
+- [ ] 學習圖譜、curator
+- [ ] 委派設定、本機模型
+- [ ] Computer use、瀏覽器控制
+- [ ] 密碼庫（vault）
+- [ ] 內嵌網頁預覽
+
+### v1.0：可以不開 Hermes Desktop
+
+- [ ] Devon 列出平常在 Desktop 會用到的功能，每一項在 Overlay 上（Windows）都能用，而且是對著他的伺服器版本實測過
+- [ ] 決定簽章和更新的方式（見下面）
+- [ ] 「不做」清單寫清楚
+- [ ] 固定支援一個 Hermes 版本，並列出之後追新版的方式
+- [ ] Devon 實際一週不開 Desktop
+
+Desktop 改版很快：過去三個月大約發了 23 個正式版，從 v0.22.5 到 v0.23.0 的兩週內就改了一千多個檔案。所以 v1.0 是以「實際會用到的功能」來定義，而不是「Desktop 的全部功能」。
+
+## 不做或待決定
+
+**目前不打算做：**
+
+- Desktop 的外掛 SDK。這些外掛是給 Desktop 介面用的模組，Overlay 要跑它們等於重寫一套 SDK。
+- 在本機安裝、啟動 Hermes，或用 SSH 管理遠端 Hermes。Overlay 只當遠端 9119 的用戶端。
+- Nous portal、免費額度、計費。
+
+**需要 Devon 決定：**
+
+- **自動更新**：技術上可以做，但需要發佈 Release。依照 REQUIREMENTS R-SY-05，沒有 Devon 同意不發 Release。
+- **Windows 程式碼簽章**：
+  - Desktop 用的 Azure Artifact Signing 不開放英國的個人開發者申請。
+  - OV 憑證每年大約 US$150–300。
+  - 只給自己的電腦用的話，自簽憑證就夠了，不用花錢。
+- **排程**：要不要讓 Overlay 新增或修改排程（R-CR-01 目前規定只能看）。
+- **Hermes 更新**：要不要能從 Overlay 觸發伺服器端的 Hermes 更新。
+- **終端機**：要開在筆電上，還是伺服器上。
+- **寵物、喚醒詞**：喚醒詞代表麥克風要一直開著。
+- **外觀**：要不要對齊 Desktop 的主題系統。
+- **伺服器版本**：要不要升級到 Hermes v0.23.0。有些新路由只有 v0.23.0 才有。
+
+## 已知問題
+
+- 安裝檔沒有簽章，Windows 會跳出 SmartScreen。
+- 純 Wayland 讀不到全域游標，Overlay 只能一直保持可點擊，沒有穿透效果。
+- 關閉程式時偶爾會當掉（見 v0.4）。
+- 斜線選單沒有快取，每次打 `/` 都會問一次伺服器。
+- 自己的訊息在排隊時，手機那邊的回覆不會即時出現，要排完才補上。
+- 英文介面只翻譯了按鈕、標籤這類短字，較長的說明和少見的錯誤訊息還是中文。
+- 連不上伺服器時，`/` 選單和看板會顯示舊的「未裝 overlay-slash」提示，但其實不需要裝這個 plugin。
+- Bot Chat 的標題可能被伺服器改掉。這是伺服器端的問題，Overlay 不另外處理。
+
+## 參與和回饋
+
+這個專案是社群開發，很需要大家的使用回饋。
+
+- **回報問題、提功能需求、給意見**：請到 [GitHub Issues](https://github.com/freezemusic/Hermes-Overlay/issues) 開 issue。
+  - 回報問題時，請寫上作業系統、Overlay 的 commit 或版本、Hermes 的版本（`hermes --version`），以及重現步驟。
+  - 請不要貼出密碼、token 或金鑰。
+- **路線圖的項目**都可以討論：哪一項比較重要、哪一項可以不做，都歡迎直接在 issue 裡說。
+- **送 PR 之前**：
+  - 先讀 [AGENTS.md](AGENTS.md)。驗收依據是 [REQUIREMENTS.md](REQUIREMENTS.md)，實作細節在 [SPEC.md](SPEC.md)，兩者衝突時以 REQUIREMENTS.md 為準。
+  - 改動要對上 REQUIREMENTS 的條號，並在說明裡列出受影響、重新驗證過的項目。
+  - CI 必須全部通過（`npm test`、`cargo test`、Linux 和 Windows 打包檢查）。
+  - 不要自行建立 git tag 或 GitHub Release。
+
+## 安裝
+
+安裝檔可以從 [GitHub Releases](https://github.com/freezemusic/Hermes-Overlay/releases) 下載。目前只有 v0.1.0 有 Release。v0.3.0 還沒發佈，Windows 版請用 CI 產生的 artifact `windows-x64-nsis`。安裝檔都**沒有簽章**。macOS 版開了 `macOSPrivateApi` 才能透明，所以**不能上架 Mac App Store**。
+
+發佈時的檔名如下：
 
 | 平台 | 檔案 |
 |------|------|
-| Windows | `Hermes Overlay_0.1.0_x64-setup.exe`（NSIS）、`Hermes Overlay_0.1.0_x64_en-US.msi` |
-| macOS | `Hermes Overlay_0.1.0_universal.dmg`（Apple silicon + Intel）、`Hermes Overlay.app.tar.gz` |
-| Linux | `Hermes Overlay_0.1.0_amd64.AppImage`、`Hermes Overlay_0.1.0_amd64.deb` |
+| Windows | `Hermes Overlay_0.3.0_x64-setup.exe`（NSIS）、`Hermes Overlay_0.3.0_x64_en-US.msi` |
+| macOS | `Hermes Overlay_0.3.0_universal.dmg`（Apple silicon + Intel）、`Hermes Overlay.app.tar.gz` |
+| Linux | `Hermes Overlay_0.3.0_amd64.AppImage`、`Hermes Overlay_0.3.0_amd64.deb` |
 
-### 第一次打開未簽名 build
+### 第一次開啟沒有簽章的版本
 
-**macOS：** 右鍵 `.app` →「打開」，或者喺終端：
+**Windows**
+- SmartScreen 顯示「Windows protected your PC」時，選 **More info → Run anyway**。
+- 需要 WebView2 Runtime（新版 Windows 通常已經內建）。
+- 登入資料存在 Windows 認證管理員（Credential Manager）。
 
-```bash
-xattr -dr com.apple.quarantine "/Applications/Hermes Overlay.app"
-```
+**macOS**
+- 在 `.app` 上按右鍵 →「打開」，或在終端機執行：
 
-系統匣同全域快捷鍵 **Ctrl+Shift+Alt+H** 要喺「私隱與保安 → 輔助使用」允許呢個 app。金鑰寫入 Keychain。
+  ```bash
+  xattr -dr com.apple.quarantine "/Applications/Hermes Overlay.app"
+  ```
 
-**Windows：** SmartScreen 出「Windows protected your PC」時揀 **More info → Run anyway**。金鑰寫入 Credential Manager。要有 WebView2 Runtime。
+- 系統匣和全域快捷鍵 **Ctrl+Shift+Alt+H** 需要在「隱私權與安全性 → 輔助使用」允許這個 app。
+- 登入資料存在鑰匙圈（Keychain）。
 
-**Linux：** AppImage 先加執行權，再裝 WebKit、GTK 同系統匣依賴（`.deb` 會自己拉呢三個套件）：
+**Linux**
+- AppImage 要先加上執行權限，再安裝 WebKit、GTK 和系統匣的相依套件（`.deb` 會自動安裝這三個）：
 
-```bash
-chmod +x "Hermes Overlay_0.1.0_amd64.AppImage"
-sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1
-```
+  ```bash
+  chmod +x "Hermes Overlay_0.3.0_amd64.AppImage"
+  sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1
+  ```
 
-金鑰用 Secret Service。`.deb` **建議**安裝 `gnome-keyring`（冇 Secret Service 時，儲存金鑰會話「鑰匙圈不可用」）同 `xdg-utils`（連結用系統瀏覽器打開）。KWallet 都可以提供 Secret Service。純 Wayland 讀唔到全域游標同修飾鍵，overlay 會保持可點擊、唔會穿透。用 X11 或開咗 `DISPLAY` 嘅 XWayland 先有穿透。
+- 登入資料用 Secret Service 儲存。`.deb` **建議**一起安裝：
+  - `gnome-keyring`：沒有 Secret Service 時，儲存登入資料會顯示「鑰匙圈不可用」。KWallet 也可以提供 Secret Service。
+  - `xdg-utils`：用系統瀏覽器開啟連結。
+- 純 Wayland 讀不到全域游標和修飾鍵，所以 Overlay 會一直保持可點擊，不會穿透。要有穿透效果，請用 X11，或設定了 `DISPLAY` 的 XWayland。
+- 桌面捷徑的檔名依 `productName` 產生，是 `Hermes Overlay.desktop`（Tauri 沒有另外設定檔名的選項）。`Exec` 和 `Icon` 是 `hermes-overlay`。
 
-桌面檔名跟 `productName`，係 `Hermes Overlay.desktop`。Tauri 冇獨立檔名設定。`Exec` 同 `Icon` 係 `hermes-overlay`。
+### 連上 Hermes Dashboard
 
-### First launch of an unsigned build
+1. 在伺服器上執行 `hermes serve`（Hermes Dashboard，預設埠 9119）。
+2. 打開 Overlay 的設定：從系統匣選「設定」，或按 **Ctrl+Shift+Alt+H**。
+3. 在「Kanban server」填入 `hermes serve` 的位址。留空的話，就是 `http://127.0.0.1:9119`。
+4. 輸入帳號密碼登入，或留空改用系統瀏覽器登入。
+5. 按儲存。
 
-**macOS:** right-click the app and choose Open, or run `xattr -dr com.apple.quarantine` on the `.app`. Grant Accessibility for the tray and the **Ctrl+Shift+Alt+H** shortcut. Keys go to Keychain.
+Bot 名單會自動從 Dashboard 的 `GET /api/profiles` 讀取，不用填任何 API 金鑰。
 
-**Windows:** on SmartScreen, choose **More info → Run anyway**. Keys go to Credential Manager. WebView2 Runtime is required.
+如果是從舊版升級，而且舊設定檔的「Kanban server」是空的，第一次載入時會把舊 gateway 的主機配上 9119 埠，寫入一次。例如 `http://10.10.24.33:8642` 會變成 `http://10.10.24.33:9119`。
 
-**Linux:** `chmod +x` the AppImage, then install `libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `libayatana-appindicator3-1` (the `.deb` depends on these). The `.deb` also recommends `gnome-keyring` (API keys need a Secret Service; without it, saving a key reports 鑰匙圈不可用) and `xdg-utils` (opens links). KWallet can provide Secret Service too. On pure Wayland the overlay stays clickable because the global cursor and modifier cannot be read; click-through needs X11 or XWayland with `DISPLAY` set. The desktop file is named `Hermes Overlay.desktop` from `productName`; Tauri has no separate filename setting. `Exec` and `Icon` are `hermes-overlay`.
+### overlay-slash plugin（v0.3 不需要）
 
-### 設定 gateway
+v0.3 的 `/` 選單和 `/plan` 直接使用 9119 內建的 `complete.slash`、`command.dispatch`，**不需要**再安裝 `hermes-plugin/overlay-slash`。這個 plugin 只給還在用舊版（v0.2 以前、走 8642）的人。舊版的 8642 設定方式請看 [v0.1.0 的 README](https://github.com/freezemusic/Hermes-Overlay/blob/v0.1.0/README.md)。
 
-打開設定（系統匣「設定」或 **Ctrl+Shift+Alt+H**）。Gateway 位址填 `http://127.0.0.1:8642`，每個 Bot 填 profile 同 API 金鑰，然後儲存。
+## 開發
 
-Open Settings from the tray or **Ctrl+Shift+Alt+H**. Set the gateway URL to `http://127.0.0.1:8642`, then add each bot's profile and API key.
+### 需要的工具
 
-### overlay-slash（可選）
+- [Node.js](https://nodejs.org/) 20 以上（CI 用 22）
+- [Rust stable](https://rustup.rs/)。Tauri 2.12 需要較新的 stable 版，系統套件附的舊版 `rustc` 可能不夠新：
 
-`/plan`、skill 目錄要裝 [PR #2](https://github.com/freezemusic/Hermes-Overlay/pull/2) 嘅 plugin。裝完同 enable 之後**重啟 gateway**。`<sha>` 用 40 位 commit（而家對住 `d422aae152a59028d991be0dcc6b36c805ff8b30`）。
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  source "$HOME/.cargo/env"
+  rustc -V
+  ```
 
-Optional. Slash commands such as `/plan` need the plugin from [PR #2](https://github.com/freezemusic/Hermes-Overlay/pull/2). Restart the gateway after install and enable. Pin a 40-character commit; the current pin is `d422aae152a59028d991be0dcc6b36c805ff8b30`.
+- 一台有 provider 設定好的 Hermes Agent，並執行 `hermes serve`。
 
-```bash
-hermes plugins install https://github.com/freezemusic/Hermes-Overlay.git#hermes-plugin/overlay-slash --ref d422aae152a59028d991be0dcc6b36c805ff8b30 --enable --yes-deps
-hermes gateway
-```
-
-## 前置需求
-
-### 共通
-
-- [Node.js](https://nodejs.org/) 20+
-- [Rust stable](https://rustup.rs/)（Tauri 2.12 需要近期 stable；系統套件嘅舊 `rustc` 可能唔夠）
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-rustc -V
-```
-
-### 啟用 Hermes API server 同攞金鑰
-
-Hermes 本身要先有 provider。API server 預設關。喺 `~/.hermes/.env`：
-
-```bash
-API_SERVER_ENABLED=true
-API_SERVER_KEY=change-me-local-dev
-# 可選
-# API_SERVER_PORT=8642
-# API_SERVER_HOST=127.0.0.1
-```
-
-然後：
-
-```bash
-hermes gateway
-```
-
-聽到 `[API Server] API server listening on http://127.0.0.1:8642` 就得。健康檢查唔使金鑰：
-
-```bash
-curl http://127.0.0.1:8642/health
-```
-
-**Bot 就係 profile。** 每個 Bot 的主對話標題係 `Bot Chat`，cron 輸出都寫入呢度。排程工作本身有獨立光球，只供查看。具名 profile 要喺自己嘅 `~/.hermes/profiles/<profile>/.env` 設**另一條** `API_SERVER_KEY`。共享一個 listener 時要開 multiplex：
-
-```yaml
-gateway:
-  multiplex_profiles: true
-```
-
-之後：
-
-- `default` profile：`http://127.0.0.1:8642/api/...`，用 default 嗰條 key
-- 具名 profile：`http://127.0.0.1:8642/p/<profile>/api/...`，用**該 profile 自己**嘅 key（default 嘅 key 會 401）
-
-如果唔開 multiplex，而係每個 profile 自己一個埠（`hermes -p alice gateway`），喺 Overlay 嗰個 Bot 填「專用位址」（例如 `http://127.0.0.1:8643`）。專用位址唔再加 `/p/<profile>/`。
-
-公開 API server **冇**穩定嘅「列出所有 profile」端點。名單要自己加。實驗按鈕先會問 dashboard 嘅 `GET /api/profiles`（預設 `http://127.0.0.1:9119`，`hermes dashboard`），而且**唔會**帶返 API 金鑰。Hermes 0.21.6 嘅 dashboard **即使係 localhost** 都會 401，除非你貼 dashboard 頁面入面嘅 `window.__HERMES_SESSION_TOKEN__`（session token，唔係 `API_SERVER_KEY`）。
-
-參考：
-
-- [API Server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)
-- [Programmatic integration](https://hermes-agent.nousresearch.com/docs/developer-guide/programmatic-integration)
-- [Bot Mode](https://hermes-agent.nousresearch.com/docs/user-guide/bot-mode)
-
-### Linux（Debian / Ubuntu 類）
+**Linux（Debian／Ubuntu 類）**
 
 ```bash
 sudo apt update
@@ -144,130 +295,156 @@ sudo apt install -y \
   libx11-dev
 ```
 
-金鑰用系統 Secret Service（gnome-keyring 或 KWallet）。程式連結咗 `sync-secret-service`，唔會靜靜雞退回 keyring 嘅記憶體 mock。無 keyring daemon 時，儲存金鑰會失敗並顯示錯誤。編譯需要 `libdbus-1-dev`。
+- 登入資料存在系統的 Secret Service（gnome-keyring 或 KWallet）。
+- 程式連結了 `sync-secret-service`，不會偷偷退回 keyring 的記憶體模擬版。沒有 keyring daemon 時，儲存會失敗並顯示錯誤。
+- 編譯需要 `libdbus-1-dev`。
 
-### macOS
+**macOS**
+- 需要 Xcode Command Line Tools。
+- 透明視窗開了 `macOSPrivateApi`，用了 private API，可能無法通過 App Store 審查。
 
-- Xcode Command Line Tools
-- 金鑰放去 Keychain
-- 透明窗開咗 `macOSPrivateApi`。**用 private API 可能過唔到 App Store。**
+**Windows**
+- 需要 Microsoft Visual Studio C++ Build Tools 和 WebView2 Runtime。
 
-### Windows
-
-- Microsoft Visual Studio C++ Build Tools
-- WebView2 Runtime（新版 Windows 通常已有）
-- 金鑰放去 Windows Credential Manager
-
-## 安裝同執行
+### 執行和打包
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-`npm run tauri dev` 會合併 `src-tauri/tauri.dev.conf.json`，identifier 係 `com.freezemusic.hermes-overlay.dev`。設定目錄同鑰匙圈 service 都跟呢個 id，唔會覆蓋已安裝版（`com.freezemusic.hermes-overlay`）嘅設定同金鑰。`npm run tauri build` 唔會用呢個檔。
+`npm run tauri dev` 會合併 `src-tauri/tauri.dev.conf.json`，identifier 是 `com.freezemusic.hermes-overlay.dev`。設定目錄和鑰匙圈的 service 名稱都跟著這個 id，所以不會蓋掉已安裝版本（`com.freezemusic.hermes-overlay`）的設定和登入資料。`npm run tauri build` 不會用到這個檔案。
 
-只起前端（無透明窗、無鑰匙圈，強制示範模式）：
+**只跑前端**（沒有透明視窗、沒有鑰匙圈，會強制進入示範模式）：
 
 ```bash
 npm run dev
 # http://localhost:1420
 ```
 
-正式打包：
+**正式打包**：
 
 ```bash
 npm run tauri build
 ```
 
-無 GUI 時可以只驗證編譯：
+**沒有圖形介面時，只驗證編譯和測試**：
 
 ```bash
 npm run build
+npm test
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-## 點用
+## 使用方式
 
-1. 開中間面板嘅「設定」。
-2. Gateway 位址填 `http://127.0.0.1:8642`（留空 = 示範模式）。
-3. 每個 Bot：profile 名稱、顯示名稱、顏色、API 金鑰。金鑰留空代表保留鑰匙圈入面已有嗰條。
-4. 儲存。邊框會按名單數量排頭像。
-5. 點一個頭像：主光球開該 profile 同 Hermes Desktop 一樣的 Bot Chat（標題剛好係 `Bot Chat`，通常 hidden；標題查已經係最新 child，客戶端唔沿 `parent_session_id`；`source` 同訊息數都不計，空的都有效）。人手 explicit 先可以蓋過。非 explicit 的已存 id 讓給這條，而且不寫回 config。啟動同打開都唔建立 session，亦唔改跟最新 session；未有 Bot Chat 就保持未有對話。選擇器仍可手動改揀，`Bot Chat` 釘在最頂，手動先寫 explicit。收合再打開：有 explicit 就留喺嗰條，否則回到 Desktop 的 Bot Chat。
-6. 傳送會 `POST /api/sessions/{id}/chat/stream`，即時顯示文字、工具開始／完成／失敗，同埋忙碌或閒置。助手同歷史訊息會渲染 Markdown（標題、粗斜體、清單、程式碼、引用、表格、分隔線）；串流期間約 50ms 更新一次，未閉合嘅程式碼圍欄都會保持成塊程式碼。連結用系統瀏覽器打開，唔會喺 overlay 裡面跳頁。你自己打嘅字維持純文字。每次打開 `/` 選單都會再攞 overlay-slash 目錄（`GET /v1/overlay/commands`，有 ETag，未變就 304）。分類按首次出現次序合併。↑↓ 移動，Tab 補全；有參數提示嘅指令會喺游標後面顯示淡色提示。`args_hint` 空嘅指令按 Enter 會補全並送出。回合進行中仍然可以打 `/stop`。`/new`、`/title`、`/branch`、`/model`、`/stop` 由 overlay 自己處理；其他指令原文送出，由 plugin 改寫。串流回應嘅 `X-Hermes-Command` 會變成氣泡上嘅小標籤（例如 `plan`、`skill:arxiv`）。歷史入面第一行 `<!-- overlay-slash: {"display":"/plan add dark mode","command":"plan"} -->` 會顯示 `display` 同 chip；`command` 係指令名或 skill slug（疊加係 `arxiv+pdf`），唔帶 `skill:`。如果 gateway 連唔到或者逾時，看板、排程、Bot 名單同對話會以 5 秒、10 秒、20 秒退避到 60 秒（上下 20%）自動再試；網路恢復、休眠醒來、或者打開相關面板會即刻再試。重試期間顯示「連唔到 Hermes，自動重試中…」同下次時間，恢復之後載入一次並清走錯誤。重試唔會建立 session。
-7. 「測試已儲存連線」打 `GET /health`，再對每個已存金鑰打 `GET /api/sessions?limit=1`。
+1. 打開設定，在「Kanban server」填入 Dashboard 位址並登入。示範模式不在設定裡，要用 `--demo` 啟動。
+2. 每個 Bot 可以設定 profile 名稱、顯示名稱、顏色和說明。名單通常會自動從 Dashboard 讀取。
+3. 按儲存。螢幕邊緣會依名單數量排好光球。
+4. **點一個光球**，主光球會開啟這個 profile 的 Bot Chat，也就是和 Hermes Desktop 同一個對話（標題剛好是 `Bot Chat` 的那一條）。
+   - 啟動和開啟時都不會建立 session。還沒有 Bot Chat 的話，就保持沒有對話。
+   - 選單裡可以手動改選其他 session，`Bot Chat` 固定在最上面。手動選的才會記住。
+   - 收起再打開時，有手動選過就留在那一條，否則回到 Bot Chat。
+5. **送出訊息**時，會經由 `/api/ws` 的 `prompt.submit` 送出，即時顯示文字，以及工具的開始、完成、失敗，和忙碌或閒置狀態。
+   - 回覆和歷史訊息會顯示成 Markdown。串流期間大約每 50ms 更新一次。
+   - 你自己打的字維持純文字。
+6. **`/` 選單**的內容來自伺服器的 `complete.slash`。
+   - ↑↓ 移動，Tab 補全。
+   - `/new`、`/title`、`/branch`、`/model`、`/stop` 由 Overlay 自己處理，其他指令交給伺服器執行。
+   - 回合進行中也可以打 `/stop`。
+7. **停止**會經由 WebSocket 的 `session.interrupt` 要求伺服器停止這一輪。等伺服器確認後，畫面才會顯示「已停止」。
+8. **斷線或逾時**時，看板、排程、Bot 名單和對話會自動重試，間隔依序是 5 秒、10 秒、20 秒，最長到 60 秒（上下浮動 20%）。
+   - 網路恢復、從睡眠喚醒，或打開相關面板時，會立刻重試。
+   - 重試不會建立 session。
+9. 設定頁的「測試已儲存連線」會呼叫 Dashboard 的 `GET /api/health`，再對每個 Bot 讀一次 session 清單。
+
+## 游標與穿透
+
+光球和面板的行為剛好相反。預設的修飾鍵是 **Ctrl**（可以改成 Shift 或 Alt）。
+
+- **光球**（Bot、設定、看板、排程）平常是實色，但滑鼠可以穿透，不會擋住後面的視窗。游標靠近時光球會淡化。按住 Ctrl 並對準光球，才能點擊。
+- **面板**（Bot 面板、設定、看板、排程、計劃視窗）平常是實色、可以操作。按住 Ctrl 時，所有面板會變透明，滑鼠可以穿透；放開就恢復。
+- 在其他程式裡按 Ctrl+C／Ctrl+V 時，光球和面板不會閃動。
+- 在輸入框打字時，對話面板會保持實色。按 Esc、點空白處，或切到別的程式，就會解除。
+- 在 Linux 上把修飾鍵改成 Alt 的話，視窗管理員可能會攔下 Alt+click，設定頁會顯示警告。
+- 不用點擊也能開設定：按全域快捷鍵 **Ctrl+Shift+Alt+H**，或從系統匣選「設定」。系統匣和設定頁都有「結束」。對話面板的「關閉」只會收起面板，不會結束程式。
+
+**實作方式**：
+
+- Rust 端大約每 16ms 讀一次全域游標和修飾鍵（`device_query`）。
+- Windows 和 macOS 用 `set_ignore_cursor_events` 切換整個視窗的穿透。
+- Linux X11（包括 XWayland）用 GDK input shape。
+- macOS 要允許「輔助使用」，否則可能讀不到修飾鍵。
+
+詳細規則見 [REQUIREMENTS.md](REQUIREMENTS.md) §1（R-CT）。原本寫在 README 的實作筆記已經移到 [docs/CLICKTHROUGH.md](docs/CLICKTHROUGH.md)。
+
+## 設定檔和登入資料
+
+- **設定檔**：位址、名稱、顏色、說明等存在 app 設定目錄的 `config.json`，目錄名稱就是 bundle identifier。
+- **登入資料**：Dashboard 的登入資料（token 或密碼）存在作業系統的鑰匙圈，service 名稱和 identifier 相同。網頁層拿不到明文。
+- **第一次執行**：還沒有設定檔時，會自動打開設定頁。
 
 ## 外觀
 
-色板、圓角同字體都係 `:root` 嘅 CSS 變數，之後可以整組換主題。色同公開 Nous / Hermes 站一致：電光藍 `#0000f2`、螢光黃 `#edff45`、紙色字 `#f5f5f5`。頭像係太陽光暈（`--orb-glare-tint`、`--orb-core-alpha`、`--orb-glow-radius`、`--orb-glow-alpha`、`--orb-selected-glow-radius`、`--orb-selected-glow-alpha`）：細粒近白熱核、只帶少少 Bot 色，用徑向漸變向外淡到完全透明，冇實色圓球同硬邊。Bot 色只用於光球核心、光暈、頭像環同 2px 色條。文字、氣泡框同實色按鈕用 #0000f2 或 #14142b。淺色填色上面的字用 #14142b。每對對比至少 4.5。未選中光暈大約 34px。選中係更大更亮嘅同一種光，大約 52px。邊位頭像內縮夠選中光暈，貼住螢幕邊都唔會被切走。選中嘅光只喺切換時以 transform 脈衝兩次，之後保持靜態。Linux 面板唔再用模糊 box-shadow，自己放喺一層合成上面。狀態點同樣係圓。中間面板大約 76% 不透明，設定卡大約 80%，支援嘅 WebView 會加 `backdrop-filter` 模糊。Linux 嘅 WebKitGTK 畫唔到 `backdrop-filter`，面板同設定卡會提高到大約 90% 不透明，對比唔再靠背後嘅牆紙。字用紙色加陰影，淺色或深色牆紙都讀到。標題用 Barlow Condensed，正文用 Schibsted Grotesk，狀態用 IBM Plex Mono，中文繼續落 PingFang HK / Noto Sans TC。呢啲係開源替代，冇嵌入 Rules、Aeonik 或其他專有字檔同標誌。
+- **配色**：色盤、圓角和字型都是 `:root` 裡的 CSS 變數，之後可以整組換主題。配色參考 Nous／Hermes 公開網站：電光藍 `#0000f2`、螢光黃 `#edff45`、紙白字 `#f5f5f5`。
+- **光球**：像一團太陽光暈，中心接近白色，只帶一點 Bot 的顏色，往外漸淡到完全透明，沒有實色圓球和硬邊。
+  - 選中的光球光暈更大、更亮，切換時脈動兩次，之後保持靜止。
+  - 靠近螢幕邊的光球會往內縮，光暈不會被切掉。
+- **面板**：中間面板大約 76% 不透明，設定卡大約 80%。支援的 WebView 會加上背景模糊。Linux 的 WebKitGTK 畫不出背景模糊，所以會把不透明度提高到大約 90%。
+- **字型**：標題用 Barlow Condensed，內文用 Schibsted Grotesk，狀態用 IBM Plex Mono，中文用 PingFang HK／Noto Sans TC。這些都是開源字型，沒有內嵌專有字型，也沒有使用 Nous Research 或 Hermes 的標誌。
+- **對比**：每一組文字和背景的對比至少 4.5:1。
 
-## 游標同穿透
-
-光球同面板方向相反。預設修飾鍵係 **Ctrl**（可改 Shift 或 Alt）。靜止透明度預設 18%（可設 5–60%）。
-
-- 光球（Bot、設定、看板、排程）預設實色而且穿透：唔收 click、hover、右撳。游標距命中圓 72px 內，嗰粒先用 120ms ease-out 淡到靜止透明度（上限 30%）；離開就淡返實色。淡出由腳本逐幀寫 inline opacity（120ms ease-out，`transition: none`），輪詢喺目標改變後繼續送約 168ms，到埗就停寫。透明度只跟全域輪詢嘅游標距離同 Ctrl。
-- 揸住修飾鍵，而且游標喺淡出範圍內，嗰粒返實色。可以撳仍然只係游標下面或者 12px 內。其他唔近嘅光球維持實色同穿透。放手之後按游標距離返第上一條。名稱標籤只喺修飾鍵加 hover 先出，放手即消失。光球用圓形：距離圓心唔超過半徑加 12px 先算對準，外接正方形嘅角位唔會接手。Ctrl+C／Ctrl+V 唔閃。
-- 面板（Bot 面板、設定、看板、排程、貼住嘅計劃視窗）預設實色、可以撳、可以操作。游標行近唔會令佢變淡。
-- 揸住修飾鍵，所有面板（連關閉掣同計劃視窗）變透明而且穿透。放手即返實色、可操作。
-- 訊息預覽膠囊平時實色但穿透。只有修飾鍵加游標喺膠囊上先可以撳，再展開成面板。
-- 喺其他程式或者輸入框撳 Ctrl+C／Ctrl+V，光球同面板嘅透明度同穿透唔變、唔閃，包括 C／V 放咗、Ctrl 仲揸住嗰段。
-- 讀唔到全域游標或者修飾鍵（純 Wayland）時，光球同面板保持可撳，唔入穿透。
-- 任何 hit flush 都要跟住而家嘅修飾鍵。Ctrl 仍然按住、游標又喺光球或預覽膠囊上時，不得把 input shape 清成 n=0；要保留或重算嗰個矩形。滑鼠已經按下期間亦不得清走現有命中區。呢個判斷喺 Rust，用系統鍵監測（`device_query`，同驅動 Ctrl 時 n=1 嗰個），唔信網頁 keydown。穿透視窗未聚焦時撳落嘅 Ctrl，頁面會報 `ctrl=0`，都不得清走 Rust 嘅鍵態。有面板蓋住光球時，只要游標喺已公佈嘅光球或膠囊上，shape 都留住嗰個矩形。Rust 把真實鍵態交俾頁面。滑鼠鍵亦係 `device_query`。Ctrl 按住時喺光球上按下，就把當時的 input shape 鎖到放開，重新公佈唔會改形狀。重新公佈用同 n=1 一樣的 CSS 座標打新矩形；游標樣本缺失就沿用上次打中的點。游標仲喺上一份形狀的光球裡面就不得公佈 n=0。開咗 debug log 會寫 `hit-shape`（游標、候選矩形、點解落到 n=0）。Ctrl+光球由 pointerup 打開：pointerdown 用 pointer capture 記住光球 id，唔靠同一個元素的 click。按下期間同之後約 300ms 唔開始計劃彩排，亦唔重畫光球；進行中的彩排會中止並延後。真實計劃接縫期間彩排同 hit flush 都延後。Rust 鎖住形狀時用鎖住的光球 id。debug log 會寫 `pointer`（phase、目標、光球 id）。pointerup 要按下開始時修飾鍵按住先打開：Rust hit check 鎖住嘅光球 id，同埋 pointerdown 嘅 ctrlKey；之後先至推到嘅鍵態不得取消。剛放開就點不得打開。計劃增長時鐘要等殼嘅收起 clip 已經合成，而且 GTK after-paint 確認至少兩幀，先開始 280ms。揭示跟返 v71：殼 `shell.animate` 剪裁，`fill: both`，`holdMotion` 係 `transition: none !important`。冷開第一個超過 20ms 嘅樣本重新對原點，最多三次，仍然遲就顯示 20ms；第二個提交樣本最多 45ms，暖開同底緣都用同一對上限。重新對鐘之後第一個可見樣本停喺 20ms。計劃 ✕ 同右邊界從第一幀就喺剪裁入面，揭示前寬度鎖定，排隊重畫不得改幾何或換走 ✕。揭示中途呈現幀距超過一幀就每幀最多行一幀，總時間超過兩倍先追，而且不得連續兩幀同一進度，每一個呈現樣本至少行一幀曲線。最後一個樣本同一幀寫入完全打開嘅整數 px clip，並推計劃層重畫成個矩形，after-paint 確認後先還原；開咗 debug log 先寫 `seam-final`。曲線唔改。鍵沿用 run_javascript 直接寫透明度。打開、變形同啟動的 input shape 即時套用。Ctrl 鍵沿矩形冇變就唔再 combine，亦不得延遲加入游標打得到的矩形。完成但 computed clip-path 仍然收起就寫 `seam-clip-stuck`。計劃收回去到 160ms 就開始面板收回，兩段曲線同時間唔改。計劃收回同面板收回中間唔改畫面，面板層要喺計劃收回期間已經合成，關閉按鈕唔播背景 transition。Ctrl 按下或放開由 `device_query` 監測即時推去頁面，唔等 morph、收回、彩排或 hit flush；面板透明係 Ctrl 鍵沿處理器入面同步寫殼嘅 inline opacity，唔等 rAF、after-paint 或 input shape；新的 input shape 即時套用，冇變的 Ctrl 鍵沿先跳過 combine。寫入記 `opacity-write`，下一幀 after-paint 記 `opacity-present`。呢下唔重畫 Bot。Ctrl 按住穿過打開，動畫完結第一幀就要透明。聚焦輸入框嘅 Enter 用 DOM ctrlKey 或者系統鍵態，唔好兩個一齊先算。
-- 輸入框聚焦會保持**中間對話面板**實色，游標喺塊面板上先可以點。設定頁打開會保持**設定面板**同樣處理。Esc、點到元素以外嘅空白，或者視窗失焦，會 blur 輸入框並解除鎖定。視窗交畀另一個程式會即時解除鎖定；網頁內短暫失焦先會等約 150ms。修飾鍵選單嘅彈出視窗、本程式視窗，同埋佢嘅外框，都仍然算本程式，設定卡會保持。Linux 用前景視窗嘅 X11 window id 對照呢啲 id，唔再靠 `_NET_WM_PID`；任何其他非零前景視窗都係另一個程式，連續兩次讀到就放開，並且清走 dropdown 旗、blur 修飾鍵選單，再叫 WebKit 閂 option menu，GTK menu 用 cancel／deactivate 收起。WebKit 自己嘅 popup 唔係 GtkMenu，`menu.close()` 收唔到；抓手係普通 popup window 時，向個 window 送合成 Escape（`widget.event`），等 WebKit 自己取消。唔再用 hide 同 seat ungrab，避免下一次撳選單要撳兩下。讀唔到前景視窗先保持。Windows 同 macOS 仍然用行程 id。
-- 修飾鍵可以改做 Alt，但 Linux 視窗管理員（xfwm4 預設，GNOME／KDE 都常見）用 Alt 拖移視窗，Alt+click 可能去唔到 overlay。設定頁喺 Linux 會顯示呢個警告，Alt 仍然可以揀。唔使點擊都可以開設定：全域快捷鍵 **Ctrl+Shift+Alt+H**，或者系統匣選單「設定 (Ctrl+Shift+Alt+H)」。系統匣亦有「結束」。中間面板嘅「關閉」只收起對話面板，唔會結束程式。收起會設 `[hidden]`，`.center-panel[hidden]` 用 `display: none` 蓋過 `display: flex`，面板先會真係消失，hit-sync 亦會丟掉呢塊矩形。置頂只切換 keep-above。置頂之後大約 1 秒內先拒絕關閉要求，避免 keep-above 令程式退出。過咗呢一秒，Alt+F4 同 wmctrl -c 可以正常結束。設定頁有「結束」，同系統匣「結束」一樣呼叫 `app.exit(0)`。`quit_app` 同 `arm_pin_close_guard` 要喺預設 capability 允許先叫到；叫唔到會出喺錯誤橫額。Unix 嘅 SIGINT／SIGTERM 同樣走呢條路。
-
-實作用 Rust 大約每 16ms 讀全域游標同修飾鍵（`device_query`），前端報上元素矩形。Windows 同 macOS 用成個視窗嘅 `set_ignore_cursor_events`：有任何應接收游標嘅光球或面板先關閉穿透。光球只喺修飾鍵對準時接收；面板喺未按修飾鍵而且游標喺上面時接收。Linux X11（包括開咗 `DISPLAY` 嘅 XWayland）用 GDK input shape。純 Wayland 讀唔到全域游標／修飾鍵，overlay 會保持可點擊，唔會穿透。macOS 要喺「私隱與保安 → 輔助使用」允許呢個 app，否則修飾鍵可能讀唔到。全域快捷鍵同樣要輔助使用權限。
-
-設定檔（位址、名稱、顏色、詳情）喺 app config 目錄嘅 `config.json`，目錄名係 bundle identifier。金鑰同 dashboard token 喺 OS keychain，service 名同 identifier 一樣（已安裝版 `com.freezemusic.hermes-overlay`，`tauri dev` 係 `com.freezemusic.hermes-overlay.dev`）。網頁層只知道 `has_key`，唔會再攞到明文。未有設定檔時會自動打開設定，示範橫額亦可以撳開設定。
-
-## 設定重點
-
-`src-tauri/tauri.conf.json` 視窗：
+`src-tauri/tauri.conf.json` 的視窗設定：
 
 | 選項 | 值 | 作用 |
 |------|-----|------|
-| `transparent` | `true` | 視窗可透明 |
-| `decorations` | `false` | 無標題列 |
-| `alwaysOnTop` | `true` | 長期置頂 |
+| `transparent` | `true` | 視窗可以透明 |
+| `decorations` | `false` | 沒有標題列 |
+| `alwaysOnTop` | `true` | 永遠置頂 |
 | `shadow` | `false` | 減少邊框陰影 |
-| `maximized` | `false` | 唔好等 show 之後先 maximize；隱藏時先鋪滿螢幕 |
+| `maximized` | `false` | 不在顯示後才最大化，隱藏時就先鋪滿螢幕 |
 | `macOSPrivateApi` | `true` | macOS 透明背景 |
 | `identifier` | `com.freezemusic.hermes-overlay` | bundle id |
 
-## 已知限制
+## 限制
 
-1. **Click-through**  
-   光球預設穿透，面板預設可撳（見上面「游標同穿透」）。純 Wayland 未支援全域游標／修飾鍵查詢，會保持可點擊。Linux 用 X11 或 XWayland。
-
-2. **Profile 列表**  
-   API server 冇已文件化、穩定嘅 roster 端點（曾經提出嘅 `GET /api/profiles` 冇落地）。Dashboard 嘅 `GET /api/profiles` 先係實驗匯入，而且唔包含 API 金鑰。Hidden 嘅 `Bot Chat` 要 gateway 支援 `include_hidden=true` 先搵到；舊版忽略呢個 query 時，如果標題已被隱藏 session 佔用，建立會 400。
-
-3. **串流中斷**  
-   「停止」只會切斷呢個客戶端嘅 SSE。Gateway 上嗰輪可能繼續行。逾時上限約由 reqwest 預設（無總時限，連接逾時 10 秒）；keepalive comment 會被略過。
-
-4. **無頭／CI**  
-   `tauri dev` / `tauri build` 要顯示器同 WebKit。無 GUI 時用 `cargo check` 同 `cargo test`。
-
-5. **Wayland**  
-   部分合成器對 transparent / always-on-top 嘅行為同 X11 唔同。
-
-6. **真實 Hermes**  
-   協議對過 Hermes v0.21.6 實機（Ollama qwen2.5 1.5B，`default` / `researcher` / `writer` / `broken`，multiplex `/p/<profile>/`）：重複 `Bot Chat` 標題、失敗回合 `display_kind: failed_turn`、中文 SSE 分塊。單元測試用本機假 HTTP 鎖住呢啲形狀。金鑰圈要有 Secret Service / Keychain / Credential Manager 先寫到持久金鑰。
+1. **穿透**：純 Wayland 還不支援讀取全域游標和修飾鍵，所以會一直保持可點擊。Linux 請用 X11 或 XWayland。
+2. **沒有圖形介面的環境（CI）**：`tauri dev`／`tauri build` 需要顯示器和 WebKit。沒有圖形介面時，用 `npm test`、`cargo check` 和 `cargo test`。
+3. **Wayland**：部分合成器對透明和置頂的處理和 X11 不同。
+4. **Hermes 版本**：通訊協定是對照 Hermes Agent v0.22.5 stable（`bf0203a`）的實機和原始碼。單元測試用本機的假伺服器固定這些格式。v0.23.0 還沒測。
+5. **鑰匙圈**：需要 Secret Service、Keychain 或 Credential Manager，才能長期保存登入資料。
 
 ## 專案結構
 
 ```
 .
 ├── index.html
-├── src/main.js              # 邊框排位、設定、對話
-├── src/styles.css
-└── src-tauri/
-    ├── tauri.conf.json
-    └── src/
-        ├── lib.rs           # Tauri commands、事件
-        ├── hermes.rs        # Sessions / SSE
-        ├── interaction.rs   # 穿透、Ctrl、修飾鍵
-        ├── secrets.rs       # OS keychain
-        └── config.rs
+├── REQUIREMENTS.md            # 驗收依據
+├── SPEC.md                    # 實作細節
+├── AGENTS.md                  # 協作者須知
+├── docs/
+│   ├── ROADMAP.md             # 和 Desktop 的逐項比較、路線圖依據
+│   └── CLICKTHROUGH.md        # 游標與穿透的實作筆記
+├── src/
+│   ├── main.js                # 光球排列、設定、對話
+│   ├── *.js                   # 各功能模組（看板、排程、子光球、斜線選單…）
+│   ├── *.test.js              # Node 單元測試（npm test）
+│   └── styles.css
+├── src-tauri/
+│   ├── tauri.conf.json
+│   └── src/
+│       ├── lib.rs             # Tauri commands、事件
+│       ├── client/            # HermesClient：和 9119 的所有連線（REST、/api/ws、登入、看板）
+│       ├── hermes.rs          # 共用的資料型別和解析
+│       ├── sse.rs             # SSE 解析
+│       ├── interaction.rs     # 穿透、Ctrl、修飾鍵
+│       ├── secrets.rs         # 作業系統鑰匙圈
+│       └── config.rs
+├── hermes-plugin/overlay-slash/  # 舊版 8642 用的 plugin（v0.3 不需要）
+└── scripts/                   # CI 用的假伺服器、Windows 穿透測試
 ```
+
+## 授權
+
+本專案以 MIT License 釋出，全文見 [LICENSE](LICENSE)。

@@ -1,4 +1,11 @@
-//! HTTP client for a self-hosted Hermes Agent API server.
+//! Hermes data types, parsers and session rules shared by the client and the
+//! Tauri commands. This module makes no network calls in the app: every
+//! request goes through `client::HermesClient` (R-AR-01).
+//!
+//! The old gateway API-server (port 8642) HTTP functions that are still here
+//! are `#[cfg(test)]` only: they are not in the built app and stay as test
+//! fixtures for the shared parsers (R-AR-04). `the_app_makes_no_gateway_calls`
+//! checks that.
 //!
 //! Field names follow the public API-server docs, `gateway/platforms/api_server.py`,
 //! and a live Hermes v0.21.6 gateway (`assistant.delta` uses `delta`, tool events use
@@ -6,14 +13,21 @@
 //! `display_kind: failed_turn` rather than `run.failed.error`).
 
 use crate::config::BOT_CHAT_TITLE;
+#[cfg(test)]
 use crate::sse::{self, SseEvent};
+#[cfg(not(test))]
+use crate::sse::SseEvent;
+#[cfg(test)]
 use futures_util::StreamExt;
+#[cfg(test)]
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Instant;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum HermesError {
@@ -57,12 +71,15 @@ pub struct SessionSummary {
     pub parent_session_id: String,
     /// Archived rows stay out of the titled Bot Chat pick.
     pub archived: bool,
-    /// `ended_at` is set, or `end_reason` is non-empty. The server has closed this row.
+    /// `ended_at` is set, or `end_reason` is non-empty, and the reason is not
+    /// one Hermes reopens (`RECOVERABLE_END_REASONS`). The server has closed this row.
     pub ended: bool,
-    /// Hermes `end_reason` (`tui_shutdown`, …). Empty when the row is still open.
+    /// Hermes `end_reason` (`tui_shutdown`, `ws_orphan_reap`, …). Empty when none.
     pub end_reason: String,
     /// Gateway routing key. Empty when the list did not include one.
     pub session_key: String,
+    /// The list said this row is running, when it sent such a flag.
+    pub busy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -150,6 +167,9 @@ pub enum TurnEvent {
         detail: String,
         run_id: String,
     },
+    /// R-ST-05. `true`: this send waits behind a turn another client (phone, Desktop
+    /// via 9119) is running on the same session. `false`: that wait is over.
+    QueueElsewhere(bool),
 }
 
 /// The run 「停止」 should post. A queued admission must not replace the id
@@ -287,8 +307,78 @@ pub fn session_accepts_send(source: &str) -> bool {
     )
 }
 
-pub fn session_read_only(source: &str) -> bool {
-    !session_accepts_send(source)
+/// R-CL-05: on the Hermes Dashboard every session takes a turn (CLI, TUI,
+/// phone, Desktop all resume the same way), so nothing is read-only any more.
+/// `session_accepts_send` stays as the old gateway's rule for reference.
+pub fn session_read_only(_source: &str) -> bool {
+    false
+}
+
+/// Sources Hermes 0.22.5 keeps as a local chat. Its Bot Chat door
+/// (`gateway/platforms/api_server_bot_chat.py::admit_peer_turn`) takes an
+/// API-key turn into such a Bot Chat. A row a native open bound reads
+/// `local` afterwards.
+pub fn is_local_chat_source(source: &str) -> bool {
+    matches!(
+        source.trim().to_ascii_lowercase().as_str(),
+        "local" | "cli" | "tui" | "gui" | "desktop" | "oneshot" | "tool" | "acp"
+    )
+}
+
+/// `session` is this profile's Desktop Bot Chat (`canonical_bot_chat`), and
+/// the only row titled `Bot Chat`. Hermes' unique title index allows one; a
+/// list with two is not a gateway list, and keeps the source rule.
+pub fn is_main_bot_chat(session: &SessionSummary, sessions: &[SessionSummary]) -> bool {
+    let titled = sessions
+        .iter()
+        .filter(|row| is_bot_chat_title(&row.title) && session_route_matches(row))
+        .count();
+    titled == 1 && canonical_bot_chat(sessions).is_some_and(|chat| chat.id == session.id)
+}
+
+/// Read-only with the list in hand. The Desktop Bot Chat with a local source
+/// takes a send through Hermes' Bot Chat door, so it is not read-only.
+/// Every other row keeps `session_read_only` (R-SS-08).
+pub fn session_read_only_in(session: &SessionSummary, _sessions: &[SessionSummary]) -> bool {
+    session_read_only(&session.source)
+}
+
+/// The send gate for a row the server closed. Hermes reopens its Bot Chat on
+/// the next turn (`end_reason` `cli_close`/`tui_shutdown` clears), so the
+/// Desktop Bot Chat is never treated as closed.
+pub fn session_send_closed(session: &SessionSummary, sessions: &[SessionSummary]) -> bool {
+    session.ended && !is_main_bot_chat(session, sessions)
+}
+
+/// Hermes 0.22.5 moves an `api_server` row that holds the `Bot Chat` title
+/// aside on the next Bot Chat turn: it is renamed `Bot Chat (API <id>)`,
+/// made visible, and a new empty local `Bot Chat` takes the turn
+/// (`gateway/session_bot.py::displaceable_bot_chat`, `_displace_bot_chat`).
+/// Not wired yet: the send policy for this case waits for Devon (FINDINGS.md D1).
+#[allow(dead_code)]
+pub fn bot_chat_send_displaces(session: &SessionSummary, sessions: &[SessionSummary]) -> bool {
+    is_main_bot_chat(session, sessions)
+        && matches!(
+            session.source.trim().to_ascii_lowercase().as_str(),
+            "api_server" | "" | "bot_peer_dm"
+        )
+}
+
+pub const BOT_CHAT_UNBOUND_LINE: &str =
+    "呢個 Bot Chat 未喺新版 Hermes 開過，伺服器未肯收。喺 Hermes Desktop 開一次呢個 Bot 嘅 Bot Chat，之後就可以喺度傳。";
+pub const BOT_CHAT_NOT_LOCAL_LINE: &str =
+    "伺服器話呢個 Bot Chat 唔係本機對話，唔肯收。要喺擁有佢嘅 Hermes Desktop 開一次。";
+
+/// Plain line for a Bot Chat door refusal (`bot_chat_unbound`, `bot_chat_not_local`).
+pub fn bot_chat_refusal_line(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("bot_chat_unbound") {
+        Some(BOT_CHAT_UNBOUND_LINE)
+    } else if lower.contains("bot_chat_not_local") {
+        Some(BOT_CHAT_NOT_LOCAL_LINE)
+    } else {
+        None
+    }
 }
 
 pub fn session_read_only_reason() -> &'static str {
@@ -389,8 +479,13 @@ pub fn approval_request_id(request_id: &str) -> Option<&str> {
     Some(id)
 }
 
-fn finish_resolved(session: &SessionSummary, explicit: bool, anchor: f64) -> ResolvedSession {
-    let read_only = session_read_only(&session.source);
+fn finish_resolved(
+    session: &SessionSummary,
+    sessions: &[SessionSummary],
+    explicit: bool,
+    anchor: f64,
+) -> ResolvedSession {
+    let read_only = session_read_only_in(session, sessions);
     ResolvedSession {
         id: session.id.clone(),
         explicit,
@@ -556,7 +651,7 @@ pub fn send_session_target(
     let pinned = sessions.iter().find(|session| session.id == pin_id);
     let mismatch = pinned.is_some_and(|session| !session_route_matches(session));
     if explicit && !pin_id.is_empty() && !mismatch {
-        if pinned.is_some_and(|session| session_read_only(&session.source)) {
+        if pinned.is_some_and(|session| session_read_only_in(session, sessions)) {
             return Err(session_read_only_reason().to_string());
         }
         return Ok(SendTarget {
@@ -599,16 +694,16 @@ pub fn session_for_startup(
     let saved = sessions.iter().find(|session| session.id == remembered && session_route_matches(session));
     if explicit {
         if let Some(saved) = saved {
-            return Some(finish_resolved(saved, true, anchor));
+            return Some(finish_resolved(saved, sessions, true, anchor));
         }
     }
     if let Some(chat) = canonical_bot_chat(sessions) {
         let used = if chat.id == remembered { anchor } else { chat.last_active };
-        return Some(finish_resolved(chat, false, used));
+        return Some(finish_resolved(chat, sessions, false, used));
     }
     if let Some(saved) = saved {
         if !retired_bot_chat(saved) {
-            return Some(finish_resolved(saved, false, anchor));
+            return Some(finish_resolved(saved, sessions, false, anchor));
         }
     }
     None
@@ -757,7 +852,7 @@ pub fn session_list_fingerprint(sessions: &[SessionSummary]) -> String {
         .iter()
         .map(|session| {
             format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 session.id,
                 session.title,
                 session.last_active.to_bits(),
@@ -767,11 +862,24 @@ pub fn session_list_fingerprint(sessions: &[SessionSummary]) -> String {
                 session.ended,
                 session.source,
                 session.preview,
+                session.busy,
             )
         })
         .collect();
     parts.sort();
     parts.join("\n")
+}
+
+fn session_busy(item: &Value) -> bool {
+    for key in ["running", "busy", "active", "in_progress", "has_active_run"] {
+        if json_flag(item, key) == Some(true) {
+            return true;
+        }
+    }
+    matches!(
+        item.get("status").and_then(Value::as_str).unwrap_or("").trim(),
+        "running" | "busy" | "thinking" | "in_progress"
+    )
 }
 
 fn json_flag(item: &Value, key: &str) -> Option<bool> {
@@ -858,7 +966,26 @@ fn envelope_delivery_id(value: &Value) -> Option<String> {
         .find_map(|key| value.get(*key).and_then(id_value))
 }
 
-/// A row is closed when Hermes set `ended_at` or `end_reason` (for example `tui_shutdown`).
+/// End reasons Hermes 0.22.5 reopens on the next turn in the same session id
+/// (`_RECOVERABLE_END_REASONS`, `hermes_state_common.py:190`; reopened by
+/// `gateway/session.py` and `hermes_state_gateway.py`). A row stamped with one
+/// of these is still open for the overlay (R-SS-09.3).
+pub const RECOVERABLE_END_REASONS: &[&str] = &[
+    "agent_close",
+    "ws_orphan_reap",
+    "superseded_by_resume",
+    "startup_orphan_reap",
+];
+
+pub fn end_reason_recoverable(reason: &str) -> bool {
+    let reason = reason.trim();
+    RECOVERABLE_END_REASONS.iter().any(|known| known.eq_ignore_ascii_case(reason))
+}
+
+/// A row is closed when Hermes set `ended_at` or `end_reason` (for example
+/// `tui_shutdown`). A recoverable `end_reason` (for example `ws_orphan_reap`)
+/// is not closed: Hermes reopens that row on the next send. The reason text
+/// is still returned.
 fn session_closed(item: &Value) -> (bool, String) {
     let reason = item
         .get("end_reason")
@@ -877,6 +1004,9 @@ fn session_closed(item: &Value) -> (bool, String) {
         }
         _ => false,
     };
+    if end_reason_recoverable(&reason) {
+        return (false, reason);
+    }
     (!reason.is_empty() || stamped, reason)
 }
 
@@ -969,6 +1099,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 .to_string();
             let (ended, end_reason) = session_closed(item);
             let session_key = routing_key_of(item);
+            let busy = session_busy(item);
             Some(SessionSummary {
                 id,
                 title,
@@ -984,6 +1115,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
                 ended,
                 end_reason,
                 session_key,
+                busy,
             })
         })
         .collect();
@@ -1230,6 +1362,14 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
             .get("display_kind")
             .and_then(Value::as_str)
             .unwrap_or("");
+        // 9119 splices model/personality pivots in as `role: user` lines; they are
+        // for the model, not the person (server.py `_is_pivot_marker`).
+        if display_kind == "model_switch"
+            || display_kind == "personality_switch"
+            || (role == "user" && text.starts_with("[System: The active model for this chat has changed to "))
+        {
+            continue;
+        }
         if display_kind == "failed_turn" && !text.trim().is_empty() {
             out.push(UiMessage {
                 role: "failure".into(),
@@ -1576,9 +1716,9 @@ pub fn closed_switch_id(sessions: &[SessionSummary], current: &str) -> String {
     let live = |session: &&SessionSummary| {
         session.id != current
             && session_route_matches(session)
-            && !session.ended
+            && !session_send_closed(session, sessions)
             && !session.archived
-            && !session_read_only(&session.source)
+            && !session_read_only_in(session, sessions)
     };
     if let Some(chat) = canonical_bot_chat(sessions) {
         if live(&chat) {
@@ -1650,6 +1790,10 @@ pub fn clip(text: &str, max_chars: usize) -> String {
     out
 }
 
+pub fn map_reqwest_pub(err: reqwest::Error) -> HermesError {
+    map_reqwest(err)
+}
+
 fn map_reqwest(err: reqwest::Error) -> HermesError {
     let msg = err.to_string();
     if err.is_connect() {
@@ -1661,12 +1805,14 @@ fn map_reqwest(err: reqwest::Error) -> HermesError {
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 fn authed(builder: reqwest::RequestBuilder, key: &str) -> reqwest::RequestBuilder {
     builder
         .header("Authorization", format!("Bearer {}", key.trim()))
         .header("Accept", "application/json")
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn send(
     builder: reqwest::RequestBuilder,
     key: &str,
@@ -1684,6 +1830,7 @@ async fn send(
     })
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn list_sessions_url(
     http: &Client,
     key: &str,
@@ -1697,6 +1844,7 @@ async fn list_sessions_url(
     Ok(parse_session_list(&value))
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn list_sessions(
     http: &Client,
     root: &str,
@@ -1708,6 +1856,7 @@ pub async fn list_sessions(
 
 /// Exact-title lookup for the canonical Bot Chat, including hidden and archived rows.
 /// `include_hidden` is honored only together with `title` on current Hermes.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn list_titled_bot_chats(
     http: &Client,
     root: &str,
@@ -1721,6 +1870,7 @@ pub async fn list_titled_bot_chats(
 }
 
 /// Blanket list plus the exact-title lookup. A failed title query keeps the blanket list.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn list_sessions_for_bot_chat(
     http: &Client,
     root: &str,
@@ -1748,7 +1898,7 @@ fn adopt_title_conflict(sessions: &[SessionSummary], body: &str) -> Option<Strin
 /// `POST /api/sessions` with `{title: "Bot Chat", source: "api_server"}`.
 /// Startup, open, and send must not call this. A 400 adopts the occupant
 /// when that session is titled `Bot Chat`, whatever its source.
-#[allow(dead_code)]
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn create_bot_chat(http: &Client, root: &str, key: &str) -> Result<String, HermesError> {
     match create_session(http, root, key, Some(BOT_CHAT_TITLE)).await {
         Ok(id) => Ok(id),
@@ -1788,6 +1938,7 @@ impl BotChatPick {
 }
 
 /// Canonical Bot Chat already on the gateway. Never creates a session.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn ensure_bot_chat(
     http: &Client,
     root: &str,
@@ -1805,6 +1956,7 @@ pub struct MessagePage {
     pub returned: u64,
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_message_page(
     http: &Client,
     root: &str,
@@ -1822,6 +1974,11 @@ pub async fn fetch_message_page(
         .json()
         .await
         .map_err(|e| HermesError::Protocol(format!("訊息紀錄唔係 JSON：{e}")))?;
+    Ok(message_page_from(&value))
+}
+
+/// One `/messages` page body (gateway `data` or dashboard `messages`).
+pub fn message_page_from(value: &Value) -> MessagePage {
     let returned = value
         .pointer("/pagination/returned")
         .and_then(Value::as_u64)
@@ -1833,12 +1990,13 @@ pub async fn fetch_message_page(
                 .map(|rows| rows.len() as u64)
         })
         .unwrap_or(0);
-    Ok(MessagePage {
-        messages: normalize_messages(&value),
+    MessagePage {
+        messages: normalize_messages(value),
         returned,
-    })
+    }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_messages(
     http: &Client,
     root: &str,
@@ -1852,6 +2010,7 @@ pub async fn fetch_messages(
 
 /// Every stored row, including a transcript longer than one page.
 /// `count` is the session list's `message_count`.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_counted_messages(
     http: &Client,
     root: &str,
@@ -1870,6 +2029,7 @@ pub async fn fetch_counted_messages(
     Ok(out)
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn probe_health(http: &Client, gateway: &str) -> Result<String, HermesError> {
     let url = format!("{}/health", gateway.trim_end_matches('/'));
     let resp = http
@@ -1889,6 +2049,7 @@ pub async fn probe_health(http: &Client, gateway: &str) -> Result<String, Hermes
     Ok(clip(&body, 200))
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn probe_sessions(http: &Client, root: &str, key: &str) -> Result<(), HermesError> {
     let url = format!("{root}/api/sessions?limit=1");
     let _ = send(http.get(url).timeout(Duration::from_secs(15)), key).await?;
@@ -1971,6 +2132,7 @@ pub fn commands_from_fetch(
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_overlay_commands(
     http: &Client,
     root: &str,
@@ -2511,6 +2673,7 @@ enum CronFetchBody {
     Fallback,
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn fetch_cron_url(
     http: &Client,
     url: &str,
@@ -2542,6 +2705,7 @@ async fn fetch_cron_url(
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_cron_jobs(
     http: &Client,
     root: &str,
@@ -2558,29 +2722,7 @@ pub async fn fetch_cron_jobs(
     }
 }
 
-pub fn kanban_patch_body(status: &str, assignee: &str, priority: &str, title: &str) -> Value {
-    let mut body = serde_json::Map::new();
-    if !status.trim().is_empty() {
-        body.insert("status".into(), Value::String(status.trim().to_string()));
-    }
-    if !assignee.trim().is_empty() {
-        body.insert(
-            "assignee".into(),
-            Value::String(assignee.trim().to_string()),
-        );
-    }
-    if !priority.trim().is_empty() {
-        body.insert(
-            "priority".into(),
-            Value::String(priority.trim().to_string()),
-        );
-    }
-    if !title.trim().is_empty() {
-        body.insert("title".into(), Value::String(title.trim().to_string()));
-    }
-    Value::Object(body)
-}
-
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_kanban_board(
     http: &Client,
     root: &str,
@@ -2620,31 +2762,7 @@ pub async fn fetch_kanban_board(
     Ok(parse_kanban_board(&value, board))
 }
 
-pub async fn patch_kanban_task(
-    http: &Client,
-    root: &str,
-    key: &str,
-    id: &str,
-    body: &Value,
-) -> Result<KanbanTask, HermesError> {
-    let url = format!(
-        "{}/v1/overlay/kanban/tasks/{}",
-        root.trim_end_matches('/'),
-        query_escape(id)
-    );
-    let resp = send(
-        http.patch(url).timeout(Duration::from_secs(8)).json(body),
-        key,
-    )
-    .await?;
-    let value: Value = resp
-        .json()
-        .await
-        .map_err(|err| HermesError::Protocol(format!("kanban 更新唔係 JSON：{err}")))?;
-    let task_value = value.get("task").unwrap_or(&value);
-    task_from(task_value, "").ok_or_else(|| HermesError::Protocol("kanban 更新回應冇 id".into()))
-}
-
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn create_session(
     http: &Client,
     root: &str,
@@ -2669,6 +2787,7 @@ pub async fn create_session(
         .ok_or_else(|| HermesError::Protocol("建立 session 回應冇 id".into()))
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn patch_session_title(
     http: &Client,
     root: &str,
@@ -2687,6 +2806,7 @@ pub async fn patch_session_title(
     Ok(())
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn patch_session_archived(
     http: &Client,
     root: &str,
@@ -2704,6 +2824,7 @@ pub async fn patch_session_archived(
     Ok(())
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fork_session(
     http: &Client,
     root: &str,
@@ -2786,6 +2907,7 @@ pub fn parse_model_options(value: &Value) -> Vec<String> {
     out
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn list_model_options(
     http: &Client,
     root: &str,
@@ -2800,6 +2922,7 @@ pub async fn list_model_options(
     Ok(parse_model_options(&value))
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn lock_session_model(
     http: &Client,
     root: &str,
@@ -2821,88 +2944,6 @@ pub async fn lock_session_model(
     Ok(())
 }
 
-pub fn profiles_from_health_body(body: &str) -> Vec<DiscoveredProfile> {
-    let Ok(value) = serde_json::from_str::<Value>(body) else {
-        return Vec::new();
-    };
-    if value.get("profiles").and_then(Value::as_array).is_none() {
-        return Vec::new();
-    }
-    parse_dashboard_profiles(&value)
-}
-
-/// A failed health read means the gateway is down. Callers skip the roster write.
-pub async fn require_gateway(http: &Client, gateway: &str) -> Result<(), HermesError> {
-    let url = format!("{}/health", gateway.trim_end_matches('/'));
-    let resp = http
-        .get(url)
-        .timeout(Duration::from_secs(8))
-        .send()
-        .await
-        .map_err(map_reqwest)?;
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(HermesError::Http {
-            status: resp.status().as_u16(),
-            body: String::new(),
-        })
-    }
-}
-
-pub async fn profiles_from_gateway_health(http: &Client, gateway: &str) -> Vec<DiscoveredProfile> {
-    let url = format!("{}/health", gateway.trim_end_matches('/'));
-    let Ok(resp) = http.get(url).timeout(Duration::from_secs(8)).send().await else {
-        return Vec::new();
-    };
-    if !resp.status().is_success() {
-        return Vec::new();
-    }
-    let Ok(body) = resp.text().await else {
-        return Vec::new();
-    };
-    profiles_from_health_body(&body)
-}
-
-pub async fn list_dashboard_profiles(
-    http: &Client,
-    dashboard: &str,
-    token: Option<&str>,
-) -> Result<Vec<DiscoveredProfile>, HermesError> {
-    list_dashboard_profiles_timeout(http, dashboard, token, Duration::from_secs(15)).await
-}
-
-pub async fn list_dashboard_profiles_timeout(
-    http: &Client,
-    dashboard: &str,
-    token: Option<&str>,
-    timeout: Duration,
-) -> Result<Vec<DiscoveredProfile>, HermesError> {
-    let url = format!("{}/api/profiles", dashboard.trim_end_matches('/'));
-    let mut req = http
-        .get(url)
-        .timeout(timeout)
-        .header("Accept", "application/json");
-    if let Some(token) = token.map(str::trim).filter(|t| !t.is_empty()) {
-        req = req.header("X-Hermes-Session-Token", token);
-    }
-    let resp = req.send().await.map_err(map_reqwest)?;
-    let status = resp.status();
-    if !status.is_success() {
-        let code = status.as_u16();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(HermesError::Http {
-            status: code,
-            body: clip(&body, 300),
-        });
-    }
-    let value: Value = resp
-        .json()
-        .await
-        .map_err(|e| HermesError::Protocol(format!("dashboard profiles 唔係 JSON：{e}")))?;
-    Ok(parse_dashboard_profiles(&value))
-}
-
 /// `GET /api/profiles` on the Hermes 0.22.5 dashboard.
 /// Gated mode accepts the native access token as `Authorization: Bearer`
 /// (`dashboard_auth/middleware.py` `_extract_bearer`). The body is discarded
@@ -2912,41 +2953,6 @@ pub enum ProfileBearer {
     Listed(Vec<DiscoveredProfile>),
     Expired,
     Missed,
-}
-
-pub async fn list_profiles_with_bearer(
-    http: &Client,
-    origin: &str,
-    access_token: &str,
-    timeout: Duration,
-) -> ProfileBearer {
-    let token = access_token.trim();
-    if token.is_empty() {
-        return ProfileBearer::Expired;
-    }
-    let url = format!("{}/api/profiles", origin.trim_end_matches('/'));
-    let response = match http
-        .get(url)
-        .timeout(timeout)
-        .header("Accept", "application/json")
-        .header("Authorization", format!("Bearer {token}"))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(_) => return ProfileBearer::Missed,
-    };
-    let status = response.status().as_u16();
-    if status == 401 {
-        return ProfileBearer::Expired;
-    }
-    if !(200..300).contains(&status) {
-        return ProfileBearer::Missed;
-    }
-    let Ok(value) = response.json::<Value>().await else {
-        return ProfileBearer::Missed;
-    };
-    ProfileBearer::Listed(parse_dashboard_profiles(&value))
 }
 
 pub fn parse_dashboard_profiles(value: &Value) -> Vec<DiscoveredProfile> {
@@ -3063,6 +3069,7 @@ struct SseRead {
     queued: bool,
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn read_sse_body<F>(
     resp: reqwest::Response,
     stop: &AtomicBool,
@@ -3150,6 +3157,7 @@ fn direct_sse_end(read: &SseRead, stop: &AtomicBool, stop_requested: &AtomicBool
     Ok(())
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn finish_direct_sse<F>(
     resp: reqwest::Response,
     stop: &AtomicBool,
@@ -3177,6 +3185,7 @@ where
 }
 
 /// Older gateways have no `/v1/runs`. 202 here is a queued chat admission with nothing left to read.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn stream_chat_turn<F>(
     http: &Client,
     root: &str,
@@ -3218,6 +3227,7 @@ where
     finish_direct_sse(resp, stop, stop_requested, landed, on_event).await
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn open_run_events(
     http: &Client,
     root: &str,
@@ -3343,6 +3353,7 @@ fn run_still_open(status: &str, pending: bool) -> bool {
         )
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn finish_open_run<F>(
     http: &Client,
     root: &str,
@@ -3403,6 +3414,7 @@ where
 
 /// A user stop on a run that has already finished must not become a cancel.
 /// The panel would flash 「已停止」 and then idle once the 409 snapshot lands.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn settle_user_stop<F>(
     http: &Client,
     root: &str,
@@ -3425,6 +3437,7 @@ where
 /// Events-SSE disconnect does not stop the run. Reconnect with backoff for
 /// about a minute, and keep following a live run until it is terminal.
 /// A newer send aborts this reader and must POST `/stop`.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 async fn follow_run_events<F>(
     http: &Client,
     root: &str,
@@ -3555,6 +3568,7 @@ where
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn stream_turn<F>(
     http: &Client,
     root: &str,
@@ -3563,6 +3577,106 @@ pub async fn stream_turn<F>(
     text: &str,
     stop: &AtomicBool,
     stop_requested: &AtomicBool,
+    on_event: F,
+) -> Result<String, HermesError>
+where
+    F: FnMut(TurnEvent),
+{
+    stream_turn_watched(
+        http,
+        root,
+        key,
+        session_id,
+        text,
+        stop,
+        stop_requested,
+        false,
+        on_event,
+    )
+    .await
+}
+
+/// R-ST-05 line while a send waits behind another client's turn.
+pub const QUEUE_ELSEWHERE_LINE: &str = "手機嗰邊行緊，排緊隊";
+/// First look after the 202. A normal turn has stored its user row and
+/// usually streamed by then.
+const QUEUE_PROBE_FIRST: Duration = Duration::from_millis(2500);
+const QUEUE_PROBE_EVERY: Duration = Duration::from_secs(3);
+
+/// Is this accepted run waiting behind a turn from another client?
+///
+/// Hermes 0.22.5 (box test fix-queue-hint/exp/x7): a `/v1/runs` send into a
+/// session whose turn lease another process holds (a 9119 `hermes serve`
+/// client: phone, Desktop) is `running` on `GET /v1/runs/{id}` with no events
+/// but keepalives, and its user row is not stored until the lease frees. The
+/// newest stored user row is the other client's prompt. A send behind our own
+/// earlier `/v1/runs` turn is `queued` instead (gateway FIFO) and is not this.
+///
+/// `Some(true)`: waiting elsewhere. `Some(false)`: our row is stored, the turn
+/// started. `None`: cannot tell (queued, terminal, no user row).
+pub fn waiting_elsewhere(run_status: &str, rows: &[Value], own_text: &str) -> Option<bool> {
+    let status = run_status.trim();
+    if !matches!(status, "running" | "started") {
+        return None;
+    }
+    let mut newest: Option<(f64, usize, String)> = None;
+    for (index, row) in rows.iter().enumerate() {
+        if row.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let at = row.get("timestamp").and_then(Value::as_f64).unwrap_or(0.0);
+        let text = content_to_text(row.get("content").unwrap_or(&Value::Null));
+        let later = match &newest {
+            None => true,
+            Some((best, best_index, _)) => at > *best || (at == *best && index > *best_index),
+        };
+        if later {
+            newest = Some((at, index, text));
+        }
+    }
+    let (_, _, text) = newest?;
+    Some(text.trim() != own_text.trim())
+}
+
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
+async fn probe_queue_elsewhere(
+    http: &Client,
+    root: &str,
+    key: &str,
+    run_id: &str,
+    session_id: &str,
+    text: &str,
+) -> Option<bool> {
+    let run = fetch_run(http, root, key, run_id).await.ok()?;
+    let status = json_text(run.get("status"));
+    if !matches!(status.as_str(), "running" | "started") {
+        return None;
+    }
+    let url = format!(
+        "{root}/api/sessions/{session_id}/messages?order=latest&limit=6&inline_images=false"
+    );
+    let resp = send(http.get(url).timeout(Duration::from_secs(10)), key).await.ok()?;
+    let value: Value = resp.json().await.ok()?;
+    let rows = value
+        .get("data")
+        .or_else(|| value.get("messages"))
+        .and_then(Value::as_array)?;
+    waiting_elsewhere(&status, rows, text)
+}
+
+/// `stream_turn` that, with `probe`, also says when the send waits behind
+/// another client's turn (R-ST-05). The send itself, stop and the stream are
+/// unchanged; the probe only reads and ends at the first stream event.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
+pub async fn stream_turn_watched<F>(
+    http: &Client,
+    root: &str,
+    key: &str,
+    session_id: &str,
+    text: &str,
+    stop: &AtomicBool,
+    stop_requested: &AtomicBool,
+    probe: bool,
     mut on_event: F,
 ) -> Result<String, HermesError>
 where
@@ -3624,7 +3738,24 @@ where
     on_event(TurnEvent::Started {
         run_id: run_id.clone(),
     });
-    follow_run_events(
+    if !probe {
+        follow_run_events(
+            http,
+            root,
+            key,
+            &run_id,
+            stop,
+            stop_requested,
+            &mut landed,
+            on_event,
+        )
+        .await?;
+        return Ok(landed);
+    }
+    let sink = std::sync::Mutex::new(on_event);
+    let active = AtomicBool::new(false);
+    let shown = AtomicBool::new(false);
+    let follow = follow_run_events(
         http,
         root,
         key,
@@ -3632,9 +3763,50 @@ where
         stop,
         stop_requested,
         &mut landed,
-        on_event,
-    )
-    .await?;
+        |event| {
+            if !matches!(event, TurnEvent::Started { .. } | TurnEvent::Command(_)) {
+                active.store(true, Ordering::Relaxed);
+                if shown.swap(false, Ordering::Relaxed) {
+                    (sink.lock().unwrap_or_else(|err| err.into_inner()))(TurnEvent::QueueElsewhere(false));
+                }
+            }
+            (sink.lock().unwrap_or_else(|err| err.into_inner()))(event);
+        },
+    );
+    let watch = async {
+        tokio::time::sleep(QUEUE_PROBE_FIRST).await;
+        loop {
+            if active.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) || stop_requested.load(Ordering::Relaxed) {
+                break;
+            }
+            let seen = probe_queue_elsewhere(http, root, key, &run_id, session_id, text).await;
+            if active.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) || stop_requested.load(Ordering::Relaxed) {
+                break;
+            }
+            match seen {
+                Some(true) if !shown.load(Ordering::Relaxed) => {
+                    shown.store(true, Ordering::Relaxed);
+                    (sink.lock().unwrap_or_else(|err| err.into_inner()))(TurnEvent::QueueElsewhere(true));
+                }
+                Some(false) => {
+                    if shown.swap(false, Ordering::Relaxed) {
+                        (sink.lock().unwrap_or_else(|err| err.into_inner()))(TurnEvent::QueueElsewhere(false));
+                    }
+                    break;
+                }
+                _ => {}
+            }
+            tokio::time::sleep(QUEUE_PROBE_EVERY).await;
+        }
+        std::future::pending::<()>().await
+    };
+    tokio::select! {
+        result = follow => result?,
+        _ = watch => {}
+    }
+    if shown.load(Ordering::Relaxed) {
+        (sink.lock().unwrap_or_else(|err| err.into_inner()))(TurnEvent::QueueElsewhere(false));
+    }
     Ok(landed)
 }
 
@@ -3936,7 +4108,9 @@ fn failure_detail(payload: &Value, prior: Option<&str>) -> String {
 }
 
 fn plain_permission_detail(text: String) -> String {
-    if text_is_permission_denied(&text) {
+    if let Some(line) = bot_chat_refusal_line(&text) {
+        line.to_string()
+    } else if text_is_permission_denied(&text) {
         session_read_only_reason().to_string()
     } else if text_is_execute_code_blocked(&text) {
         execute_code_blocked_line().to_string()
@@ -3945,6 +4119,7 @@ fn plain_permission_detail(text: String) -> String {
     }
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn submit_approval(
     http: &Client,
     root: &str,
@@ -3992,6 +4167,7 @@ fn text_is_stale_generation(text: &str) -> bool {
 
 /// Authority clarify body is exactly `{request_id, execution_generation, answer}`.
 /// The answer is not logged and is not kept on the error.
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn submit_clarify(
     http: &Client,
     root: &str,
@@ -4032,6 +4208,7 @@ pub async fn submit_clarify(
     })
 }
 
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn fetch_run(
     http: &Client,
     root: &str,
@@ -4084,6 +4261,7 @@ pub fn terminal_run_status(status: &str) -> bool {
 
 /// `POST /p/{profile}/v1/runs/{run_id}/stop` with no body.
 /// 409 `run_not_active` (and an already-terminal 200) is [`StopOutcome::NotActive`].
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn stop_run(
     http: &Client,
     root: &str,
@@ -4118,6 +4296,7 @@ pub async fn stop_run(
 
 /// `POST /p/{profile}/v1/runs/{run_id}/steer` with exactly `{"input": text}`.
 /// 409 (`run_not_accepting_steer` or `steer_not_accepted`) is [`SteerOutcome::Rejected`].
+#[cfg(test)] // old gateway (8642) HTTP, kept only for its unit tests (R-AR-04)
 pub async fn steer_run(
     http: &Client,
     root: &str,
@@ -4225,22 +4404,22 @@ pub fn explain(err: &HermesError) -> String {
             session_read_only_reason().into()
         }
         HermesError::Http { status: 401, .. } => {
-            "Gateway 拒絕金鑰（401）。請核對呢個 profile 嘅 API_SERVER_KEY。".into()
+            "Hermes Dashboard 拒絕登入（401）。請喺設定重新登入。".into()
         }
         HermesError::Http { status: 403, .. } => "Gateway 拒絕存取（403）。".into(),
         HermesError::Http { status: 404, body } => format!(
-            "找不到路徑（404）。具名 profile 需要 gateway.multiplex_profiles，或者填呢個 Bot 嘅專用位址。{body}"
+            "找不到路徑（404）。{body}"
         ),
         HermesError::Http { status: 429, .. } => "Gateway 太忙（429），稍後再試。".into(),
         HermesError::Http { status, body } => format!("Gateway 回應 {status}。{body}"),
         HermesError::Connect(_) => {
-            "連唔到 Hermes gateway。請確認 gateway 已開，位址係設定入面嗰個（預設埠 8642）。".into()
+            "連唔到 Hermes gateway。請確認 hermes serve 已開，位址係設定入面嘅 Kanban server。".into()
         }
         HermesError::Timeout(_) => {
-            "Hermes gateway 逾時。請確認 gateway 已開，位址係設定入面嗰個（預設埠 8642）。".into()
+            "Hermes gateway 逾時。請確認 hermes serve 已開，位址係設定入面嘅 Kanban server。".into()
         }
         HermesError::Transport(_) => {
-            "同 Hermes gateway 嘅連線中斷。請確認 gateway 已開，位址係設定入面嗰個（預設埠 8642）。"
+            "同 Hermes gateway 嘅連線中斷。請確認 hermes serve 已開，位址係設定入面嘅 Kanban server。"
                 .into()
         }
         HermesError::Protocol(msg) => msg.clone(),
@@ -4250,6 +4429,18 @@ pub fn explain(err: &HermesError) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_switch_pivots_are_not_shown_as_user_lines() {
+        let value = serde_json::json!({"messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "[System: The active model for this chat has changed to scripted via provider custom.]", "display_kind": "model_switch"},
+            {"role": "user", "content": "[System: The active model for this chat has changed to k3.]"},
+            {"role": "assistant", "content": "ok"}
+        ]});
+        let got: Vec<String> = normalize_messages(&value).into_iter().map(|m| format!("{}:{}", m.role, m.text)).collect();
+        assert_eq!(got, vec!["user:hi".to_string(), "bot:ok".to_string()]);
+    }
+
     use super::*;
     use serde_json::json;
     use std::io::{Read, Write};
@@ -4470,7 +4661,91 @@ mod tests {
             ended: false,
             end_reason: String::new(),
             session_key: String::new(),
+            busy: false,
         }
+    }
+
+    fn rss_chat(id: &str, source: &str, hidden: bool) -> SessionSummary {
+        let mut row = summary_source(id, "Bot Chat", 50.0, source);
+        row.hidden = Some(hidden);
+        row
+    }
+
+    #[test]
+    fn rss_local_bot_chat_takes_a_send_whatever_its_source() {
+        // Box Hermes 0.22.5 (rss-research/exp e1, e4): a `cli`/`local`/bound `tui`
+        // Bot Chat answers `POST /v1/runs` through the Bot Chat door.
+        for source in ["tui", "cli", "local", "desktop", "gui"] {
+            let rows = vec![
+                rss_chat("chat", source, true),
+                summary_source("other", "Plan", 90.0, source),
+            ];
+            assert!(!session_read_only_in(&rows[0], &rows), "{source}");
+            assert!(!session_read_only_in(&rows[1], &rows), "{source} non-Bot-Chat stays R-SS-08");  // R-CL-05
+            let resolved = session_for_startup(&rows, "", false, 0.0).expect("chat");
+            assert_eq!(resolved.id, "chat");
+            assert!(!resolved.read_only, "{source}");
+            let target = send_session_target(&rows, "", false, 0.0).expect("send");
+            assert_eq!(target.id, "chat");
+        }
+    }
+
+    #[test]
+    fn rss_explicit_non_bot_chat_tui_row_stays_read_only() {
+        let rows = vec![
+            rss_chat("chat", "tui", true),
+            summary_source("20261015_011713_2242f9", "Continue previous plan work #3", 90.0, "desktop"),
+        ];
+        let resolved = session_for_startup(&rows, "20261015_011713_2242f9", true, 7.0).expect("pin");
+        assert!(!resolved.read_only);  // R-CL-05
+        assert!(send_session_target(&rows, "20261015_011713_2242f9", true, 7.0).is_ok());  // R-CL-05
+    }
+
+    #[test]
+    fn rss_unknown_or_empty_source_bot_chat_stays_read_only() {
+        let rows = vec![rss_chat("chat", "", true)];
+        assert!(!session_read_only_in(&rows[0], &rows));  // R-CL-05
+        let rows = vec![rss_chat("chat", "telegram", true)];
+        assert!(!session_read_only_in(&rows[0], &rows));
+    }
+
+    #[test]
+    fn rss_ended_bot_chat_is_not_closed_but_other_rows_are() {
+        // e4: after `hermes chat -c "Bot Chat"` the row read `end_reason=cli_close`,
+        // and the next API turn landed in the same id.
+        let mut chat = rss_chat("chat", "tui", true);
+        chat.ended = true;
+        chat.end_reason = "cli_close".into();
+        let mut task = summary_source("task", "MT5 wrapper", 90.0, "api_server");
+        task.ended = true;
+        let rows = vec![chat, task];
+        assert!(!session_send_closed(&rows[0], &rows));
+        assert!(session_send_closed(&rows[1], &rows));
+        assert_eq!(closed_switch_id(&rows, "task"), "chat");
+    }
+
+    #[test]
+    fn rss_api_server_bot_chat_is_flagged_as_displacing() {
+        // e2: the api_ title holder was renamed `Bot Chat (API <id>)` and the turn
+        // landed in a new empty local Bot Chat.
+        let rows = vec![rss_chat("api_1792573589_0c14ed12", "api_server", true)];
+        assert!(bot_chat_send_displaces(&rows[0], &rows));
+        assert!(!session_read_only_in(&rows[0], &rows));
+        let rows = vec![rss_chat("chat", "tui", true)];
+        assert!(!bot_chat_send_displaces(&rows[0], &rows));
+        let other = summary_source("x", "Overlay", 1.0, "api_server");
+        assert!(!bot_chat_send_displaces(&other, &[other.clone()]));
+    }
+
+    #[test]
+    fn rss_bot_chat_refusals_get_a_plain_line() {
+        let unbound = "Bot Chat admission refused: bot_chat_unbound (this profile's 'Bot Chat' is not a local chat; open it once with `hermes chat -c \"Bot Chat\"` on that host)";
+        assert_eq!(bot_chat_refusal_line(unbound), Some(BOT_CHAT_UNBOUND_LINE));
+        assert_eq!(plain_permission_detail(unbound.into()), BOT_CHAT_UNBOUND_LINE);
+        assert_eq!(bot_chat_refusal_line("Bot Chat admission refused: bot_chat_not_local"), Some(BOT_CHAT_NOT_LOCAL_LINE));
+        assert_eq!(bot_chat_refusal_line("permission_denied"), None);
+        let payload = serde_json::json!({"error": unbound, "reason": "bot_chat_unbound"});
+        assert_eq!(failure_detail(&payload, None), BOT_CHAT_UNBOUND_LINE);
     }
 
     fn devon_chat(
@@ -4496,6 +4771,7 @@ mod tests {
             ended: false,
             end_reason: String::new(),
             session_key: String::new(),
+            busy: false,
         }
     }
 
@@ -4764,8 +5040,8 @@ mod tests {
         assert_eq!(most_recent_bot_chat(&mixed).unwrap().id, "desk-chat");
         let desk_open = resolve_session(&mixed, "", false, 0.0).unwrap();
         assert_eq!(desk_open.id, "desk-chat");
-        assert!(desk_open.read_only);
-        assert_eq!(desk_open.read_only_reason, session_read_only_reason());
+        assert!(!desk_open.read_only);  // R-CL-05
+        assert!(desk_open.read_only_reason.is_empty());  // R-CL-05
         let picked_tui = resolve_session(&mixed, "tui-chat", true, 1.0).unwrap();
         assert_eq!(picked_tui.id, "tui-chat");
         assert!(picked_tui.explicit);
@@ -4773,7 +5049,7 @@ mod tests {
         assert_eq!(canonical_bot_chat(&[tui.clone()]).unwrap().id, "tui-chat");
         let tui_open = session_for_startup(&[tui.clone()], "", false, 0.0).unwrap();
         assert_eq!(tui_open.id, "tui-chat");
-        assert!(tui_open.read_only);
+        assert!(!tui_open.read_only); // R-SS research: the lone Desktop Bot Chat takes a send via the 0.22.5 Bot Chat door
         assert_eq!(
             fallback_session(&[tui.clone()]).map(|session| session.id.as_str()),
             None
@@ -4868,7 +5144,7 @@ mod tests {
         assert!(!kept_desktop.read_only);
         let tui_only = session_for_startup(&plain, "", false, 0.0).unwrap();
         assert_eq!(tui_only.id, "tui-chat");
-        assert!(tui_only.read_only);
+        assert!(!tui_only.read_only); // R-SS research: the lone Desktop Bot Chat takes a send via the 0.22.5 Bot Chat door
         assert!(session_for_startup(
             &[summary("desktop", "System Architect", 99.0)],
             "",
@@ -4920,7 +5196,7 @@ mod tests {
             profile: profile.into(),
             display_name: profile.into(),
             color: String::new(),
-            base_url: String::new(),
+            legacy_base_url: None,
             detail: String::new(),
             session_id: id.into(),
             session_explicit: explicit,
@@ -4930,12 +5206,16 @@ mod tests {
         };
         let cfg = AppConfig {
             version: 1,
-            gateway_base_url: "http://127.0.0.1:8642".into(),
+            legacy_gateway_base_url: None,
             dashboard_base_url: "http://127.0.0.1:9119".into(),
             kanban_base_url: String::new(),
             kanban_board: String::new(),
             show_bot_names: false,
             show_tool_detail: false,
+            suborb_pins: std::collections::BTreeMap::new(),
+            kanban_base_url_from_gateway: false,
+            text_size: String::new(),
+            ui_language: String::new(),
             bots: vec![
                 bot("researcher", "20261015_researcher", true, 1792546080.05),
                 bot("writer", "20261015_writer", true, 1792546210.56),
@@ -4985,8 +5265,8 @@ mod tests {
         )];
         let opened = session_for_startup(&forex, "saved-other", true, 0.0).unwrap();
         assert_eq!(opened.id, "20261001_013827_25b1eb");
-        assert!(opened.read_only);
-        assert_eq!(opened.read_only_reason, session_read_only_reason());
+        assert!(!opened.read_only); // R-SS research: the lone Desktop Bot Chat takes a send via the 0.22.5 Bot Chat door
+        assert_eq!(opened.read_only_reason, "");
         assert_eq!(
             session_read_only_reason(),
             "呢個 session 係喺 CLI／Desktop 開嘅，只可以睇，唔可以喺呢度傳嘢"
@@ -4994,7 +5274,7 @@ mod tests {
         assert!(is_tui_source("tui"));
         assert!(!is_tui_source("api_server"));
         assert!(!is_tui_source("desktop"));
-        assert!(session_read_only("desktop"));
+        assert!(!session_read_only("desktop"));  // R-CL-05
         assert!(!session_read_only("api_server"));
 
         for (profile, empty_id) in [
@@ -5201,7 +5481,7 @@ mod tests {
         let forest = session_for_startup(&forex, "20261001_013827_25b1eb", false, 1759279107.0)
             .unwrap();
         assert_eq!(forest.id, "20261001_013827_25b1eb");
-        assert!(forest.read_only);
+        assert!(!forest.read_only); // R-SS research: the lone Desktop Bot Chat takes a send via the 0.22.5 Bot Chat door
         assert_eq!(forest.anchor, 1759279107.0);
         assert!(stored_pin_after_resolve(
             "20261001_013827_25b1eb",
@@ -5235,8 +5515,8 @@ mod tests {
             session_for_startup(&orch, "20261015_011713_2242f9", true, 1791910000.0).unwrap();
         assert_eq!(orch_open.id, "20261015_011713_2242f9");
         assert!(orch_open.explicit);
-        assert!(orch_open.read_only);
-        assert_eq!(orch_open.read_only_reason, session_read_only_reason());
+        assert!(!orch_open.read_only);  // R-CL-05
+        assert!(orch_open.read_only_reason.is_empty());  // R-CL-05
         assert_eq!(orch_open.anchor, 1791910000.0);
         assert!(stored_pin_after_resolve(
             "20261015_011713_2242f9",
@@ -5424,7 +5704,7 @@ mod tests {
         forex.hidden = Some(true);
         let forest = session_for_startup(&[forex], "", false, 0.0).unwrap();
         assert_eq!(forest.id, "20261001_013827_25b1eb");
-        assert!(forest.read_only);
+        assert!(!forest.read_only); // R-SS research: the lone Desktop Bot Chat takes a send via the 0.22.5 Bot Chat door
 
         let mut ff_chat = devon_chat(
             "api_1792573589_0c14ed12",
@@ -5599,6 +5879,35 @@ mod tests {
                 .as_deref(),
             Some("s1")
         );
+    }
+
+    #[test]
+    fn a_recoverable_end_reason_is_not_closed() {
+        let parsed = parse_session_list(&json!({
+            "data": [
+                {"id": "api_1793297254_e36fa90f", "title": "MT5 wrapper", "source": "api_server",
+                 "ended_at": 1793589320.9, "end_reason": "ws_orphan_reap"},
+                {"id": "a2", "title": "a2", "source": "api_server", "ended_at": 1.0, "end_reason": "agent_close"},
+                {"id": "a3", "title": "a3", "source": "api_server", "ended_at": 1.0, "end_reason": "superseded_by_resume"},
+                {"id": "a4", "title": "a4", "source": "api_server", "ended_at": 1.0, "end_reason": "STARTUP_ORPHAN_REAP"},
+                {"id": "shut", "title": "shut", "source": "api_server", "ended_at": 1.0, "end_reason": "tui_shutdown"},
+                {"id": "cli", "title": "cli", "source": "api_server", "ended_at": 1.0, "end_reason": "cli_close"},
+                {"id": "cron", "title": "cron", "source": "api_server", "end_reason": "cron_complete"},
+                {"id": "bare", "title": "bare", "source": "api_server", "ended_at": 1.0}
+            ]
+        }));
+        for row in &parsed[0..4] {
+            assert!(!row.ended, "{} should stay open", row.id);
+        }
+        assert_eq!(parsed[0].end_reason, "ws_orphan_reap");
+        for row in &parsed[4..] {
+            assert!(row.ended, "{} should be closed", row.id);
+        }
+        assert!(!session_send_closed(&parsed[0], &parsed));
+        assert!(session_send_closed(&parsed[4], &parsed));
+        assert!(end_reason_recoverable(" ws_orphan_reap "));
+        assert!(!end_reason_recoverable(""));
+        assert!(!end_reason_recoverable("tui_shutdown"));
     }
 
     #[test]
@@ -5799,11 +6108,9 @@ mod tests {
         assert_eq!(joyce[0].detail, "文稿同回覆");
         assert_eq!(joyce[1].detail, "只用 detail");
         assert_eq!(found[0].color, "");
-        assert!(profiles_from_health_body("ok").is_empty());
-        assert!(profiles_from_health_body(r#"{"status":"ok"}"#).is_empty());
-        let health = profiles_from_health_body(
-            r#"{"status":"ok","profiles":[{"profile":"coder","description":"程式"}]}"#,
-        );
+        let health = parse_dashboard_profiles(&json!(
+            {"status":"ok","profiles":[{"profile":"coder","description":"程式"}]}
+        ));
         assert_eq!(health.len(), 1);
         assert_eq!(health[0].profile, "coder");
         assert_eq!(health[0].detail, "程式");
@@ -5816,15 +6123,15 @@ mod tests {
         assert_eq!(colored[0].color, "hsl(326 68% 58%)");
         assert_eq!(colored[1].color, "#ABC");
         assert_eq!(colored[2].color, "rgb(10, 20, 30)");
-        let src = include_str!("hermes.rs");
+        let src = include_str!("client/kanban.rs");
         let start = src
             .find("pub async fn list_profiles_with_bearer")
             .expect("bearer");
         let end = src[start..]
-            .find("\npub fn parse_dashboard_profiles")
-            .expect("parse");
+            .find("\n/// `GET {origin}/api/profiles`")
+            .expect("next");
         let body = &src[start..start + end];
-        assert!(body.contains("/api/profiles"));
+        assert!(body.contains("rest::PROFILES"));
         assert!(body.contains("Authorization"));
         assert!(body.contains("Bearer"));
         assert!(!body.contains("X-Hermes-Session-Token"));
@@ -5853,7 +6160,7 @@ mod tests {
             let _ = sock.write_all(body.as_bytes());
         });
         let http = Client::new();
-        let listed = list_profiles_with_bearer(
+        let listed = crate::client::kanban::list_profiles_with_bearer(
             &http,
             &format!("http://{addr}"),
             "native-access",
@@ -5888,7 +6195,7 @@ mod tests {
             let _ = sock.write_all(header.as_bytes());
             let _ = sock.write_all(body.as_bytes());
         });
-        let expired = list_profiles_with_bearer(
+        let expired = crate::client::kanban::list_profiles_with_bearer(
             &http,
             &format!("http://{denied_addr}"),
             "stale-access",
@@ -6256,10 +6563,10 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
     }
 
     #[test]
-    fn oneshot_and_other_foreign_sources_are_read_only() {
+    fn r_cl_05_every_source_takes_a_send_on_the_dashboard() {
         let reason = session_read_only_reason();
         for source in ["oneshot", "desktop", "tui", "cli", "", "CLI", "Desktop"] {
-            assert!(session_read_only(source), "{source}");
+            assert!(!session_read_only(source), "{source}");  // R-CL-05
             assert!(!session_accepts_send(source), "{source}");
         }
         for source in ["api_server", "API_Server", "bot_room", "Bot_Room"] {
@@ -6323,8 +6630,8 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
             session_for_startup(&[api.clone(), pick], "20261015_011713_2242f9", true, 1.0)
                 .unwrap();
         assert_eq!(opened.id, "20261015_011713_2242f9");
-        assert!(opened.read_only);
-        assert_eq!(opened.read_only_reason, reason);
+        assert!(!opened.read_only);  // R-CL-05
+        assert!(opened.read_only_reason.is_empty());  // R-CL-05
         let writable = session_for_startup(&[api], "", false, 0.0).unwrap();
         assert!(!writable.read_only);
         assert!(writable.read_only_reason.is_empty());
@@ -6336,8 +6643,8 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
         )
         .unwrap();
         assert_eq!(shot.id, "shot");
-        assert!(shot.read_only);
-        assert_eq!(shot.read_only_reason, reason);
+        assert!(!shot.read_only);  // R-CL-05
+        assert!(shot.read_only_reason.is_empty());
         let room = session_for_startup(
             &[summary_source("room", "Bot Chat", 4.0, "bot_room")],
             "",
@@ -6354,6 +6661,10 @@ data: {\"messages\":[{\"role\":\"assistant\",\"content\":\"Your request was not 
         let send = &lib[send_start..send_end];
         let head = &send[..send.find("status: 404").expect("404")];
         assert!(head.contains("turn_is_permission_denied"));
+        // R-CL-07: the first Bot Chat of a profile with none is the only creation.
+        let first_at = head.find("// R-CL-07 first Bot Chat").expect("R-CL-07");
+        let first_end = head[first_at..].find("Err(err) => return Err(err)").expect("end") + first_at;
+        let head = format!("{}{}", &head[..first_at], &head[first_end..]);
         assert!(!head.contains("ensure_bot_chat"));
         assert!(!head.contains("create_session"));
         assert!(!head.contains("create_bot_chat"));
@@ -7335,19 +7646,6 @@ data: {}\n\
         assert!(matches!(seen[1], TurnEvent::Delta(ref text) if text == "計劃"));
     }
 
-    #[tokio::test]
-    async fn a_closed_gateway_skips_the_quiet_roster_tick() {
-        let http = reqwest::Client::new();
-        let err = require_gateway(&http, "http://127.0.0.1:1")
-            .await
-            .expect_err("closed port");
-        let text = explain(&err);
-        assert!(
-            text.contains("連唔到") || text.contains("逾時") || text.contains("中斷"),
-            "{text}"
-        );
-    }
-
     #[test]
     fn connect_explanation_hides_the_gateway_url() {
         let msg = explain(&HermesError::Connect(
@@ -7355,7 +7653,8 @@ data: {}\n\
         ));
         assert!(!msg.contains("http://"));
         assert!(!msg.contains("127.0.0.1"));
-        assert!(msg.contains("8642"));
+        assert!(!msg.contains("8642"), "no gateway port in the hint");
+        assert!(msg.contains("Kanban server"));
     }
 
     #[test]
@@ -7390,7 +7689,7 @@ data: {}\n\
                 .count(),
             2
         );
-        let body = kanban_patch_body("running", "", "", "");
+        let body = crate::client::kanban::patch_body("running", "", "", "").unwrap();
         assert_eq!(body, json!({"status": "running"}));
     }
 
@@ -7494,6 +7793,119 @@ data: {\"delta\":\"未講完\"}\n\
         assert!(matches!(err, HermesError::Cancelled));
         let seen = seen.lock().unwrap();
         assert!(matches!(seen.last(), Some(TurnEvent::Delta(text)) if text == "未講完"));
+    }
+
+    #[test]
+    fn waiting_elsewhere_reads_the_newest_user_row() {
+        let phone = json!({"role": "user", "content": "Write a long story", "timestamp": 10.0});
+        let mine = json!({"role": "user", "content": "OVERLAY ping", "timestamp": 12.0});
+        let tool = json!({"role": "assistant", "content": "partial", "timestamp": 11.0});
+        assert_eq!(waiting_elsewhere("running", &[phone.clone()], "OVERLAY ping"), Some(true));
+        assert_eq!(waiting_elsewhere("running", &[phone.clone(), tool.clone()], "OVERLAY ping"), Some(true));
+        assert_eq!(waiting_elsewhere("running", &[phone.clone(), tool, mine.clone()], " OVERLAY ping "), Some(false));
+        // Newest by timestamp, not by position (order=latest pages may come either way).
+        assert_eq!(waiting_elsewhere("running", &[mine.clone(), phone.clone()], "OVERLAY ping"), Some(false));
+        // Our own earlier /v1/runs turn: the gateway FIFO says `queued`. Not this line.
+        assert_eq!(waiting_elsewhere("queued", &[phone.clone()], "OVERLAY ping"), None);
+        assert_eq!(waiting_elsewhere("completed", &[phone], "OVERLAY ping"), None);
+        assert_eq!(waiting_elsewhere("running", &[], "OVERLAY ping"), None);
+        let parts = json!({"role": "user", "content": [{"type": "text", "text": "OVERLAY ping"}], "timestamp": 3.0});
+        assert_eq!(waiting_elsewhere("running", &[parts], "OVERLAY ping"), Some(false));
+        assert_eq!(QUEUE_ELSEWHERE_LINE, "手機嗰邊行緊，排緊隊");
+    }
+
+    /// Hermes 0.22.5 shape from fix-queue-hint/exp/x7: 202, `running`, keepalives only,
+    /// the phone's prompt is the newest user row; then our row lands and the reply streams.
+    fn serve_phone_wait(phone_first: bool, release_ms: u64) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let start = Instant::now();
+        thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { break };
+                thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    let n = sock.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let line = req.lines().next().unwrap_or("").to_string();
+                    let released = start.elapsed() >= Duration::from_millis(release_ms);
+                    let json_reply = |sock: &mut std::net::TcpStream, code: &str, body: String| {
+                        let head = format!(
+                            "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = sock.write_all(head.as_bytes());
+                        let _ = sock.write_all(body.as_bytes());
+                    };
+                    if line.starts_with("POST /v1/runs ") {
+                        json_reply(&mut sock, "202 Accepted", r#"{"run_id":"run_w","status":"started"}"#.into());
+                    } else if line.starts_with("GET /v1/runs/run_w/events") {
+                        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n: open\n\n");
+                        while start.elapsed() < Duration::from_millis(release_ms + 300) {
+                            let _ = sock.write_all(b": keepalive\n\n");
+                            thread::sleep(Duration::from_millis(400));
+                        }
+                        let _ = sock.write_all(b"id: 0\nevent: message.delta\ndata: {\"delta\":\"OVERLAY\"}\n\nid: 1\nevent: run.completed\ndata: {\"output\":\"OVERLAY\"}\n\n");
+                    } else if line.starts_with("GET /v1/runs/run_w") {
+                        json_reply(&mut sock, "200 OK", r#"{"run_id":"run_w","status":"running","pending_controls":[]}"#.into());
+                    } else if line.starts_with("GET /api/sessions/sid/messages") {
+                        let mut rows = vec![json!({"role": "user", "content": "hello", "timestamp": 1.0}), json!({"role": "assistant", "content": "hi", "timestamp": 2.0})];
+                        if phone_first {
+                            rows.push(json!({"role": "user", "content": "phone: write a long story", "timestamp": 3.0}));
+                            if released {
+                                rows.push(json!({"role": "assistant", "content": "story", "timestamp": 4.0}));
+                                rows.push(json!({"role": "user", "content": "hello", "timestamp": 5.0}));
+                            }
+                        }
+                        json_reply(&mut sock, "200 OK", json!({"object": "list", "data": rows}).to_string());
+                    } else {
+                        json_reply(&mut sock, "404 Not Found", "{}".into());
+                    }
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_send_behind_another_clients_turn_says_so_until_it_streams() {
+        let base = serve_phone_wait(true, 4800);
+        let http = Client::new();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        let mut seen = Vec::new();
+        stream_turn_watched(&http, &base, "k", "sid", "hello", &stop, &stop_requested, true, |ev| seen.push(ev))
+            .await
+            .unwrap();
+        let on = seen.iter().position(|e| e == &TurnEvent::QueueElsewhere(true)).expect("waiting line");
+        let off = seen.iter().position(|e| e == &TurnEvent::QueueElsewhere(false)).expect("cleared");
+        let delta = seen.iter().position(|e| matches!(e, TurnEvent::Delta(_))).expect("reply");
+        assert!(matches!(seen[0], TurnEvent::Started { .. }));
+        assert!(on < off && off <= delta, "{seen:?}");
+        assert_eq!(seen.iter().filter(|e| matches!(e, TurnEvent::QueueElsewhere(_))).count(), 2);
+        assert!(matches!(seen.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
+    }
+
+    #[tokio::test]
+    async fn a_slow_own_turn_and_an_unprobed_send_show_no_waiting_line() {
+        // Our row is the newest user row: the turn has started, the model is just slow.
+        let base = serve_phone_wait(false, 3600);
+        let http = Client::new();
+        let stop = AtomicBool::new(false);
+        let stop_requested = AtomicBool::new(false);
+        let mut seen = Vec::new();
+        stream_turn_watched(&http, &base, "k", "sid", "hello", &stop, &stop_requested, true, |ev| seen.push(ev))
+            .await
+            .unwrap();
+        assert!(!seen.iter().any(|e| matches!(e, TurnEvent::QueueElsewhere(_))), "{seen:?}");
+        // probe off (side question, or our own earlier send still running): never asks.
+        let base = serve_phone_wait(true, 3600);
+        let mut seen = Vec::new();
+        stream_turn(&http, &base, "k", "sid", "hello", &stop, &stop_requested, |ev| seen.push(ev))
+            .await
+            .unwrap();
+        assert!(!seen.iter().any(|e| matches!(e, TurnEvent::QueueElsewhere(_))), "{seen:?}");
+        assert!(matches!(seen.last(), Some(TurnEvent::Finished { outcome, .. }) if outcome == "completed"));
     }
 
     #[tokio::test]
