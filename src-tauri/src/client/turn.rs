@@ -299,6 +299,34 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_clarify_emits_one_card_per_question() {
+        let mut m = mapper("streaming");
+        let step = m.on_request(
+            "srq-batch",
+            "clarify",
+            &json!({
+                "session_id": "ab12",
+                "questions": [
+                    {"qid": "q0", "question": "Time?", "choices": ["Unknown"]},
+                    {"qid": "q1", "question": "City?", "choices": ["HK", "GZ"]},
+                    {"qid": "q2", "question": "Sex?", "choices": ["M", "F"]}
+                ]
+            }),
+        );
+        match step {
+            Step::Emit(ref v) => {
+                assert_eq!(v.len(), 3);
+                assert!(matches!(&v[0], TurnEvent::ClarifyRequest { prompt_id, question, .. }
+                    if prompt_id == "srq-batch~q0" && question == "Time?"));
+                assert!(matches!(&v[1], TurnEvent::ClarifyRequest { prompt_id, .. } if prompt_id == "srq-batch~q1"));
+                assert!(matches!(&v[2], TurnEvent::ClarifyRequest { prompt_id, .. } if prompt_id == "srq-batch~q2"));
+            }
+            other => panic!("expected Emit, got {other:?}"),
+        }
+    }
+
+
+    #[test]
     fn an_error_event_ends_the_turn_as_failed() {
         let mut m = mapper("streaming");
         assert!(matches!(m.on_event("error", "ab12", &json!({"message": "boom"})), Step::Done { failed: Some(ref t), .. } if t == "boom"));

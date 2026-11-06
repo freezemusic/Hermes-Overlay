@@ -122,6 +122,7 @@ import {
   clarifyKept,
   clarifyPending,
   clarifyPost,
+  clarifyRequestId,
   clarifyTick,
   mergePendingControls,
   renderClarifyCard,
@@ -7325,11 +7326,14 @@ function paintApprovalBadge(id) {
 }
 
 function closeOtherClarifies(messages, promptId) {
+  const requestId = clarifyRequestId(promptId);
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
-    if (message.role === "clarify" && message.promptId !== promptId && (clarifyPending(message) || message.status === "timeout")) {
-      messages.splice(i, 1);
-    }
+    if (message.role !== "clarify") continue;
+    if (!(clarifyPending(message) || message.status === "timeout")) continue;
+    // Keep every qid from the same batch request; only retire an older request.
+    if (clarifyRequestId(message.promptId) === requestId) continue;
+    messages.splice(i, 1);
   }
 }
 
@@ -8016,6 +8020,18 @@ async function sendActive(id = state.activeId) {
     return;
   }
   if (busy && action?.command !== "stop" && !composeSkipsBusyQueue(text)) {
+    const pendingClarify = runMessages(id).find((message) => clarifyPending(message) && message.status === "pending");
+    if (pendingClarify) {
+      closeSlash();
+      input.value = "";
+      input.placeholder = "輸入訊息給呢個 Bot…";
+      state.slashArgsHint = "";
+      syncSlashGhost();
+      // Free-text while a clarify card is open answers that card (Hermes "Other"),
+      // instead of steer/queue which never reaches clarify.lock and vanishes on catch-up.
+      await answerClarify(id, pendingClarify, composeUserMessage(text).text || text);
+      return;
+    }
     closeSlash();
     input.value = "";
     input.placeholder = "輸入訊息給呢個 Bot…";
@@ -12339,12 +12355,18 @@ async function sendSuborb(id) {
   }
   const text = composeModeWire(typed, composeModeOf(id));
   thread.followTail = true;
-  appendMessage(id, composeUserMessage(text));
   const busy = state.busy.has(id);
   if (busy && !composeSkipsBusyQueue(text)) {
+    const pendingClarify = runMessages(id).find((message) => clarifyPending(message) && message.status === "pending");
+    if (pendingClarify) {
+      await answerClarify(id, pendingClarify, composeUserMessage(text).text || text);
+      return;
+    }
+    appendMessage(id, composeUserMessage(text));
     await sendSuborbBusy(id, sub, thread, text);
     return;
   }
+  appendMessage(id, composeUserMessage(text));
   await postSuborb(id, sub, text, { side: busy && composeSkipsBusyQueue(text) });
 }
 
