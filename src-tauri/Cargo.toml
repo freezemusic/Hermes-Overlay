@@ -1,6 +1,6 @@
 [package]
 name = "hermes-overlay"
-version = "0.1.0"
+version = "0.3.0"
 description = "Transparent always-on-top Hermes Overlay (Windows / macOS / Linux)"
 authors = ["freezemusic"]
 edition = "2021"

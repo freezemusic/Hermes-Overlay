@@ -18,9 +18,9 @@ Download a draft or published build from [GitHub Releases](https://github.com/fr
 
 | 平台 | 檔案 |
 |------|------|
-| Windows | `Hermes Overlay_0.1.0_x64-setup.exe`（NSIS）、`Hermes Overlay_0.1.0_x64_en-US.msi` |
-| macOS | `Hermes Overlay_0.1.0_universal.dmg`（Apple silicon + Intel）、`Hermes Overlay.app.tar.gz` |
-| Linux | `Hermes Overlay_0.1.0_amd64.AppImage`、`Hermes Overlay_0.1.0_amd64.deb` |
+| Windows | `Hermes Overlay_0.3.0_x64-setup.exe`（NSIS）、`Hermes Overlay_0.3.0_x64_en-US.msi` |
+| macOS | `Hermes Overlay_0.3.0_universal.dmg`（Apple silicon + Intel）、`Hermes Overlay.app.tar.gz` |
+| Linux | `Hermes Overlay_0.3.0_amd64.AppImage`、`Hermes Overlay_0.3.0_amd64.deb` |
 
 ### 第一次打開未簽名 build
 
@@ -37,7 +37,7 @@ xattr -dr com.apple.quarantine "/Applications/Hermes Overlay.app"
 **Linux：** AppImage 先加執行權，再裝 WebKit、GTK 同系統匣依賴（`.deb` 會自己拉呢三個套件）：
 
 ```bash
-chmod +x "Hermes Overlay_0.1.0_amd64.AppImage"
+chmod +x "Hermes Overlay_0.3.0_amd64.AppImage"
 sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1
 ```
 
