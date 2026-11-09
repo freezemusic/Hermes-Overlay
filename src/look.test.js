@@ -23,9 +23,12 @@ const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
 
-test("text size has four steps, standard by default, and stores only non-standard steps (R-LK-01)", () => {
-  assert.deepEqual(TEXT_SIZES.map((step) => step.id), ["s", "m", "l", "xl"]);
-  assert.deepEqual(TEXT_SIZES.map((step) => step.scale), [0.9, 1, 1.15, 1.3]);
+test("text size has five steps (R-LK-04 adds 特細), standard by default, and stores only non-standard steps (R-LK-01)", () => {
+  assert.deepEqual(TEXT_SIZES.map((step) => step.id), ["xs", "s", "m", "l", "xl"]);
+  assert.deepEqual(TEXT_SIZES.map((step) => step.scale), [0.8, 0.9, 1, 1.15, 1.3]);
+  assert.equal(normalizeTextSize("XS"), "xs");
+  assert.equal(textScale("xs"), 0.8);
+  assert.equal(storedTextSize("xs"), "xs");
   assert.equal(DEFAULT_TEXT_SIZE, "m");
   assert.equal(normalizeTextSize(""), "m");
   assert.equal(normalizeTextSize("huge"), "m");
@@ -159,7 +162,7 @@ test("settings has compact text-size and language icon buttons with tooltips (R-
   const dom = new JSDOM(html);
   const doc = dom.window.document;
   const sizes = [...doc.querySelectorAll("#text-size-group [data-look-size]")];
-  assert.deepEqual(sizes.map((b) => b.dataset.lookSize), ["s", "m", "l", "xl"]);
+  assert.deepEqual(sizes.map((b) => b.dataset.lookSize), ["xs", "s", "m", "l", "xl"]);
   const langs = [...doc.querySelectorAll("#ui-language-group [data-look-lang]")];
   assert.deepEqual(langs.map((b) => b.dataset.lookLang), ["zh-HK", "en"]);
   for (const btn of [...sizes, ...langs]) {
@@ -224,17 +227,32 @@ test("R-KB-10 bell strings have English, numbered whole strings use anchored pat
   assert.match(NO_TRANSLATE, /\.kanban-bell-change/);
 });
 
-test("R-LK-03 text-size buttons: 細／標準／大／特大 tooltips = aria-labels, English names, 12/14/16/18px glyphs, solid #0000f2 selected", () => {
+test("R-LK-03/04 text-size buttons: 特細／細／標準／大／特大 tooltips = aria-labels, English names, 10/12/14/16/18px glyphs, solid #0000f2 selected", () => {
   const doc = new JSDOM(html).window.document;
   const sizes = [...doc.querySelectorAll("#text-size-group [data-look-size]")];
-  assert.deepEqual(sizes.map((b) => b.title), ["細", "標準", "大", "特大"]);
-  assert.deepEqual(sizes.map((b) => b.getAttribute("aria-label")), ["細", "標準", "大", "特大"]);
-  assert.deepEqual(TEXT_SIZES.map((s) => s.tip), ["細", "標準", "大", "特大"]);
-  assert.deepEqual(sizes.map((b) => translate(b.title, "en")), ["Small", "Default", "Large", "Extra large"]);
-  const px = ["s", "m", "l", "xl"].map((id) => Number(new RegExp(`\\.look-size-${id} span \\{ font-size: (\\d+)px; \\}`).exec(css)?.[1]));
-  assert.deepEqual(px, [12, 14, 16, 18]);
+  const tips = ["特細", "細", "標準", "大", "特大"];
+  assert.deepEqual(sizes.map((b) => b.title), tips);
+  assert.deepEqual(sizes.map((b) => b.getAttribute("aria-label")), tips);
+  assert.deepEqual(TEXT_SIZES.map((s) => s.tip), tips);
+  assert.deepEqual(sizes.map((b) => translate(b.title, "en")), ["Extra small", "Small", "Default", "Large", "Extra large"]);
+  const px = ["xs", "s", "m", "l", "xl"].map((id) => Number(new RegExp(`\\.look-size-${id} span \\{ font-size: (\\d+)px; \\}`).exec(css)?.[1]));
+  assert.deepEqual(px, [10, 12, 14, 16, 18]);
   for (let i = 1; i < px.length; i += 1) assert.ok(px[i] > px[i - 1], "still grows");
-  assert.ok(px[0] >= 12, "smallest A readable");
-  assert.ok(px[3] <= 24 - 4, "largest fits the 24px button");
+  assert.ok(px[0] >= 10, "smallest A readable");
+  assert.ok(px[4] <= 24 - 4, "largest fits the 24px button");
   assert.match(css, /\.look-btn\[aria-checked="true"\] \{[^}]*background:\s*#0000f2/s);
+});
+
+test("R-LK-04 applyTextSize sets --ui-scale with --text-scale, and standard removes both", async () => {
+  const { JSDOM: Dom } = await import("jsdom");
+  const doc = new Dom("<html><body></body></html>").window.document;
+  assert.equal(applyTextSize(doc, "xs"), "xs");
+  assert.equal(doc.documentElement.dataset.textSize, "xs");
+  assert.equal(doc.documentElement.style.getPropertyValue("--ui-scale"), "0.8");
+  assert.equal(doc.documentElement.style.getPropertyValue("--text-scale"), "0.8");
+  assert.equal(applyTextSize(doc, "m"), "m");
+  assert.equal(doc.documentElement.dataset.textSize, undefined);
+  assert.equal(doc.documentElement.style.getPropertyValue("--ui-scale"), "");
+  assert.equal(translate("特細", "en"), "Extra small");
+  assert.equal(translate("拖拉改大小，雙擊還原", "en"), "Drag to resize, double-click to reset");
 });

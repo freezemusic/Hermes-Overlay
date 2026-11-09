@@ -156,7 +156,12 @@ pub struct AppConfig {
     /// Omitted while false so files that never migrated stay byte-identical.
     #[serde(default, skip_serializing_if = "skip_false")]
     pub kanban_base_url_from_gateway: bool,
-    /// R-LK-01 text size: "s", "l" or "xl". Empty is the standard size and is
+    /// R-PN-09 panel sizes the user dragged, keyed by panel id (a profile,
+    /// "kanban" or "settings"). Omitted while empty so an untouched
+    /// config.json stays byte-identical. Written only by `store_panel_size`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub panel_sizes: BTreeMap<String, PanelSize>,
+    /// R-LK-01 text size: "xs" (R-LK-04), "s", "l" or "xl". Empty is the standard size and is
     /// omitted, so an untouched config.json stays byte-identical.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text_size: String,
@@ -165,10 +170,31 @@ pub struct AppConfig {
     pub ui_language: String,
 }
 
+/// R-PN-09. One dragged panel box in CSS px.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PanelSize {
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Largest stored side. The front end clamps to the monitor work area.
+pub const PANEL_MAX_SIDE: u32 = 10_000;
+/// Smallest stored side. The front end has larger per-kind minimums.
+pub const PANEL_MIN_SIDE: u32 = 120;
+
+/// Same charset as a profile, plus nothing else: ids are a profile,
+/// "kanban" or "settings". Matches `validPanelId` in src/resize.js.
+pub fn valid_panel_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// R-LK-01. Only the non-standard steps are stored; "m", blank and unknown
-/// values are the standard size (stored as "").
+/// values are the standard size (stored as ""). R-LK-04 adds "xs".
 pub fn normalize_text_size(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
+        "xs" => "xs".into(),
         "s" => "s".into(),
         "l" => "l".into(),
         "xl" => "xl".into(),
@@ -270,6 +296,7 @@ impl Default for AppConfig {
             show_tool_detail: false,
             suborb_pins: BTreeMap::new(),
             kanban_base_url_from_gateway: false,
+            panel_sizes: BTreeMap::new(),
             text_size: String::new(),
             ui_language: String::new(),
         }
@@ -1025,6 +1052,109 @@ fn insert_suborb_pins(text: &str, body: &str) -> Result<String, String> {
     out.push_str(&field);
     out.push_str(&text[close..]);
     Ok(out)
+}
+
+fn insert_top_level_field(text: &str, key: &str, body: &str) -> Result<String, String> {
+    let bytes = text.as_bytes();
+    let close = root_object_close(bytes).ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    let mut j = close;
+    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    let field = format!("\n  \"{key}\": {body}\n");
+    let mut out = String::with_capacity(text.len() + field.len() + 1);
+    out.push_str(&text[..j]);
+    if !(j > 0 && bytes[j - 1] == b'{') {
+        out.push(',');
+    }
+    out.push_str(&field);
+    out.push_str(&text[close..]);
+    Ok(out)
+}
+
+fn read_panel_sizes(value: &serde_json::Value) -> BTreeMap<String, PanelSize> {
+    let mut out = BTreeMap::new();
+    let Some(object) = value.get("panel_sizes").and_then(|item| item.as_object()) else {
+        return out;
+    };
+    for (id, size) in object {
+        if !valid_panel_id(id) {
+            continue;
+        }
+        let w = size.get("w").and_then(serde_json::Value::as_u64);
+        let h = size.get("h").and_then(serde_json::Value::as_u64);
+        if let (Some(w), Some(h)) = (w, h) {
+            let max = u64::from(PANEL_MAX_SIDE);
+            if w > 0 && h > 0 && w <= max && h <= max {
+                out.insert(id.clone(), PanelSize { w: w as u32, h: h as u32 });
+            }
+        }
+    }
+    out
+}
+
+/// R-PN-09. Writes one panel's dragged size, or removes it when `size` is
+/// None (double-click reset). Splices only `panel_sizes`; every other key
+/// stays put. An empty map removes the key so the file goes back to
+/// byte-identical. Sides are clamped to PANEL_MIN_SIDE..=PANEL_MAX_SIDE.
+pub fn store_panel_size(path: &Path, id: &str, size: Option<PanelSize>) -> Result<bool, String> {
+    let id = id.trim();
+    if !valid_panel_id(id) {
+        return Err("面板 id 唔合法".into());
+    }
+    let size = size.map(|s| PanelSize {
+        w: s.w.clamp(PANEL_MIN_SIDE, PANEL_MAX_SIDE),
+        h: s.h.clamp(PANEL_MIN_SIDE, PANEL_MAX_SIDE),
+    });
+    if !path.exists() {
+        let Some(size) = size else { return Ok(false) };
+        let mut cfg = AppConfig::default();
+        cfg.panel_sizes.insert(id.to_string(), size);
+        save(path, &cfg)?;
+        return Ok(true);
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    if !value.is_object() {
+        return Err("設定檔格式唔啱".to_string());
+    }
+    let mut sizes = read_panel_sizes(&value);
+    match size {
+        Some(size) => {
+            if sizes.get(id) == Some(&size) {
+                return Ok(false);
+            }
+            sizes.insert(id.to_string(), size);
+        }
+        None => {
+            if sizes.remove(id).is_none() && top_level_field(&text, "panel_sizes").is_none() {
+                return Ok(false);
+            }
+        }
+    }
+    let patched = if sizes.is_empty() {
+        match top_level_field(&text, "panel_sizes") {
+            Some(span) => remove_top_level_field(&text, &span),
+            None => text.clone(),
+        }
+    } else {
+        let body = serde_json::to_string(&sizes).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+        if let Some(span) = top_level_field(&text, "panel_sizes") {
+            let mut out = String::with_capacity(text.len() + body.len());
+            out.push_str(&text[..span.value_start]);
+            out.push_str(&body);
+            out.push_str(&text[span.value_end..]);
+            out
+        } else {
+            insert_top_level_field(&text, "panel_sizes", &body)?
+        }
+    };
+    if patched == text {
+        return Ok(false);
+    }
+    write_config_text(path, &patched)?;
+    Ok(true)
 }
 
 /// Writes one profile's pinned sub-orb session id.
@@ -2605,6 +2735,9 @@ other:
         assert_eq!(normalize_text_size(" XL "), "xl");
         assert_eq!(normalize_text_size("s"), "s");
         assert_eq!(normalize_text_size("l"), "l");
+        // R-LK-04: 特細 is a stored step too; older values map unchanged.
+        assert_eq!(normalize_text_size("xs"), "xs");
+        assert_eq!(normalize_text_size(" XS "), "xs");
         assert_eq!(normalize_ui_language("zh-HK"), "");
         assert_eq!(normalize_ui_language(""), "");
         assert_eq!(normalize_ui_language("ja"), "");
@@ -2650,5 +2783,60 @@ other:
         save(&path, &standard).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), plain);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn panel_sizes_splice_only_their_key_and_reset_back_to_byte_identical() {
+        let dir = migration_dir("panel-sizes");
+        let path = dir.join("config.json");
+        let old = "{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"bots\": [],\n  \"text_size\": \"s\"\n}";
+        fs::write(&path, old).unwrap();
+        assert!(load(&path).unwrap().panel_sizes.is_empty());
+        // An untouched file never gains the key.
+        let plain = load(&path).unwrap();
+        save(&path, &plain).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("panel_sizes"));
+        fs::write(&path, old).unwrap();
+        assert!(store_panel_size(&path, "researcher", Some(PanelSize { w: 560, h: 720 })).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"bots\": [],\n  \"text_size\": \"s\","));
+        assert!(text.contains("\"panel_sizes\": {\"researcher\":{\"w\":560,\"h\":720}}"));
+        let back = load(&path).unwrap();
+        assert_eq!(back.panel_sizes.get("researcher"), Some(&PanelSize { w: 560, h: 720 }));
+        assert_eq!(back.text_size, "s");
+        // Same size again is not a write.
+        assert!(!store_panel_size(&path, "researcher", Some(PanelSize { w: 560, h: 720 })).unwrap());
+        // A second panel joins the same map; sides are clamped.
+        assert!(store_panel_size(&path, "kanban", Some(PanelSize { w: 50, h: 99_999 })).unwrap());
+        let both = load(&path).unwrap();
+        assert_eq!(both.panel_sizes.get("kanban"), Some(&PanelSize { w: PANEL_MIN_SIDE, h: PANEL_MAX_SIDE }));
+        assert_eq!(both.panel_sizes.len(), 2);
+        // A full save keeps what store_panel_size wrote.
+        save(&path, &both).unwrap();
+        assert_eq!(load(&path).unwrap().panel_sizes, both.panel_sizes);
+        fs::write(&path, old).unwrap();
+        assert!(store_panel_size(&path, "researcher", Some(PanelSize { w: 560, h: 720 })).unwrap());
+        // Reset removes the key and the file is byte-identical again.
+        assert!(store_panel_size(&path, "researcher", None).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        assert!(!store_panel_size(&path, "researcher", None).unwrap());
+        // Bad ids are refused and nothing is written.
+        assert!(store_panel_size(&path, "../x", Some(PanelSize { w: 400, h: 400 })).is_err());
+        assert!(store_panel_size(&path, "", Some(PanelSize { w: 400, h: 400 })).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        assert!(valid_panel_id("settings") && valid_panel_id("code-pal_2.x"));
+        assert!(!valid_panel_id("a b") && !valid_panel_id("bot:x") && !valid_panel_id(&"a".repeat(129)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn panel_sizes_ignore_junk_entries_when_read_back() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"panel_sizes": {"ok": {"w": 400, "h": 500}, "zero": {"w": 0, "h": 5}, "bad id": {"w": 1, "h": 1}, "str": {"w": "1", "h": 2}, "big": {"w": 20000, "h": 10}}}"#,
+        )
+        .unwrap();
+        let sizes = read_panel_sizes(&value);
+        assert_eq!(sizes.len(), 1);
+        assert_eq!(sizes.get("ok"), Some(&PanelSize { w: 400, h: 500 }));
     }
 }

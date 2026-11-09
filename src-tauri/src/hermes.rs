@@ -5237,6 +5237,7 @@ mod tests {
             show_tool_detail: false,
             suborb_pins: std::collections::BTreeMap::new(),
             kanban_base_url_from_gateway: false,
+            panel_sizes: std::collections::BTreeMap::new(),
             text_size: String::new(),
             ui_language: String::new(),
             bots: vec![

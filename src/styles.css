@@ -4075,7 +4075,8 @@ html.platform-linux .session-menu { padding-right: 22px; }
   border-color: #0000f2;
   color: #fff;
 }
-/* R-LK-03: even 2px steps; the smallest is 12px so it still reads at 24px. */
+/* R-LK-03: even 2px steps. R-LK-04 adds 特細 below at 10px, still an even step. */
+.look-size-xs span { font-size: 10px; }
 .look-size-s span { font-size: 12px; }
 .look-size-m span { font-size: 14px; }
 .look-size-l span { font-size: 16px; }
@@ -4136,6 +4137,50 @@ html[data-text-size] .session-menu-row { font-size: calc(13px * var(--text-scale
 html[data-text-size] .session-menu-empty { font-size: calc(12px * var(--text-scale, 1)); line-height: calc(18px * var(--text-scale, 1)); }
 html[data-text-size] .new-session-form input { font-size: calc(13px * var(--text-scale, 1)); }
 
+
+/*
+ * R-LK-04 (Devon 2026-11-09): the text size scales everything inside an open
+ * panel, not only the text: buttons, paddings, gaps, icons, tool rows, the
+ * composer and the header text. One `zoom` on the panel body does it, so at
+ * 特細／細 more of a reply fits in the same box. The panel box, the orb in its
+ * header slot, the stroke and the clip keep their px size, so the shell hit
+ * rect (R-CT) and the morph geometry do not move. getBoundingClientRect in
+ * WebView2 (Chromium >= 128, standardized zoom) returns zoomed screen px, so
+ * every rect published to Rust (close, slash, panel) stays exact.
+ * Inside the zoomed panel the font rules above must not scale a second time:
+ * --text-scale and the --fs-* tokens go back to their standard values.
+ */
+html[data-text-size] .morph .center-panel {
+  zoom: var(--ui-scale, 1);
+  box-sizing: border-box;
+  --text-scale: 1;
+  --fs-micro: 10px;
+  --fs-meta: 11px;
+  --fs-ui: 13px;
+  --fs-body: 14px;
+  --fs-title: 22px;
+  --fs-hero: 40px;
+}
+/* The kanban drag ghost is a clone in <body>; it gets the same reset and is
+   scaled with a transform (see moveKanbanPointer). */
+html[data-text-size] .kanban-ghost {
+  --text-scale: 1;
+  --fs-micro: 10px;
+  --fs-meta: 11px;
+  --fs-ui: 13px;
+  --fs-body: 14px;
+  --fs-title: 22px;
+  --fs-hero: 40px;
+}
+/* The orb in the header slot is not zoomed: keep its 40px / 64px / 44px slot. */
+html[data-text-size] .morph[data-anchor="start"] .center-panel > .panel-header,
+html[data-text-size] .morph[data-anchor="start"] .settings-head { padding-left: calc(40px / var(--ui-scale, 1)); }
+html[data-text-size] .morph[data-anchor="end"] .center-panel > .panel-header,
+html[data-text-size] .morph[data-anchor="end"] .settings-head { padding-right: calc(40px / var(--ui-scale, 1)); }
+html[data-text-size] .morph[data-kind="suborb"][data-anchor="end"] .center-panel > .panel-header { padding-right: calc(64px / var(--ui-scale, 1)); }
+html[data-text-size] .morph[data-kind="suborb"][data-anchor="start"] .center-panel > .panel-header { padding-left: calc(64px / var(--ui-scale, 1)); }
+html[data-text-size] .morph[data-header="bottom"] .center-panel > .panel-header,
+html[data-text-size] .morph[data-header="bottom"] .settings-head { min-height: calc(44px / var(--ui-scale, 1)); }
 
 /* Orb labels and the orb-height preview pill keep their px size (R-OB-01, SPEC §2.4). */
 html[data-text-size] .bot-btn .bot-label,
@@ -4297,3 +4342,49 @@ html[data-fan-held="1"] .suborb-orbit { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   .suborb-orbit { transition: none; }
 }
+
+/*
+ * R-PN-09: resize handles on the free sides of an open panel (away from the
+ * orb). They sit inside the shell box, so the shell hit rect already covers
+ * them (R-CT); while a drag runs the shell publishes the full-screen drag rect
+ * like a header drag. Ctrl (data-pass) makes them click-through with the body.
+ */
+.morph > .panel-resize {
+  position: absolute;
+  z-index: 6;
+  display: none;
+  pointer-events: none;
+  background: transparent;
+  touch-action: none;
+}
+.morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) > .panel-resize {
+  display: block;
+  pointer-events: auto;
+}
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) > .panel-resize {
+  pointer-events: auto !important;
+}
+/* Free vertical side: right for a start (left) orb, left for an end orb. */
+.morph > .panel-resize[data-dir="x"] { top: 48px; bottom: 48px; width: 6px; right: 0; cursor: ew-resize; }
+.morph[data-anchor="end"] > .panel-resize[data-dir="x"] { right: auto; left: 0; }
+/* Free horizontal side: bottom for a top header, top for a bottom header. */
+.morph > .panel-resize[data-dir="y"] { left: 48px; right: 48px; height: 6px; bottom: 0; cursor: ns-resize; }
+.morph[data-header="bottom"] > .panel-resize[data-dir="y"] { bottom: auto; top: 0; }
+/* Free corner, with a small grip so it can be found. */
+.morph > .panel-resize[data-dir="xy"] { width: 14px; height: 14px; right: 0; bottom: 0; cursor: nwse-resize; }
+.morph[data-anchor="end"] > .panel-resize[data-dir="xy"] { right: auto; left: 0; cursor: nesw-resize; }
+.morph[data-header="bottom"] > .panel-resize[data-dir="xy"] { bottom: auto; top: 0; cursor: nesw-resize; }
+.morph[data-anchor="end"][data-header="bottom"] > .panel-resize[data-dir="xy"] { cursor: nwse-resize; }
+.morph > .panel-resize[data-dir="xy"]::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-right: 2px solid rgb(0 0 242 / .45);
+  border-bottom: 2px solid rgb(0 0 242 / .45);
+}
+.morph[data-anchor="end"] > .panel-resize[data-dir="xy"]::after { border-right: 0; border-left: 2px solid rgb(0 0 242 / .45); }
+.morph[data-header="bottom"] > .panel-resize[data-dir="xy"]::after { border-bottom: 0; border-top: 2px solid rgb(0 0 242 / .45); }
+.morph > .panel-resize:hover::after,
+.morph.is-resizing > .panel-resize[data-dir="xy"]::after { border-color: #0000f2; }
+.morph.is-resizing,
+.morph.is-resizing * { user-select: none; }

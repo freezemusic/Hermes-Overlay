@@ -6,7 +6,12 @@
 
 ## [Unreleased]
 
-尚無。下一批功能見 [README 路線圖 v0.4](README.md#路線圖) 與 [docs/ROADMAP.md](docs/ROADMAP.md)。
+### Added
+
+- 文字大小加「特細」（0.8×），而家五級；文字大小改為縮放成個面板內容（掣、留白、圖示、工具列、輸入列），唔再只係字（R-LK-04）。
+- 對話、看板、設定面板可以拖離光球嗰兩條邊同角嚟拉大／拉細，大小逐個面板記入 config.json `panel_sizes`，雙擊把手還原（R-PN-09）。
+
+下一批功能見 [README 路線圖 v0.4](README.md#路線圖) 與 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## [0.3.0] - Unreleased
 

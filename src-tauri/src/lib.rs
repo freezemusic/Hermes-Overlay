@@ -252,6 +252,8 @@ struct PublicSettings {
     show_bot_names: bool,
     show_tool_detail: bool,
     suborb_pins: std::collections::BTreeMap<String, Vec<String>>,
+    /// R-PN-09 dragged panel sizes (empty when none).
+    panel_sizes: std::collections::BTreeMap<String, config::PanelSize>,
     /// R-LK-01 / R-LK-02. "" is the standard size / zh-HK.
     text_size: String,
     ui_language: String,
@@ -1104,6 +1106,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         show_bot_names: cfg.show_bot_names,
         show_tool_detail: cfg.show_tool_detail,
         suborb_pins: cfg.suborb_pins.clone(),
+        panel_sizes: cfg.panel_sizes.clone(),
         text_size: config::normalize_text_size(&cfg.text_size),
         ui_language: config::normalize_ui_language(&cfg.ui_language),
         listed_profiles: None,
@@ -1143,6 +1146,44 @@ fn set_show_tool_detail_sync(app: AppHandle, enabled: bool) -> Result<PublicSett
     });
     let path = config_path(&app)?;
     config::store_show_tool_detail(&path, enabled)?;
+    drop(_guard);
+    drop(state);
+    load_public_settings(app)
+}
+
+/// R-PN-09. width/height 0 removes the panel's saved size (reset).
+#[tauri::command]
+async fn set_panel_size(
+    app: AppHandle,
+    panel: String,
+    width: u32,
+    height: u32,
+) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || set_panel_size_sync(app, panel, width, height))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn set_panel_size_sync(
+    app: AppHandle,
+    panel: String,
+    width: u32,
+    height: u32,
+) -> Result<PublicSettings, String> {
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    let size = if width == 0 || height == 0 {
+        None
+    } else {
+        Some(config::PanelSize { w: width, h: height })
+    };
+    config::store_panel_size(&path, panel.trim(), size)?;
     drop(_guard);
     drop(state);
     load_public_settings(app)
@@ -1314,6 +1355,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         show_tool_detail: input.show_tool_detail,
         suborb_pins: previous.suborb_pins.clone(),
         kanban_base_url_from_gateway: previous.kanban_base_url_from_gateway,
+        panel_sizes: previous.panel_sizes.clone(),
         text_size: config::normalize_text_size(
             input.text_size.as_deref().unwrap_or(&previous.text_size),
         ),
@@ -3997,6 +4039,7 @@ pub fn run() {
             save_settings,
             set_show_bot_names,
             set_show_tool_detail,
+            set_panel_size,
             set_compose_mode,
             probe_gateway,
             discover_profiles,
