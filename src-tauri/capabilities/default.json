@@ -17,6 +17,7 @@
     "allow-save-settings",
     "allow-set-show-bot-names",
     "allow-set-show-tool-detail",
+    "allow-set-panel-size",
     "allow-set-compose-mode",
     "allow-probe-gateway",
     "allow-discover-profiles",

@@ -19,6 +19,11 @@ description = "Persist the show-tool-detail toggle."
 commands.allow = ["set_show_tool_detail"]
 
 [[permission]]
+identifier = "allow-set-panel-size"
+description = "Persist one panel's dragged size (R-PN-09)."
+commands.allow = ["set_panel_size"]
+
+[[permission]]
 identifier = "allow-set-compose-mode"
 description = "Persist one bot's composer mode."
 commands.allow = ["set_compose_mode"]

@@ -181,7 +181,8 @@ import {
 import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkdown } from "./markdown.js";
 import { DEMO_BANNER, SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
 import { chromeOrbText, DEMO_BANNER_EN, DEMO_BOTS_EN, DEMO_OLD_SESSION_EN, demoCommandEn, demoCronEn, demoKanbanEn, demoPlanEn, demoReplyEn, PREVIEW_BANNER, PREVIEW_BANNER_EN } from "./demo.js";
-import { applyTextSize, createTranslator, storedLanguage, storedTextSize, translate } from "./look.js";
+import { applyTextSize, createTranslator, storedLanguage, storedTextSize, textScale, translate } from "./look.js";
+import { clampPanelSize, normalizePanelSizes, panelResizeKind, resizedSize } from "./resize.js";
 import {
   RECONNECT_STATUS,
   createProbeGate,
@@ -392,9 +393,27 @@ function edgePadPx() {
   return (Number.isFinite(glow) ? glow : 34) + 8;
 }
 
+/**
+ * R-PN-09: a size the user dragged, or the one saved in config.json, clamped
+ * to the kind's minimum and the work area. null keeps the design size.
+ * A live `null` is a reset that has not come back from Rust yet.
+ */
+function savedPanelSize(id, vw, vh) {
+  const kind = panelResizeKind(id);
+  if (!kind) return null;
+  const live = state.panelSizes || {};
+  const saved = Object.prototype.hasOwnProperty.call(live, id)
+    ? live[id]
+    : normalizePanelSizes(state.settings?.panel_sizes)[id];
+  if (!saved) return null;
+  return clampPanelSize(saved, { kind, vw, vh, insets: state.workInsets });
+}
+
 function boxSize(id) {
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
+  const custom = savedPanelSize(id, vw, vh);
+  if (custom) return custom;
   if (id === "kanban") return { w: Math.min(960, vw * 0.8), h: Math.min(vh * 0.8, 760) };
   if (id === "cron") {
     const fitted = state.cronBoxH > 0 ? state.cronBoxH : 140;
@@ -561,6 +580,7 @@ function clampDraggedShell(shell) {
 }
 
 function placeShellElement(shell) {
+  ensureResizeHandles(shell);
   if (shell?.dataset?.dragged === "1") return clampDraggedShell(shell);
   if (shell?.dataset?.kind === "suborb") return placeSuborbShell(shell);
   const id = shell.dataset.botId;
@@ -3822,6 +3842,158 @@ function clearInnerPanelBox(panel, shell) {
   }
 }
 
+/** R-PN-09: free edge, free corner. The orb side never moves. */
+const RESIZE_TIP = "拖拉改大小，雙擊還原";
+
+function ensureResizeHandles(shell) {
+  if (!shell || shell._resizeBound) return;
+  if (!panelResizeKind(shell.dataset?.botId, shell.dataset?.kind)) return;
+  shell._resizeBound = 1;
+  for (const dir of ["x", "y", "xy"]) {
+    const handle = document.createElement("div");
+    handle.className = "panel-resize";
+    handle.dataset.dir = dir;
+    handle.title = RESIZE_TIP;
+    handle.setAttribute("aria-hidden", "true");
+    bindResizeHandle(handle, shell);
+    shell.appendChild(handle);
+  }
+}
+
+/** Box for a new size. The anchor (orb centre) keeps its screen point. */
+function applyPanelResize(shell, size, anchorScreen, anchor, header) {
+  if (shell.dataset.dragged === "1") {
+    const ax = anchor === "end" ? size.w - ORB / 2 : ORB / 2;
+    const ay = header === "bottom" ? size.h - ORB / 2 : ORB / 2;
+    shell.style.width = `${size.w}px`;
+    shell.style.height = `${size.h}px`;
+    shell.style.left = `${anchorScreen.x - ax}px`;
+    shell.style.top = `${anchorScreen.y - ay}px`;
+    shell.dataset.ax = String(ax);
+    shell.dataset.ay = String(ay);
+    shell.style.setProperty("--ax", `${ax}px`);
+    shell.style.setProperty("--ay", `${ay}px`);
+    shell.style.transformOrigin = `${ax}px ${ay}px`;
+  }
+  const placed = placeShellElement(shell);
+  paintClip(shell, insetsFor("panel", {
+    boxW: placed?.width || size.w,
+    boxH: placed?.height || size.h,
+    ax: placed?.anchor?.x || Number(shell.dataset.ax) || ORB / 2,
+    ay: placed?.anchor?.y || Number(shell.dataset.ay) || ORB / 2,
+  }), "panel");
+  if (shell.dataset.planOpen === "1") hostOpenPlan(shell);
+  scheduleHitSync();
+}
+
+let panelSizeWrite = 0;
+
+async function persistPanelSize(id, size) {
+  if (!inTauri()) return;
+  const generation = ++panelSizeWrite;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const settings = await invoke("set_panel_size", {
+      panel: id,
+      width: size ? size.w : 0,
+      height: size ? size.h : 0,
+    });
+    if (generation !== panelSizeWrite || !settings) return;
+    state.settings = settings;
+    delete state.panelSizes[id];
+  } catch (err) {
+    if (generation !== panelSizeWrite) return;
+    setBanner(String(err), "error");
+  }
+}
+
+function bindResizeHandle(handle, shell) {
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (shell.dataset.state !== "panel"
+      || shell.classList.contains("is-morphing")
+      || shell.classList.contains("is-collapsing")) return;
+    const id = shell.dataset.botId;
+    const kind = panelResizeKind(id, shell.dataset.kind);
+    if (!kind) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const dir = handle.dataset.dir || "xy";
+    const start = {
+      w: Number.parseFloat(shell.style.width) || shell.getBoundingClientRect().width,
+      h: Number.parseFloat(shell.style.height) || shell.getBoundingClientRect().height,
+    };
+    const anchor = shell.dataset.anchor === "end" ? "end" : "start";
+    const header = shell.dataset.header === "bottom" ? "bottom" : "top";
+    const anchorScreen = {
+      x: (Number.parseFloat(shell.style.left) || 0) + (Number(shell.dataset.ax) || ORB / 2),
+      y: (Number.parseFloat(shell.style.top) || 0) + (Number(shell.dataset.ay) || ORB / 2),
+    };
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let moved = false;
+    let last = start;
+    const move = (ev) => {
+      if (ev.pointerId !== event.pointerId) return;
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!moved) {
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+        moved = true;
+        state.dragHitId = shell.dataset.hitId || "";
+        shell.classList.add("is-resizing");
+        raisePanel(shell);
+        flushHits();
+      }
+      const vw = window.innerWidth || 1280;
+      const vh = window.innerHeight || 800;
+      last = clampPanelSize(resizedSize({ dir, anchor, header, dx, dy, start }), {
+        kind, vw, vh, insets: state.workInsets,
+      });
+      state.panelSizes[id] = last;
+      applyPanelResize(shell, last, anchorScreen, anchor, header);
+    };
+    const up = (ev) => {
+      if (ev.pointerId !== event.pointerId) return;
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      if (!moved) return;
+      state.dragHitId = "";
+      shell.classList.remove("is-resizing");
+      separateOpenShells([...document.querySelectorAll(".morph")]);
+      flushHits();
+      void persistPanelSize(id, last);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      /* Synthetic pointer ids keep the listeners on the handle. */
+    }
+  });
+  handle.addEventListener("dblclick", (event) => {
+    if (shell.dataset.state !== "panel") return;
+    const id = shell.dataset.botId;
+    if (!panelResizeKind(id, shell.dataset.kind)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const anchor = shell.dataset.anchor === "end" ? "end" : "start";
+    const header = shell.dataset.header === "bottom" ? "bottom" : "top";
+    const anchorScreen = {
+      x: (Number.parseFloat(shell.style.left) || 0) + (Number(shell.dataset.ax) || ORB / 2),
+      y: (Number.parseFloat(shell.style.top) || 0) + (Number(shell.dataset.ay) || ORB / 2),
+    };
+    state.panelSizes[id] = null;
+    applyPanelResize(shell, boxSize(id), anchorScreen, anchor, header);
+    separateOpenShells([...document.querySelectorAll(".morph")]);
+    flushHits();
+    void persistPanelSize(id, null);
+  });
+}
+
 function bindPanelDrag(panel) {
   if (!panel) return;
   const header = panel.querySelector(".panel-header, .settings-head");
@@ -3927,6 +4099,8 @@ const state = {
     supported: true,
   },
   pointerHitId: "",
+  /** R-PN-09 live panel sizes (id -> {w,h}, or null for a pending reset). */
+  panelSizes: {},
   heldKeys: new Set(),
   osModifierDown: false,
   modifierHeld: false,
@@ -13520,7 +13694,14 @@ function moveKanbanPointer(event) {
     const ghost = drag.card.cloneNode(true);
     ghost.classList.add("kanban-ghost");
     ghost.style.position = "fixed";
+    // R-LK-04: the card sits in a zoomed panel and the ghost in <body>.
+    // offsetWidth is the card's own (unzoomed) width; scale it like the panel.
     ghost.style.width = `${drag.card.offsetWidth}px`;
+    const zoom = textScale(look.size);
+    if (zoom !== 1) {
+      ghost.style.transformOrigin = "0 0";
+      ghost.style.transform = `scale(${zoom})`;
+    }
     ghost.style.pointerEvents = "none";
     ghost.style.zIndex = "50";
     ghost.style.margin = "0";

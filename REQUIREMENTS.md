@@ -187,6 +187,10 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 
 ## 3. 計劃視窗（R-PL）
 
+**R-PN-09** 面板可以拉大／拉細（Devon 2026-11-09：「或者你給我拉大框框也好啊」）。打開咗嘅對話面板、看板、設定，離光球嗰兩條邊（光球喺左就右邊，喺右就左邊；標題喺頂就底邊，喺底就頂邊）同嗰個角可以拖：邊係 6px 窄條，角係 14px 有小角標。光球唔郁（標題球係錨點），只係個框向外長或者縮。下限：對話 320×240、看板 480×320、設定 420×320；上限係螢幕工作區（減工作列）。放手之後經 app 自己嘅 `set_panel_size` 寫入 config.json `panel_sizes`（以 profile／`kanban`／`settings` 做鍵，`{"w","h"}` CSS px），只改呢個鍵；冇改過就冇呢個鍵（舊檔逐個位元組不變）。雙擊把手還原設計大小，並移除嗰個鍵（全部還原就移除成個 `panel_sizes`）。「儲存」設定保留 `panel_sizes`。拖緊嗰陣個殼發全畫面命中框（同拖標題列一樣），放手後命中框就係新框；揸住 Ctrl 時把手同面板一樣穿透。開住嘅計劃視窗跟住新框。子光球面板（瀑布排）同排程欄（跟內容高度）唔可以拉。
+- 驗收（單元）：`resize.test.js`、`config.rs`「panel_sizes_*」。盒：`/workspace/hermes-test/linux-demo/scale/run-scale.mjs`（拉大後命中框 = 新框、儲存一次、雙擊還原、重開用返儲存大小）。手提：真 Windows 穿透、125% 縮放、拖到工作列邊。
+- 狀態：❓ / ✅(盒)。
+
 **R-PL-01** 只有 bot 真係出咗計劃，先喺該 bot 面板**右邊**貼一個計劃視窗（右邊放唔落就貼左；兩邊都放唔落就鉗入畫面，成個計劃要留喺螢幕入面）；串流緊嘅氣泡唔算計劃；新計劃到就換成最新嗰份。`.hermes/plans/*.md` 同 `.hermes\plans\*.md` 都算路徑；`.hermes` 前面嘅反斜線被吃掉（`Workbench.hermes\plans\`）仍然算。冇 `#` 標題、但成篇至少 200 字而且有呢條路徑，都當計劃。標題跟 `#` 標題；冇標題就用檔名，去掉日期前綴同 `.md`（`2026-10-26_210008-mt5-wrapper-next.md` → `mt5-wrapper-next`），再冇就「計劃」。一行短句只提到路徑唔算。對話氣泡同計劃預覽要原樣顯示 Windows 路徑嘅反斜線。落定嗰一幀就要畫到計劃外緣（邊線、1px 環、角），唔好等下一幀先補一條 1–3px 線。落定嗰幀同時把計劃放上 hit host；之後唔好再清 `translateZ(0)`，亦唔好再寫一次已經空咗嘅 `left`／`right`。重開都要沿住同一條揭示揭開：計劃返入 shell 之後清走 hosted 嘅 `left`／`right`，唔好停喺面板下面大約十格先一次過彈出。落定嗰幀把計劃 opacity 定做 1，之後唔好用揭示 clip 蓋過已經落定嘅外緣。落定之後，包括重開，唔好再讀 computed clip，亦唔好用未取整嘅揭示 clip 寫多次。1px 外緣畫喺計劃正文同一個合成層（`.plan-fit` 嘅 inset 線同 `translateZ(0)`），由揭示第 0 幀開始跟住視窗一齊揭開，唔好等下一幀先補邊。R-PL-04 曲線唔改。
 - 來源：Devon；SPEC §6.6–6.7。2026-10-26 手提：mt-orch 把整份計劃貼成普通回覆，路徑係 `C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-10-26_210008-mt5-wrapper-next.md`，畫面未開計劃窗。驗收（盒＋Windows）：冇計劃嘅 session 唔出；送 `/plan` → 出；第二份取代第一份。上面嗰條 Windows 路徑（連吃掉 `\.` 嗰種）喺長文入面會開計劃窗，短句提到路徑唔會。狀態：❓ / ❓。
 
@@ -544,6 +548,10 @@ config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細�
 **R-LK-03** 文字大小掣（美術監督 72cba45 審查第 6 點，2026-11-03）。四粒 24px 掣嘅「A」由 10／12／15／18px 改做 12／14／16／18px：最細嗰粒讀得到，仍然逐級變大。tooltip 同 `aria-label` 一樣：「細」「標準」「大」「特大」；EN 係 Small、Default、Large、Extra large（`look.js` 對照表）。揀中嗰粒仍然實心 `#0000f2` 白字。繁／EN 掣唔改。
 - 驗收（單元）：`look.test.js`「R-LK-03 …」。盒：設定外觀行截圖（繁、EN），hover tooltip。
 - 狀態：❓ / ✅(盒，ad-72cba45)。
+
+**R-LK-04** 特細同成個面板一齊縮放（Devon 2026-11-09：「再小一號的字體大小」「大小更改可以同時影響框內物件大小」）。文字大小加多一級「特細」0.8×（EN：Extra small），擺喺「細」之前，掣「A」10px，所以而家五級 10／12／14／16／18px。config.json `text_size` 多一個值 `xs`；`s`／`l`／`xl` 同冇鍵照舊（舊檔意思不變）。**取代 R-LK-01 嘅範圍**：文字大小唔再只係放大縮細字，而係用 `zoom: var(--ui-scale)` 縮放成個打開咗嘅面板內容（字、掣、留白、間距、圖示、工具列、輸入列、標題字），所以特細／細時同一個框睇到更多內容。面板個框、光球（包括標題位嗰粒）、光球字、光球名、預覽膠囊唔縮放，所以殼命中框同變形幾何唔郁（R-OB-01、R-CT）；標題位留俾光球嘅 40px／64px 同底部標題 44px 高按倍數補返，光球唔會疊住標題。面板入面 `--text-scale` 同 `--fs-*` 還原做標準值，唔會縮放兩次。面板外面嘅字（計劃視窗、橫額）照舊用 `--text-scale` 放大縮細字。看板拖卡嘅影子卡（喺 `<body>`）用 transform 跟同一倍數。WebView2（Chromium ≥128 標準化 zoom）嘅 `getBoundingClientRect` 係縮放後螢幕 px，所以發俾 Rust 嘅關閉、slash、面板命中框都準。
+- 驗收（單元）：`look.test.js`「R-LK-03/04 …」「R-LK-04 …」、`resize.test.js`「R-LK-04 …」、`config.rs` `normalize_text_size("xs")`。盒：`run-scale.mjs` 每級截圖，命中框 = 殼、`elementFromPoint` 喺關閉掣同輸入框中心打中佢哋。手提：WebView2 真實縮放、125% DPI、Ctrl 穿透。
+- 狀態：❓ / ✅(盒)。
 
 ## 11. 系統、安全、部署（R-SY）
 

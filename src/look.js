@@ -1,8 +1,12 @@
 /**
  * Text size and interface language (R-LK-01, R-LK-02).
  *
- * Text size scales panel text only. Orbs, glyphs, orb names and panel boxes
- * keep their size, so hit areas and morph geometry do not move.
+ * Text size (R-LK-04, Devon 2026-11-09) scales the whole content of an open
+ * panel (text, buttons, paddings, icons, tool rows, composer, header text)
+ * through CSS `zoom: var(--ui-scale)` on `.morph .center-panel`. The panel
+ * box itself, the orbs, orb glyphs, orb names and the preview pill keep their
+ * size, so hit areas and morph geometry do not move. Text outside a panel
+ * (the plan pane, the banner) still scales its font with `--text-scale`.
  *
  * Language: zh-HK is the source text in index.html and main.js. English swaps
  * whole UI strings by exact match through a MutationObserver. The observer is
@@ -14,6 +18,7 @@
  */
 
 export const TEXT_SIZES = Object.freeze([
+  Object.freeze({ id: "xs", scale: 0.8, glyph: "A", tip: "特細" }),
   Object.freeze({ id: "s", scale: 0.9, glyph: "A", tip: "細" }),
   Object.freeze({ id: "m", scale: 1, glyph: "A", tip: "標準" }),
   Object.freeze({ id: "l", scale: 1.15, glyph: "A", tip: "大" }),
@@ -66,9 +71,12 @@ export function applyTextSize(doc, raw) {
   if (id === DEFAULT_TEXT_SIZE) {
     delete root.dataset.textSize;
     root.style.removeProperty("--text-scale");
+    root.style.removeProperty("--ui-scale");
   } else {
+    const scale = String(textScale(id));
     root.dataset.textSize = id;
-    root.style.setProperty("--text-scale", String(textScale(id)));
+    root.style.setProperty("--text-scale", scale);
+    root.style.setProperty("--ui-scale", scale);
   }
   return id;
 }
@@ -202,6 +210,8 @@ export const EN = Object.freeze({
   "外觀": "Look",
   "文字大小": "Text size",
   "介面語言": "Interface language",
+  "特細": "Extra small",
+  "拖拉改大小，雙擊還原": "Drag to resize, double-click to reset",
   "細": "Small",
   "標準": "Default",
   "大": "Large",
