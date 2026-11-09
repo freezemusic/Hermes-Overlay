@@ -646,7 +646,9 @@ async fn watch_profile(
                 }
             }
         }
-        chat.rows.retain(|id, _| ids.iter().any(|keep| keep == id));
+        // A poll that misses the pinned hidden Bot Chat (title RPC failed) keeps its row.
+        // Dropping it re-baselines on the next sight and skips the rows written meanwhile.
+        chat.rows.retain(|id, _| hermes::keep_watched_row(id, &ids, &pin.id));
     }
     let sessions_out = if list_same {
         None
@@ -3968,7 +3970,12 @@ pub fn run() {
                         }
                     }
                     tauri::WindowEvent::Resized(size) => {
-                        interaction::recover_startup_size(&placed, size.width, size.height);
+                        // Skip while iconic: recover/place must not SetWindowLongW
+                        // on a minimized HWND (unrestorable at -32000,-32000).
+                        if !placed.is_minimized().unwrap_or(false) {
+                            interaction::recover_startup_size(&placed, size.width, size.height);
+                            interaction::reposition_if_offscreen(&placed);
+                        }
                     }
                     tauri::WindowEvent::ScaleFactorChanged { .. } => {
                         interaction::place_overlay(&placed);
@@ -4223,6 +4230,26 @@ mod tests {
         assert!(send.contains("stop_requested"));
         assert!(send.contains("chat_failure_line"));
         assert!(send.contains("keep_busy"));
+    }
+
+    #[test]
+    fn resized_skips_place_while_minimized_and_recovers_offscreen() {
+        let src = include_str!("lib.rs");
+        assert!(
+            src.contains("reposition_if_offscreen"),
+            "restore path must re-cover a frame stuck at the minimize sentinel"
+        );
+        assert!(
+            src.contains("is_minimized()"),
+            "Resized must not recover/place while the HWND is iconic"
+        );
+        let interaction = include_str!("interaction.rs");
+        assert!(interaction.contains("may_mutate_overlay_frame"));
+        assert!(interaction.contains("is_minimize_sentinel_pos"));
+        assert!(
+            interaction.contains("IsIconic"),
+            "cover_windows_monitor must refuse SetWindowLongW while iconic"
+        );
     }
 
     #[test]

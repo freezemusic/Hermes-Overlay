@@ -1530,8 +1530,16 @@ export function finishWatchedRows(previous, incoming, reset = false, options = {
   return reset ? attachOpenCards(prior, withKept) : withKept;
 }
 
+/** R-CL-03 bubble for another device's turn. It is not a stored row, so it never matches one. */
+export function isRemoteStreamBubble(message) {
+  return !!message?.remote;
+}
+
 export function unseenMessages(existing, incoming) {
-  const have = (existing || []).filter((message) => message && !isSideMessage(message) && !isLocalChrome(message));
+  const have = (existing || []).filter((message) => message
+    && !isSideMessage(message)
+    && !isLocalChrome(message)
+    && !isRemoteStreamBubble(message));
   const next = (incoming || []).filter((message) => message && message.role);
   let matched = 0;
   let settled = null;
