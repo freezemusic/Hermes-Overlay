@@ -1955,9 +1955,73 @@ fn screen_cursor() -> &'static Mutex<Option<(f64, f64)>> {
     CURSOR.get_or_init(|| Mutex::new(None))
 }
 
+/// Windows parks an iconic window near this origin. Treating that point as a
+/// real desktop position (or writing styles/`SetWindowPos` while iconic) is
+/// how a frameless overlay ends up unrestorable at (-32000, -32000).
+pub const WIN_MINIMIZE_SENTINEL: i32 = -32000;
+
+/// True when a Win32 window origin is the minimize parking spot, not a desktop.
+pub fn is_minimize_sentinel_pos(x: i32, y: i32) -> bool {
+    x <= -31000 || y <= -31000
+}
+
+/// True when `window` shares no area with the virtual desktop.
+pub fn rect_off_virtual_desktop(
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    desk_left: i32,
+    desk_top: i32,
+    desk_right: i32,
+    desk_bottom: i32,
+) -> bool {
+    right <= desk_left || left >= desk_right || bottom <= desk_top || top >= desk_bottom
+}
+
+/// Cover/place must not mutate HWND styles while minimized. tao itself skips
+/// `SetWindowLongW` in that state "to avoid having an unrestorable window";
+/// `cover_windows_monitor` talks to the HWND directly and has to match.
+pub fn may_mutate_overlay_frame(is_minimized: bool) -> bool {
+    !is_minimized
+}
+
+fn overlay_is_minimized(window: &tauri::WebviewWindow) -> bool {
+    window.is_minimized().unwrap_or(false)
+}
+
+/// After a broken show path leaves the frame at the minimize sentinel without
+/// `WS_MINIMIZE`, put it back on the monitor. No-op while still iconic.
+pub fn reposition_if_offscreen(window: &tauri::WebviewWindow) {
+    #[cfg(windows)]
+    {
+        if !may_mutate_overlay_frame(overlay_is_minimized(window)) {
+            return;
+        }
+        let Ok(pos) = window.outer_position() else {
+            return;
+        };
+        if is_minimize_sentinel_pos(pos.x, pos.y) {
+            place_overlay(window);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+    }
+}
+
 /// Linux stays unmapped until `reveal_overlay`. Windows is created visible
 /// and this call shows the monitor rect, then click-through follows the cursor.
 pub fn place_overlay(window: &tauri::WebviewWindow) {
+    #[cfg(windows)]
+    {
+        // Do not clear WS_MAXIMIZE / SetWindowPos while iconic: that is the
+        // unrestorable (-32000,-32000) path. Wait for restore, then cover.
+        if !may_mutate_overlay_frame(overlay_is_minimized(window)) {
+            return;
+        }
+    }
     let _ = window.set_always_on_top(true);
     #[cfg(windows)]
     {
@@ -1980,6 +2044,13 @@ pub fn place_overlay(window: &tauri::WebviewWindow) {
 /// Whole-window click-through. tao sets `WS_EX_LAYERED|WS_EX_TRANSPARENT` and
 /// keeps its style cache in sync. Windows then asks the frame to pick that up.
 fn apply_ignore_cursor(window: &tauri::WebviewWindow, ignore: bool, shape_n: usize) -> bool {
+    #[cfg(windows)]
+    {
+        // Avoid style/frame churn while iconic (same unrestorable risk).
+        if !may_mutate_overlay_frame(overlay_is_minimized(window)) {
+            return false;
+        }
+    }
     if window.set_ignore_cursor_events(ignore).is_err() {
         return false;
     }
@@ -2344,6 +2415,12 @@ pub fn monitor_css_size(window: &tauri::WebviewWindow) -> Option<(u32, u32)> {
 
 /// A cold start that stayed at the config size is not covering the monitor.
 pub fn recover_startup_size(window: &tauri::WebviewWindow, width: u32, height: u32) {
+    #[cfg(windows)]
+    {
+        if !may_mutate_overlay_frame(overlay_is_minimized(window)) {
+            return;
+        }
+    }
     if RECOVER_ATTEMPTS.load(Ordering::Relaxed) >= 4 {
         return;
     }
@@ -2457,6 +2534,7 @@ fn cover_windows_monitor(window: &tauri::WebviewWindow) -> bool {
         fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MonitorInfo) -> i32;
         fn GetWindowLongW(hwnd: *mut c_void, index: i32) -> i32;
         fn SetWindowLongW(hwnd: *mut c_void, index: i32, value: i32) -> i32;
+        fn IsIconic(hwnd: *mut c_void) -> i32;
         fn SetWindowPos(
             hwnd: *mut c_void,
             insert_after: *mut c_void,
@@ -2476,6 +2554,10 @@ fn cover_windows_monitor(window: &tauri::WebviewWindow) -> bool {
     };
     let hwnd = win.hwnd.get() as *mut c_void;
     if hwnd.is_null() {
+        return false;
+    }
+    // Belt-and-suspenders with place_overlay: never SetWindowLongW while iconic.
+    if unsafe { IsIconic(hwnd) } != 0 {
         return false;
     }
     unsafe {
@@ -3651,6 +3733,34 @@ mod tests {
         assert_eq!(opacity_shape_gate(10, true, 50), OpacityShapeGate::Defer);
         assert_eq!(opacity_shape_gate(50, true, 50), OpacityShapeGate::Fallback);
         assert_eq!(opacity_shape_gate(80, true, 0), OpacityShapeGate::Defer);
+    }
+
+    #[test]
+    fn minimize_sentinel_pos_matches_win32_parking_spot() {
+        assert!(is_minimize_sentinel_pos(WIN_MINIMIZE_SENTINEL, WIN_MINIMIZE_SENTINEL));
+        assert!(is_minimize_sentinel_pos(-32000, 0));
+        assert!(is_minimize_sentinel_pos(0, -32000));
+        assert!(is_minimize_sentinel_pos(-31000, 100));
+        assert!(!is_minimize_sentinel_pos(-100, -100));
+        assert!(!is_minimize_sentinel_pos(0, 0));
+        assert!(!is_minimize_sentinel_pos(2560, 1600));
+    }
+
+    #[test]
+    fn rect_off_virtual_desktop_detects_no_overlap() {
+        // Primary 0,0–2560x1600; iconic parking is far off.
+        assert!(rect_off_virtual_desktop(
+            -32000, -32000, -31840, -31972, 0, 0, 2560, 1600
+        ));
+        assert!(!rect_off_virtual_desktop(0, 0, 2560, 1600, 0, 0, 2560, 1600));
+        assert!(!rect_off_virtual_desktop(100, 100, 500, 400, 0, 0, 2560, 1600));
+        assert!(rect_off_virtual_desktop(3000, 0, 3500, 100, 0, 0, 2560, 1600));
+    }
+
+    #[test]
+    fn may_mutate_overlay_frame_blocks_while_minimized() {
+        assert!(!may_mutate_overlay_frame(true));
+        assert!(may_mutate_overlay_frame(false));
     }
 
     fn hit(id: &str, x: f64, y: f64, w: f64, h: f64) -> HitRect {
