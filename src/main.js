@@ -4806,6 +4806,9 @@ function syncChatInPlace(chat, thread, id, resting = false) {
     }
     restBubble(node);
     if (message.role === "tool-run") {
+      // This node may be a reused bot bubble. Drop its markdown cache so a
+      // later bot row at this index repaints instead of keeping the tool row.
+      delete node.dataset.md;
       paintToolRun(node, message, toolRunHooks(id));
       if (message.live) node.dataset.live = "1";
       else delete node.dataset.live;
@@ -4813,7 +4816,13 @@ function syncChatInPlace(chat, thread, id, resting = false) {
     }
     const want = message.role === "user" ? "user" : message.role === "bot" ? "bot" : message.role;
     const nextClass = `bubble ${want}`;
-    if (node.className !== nextClass) node.className = nextClass;
+    if (node.className !== nextClass) {
+      // Role changed at this index (e.g. tool-run -> bot after a row shifted):
+      // the painter caches belong to the old row.
+      delete node.dataset.md;
+      delete node.dataset.toolSig;
+      node.className = nextClass;
+    }
     if (message.role === "bot") {
       paintBotBubble(node, message.text);
       ensurePlanChip(node, message, id);
@@ -6924,9 +6933,13 @@ function deliverRemote(id, payload) {
   if (!sessionId || thread.sessionId !== sessionId) return;
   const at = thread.messages.findIndex((message) => message.remote);
   if (payload.type === "remote.done") {
-    if (at < 0) return;
-    thread.messages.splice(at, 1);
-    if (panelFor(id)) renderChat(id);
+    if (at >= 0) {
+      thread.messages.splice(at, 1);
+      if (panelFor(id)) renderChat(id);
+    }
+    // The other device's turn is stored before message.complete. Re-read it
+    // instead of waiting for a watch tail that a missed poll can skip.
+    if (thread.loaded && !state.busy.has(id)) void catchUpSession(id);
     return;
   }
   if (payload.type === "remote.start") {
@@ -6992,7 +7005,7 @@ function deliverCron(id, payload) {
   }
   const { fresh, settled } = unseenMessages(existing, incoming);
   if (settled && viewing) {
-    const last = [...thread.messages].reverse().find((message) => message.live && message.role === "bot");
+    const last = [...thread.messages].reverse().find((message) => message.live && message.role === "bot" && !message.remote);
     if (last) {
       last.text = settled.text;
       last.live = false;

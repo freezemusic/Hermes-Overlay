@@ -823,6 +823,14 @@ pub fn transcript_windows(count: Option<u64>) -> Vec<(u64, u64)> {
     }
 }
 
+/// Watched rows kept after a poll: this poll's ids, plus the pinned session.
+/// The pinned hidden Bot Chat only comes from the title RPC; when that call
+/// fails the REST list omits it, and forgetting its stamp would make the next
+/// sight a `Skip` baseline that never emits the rows written in between.
+pub fn keep_watched_row(id: &str, polled: &[String], pinned: &str) -> bool {
+    polled.iter().any(|keep| keep == id) || (!pinned.trim().is_empty() && id == pinned.trim())
+}
+
 /// The row is still the one this fetch was planned from.
 /// A stamp written while the request was in flight must not be overwritten.
 pub fn watch_row_unchanged(planned: Option<&ChatStamp>, current: Option<&ChatStamp>) -> bool {
@@ -4454,6 +4462,21 @@ mod tests {
             message_count: count,
             last_active_bits: last_active.to_bits(),
         }
+    }
+
+    #[test]
+    fn pinned_watch_row_survives_a_poll_that_misses_it() {
+        let polled = vec!["other".to_string()];
+        assert!(keep_watched_row("other", &polled, "pinned"));
+        assert!(keep_watched_row("pinned", &polled, "pinned"));
+        assert!(keep_watched_row("pinned", &[], " pinned "));
+        assert!(!keep_watched_row("stale", &polled, "pinned"));
+        assert!(!keep_watched_row("stale", &polled, ""));
+        // Kept stamp: the next sight is a tail from the old count, not a Skip baseline.
+        let old = ChatStamp { session_id: "pinned".into(), message_count: Some(7), last_active_bits: 1.0f64.to_bits() };
+        let next = ChatStamp { session_id: "pinned".into(), message_count: Some(11), last_active_bits: 1.0f64.to_bits() };
+        assert_eq!(message_fetch(Some(&old), &next), MessageFetch::Tail { from: 7, to: 11 });
+        assert_eq!(message_fetch(None, &next), MessageFetch::Skip);
     }
 
     #[test]

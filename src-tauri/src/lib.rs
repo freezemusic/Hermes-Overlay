@@ -646,7 +646,9 @@ async fn watch_profile(
                 }
             }
         }
-        chat.rows.retain(|id, _| ids.iter().any(|keep| keep == id));
+        // A poll that misses the pinned hidden Bot Chat (title RPC failed) keeps its row.
+        // Dropping it re-baselines on the next sight and skips the rows written meanwhile.
+        chat.rows.retain(|id, _| hermes::keep_watched_row(id, &ids, &pin.id));
     }
     let sessions_out = if list_same {
         None
