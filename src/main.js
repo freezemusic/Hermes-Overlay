@@ -10137,9 +10137,12 @@ function openCoverBoxes() {
 function coverDisc(shell) {
   const box = discBox(shell);
   if (!shell?._orbGlide) return box;
-  const raw = getComputedStyle(shell).translate || "";
-  const [tx, ty] = raw.split(/\s+/).map((part) => Number.parseFloat(part) || 0);
-  return { x: box.x - (tx || 0), y: box.y - (ty || 0), w: box.w, h: box.h };
+  // CSS translate is not readable on the first frame, so a flush then sticks
+  // on a mid-glide point and the destination never becomes clickable.
+  const id = shell.dataset?.botId;
+  const spot = state.orbDodge?.[id] || homeOrbPoint(id);
+  if (!spot) return box;
+  return { x: spot.x - ORB / 2, y: spot.y - ORB / 2, w: ORB, h: ORB };
 }
 
 function discBox(shell) {
