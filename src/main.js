@@ -5,7 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, plansIn, rememberPlan } from "./plan.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, plansIn, rememberPlan } from "./plan.js";
 import {
   SUBORB_FADE_MS,
   emptySuborbModel,
@@ -8101,9 +8101,17 @@ function offeredFor(id) {
   return offeredComposeModes(entry.commands, true);
 }
 
+/** Sub-orb panels keep their own mode; Shift+Tab in one panel must not flip the others. */
+const suborbComposeModes = panelComposeModes();
+
+function storedComposeMode(id) {
+  return state.bots.find((bot) => bot.id === gatewayProfile(id))?.composeMode;
+}
+
 function composeModeOf(id) {
-  const stored = state.bots.find((bot) => bot.id === gatewayProfile(id))?.composeMode;
-  return effectiveComposeMode(stored, offeredFor(id));
+  const stored = storedComposeMode(id);
+  const mode = isSuborbId(id) ? suborbComposeModes.of(id, stored) : stored;
+  return effectiveComposeMode(mode, offeredFor(id));
 }
 
 const composeCatalogLoads = new Set();
@@ -8145,6 +8153,15 @@ function paintComposeMode(id) {
 const composeModeWrite = new Map();
 
 async function cycleComposeMode(id) {
+  if (isSuborbId(id)) {
+    // Only this sub-orb panel changes. No config write, no repaint of the Bot Chat or sibling panels.
+    const prev = normalizeComposeMode(suborbComposeModes.of(id, storedComposeMode(id)));
+    const next = nextComposeMode(prev, offeredFor(id));
+    if (next === prev) return;
+    suborbComposeModes.set(id, next);
+    paintComposeMode(id);
+    return;
+  }
   const bot = state.bots.find((item) => item.id === id);
   if (!bot) return;
   const prev = normalizeComposeMode(bot.composeMode);
@@ -12422,15 +12439,16 @@ function wireSuborbPanel(panel, id) {
   role(panel, "send")?.addEventListener("click", () => { void sendSuborb(id); });
   role(panel, "stop")?.addEventListener("click", () => { void stopSuborb(id); });
   role(panel, "compose-mode")?.addEventListener("click", () => {
-    const profile = gatewayProfile(id);
-    void cycleComposeMode(profile).then(() => paintComposeMode(id));
+    void cycleComposeMode(id);
   });
+  // Start this panel from the bot's mode now, so a later change elsewhere does not leak in.
+  suborbComposeModes.of(id, storedComposeMode(id));
   const input = role(panel, "input");
   input?.addEventListener("keydown", (event) => {
     if (event.shiftKey && (event.key === "Tab" || event.code === "Tab")) {
       event.preventDefault();
-      const profile = gatewayProfile(id);
-      void cycleComposeMode(profile).then(() => paintComposeMode(id));
+      event.stopPropagation();
+      void cycleComposeMode(id);
       return;
     }
     if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
@@ -12457,7 +12475,7 @@ function paintSuborbComposeModes(profile) {
     const sub = parseSuborbId(shell.dataset.botId || "");
     if (!sub || sub.profile !== profile) return;
     const panel = shell.querySelector(".bot-panel");
-    const mode = composeModeOf(profile);
+    const mode = composeModeOf(shell.dataset.botId);
     const chip = role(panel, "compose-mode");
     const composer = panel?.querySelector(".composer");
     if (chip) {

@@ -132,6 +132,31 @@ export function effectiveComposeMode(mode, offered) {
   return id;
 }
 
+/**
+ * Per-panel compose mode for sub-orb panels (Shift+Tab bug, 2026-11-10).
+ * A sub-orb panel starts from its bot's stored `compose_mode` the first time it is read,
+ * then keeps its own value in memory. Changing one panel never changes another panel,
+ * and a sub-orb change writes nothing to config.json (R-SO-09: no extra key).
+ */
+export function panelComposeModes() {
+  const own = new Map();
+  return {
+    of(panelId, stored) {
+      const key = String(panelId || "");
+      if (!key) return normalizeComposeMode(stored);
+      if (!own.has(key)) own.set(key, normalizeComposeMode(stored));
+      return own.get(key);
+    },
+    set(panelId, mode) {
+      const key = String(panelId || "");
+      if (key) own.set(key, normalizeComposeMode(mode));
+    },
+    has(panelId) {
+      return own.has(String(panelId || ""));
+    },
+  };
+}
+
 /** Shift+Tab and the chip advance through the modes the server still offers. */
 export function nextComposeMode(mode, offered) {
   const visible = COMPOSE_ORDER.filter((id) => {

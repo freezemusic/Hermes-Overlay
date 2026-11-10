@@ -280,3 +280,41 @@ test("a later edit with the same opening changes the plan key", () => {
   assert.equal(left.key.endsWith(planTextHash(first)), true);
   assert.equal(right.key.endsWith(planTextHash(second)), true);
 });
+
+test("Shift+Tab mode is per panel: a sub-orb keeps its own mode and never flips siblings", async () => {
+  const { panelComposeModes } = await import("./plan.js");
+  const modes = panelComposeModes();
+  // Both sub-orbs start from the bot's stored mode.
+  assert.equal(modes.of("suborb:sa:a", ""), "");
+  assert.equal(modes.of("suborb:sa:b", ""), "");
+  // The Bot Chat panel moves to Plan later: open sub-orbs keep what they had.
+  assert.equal(modes.of("suborb:sa:a", "plan"), "");
+  assert.equal(modes.of("suborb:sa:b", "plan"), "");
+  // A new sub-orb opened after that starts from the new bot mode.
+  assert.equal(modes.of("suborb:sa:c", "plan"), "plan");
+  // Changing one sub-orb leaves the others alone.
+  modes.set("suborb:sa:a", "btw");
+  assert.equal(modes.of("suborb:sa:a", ""), "btw");
+  assert.equal(modes.of("suborb:sa:b", ""), "");
+  assert.equal(modes.of("suborb:sa:c", ""), "plan");
+  modes.set("suborb:sa:b", "debug");
+  assert.equal(modes.of("suborb:sa:b", ""), "");
+  assert.equal(modes.has("suborb:sa:z"), false);
+});
+
+test("sub-orb Shift+Tab and chip cycle only that panel and write no config", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const wire = main.slice(main.indexOf("function wireSuborbPanel"), main.indexOf("installNewSessionButton(panel, id);", main.indexOf("function wireSuborbPanel")));
+  assert.doesNotMatch(wire, /cycleComposeMode\(profile\)/);
+  assert.match(wire, /event\.shiftKey && \(event\.key === "Tab" \|\| event\.code === "Tab"\)[\s\S]*?cycleComposeMode\(id\)/);
+  assert.match(wire, /suborbComposeModes\.of\(id, storedComposeMode\(id\)\)/);
+  const cycle = main.slice(main.indexOf("async function cycleComposeMode"), main.indexOf("function composeUserMessage"));
+  const subBranch = cycle.slice(cycle.indexOf("if (isSuborbId(id))"), cycle.indexOf("const bot = state.bots.find"));
+  assert.ok(subBranch.length > 0);
+  assert.doesNotMatch(subBranch, /set_compose_mode|bot\.composeMode/);
+  assert.match(subBranch, /suborbComposeModes\.set\(id, next\)/);
+  const of = main.slice(main.indexOf("function composeModeOf"), main.indexOf("const composeCatalogLoads"));
+  assert.match(of, /isSuborbId\(id\) \? suborbComposeModes\.of\(id, stored\) : stored/);
+  const paintSubs = main.slice(main.indexOf("function paintSuborbComposeModes"), main.indexOf("function openSuborbShells"));
+  assert.match(paintSubs, /composeModeOf\(shell\.dataset\.botId\)/);
+});
