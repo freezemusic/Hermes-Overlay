@@ -10600,7 +10600,22 @@ function hitsBlocked() {
   return hitBlockReason() !== "";
 }
 
+let stablePanelHits = null;
+
 function sendHitRects(rects, tag, force = false) {
+  if (tag === "orb-dodge-return" && hitBlockReason() === "plan-open" && stablePanelHits?.length) {
+    const orbs = rects.filter((rect) => {
+      const id = String(rect.id || "");
+      return id.startsWith("bot:") || id.startsWith("pill:");
+    });
+    rects = orbs.concat(stablePanelHits.map((rect) => ({ ...rect })));
+  } else if (tag !== "orb-dodge-return") {
+    const kept = rects.filter((rect) => {
+      const id = String(rect.id || "");
+      return id && !id.startsWith("bot:") && !id.startsWith("pill:");
+    });
+    if (kept.length) stablePanelHits = kept.map((rect) => ({ ...rect }));
+  }
   const held = state.interaction.supported !== false && engagedModifier();
   const guarded = guardPublishedHits({
     rects,
@@ -11112,9 +11127,7 @@ function reconcileOrbDodges() {
       // destination disc has to be live before that, or Ctrl+click at home misses.
       // A plan seam must keep the announced panel box: an early remeasure
       // shifts it into the close button's hit margin (bot-edge-top).
-      if (hitBlockReason() !== "plan-open") {
-        sendHitRects(collectHits(), "orb-dodge-return", true);
-      }
+      sendHitRects(collectHits(), "orb-dodge-return", true);
     }
   } finally {
     reconcileOrbDodges.busy = false;

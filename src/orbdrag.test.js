@@ -147,7 +147,7 @@ test("R-OB-08 main.js: anchor order, drag rule, persistence through set_orb_posi
   assert.match(main, /is-collapsing"\) \|\| shell\.dataset\.intent === "close"\) return;/);
   assert.match(main, /sendHitRects\(collectHits\(\), "orb-dodge-return", true\);/);
   assert.match(main, /state\.orbDodge\[shell\.dataset\.botId\]/);
-  assert.match(main, /hitBlockReason\(\) !== "plan-open"/);
+  assert.match(main, /tag === "orb-dodge-return" && hitBlockReason\(\) === "plan-open"/);
   assert.match(main, /if \(target === "orb"\) reconcileOrbDodges\(\);/);
   const closed = main.slice(main.indexOf("function commitClosedShell(shell)"), main.indexOf("function restingTransform("));
   assert.match(closed, /noteOrbCover\(\);\s*sendHitRects\(collectHits\(\), "orb-dodge-return", true\);/);
