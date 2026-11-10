@@ -145,6 +145,9 @@ test("R-OB-08 main.js: anchor order, drag rule, persistence through set_orb_posi
   assert.match(main, /const open = !droppedOrb && orbOpenFromPress\(/, "a drag never opens the panel");
   assert.match(main, /function noteOrbCover\(\) \{\s*reconcileOrbDodges\(\);/);
   assert.match(main, /if \(target === "orb"\) reconcileOrbDodges\(\);/);
+  const closed = main.slice(main.indexOf("function commitClosedShell(shell)"), main.indexOf("function restingTransform("));
+  assert.match(closed, /noteOrbCover\(\);\s*sendHitRects\(collectHits\(\), "orb-dodge-return", true\);/);
+  assert.match(main, /shell\._orbGlide && shell\.dataset\.kind !== "suborb" \? coverDisc\(shell\)/);
   const move = main.slice(main.indexOf("function moveOrbDrag(event)"), main.indexOf("function endOrbDrag(event)"));
   assert.match(move, /orbDragAllowed\(\{[\s\S]*ctrlAtDown: orbGesture\.ctrlAtDown === true/);
   assert.match(move, /state\.dragHitId = shell\.dataset\.hitId/, "full-view capture rect while dragging, like a header drag");

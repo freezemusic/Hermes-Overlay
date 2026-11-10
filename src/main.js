@@ -1317,6 +1317,11 @@ function commitClosedShell(shell) {
   }
   debugLog("orb-restyle", `when=collapse-end class=active-off opacity=${floor}`);
   logCollapseSpan(shell);
+  // The panel is gone. Hit silence still blocks scheduleHitSync, so the
+  // dodge that the panel caused would otherwise stay put and Ctrl+click
+  // at the design spot falls through (windows-clickthrough).
+  noteOrbCover();
+  sendHitRects(collectHits(), "orb-dodge-return", true);
 }
 
 /** scale(1) and translateZ(0) are collapse leftovers, not an idle disc. */
@@ -10263,9 +10268,12 @@ function collectHits() {
         const disc = button && button.width >= 1 && button.height >= 1
           ? { x: button.x, y: button.y, w: button.width, h: button.height }
           : null;
+        // A dodge glide's later frames are dropped while collapse quiet holds
+        // the flush. Publish the destination disc, not the in-flight point.
+        const parked = shell._orbGlide && shell.dataset.kind !== "suborb" ? coverDisc(shell) : null;
         const circle = shell.dataset.kind === "suborb"
           ? suborbHitCircle(orbDiscHit(box, disc))
-          : orbDiscHit(box, disc);
+          : orbDiscHit(parked || box, parked || disc);
         const label = state.showBotNames && state.modifierHeld
           ? orbNameHitBox(shell.dataset.botId)
           : null;
