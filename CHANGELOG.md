@@ -14,6 +14,10 @@
 - 拉大框嘅把手改闊（邊 10px、角 12px），一定喺框入面、喺 HUD 角之上，角標常顯、邊 hover 有藍線；Windows CI 加真游標形狀檢查（R-PN-09）。
 - 計劃窗開住、開場 `is-morphing` 未清走時，拉大把手仍然顯示同可以拖，Windows CI 先讀到 `resize-at`（R-PN-09）。
 
+### Fixed
+
+- 計劃視窗改為顯示同一輪 `write_file` 寫入 `.hermes/plans/` 嘅計劃檔正文，唔再把提到路徑嘅對話摘要當成計劃；對話裡冇檔案正文時會註明（R-PL-01）。
+
 下一批功能見 [README 路線圖 v0.4](README.md#路線圖) 與 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## [0.3.0] - Unreleased

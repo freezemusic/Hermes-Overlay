@@ -83,6 +83,12 @@ pub struct SessionSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlanFile {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UiMessage {
     pub role: String,
     pub text: String,
@@ -90,6 +96,21 @@ pub struct UiMessage {
     /// Hermes tool-call id, so a clarify result retires only its own notice.
     #[serde(default)]
     pub tool_call_id: String,
+    /// Plan file written this turn (`write_file` to `.hermes/plans/*.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<PlanFile>,
+}
+
+impl UiMessage {
+    fn new(role: impl Into<String>, text: String, tool_name: String, tool_call_id: String) -> Self {
+        Self {
+            role: role.into(),
+            text,
+            tool_name,
+            tool_call_id,
+            plan: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1225,6 +1246,71 @@ fn call_id_name_args(call: &Value) -> (String, String, Value) {
     (id, name, args)
 }
 
+/// Cap for plan-file bodies carried on a message. Not the 8000-character clip.
+pub const PLAN_FILE_MAX_BYTES: usize = 512 * 1024;
+
+fn is_hermes_plan_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let Some(at) = normalized.find(".hermes/plans/") else {
+        return false;
+    };
+    let rest = &normalized[at + ".hermes/plans/".len()..];
+    let file = rest
+        .split(|ch: char| ch.is_whitespace() || ch == ')' || ch == '/')
+        .next()
+        .unwrap_or("");
+    file.len() > 3 && file.ends_with(".md") && !file.contains("..")
+}
+
+fn tool_arg_str(args: &Value, keys: &[&str]) -> String {
+    for key in keys {
+        if let Some(text) = args.get(*key).and_then(Value::as_str) {
+            if !text.is_empty() {
+                return text.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn clip_plan_content(text: &str) -> String {
+    let bytes = text.as_bytes();
+    if bytes.len() <= PLAN_FILE_MAX_BYTES {
+        return text.to_string();
+    }
+    let mut end = PLAN_FILE_MAX_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = text[..end].to_string();
+    out.push('…');
+    out
+}
+
+fn plan_file_from_write_args(name: &str, args: &Value) -> Option<PlanFile> {
+    if name != "write_file" {
+        return None;
+    }
+    let path = tool_arg_str(args, &["path", "file_path"]);
+    if !is_hermes_plan_path(&path) {
+        return None;
+    }
+    let content = tool_arg_str(args, &["content", "file_content"]);
+    if content.is_empty() {
+        return None;
+    }
+    Some(PlanFile {
+        path,
+        content: clip_plan_content(&content),
+    })
+}
+
+fn attach_plan(messages: &mut [UiMessage], last_bot: Option<usize>, plan: Option<PlanFile>) {
+    if let (Some(index), Some(plan)) = (last_bot, plan) {
+        messages[index].plan = Some(plan);
+    }
+}
+
 fn clarify_subject(args: &Value) -> String {
     if let Some(text) = args.get("question").and_then(Value::as_str) {
         let text = text.trim();
@@ -1334,12 +1420,7 @@ fn push_wait_notice(out: &mut Vec<UiMessage>, item: &Value, id: &str, kind: &str
     if !id.is_empty() {
         payload["tool_call_id"] = serde_json::json!(id);
     }
-    out.push(UiMessage {
-        role: "notice".into(),
-        text: payload.to_string(),
-        tool_name: kind.into(),
-        tool_call_id: id.to_string(),
-    });
+    out.push(UiMessage::new("notice", payload.to_string(), kind.into(), id.to_string()));
 }
 
 pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
@@ -1351,6 +1432,8 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
         .unwrap_or_default();
     let settled = settled_wait_ids(&items);
     let mut out = Vec::new();
+    let mut last_bot: Option<usize> = None;
+    let mut turn_plan: Option<PlanFile> = None;
     for item in items {
         let role = item.get("role").and_then(Value::as_str).unwrap_or("");
         let tool_name = item
@@ -1379,26 +1462,19 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
             continue;
         }
         if display_kind == "failed_turn" && !text.trim().is_empty() {
-            out.push(UiMessage {
-                role: "failure".into(),
-                text,
-                tool_name: String::new(), tool_call_id: String::new(),
-            });
+            out.push(UiMessage::new("failure", text, String::new(), String::new()));
             continue;
         }
         match role {
-            "user" if !text.trim().is_empty() => out.push(UiMessage {
-                role: "user".into(),
-                text,
-                tool_name: String::new(), tool_call_id: String::new(),
-            }),
+            "user" if !text.trim().is_empty() => {
+                attach_plan(&mut out, last_bot, turn_plan.take());
+                last_bot = None;
+                out.push(UiMessage::new("user", text, String::new(), String::new()));
+            }
             "assistant" => {
                 if !text.trim().is_empty() {
-                    out.push(UiMessage {
-                        role: "bot".into(),
-                        text,
-                        tool_name: String::new(), tool_call_id: String::new(),
-                    });
+                    out.push(UiMessage::new("bot", text, String::new(), String::new()));
+                    last_bot = Some(out.len() - 1);
                 }
                 if let Some(calls) = item.get("tool_calls").and_then(Value::as_array) {
                     for call in calls {
@@ -1406,22 +1482,26 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
                         if let Some(kind) = wait_kind(&name) {
                             push_wait_notice(&mut out, &item, &id, kind, &args, &settled);
                         }
+                        if let Some(plan) = plan_file_from_write_args(&name, &args) {
+                            turn_plan = Some(plan);
+                        }
                     }
                 }
             }
-            "tool" if !text.trim().is_empty() => out.push(UiMessage {
-                role: "tool".into(),
+            "tool" if !text.trim().is_empty() => out.push(UiMessage::new(
+                "tool",
                 text,
-                tool_name: if tool_name.is_empty() {
+                if tool_name.is_empty() {
                     "tool".into()
                 } else {
                     tool_name
                 },
                 tool_call_id,
-            }),
+            )),
             _ => {}
         }
     }
+    attach_plan(&mut out, last_bot, turn_plan.take());
     let order = value
         .pointer("/pagination/order")
         .and_then(Value::as_str)
@@ -4533,10 +4613,14 @@ mod tests {
             message_fetch(Some(&uncounted), &stamp("bot", None, 11.0)),
             MessageFetch::Full
         );
-        let old = vec![UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new() }];
+        let old = vec![UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new(),
+            plan: None,
+        }];
         let (kept, emitted, reset) = apply_watch_fetch(
             &old,
-            &[UiMessage { role: "bot".into(), text: "b".into(), tool_name: String::new(), tool_call_id: String::new() }],
+            &[UiMessage { role: "bot".into(), text: "b".into(), tool_name: String::new(), tool_call_id: String::new(),
+            plan: None,
+        }],
             false,
         );
         assert!(!reset);
@@ -4547,19 +4631,29 @@ mod tests {
         assert!(!reset);
         assert_eq!(baseline.len(), 1);
         let seen = vec![
-            UiMessage { role: "user".into(), text: "q".into(), tool_name: String::new(), tool_call_id: String::new() },
-            UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new() },
+            UiMessage { role: "user".into(), text: "q".into(), tool_name: String::new(), tool_call_id: String::new(),
+            plan: None,
+        },
+            UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new(),
+            plan: None,
+        },
         ];
         let longer = vec![
             seen[0].clone(),
-            UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new() },
-            UiMessage { role: "bot".into(), text: "c".into(), tool_name: String::new(), tool_call_id: String::new() },
+            UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new(),
+            plan: None,
+        },
+            UiMessage { role: "bot".into(), text: "c".into(), tool_name: String::new(), tool_call_id: String::new(),
+            plan: None,
+        },
         ];
         let (_, suffix, reset) = apply_watch_fetch(&seen, &longer, true);
         assert!(!reset);
         assert_eq!(suffix.len(), 1);
         assert_eq!(suffix[0].text, "c");
-        let diverged = vec![UiMessage { role: "bot".into(), text: "other".into(), tool_name: String::new(), tool_call_id: String::new() }];
+        let diverged = vec![UiMessage { role: "bot".into(), text: "other".into(), tool_name: String::new(), tool_call_id: String::new(),
+            plan: None,
+        }];
         let (_, replaced, reset) = apply_watch_fetch(&seen, &diverged, true);
         assert!(reset);
         assert_eq!(replaced[0].text, "other");
@@ -4799,11 +4893,7 @@ mod tests {
     }
 
     fn ui_message(role: &str, text: &str) -> UiMessage {
-        UiMessage {
-            role: role.into(),
-            text: text.into(),
-            tool_name: String::new(), tool_call_id: String::new(),
-        }
+        UiMessage::new(role, text.into(), String::new(), String::new())
     }
 
     #[test]
@@ -5908,6 +5998,114 @@ mod tests {
     }
 
     #[test]
+    fn normalize_messages_keeps_write_file_plan_content_over_8000_chars() {
+        let body = "x".repeat(9000);
+        let path = r"C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-11_013841-runtime-gate-status.md";
+        let summary = format!(
+            "詳細計劃已寫好，呢輪沒有再跑回測。\n\nlive 探針失敗。\n{path}"
+        );
+        let value = json!({
+            "data": [
+                {"role": "user", "content": "/plan runtime gate"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "w1",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": {
+                                "path": path,
+                                "content": body
+                            }
+                        }
+                    }]
+                },
+                {"role": "tool", "tool_call_id": "w1", "tool_name": "write_file", "content": "{\"bytes_written\": 9000, \"verified\": true}"},
+                {"role": "assistant", "content": summary}
+            ]
+        });
+        let msgs = normalize_messages(&value);
+        let bot = msgs.iter().find(|m| m.role == "bot").expect("summary bot");
+        assert_eq!(bot.text, summary);
+        let plan = bot.plan.as_ref().expect("plan field");
+        assert_eq!(plan.path, path);
+        assert_eq!(plan.content, body);
+        assert_eq!(plan.content.len(), 9000);
+        assert!(msgs.iter().all(|m| m.role != "bot" || m.plan.is_some()));
+    }
+
+    #[test]
+    fn write_file_plan_accepts_aliases_and_caps_at_512kb() {
+        let path = "/home/work/.hermes/plans/demo-plan.md";
+        let huge = "h".repeat(PLAN_FILE_MAX_BYTES + 50);
+        let alias = json!({
+            "data": [
+                {"role": "user", "content": "/plan demo"},
+                {
+                    "role": "assistant",
+                    "content": "ok",
+                    "tool_calls": [{
+                        "id": "w2",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json!({
+                                "file_path": path,
+                                "file_content": "# Demo\n\n**Goal:** keep the file body."
+                            }).to_string()
+                        }
+                    }]
+                }
+            ]
+        });
+        let msgs = normalize_messages(&alias);
+        let plan = msgs.iter().find(|m| m.role == "bot").unwrap().plan.as_ref().unwrap();
+        assert_eq!(plan.path, path);
+        assert!(plan.content.starts_with("# Demo"));
+
+        let capped = json!({
+            "data": [
+                {"role": "user", "content": "/plan huge"},
+                {
+                    "role": "assistant",
+                    "content": "寫好了",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "write_file",
+                            "arguments": {"path": path, "content": huge}
+                        }
+                    }]
+                }
+            ]
+        });
+        let plan = normalize_messages(&capped)
+            .into_iter()
+            .find(|m| m.role == "bot")
+            .unwrap()
+            .plan
+            .unwrap();
+        assert!(plan.content.ends_with('…'));
+        assert!(plan.content.len() <= PLAN_FILE_MAX_BYTES + 3);
+
+        let other = json!({
+            "data": [
+                {"role": "user", "content": "write notes"},
+                {
+                    "role": "assistant",
+                    "content": "done",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "write_file",
+                            "arguments": {"path": "/tmp/notes.txt", "content": "not a plan"}
+                        }
+                    }]
+                }
+            ]
+        });
+        assert!(normalize_messages(&other)[1].plan.is_none());
+    }
+
+        #[test]
     fn a_recoverable_end_reason_is_not_closed() {
         let parsed = parse_session_list(&json!({
             "data": [

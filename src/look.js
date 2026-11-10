@@ -136,6 +136,7 @@ export const EN = Object.freeze({
   "原文": "Source",
   "關閉計劃視窗": "Close the plan window",
   "睇計劃": "View plan",
+  "計劃檔內容唔在對話紀錄裡面。": "The plan file content is not in the chat history.",
   // Approvals and clarify (wording only; choices are unchanged)
   "要你批准": "Needs your approval",
   "批准（一次）": "Approve (once)",

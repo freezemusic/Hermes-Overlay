@@ -181,7 +181,7 @@ test("R-LK-02 chat-card, tool, kanban and schedule strings all have English", ()
     KANBAN_EMPTY, KANBAN_UNAVAILABLE, KANBAN_BELL_EMPTY, "返回",
     CRON_EMPTY, CRON_NONE, CRON_UNAVAILABLE, CRON_FAILED_LABEL,
     "設定", "看板", "排程", "Hermes 設定", "排程工作", "排程工作進行中", "排程工作失敗",
-    "收起完整提示", "顯示完整提示", "未送出", "複製", "已複製", "睇計劃", "旁問",
+    "收起完整提示", "顯示完整提示", "未送出", "複製", "已複製", "睇計劃", "計劃檔內容唔在對話紀錄裡面。", "旁問",
     "示範模式（--demo），冇連 Hermes。",
   ];
   for (const zh of strings) {
