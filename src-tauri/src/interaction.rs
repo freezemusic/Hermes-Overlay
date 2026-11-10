@@ -3050,22 +3050,22 @@ pub fn windows_cursor_ignored(
         if !frame.capture {
             return false;
         }
-        let Some(rect) = rects.iter().find(|item| item.id == frame.id) else {
-            return false;
-        };
-        if rect_covers_view(rect, view_w, view_h) && !pointer_down {
-            return false;
-        }
-        // R-CT-01 allows HIT_MARGIN_PX (12) around orbs and panels.
-        // Orbs use that pad so Ctrl+hover still finds the disc.
-        // Panels use 0, so 10px outside still reaches the window behind.
-        // Linux GDK already uses the raw rect.
-        let pad = if is_panel_hit(rect) {
-            0.0
-        } else {
-            HIT_MARGIN_PX
-        };
-        distance_to_hit(x, y, rect) <= pad
+        // One id can have the visible dodge spot and the covered home disc.
+        // Either one under the cursor keeps the click.
+        rects.iter().any(|rect| {
+            if rect.id != frame.id {
+                return false;
+            }
+            if rect_covers_view(rect, view_w, view_h) && !pointer_down {
+                return false;
+            }
+            // R-CT-01 allows HIT_MARGIN_PX (12) around orbs and panels.
+            // Orbs use that pad so Ctrl+hover still finds the disc.
+            // Panels use 0, so 10px outside still reaches the window behind.
+            // Linux GDK already uses the raw rect.
+            let pad = if is_panel_hit(rect) { 0.0 } else { HIT_MARGIN_PX };
+            distance_to_hit(x, y, rect) <= pad
+        })
     });
     !hot
 }

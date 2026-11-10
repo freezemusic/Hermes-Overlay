@@ -195,6 +195,8 @@ export const EN = Object.freeze({
   "線上 · 程式碼模式": "Online · code mode",
   "永遠顯示員工名": "Always show bot names",
   "顯示工具細節": "Show tool details",
+  "所有光球返原位": "Reset all orb positions",
+  "揸住 Ctrl 拖光球可以擺去任何位置。": "Hold Ctrl and drag an orb to put it anywhere.",
   "結束程式": "Quit the app",
   "結束": "Quit",
   "測試已儲存連線": "Test the saved connection",

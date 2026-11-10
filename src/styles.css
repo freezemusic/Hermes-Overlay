@@ -4432,3 +4432,15 @@ html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is
 }
 .morph.is-resizing,
 .morph.is-resizing * { user-select: none; }
+
+/* R-OB-08 「所有光球返原位」 under the interaction toggles. */
+.orb-reset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.orb-reset-row .hint {
+  margin: 0;
+}

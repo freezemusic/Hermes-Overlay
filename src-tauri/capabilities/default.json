@@ -18,6 +18,8 @@
     "allow-set-show-bot-names",
     "allow-set-show-tool-detail",
     "allow-set-panel-size",
+    "allow-set-orb-position",
+    "allow-reset-orb-positions",
     "allow-set-compose-mode",
     "allow-set-suborb-mode",
     "allow-probe-gateway",

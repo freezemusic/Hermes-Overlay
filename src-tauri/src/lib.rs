@@ -254,6 +254,8 @@ struct PublicSettings {
     suborb_pins: std::collections::BTreeMap<String, Vec<String>>,
     /// R-PN-09 dragged panel sizes (empty when none).
     panel_sizes: std::collections::BTreeMap<String, config::PanelSize>,
+    /// R-OB-08 dragged orb centres (empty when none).
+    orb_positions: std::collections::BTreeMap<String, config::OrbPosition>,
     /// R-SO-09 sub-orb panel compose modes, `[session, mode]` pairs per profile.
     suborb_modes: std::collections::BTreeMap<String, Vec<(String, String)>>,
     /// R-LK-01 / R-LK-02. "" is the standard size / zh-HK.
@@ -1109,6 +1111,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         show_tool_detail: cfg.show_tool_detail,
         suborb_pins: cfg.suborb_pins.clone(),
         panel_sizes: cfg.panel_sizes.clone(),
+        orb_positions: cfg.orb_positions.clone(),
         suborb_modes: cfg.suborb_modes.clone(),
         text_size: config::normalize_text_size(&cfg.text_size),
         ui_language: config::normalize_ui_language(&cfg.ui_language),
@@ -1187,6 +1190,66 @@ fn set_panel_size_sync(
         Some(config::PanelSize { w: width, h: height })
     };
     config::store_panel_size(&path, panel.trim(), size)?;
+    drop(_guard);
+    drop(state);
+    load_public_settings(app)
+}
+
+/// R-OB-08. `x`/`y` None removes the orb's saved spot (dropped back home).
+#[tauri::command]
+async fn set_orb_position(
+    app: AppHandle,
+    orb: String,
+    x: Option<u32>,
+    y: Option<u32>,
+) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || set_orb_position_sync(app, orb, x, y))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn set_orb_position_sync(
+    app: AppHandle,
+    orb: String,
+    x: Option<u32>,
+    y: Option<u32>,
+) -> Result<PublicSettings, String> {
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    let point = match (x, y) {
+        (Some(x), Some(y)) => Some(config::OrbPosition { x, y }),
+        _ => None,
+    };
+    config::store_orb_position(&path, orb.trim(), point)?;
+    drop(_guard);
+    drop(state);
+    load_public_settings(app)
+}
+
+/// R-OB-08 「所有光球返原位」: removes `orb_positions` only.
+#[tauri::command]
+async fn reset_orb_positions(app: AppHandle) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || reset_orb_positions_sync(app))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn reset_orb_positions_sync(app: AppHandle) -> Result<PublicSettings, String> {
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    config::clear_orb_positions(&path)?;
     drop(_guard);
     drop(state);
     load_public_settings(app)
@@ -1395,6 +1458,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         suborb_pins: previous.suborb_pins.clone(),
         kanban_base_url_from_gateway: previous.kanban_base_url_from_gateway,
         panel_sizes: previous.panel_sizes.clone(),
+        orb_positions: previous.orb_positions.clone(),
         suborb_modes: previous.suborb_modes.clone(),
         text_size: config::normalize_text_size(
             input.text_size.as_deref().unwrap_or(&previous.text_size),
@@ -4080,6 +4144,8 @@ pub fn run() {
             set_show_bot_names,
             set_show_tool_detail,
             set_panel_size,
+            set_orb_position,
+            reset_orb_positions,
             set_compose_mode,
             set_suborb_mode,
             probe_gateway,

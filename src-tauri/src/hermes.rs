@@ -5238,6 +5238,7 @@ mod tests {
             suborb_pins: std::collections::BTreeMap::new(),
             kanban_base_url_from_gateway: false,
             panel_sizes: std::collections::BTreeMap::new(),
+            orb_positions: std::collections::BTreeMap::new(),
             suborb_modes: std::collections::BTreeMap::new(),
             text_size: String::new(),
             ui_language: String::new(),

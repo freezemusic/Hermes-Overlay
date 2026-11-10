@@ -161,6 +161,16 @@ pub struct AppConfig {
     /// config.json stays byte-identical. Written only by `store_panel_size`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub panel_sizes: BTreeMap<String, PanelSize>,
+    /// R-OB-08 orb spots the user dragged, keyed by orb id (a profile,
+    /// "kanban", "cron" or "settings"), orb centre in CSS px. Omitted while
+    /// empty so an untouched config.json stays byte-identical. Written only by
+    /// `store_orb_position`; junk entries are dropped on read.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "lenient_orb_positions"
+    )]
+    pub orb_positions: BTreeMap<String, OrbPosition>,
     /// R-SO-09 sub-orb panel compose modes the user picked, per profile, as
     /// `[session_id, mode]` pairs, oldest first (mode is "general", "plan" or "btw").
     /// Omitted while empty so a config that never changed a sub-orb mode stays
@@ -185,6 +195,25 @@ pub struct AppConfig {
 pub struct PanelSize {
     pub w: u32,
     pub h: u32,
+}
+
+/// R-OB-08. One dragged orb centre in CSS px.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrbPosition {
+    pub x: u32,
+    pub y: u32,
+}
+
+/// Largest stored orb coordinate. The front end clamps to the work area.
+pub const ORB_MAX_COORD: u32 = 10_000;
+
+fn lenient_orb_positions<'de, D>(deserializer: D) -> Result<BTreeMap<String, OrbPosition>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    let wrapped = serde_json::json!({ "orb_positions": raw });
+    Ok(read_orb_positions(&wrapped))
 }
 
 /// Largest stored side. The front end clamps to the monitor work area.
@@ -307,6 +336,7 @@ impl Default for AppConfig {
             suborb_pins: BTreeMap::new(),
             kanban_base_url_from_gateway: false,
             panel_sizes: BTreeMap::new(),
+            orb_positions: BTreeMap::new(),
             suborb_modes: BTreeMap::new(),
             text_size: String::new(),
             ui_language: String::new(),
@@ -1161,6 +1191,110 @@ pub fn store_panel_size(path: &Path, id: &str, size: Option<PanelSize>) -> Resul
             insert_top_level_field(&text, "panel_sizes", &body)?
         }
     };
+    if patched == text {
+        return Ok(false);
+    }
+    write_config_text(path, &patched)?;
+    Ok(true)
+}
+
+fn read_orb_positions(value: &serde_json::Value) -> BTreeMap<String, OrbPosition> {
+    let mut out = BTreeMap::new();
+    let Some(object) = value.get("orb_positions").and_then(|item| item.as_object()) else {
+        return out;
+    };
+    for (id, point) in object {
+        if !valid_panel_id(id) {
+            continue;
+        }
+        let x = point.get("x").and_then(serde_json::Value::as_u64);
+        let y = point.get("y").and_then(serde_json::Value::as_u64);
+        if let (Some(x), Some(y)) = (x, y) {
+            let max = u64::from(ORB_MAX_COORD);
+            if x <= max && y <= max {
+                out.insert(id.clone(), OrbPosition { x: x as u32, y: y as u32 });
+            }
+        }
+    }
+    out
+}
+
+/// R-OB-08. Writes one orb's dragged centre, or removes it when `point` is
+/// None (dropped back home). Splices only `orb_positions`; every other key
+/// stays put. An empty map removes the key so the file goes back to
+/// byte-identical. Coordinates are clamped to 0..=ORB_MAX_COORD.
+pub fn store_orb_position(path: &Path, id: &str, point: Option<OrbPosition>) -> Result<bool, String> {
+    let id = id.trim();
+    if !valid_panel_id(id) {
+        return Err("光球 id 唔合法".into());
+    }
+    let point = point.map(|p| OrbPosition {
+        x: p.x.min(ORB_MAX_COORD),
+        y: p.y.min(ORB_MAX_COORD),
+    });
+    if !path.exists() {
+        let Some(point) = point else { return Ok(false) };
+        let mut cfg = AppConfig::default();
+        cfg.orb_positions.insert(id.to_string(), point);
+        save(path, &cfg)?;
+        return Ok(true);
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    if !value.is_object() {
+        return Err("設定檔格式唔啱".to_string());
+    }
+    let mut points = read_orb_positions(&value);
+    match point {
+        Some(point) => {
+            if points.get(id) == Some(&point) && top_level_field(&text, "orb_positions").is_some() {
+                return Ok(false);
+            }
+            points.insert(id.to_string(), point);
+        }
+        None => {
+            if points.remove(id).is_none() && top_level_field(&text, "orb_positions").is_none() {
+                return Ok(false);
+            }
+        }
+    }
+    let patched = if points.is_empty() {
+        match top_level_field(&text, "orb_positions") {
+            Some(span) => remove_top_level_field(&text, &span),
+            None => text.clone(),
+        }
+    } else {
+        let body = serde_json::to_string(&points).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+        if let Some(span) = top_level_field(&text, "orb_positions") {
+            let mut out = String::with_capacity(text.len() + body.len());
+            out.push_str(&text[..span.value_start]);
+            out.push_str(&body);
+            out.push_str(&text[span.value_end..]);
+            out
+        } else {
+            insert_top_level_field(&text, "orb_positions", &body)?
+        }
+    };
+    if patched == text {
+        return Ok(false);
+    }
+    write_config_text(path, &patched)?;
+    Ok(true)
+}
+
+/// R-OB-08 「所有光球返原位」. Removes the whole `orb_positions` key and
+/// nothing else. A file without the key (or no file) is not written, so a
+/// config that never had dragged orbs stays byte-identical. True when it wrote.
+pub fn clear_orb_positions(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let Some(span) = top_level_field(&text, "orb_positions") else {
+        return Ok(false);
+    };
+    let patched = remove_top_level_field(&text, &span);
     if patched == text {
         return Ok(false);
     }
@@ -3068,6 +3202,99 @@ other:
         assert_eq!(fs::read_to_string(&path).unwrap(), old);
         assert!(valid_panel_id("settings") && valid_panel_id("code-pal_2.x"));
         assert!(!valid_panel_id("a b") && !valid_panel_id("bot:x") && !valid_panel_id(&"a".repeat(129)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn orb_positions_splice_only_their_key_and_reset_back_to_byte_identical() {
+        let dir = migration_dir("orb-positions");
+        let path = dir.join("config.json");
+        let old = "{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"bots\": [],\n  \"panel_sizes\": {\"researcher\":{\"w\":560,\"h\":720}}\n}";
+        fs::write(&path, old).unwrap();
+        assert!(load(&path).unwrap().orb_positions.is_empty());
+        // An untouched file never gains the key.
+        let plain = load(&path).unwrap();
+        save(&path, &plain).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("orb_positions"));
+        fs::write(&path, old).unwrap();
+        assert!(store_orb_position(&path, "researcher", Some(OrbPosition { x: 640, y: 300 })).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"bots\": [],\n  \"panel_sizes\": {\"researcher\":{\"w\":560,\"h\":720}},"));
+        assert!(text.contains("\"orb_positions\": {\"researcher\":{\"x\":640,\"y\":300}}"));
+        let back = load(&path).unwrap();
+        assert_eq!(back.orb_positions.get("researcher"), Some(&OrbPosition { x: 640, y: 300 }));
+        assert_eq!(back.panel_sizes.get("researcher"), Some(&PanelSize { w: 560, h: 720 }));
+        // Same spot again is not a write.
+        assert!(!store_orb_position(&path, "researcher", Some(OrbPosition { x: 640, y: 300 })).unwrap());
+        // A second orb joins the same map; coordinates are clamped.
+        assert!(store_orb_position(&path, "kanban", Some(OrbPosition { x: 99_999, y: 12 })).unwrap());
+        let both = load(&path).unwrap();
+        assert_eq!(both.orb_positions.get("kanban"), Some(&OrbPosition { x: ORB_MAX_COORD, y: 12 }));
+        assert_eq!(both.orb_positions.len(), 2);
+        // A full save keeps what store_orb_position wrote.
+        save(&path, &both).unwrap();
+        assert_eq!(load(&path).unwrap().orb_positions, both.orb_positions);
+        fs::write(&path, old).unwrap();
+        assert!(store_orb_position(&path, "researcher", Some(OrbPosition { x: 640, y: 300 })).unwrap());
+        // Dropping home removes the key and the file is byte-identical again.
+        assert!(store_orb_position(&path, "researcher", None).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        assert!(!store_orb_position(&path, "researcher", None).unwrap());
+        // Bad ids are refused and nothing is written.
+        assert!(store_orb_position(&path, "../x", Some(OrbPosition { x: 1, y: 1 })).is_err());
+        assert!(store_orb_position(&path, "bot:x", Some(OrbPosition { x: 1, y: 1 })).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_orb_positions_removes_only_that_key_and_leaves_untouched_files_alone() {
+        let dir = migration_dir("orb-positions-reset");
+        let path = dir.join("config.json");
+        // No file: nothing is created.
+        assert!(!clear_orb_positions(&path).unwrap());
+        assert!(!path.exists());
+        // A file that never had the key stays byte-identical (and is not rewritten).
+        let old = "{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"bots\": [],\n  \"panel_sizes\": {\"researcher\":{\"w\":560,\"h\":720}}\n}";
+        fs::write(&path, old).unwrap();
+        assert!(!clear_orb_positions(&path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        // Two dragged orbs, then reset: back to the exact old bytes.
+        assert!(store_orb_position(&path, "researcher", Some(OrbPosition { x: 640, y: 300 })).unwrap());
+        assert!(store_orb_position(&path, "kanban", Some(OrbPosition { x: 900, y: 500 })).unwrap());
+        assert_eq!(load(&path).unwrap().orb_positions.len(), 2);
+        assert!(clear_orb_positions(&path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        assert!(load(&path).unwrap().orb_positions.is_empty());
+        assert_eq!(load(&path).unwrap().panel_sizes.get("researcher"), Some(&PanelSize { w: 560, h: 720 }));
+        assert!(!clear_orb_positions(&path).unwrap());
+        // The key in the middle of the file: other keys keep their bytes and order.
+        let mid = "{\n  \"version\": 1,\n  \"orb_positions\": {\"a\":{\"x\":1,\"y\":2}},\n  \"text_size\": \"s\"\n}";
+        fs::write(&path, mid).unwrap();
+        assert!(clear_orb_positions(&path).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("orb_positions"));
+        let back = load(&path).unwrap();
+        assert_eq!(back.text_size, "s");
+        assert!(back.orb_positions.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn orb_positions_drop_junk_on_load_without_failing_the_config() {
+        let dir = migration_dir("orb-positions-junk");
+        let path = dir.join("config.json");
+        fs::write(
+            &path,
+            r#"{"version": 1, "bots": [], "text_size": "s", "orb_positions": {"ok": {"x": 400, "y": 500}, "neg": {"x": -1, "y": 5}, "bad id": {"x": 1, "y": 1}, "str": {"x": "1", "y": 2}, "big": {"x": 20000, "y": 10}}}"#,
+        )
+        .unwrap();
+        let cfg = load(&path).unwrap();
+        assert_eq!(cfg.orb_positions.len(), 1);
+        assert_eq!(cfg.orb_positions.get("ok"), Some(&OrbPosition { x: 400, y: 500 }));
+        assert_eq!(cfg.text_size, "s");
+        fs::write(&path, r#"{"version": 1, "bots": [], "orb_positions": [1, 2]}"#).unwrap();
+        assert!(load(&path).unwrap().orb_positions.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
