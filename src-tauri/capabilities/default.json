@@ -19,6 +19,7 @@
     "allow-set-show-tool-detail",
     "allow-set-panel-size",
     "allow-set-compose-mode",
+    "allow-set-suborb-mode",
     "allow-probe-gateway",
     "allow-discover-profiles",
     "allow-open-bot",

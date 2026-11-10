@@ -161,6 +161,16 @@ pub struct AppConfig {
     /// config.json stays byte-identical. Written only by `store_panel_size`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub panel_sizes: BTreeMap<String, PanelSize>,
+    /// R-SO-09 sub-orb panel compose modes the user picked, per profile, as
+    /// `[session_id, mode]` pairs, oldest first (mode is "general", "plan" or "btw").
+    /// Omitted while empty so a config that never changed a sub-orb mode stays
+    /// byte-identical. Written only by `store_suborb_mode`; junk entries are dropped on read.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "lenient_suborb_modes"
+    )]
+    pub suborb_modes: BTreeMap<String, Vec<(String, String)>>,
     /// R-LK-01 text size: "xs" (R-LK-04), "s", "l" or "xl". Empty is the standard size and is
     /// omitted, so an untouched config.json stays byte-identical.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -297,6 +307,7 @@ impl Default for AppConfig {
             suborb_pins: BTreeMap::new(),
             kanban_base_url_from_gateway: false,
             panel_sizes: BTreeMap::new(),
+            suborb_modes: BTreeMap::new(),
             text_size: String::new(),
             ui_language: String::new(),
         }
@@ -1333,6 +1344,147 @@ pub fn normalize_compose_mode(mode: &str) -> Result<String, String> {
         "btw" => Ok("btw".into()),
         _ => Err("撰寫模式唔合法".into()),
     }
+}
+
+/// Most sub-orb modes kept per profile. The oldest pair is dropped past this.
+pub const SUBORB_MODE_CAP: usize = 32;
+/// Most profiles kept in `suborb_modes` when read back.
+pub const SUBORB_MODE_PROFILE_CAP: usize = 64;
+
+/// A stored sub-orb mode: "general", "plan" or "btw". Anything else is None.
+pub fn normalize_suborb_mode(mode: &str) -> Option<String> {
+    match mode.trim() {
+        "" | "general" => Some("general".into()),
+        "plan" => Some("plan".into()),
+        "btw" => Some("btw".into()),
+        _ => None,
+    }
+}
+
+/// Valid profiles and sessions, known modes, no duplicate session (last wins),
+/// at most SUBORB_MODE_CAP pairs per profile (newest kept).
+fn read_suborb_modes_value(value: Option<&serde_json::Value>) -> BTreeMap<String, Vec<(String, String)>> {
+    let mut out = BTreeMap::new();
+    let Some(object) = value.and_then(|item| item.as_object()) else {
+        return out;
+    };
+    for (profile, rows) in object {
+        if out.len() >= SUBORB_MODE_PROFILE_CAP {
+            break;
+        }
+        if validate_profile(profile).is_err() {
+            continue;
+        }
+        let Some(rows) = rows.as_array() else { continue };
+        let mut list: Vec<(String, String)> = Vec::new();
+        for row in rows {
+            let Some(pair) = row.as_array() else { continue };
+            if pair.len() != 2 {
+                continue;
+            }
+            let (Some(session), Some(mode)) = (pair[0].as_str(), pair[1].as_str()) else {
+                continue;
+            };
+            let session = session.trim();
+            if !valid_suborb_session(session) {
+                continue;
+            }
+            let Some(mode) = normalize_suborb_mode(mode).filter(|_| !mode.trim().is_empty()) else {
+                continue;
+            };
+            list.retain(|(have, _)| have != session);
+            list.push((session.to_string(), mode));
+        }
+        if list.len() > SUBORB_MODE_CAP {
+            list.drain(..list.len() - SUBORB_MODE_CAP);
+        }
+        if !list.is_empty() {
+            out.insert(profile.clone(), list);
+        }
+    }
+    out
+}
+
+fn lenient_suborb_modes<'de, D>(deserializer: D) -> Result<BTreeMap<String, Vec<(String, String)>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(read_suborb_modes_value(Some(&value)))
+}
+
+/// R-SO-09. Writes one sub-orb panel's compose mode. Splices only `suborb_modes`;
+/// every other key stays put, and a file that never had the key only gains it here.
+/// `live` is the profile's current session list: when non-empty, pairs for sessions
+/// that no longer exist are dropped in the same write. The newest pair goes last and
+/// the oldest is dropped past SUBORB_MODE_CAP. Same mode again is not a write.
+pub fn store_suborb_mode(
+    path: &Path,
+    profile: &str,
+    session_id: &str,
+    mode: &str,
+    live: &[String],
+) -> Result<bool, String> {
+    let profile = profile.trim();
+    validate_profile(profile)?;
+    let session_id = session_id.trim();
+    if !valid_suborb_session(session_id) {
+        return Err("session 唔合法".into());
+    }
+    let mode = normalize_suborb_mode(mode).ok_or_else(|| "撰寫模式唔合法".to_string())?;
+    if !path.exists() {
+        return Err(format!("名單冇 profile「{profile}」"));
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    if !value.is_object() {
+        return Err("設定檔格式唔啱".to_string());
+    }
+    let bots = value
+        .get("bots")
+        .and_then(|item| item.as_array())
+        .ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    if !bots.iter().any(|bot| bot.get("profile").and_then(|item| item.as_str()) == Some(profile)) {
+        return Err(format!("名單冇 profile「{profile}」"));
+    }
+    let mut modes = read_suborb_modes_value(value.get("suborb_modes"));
+    // Profiles no longer in the roster are dropped on any write.
+    modes.retain(|name, _| {
+        bots.iter().any(|bot| bot.get("profile").and_then(|item| item.as_str()) == Some(name.as_str()))
+    });
+    let list = modes.entry(profile.to_string()).or_default();
+    let before = list.clone();
+    let live: Vec<&str> = live.iter().map(|id| id.trim()).filter(|id| !id.is_empty()).collect();
+    if !live.is_empty() {
+        list.retain(|(session, _)| session == session_id || live.contains(&session.as_str()));
+    }
+    let same = list.iter().any(|(session, have)| session == session_id && *have == mode);
+    if !same {
+        list.retain(|(session, _)| session != session_id);
+        list.push((session_id.to_string(), mode));
+        if list.len() > SUBORB_MODE_CAP {
+            list.drain(..list.len() - SUBORB_MODE_CAP);
+        }
+    }
+    if same && *list == before {
+        return Ok(false);
+    }
+    let body = serde_json::to_string(&modes).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    let patched = if let Some(span) = top_level_field(&text, "suborb_modes") {
+        let mut out = String::with_capacity(text.len() + body.len());
+        out.push_str(&text[..span.value_start]);
+        out.push_str(&body);
+        out.push_str(&text[span.value_end..]);
+        out
+    } else {
+        insert_top_level_field(&text, "suborb_modes", &body)?
+    };
+    if patched == text {
+        return Ok(false);
+    }
+    write_config_text(path, &patched)?;
+    Ok(true)
 }
 
 /// Writes `compose_mode` on one bot only when that bot's stored value changes.
@@ -2782,6 +2934,96 @@ other:
         standard.ui_language = normalize_ui_language("zh-HK");
         save(&path, &standard).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), plain);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn suborb_modes_splice_only_their_key_and_untouched_files_stay_byte_identical() {
+        let dir = migration_dir("suborb-modes");
+        let path = dir.join("config.json");
+        let old = "{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"bots\": [\n    {\"profile\": \"planner\", \"display_name\": \"Planner\", \"color\": \"#0000f2\", \"compose_mode\": \"btw\"},\n    {\"profile\": \"coder\", \"display_name\": \"Coder\", \"color\": \"#00f2f2\"}\n  ]\n}";
+        fs::write(&path, old).unwrap();
+        // Untouched: load + save never adds the key.
+        let plain = load(&path).unwrap();
+        assert!(plain.suborb_modes.is_empty());
+        save(&path, &plain).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("suborb_modes"));
+        fs::write(&path, old).unwrap();
+        // Bad input is refused and nothing is written.
+        assert!(store_suborb_mode(&path, "planner", "task-a", "debug", &[]).is_err());
+        assert!(store_suborb_mode(&path, "planner", "task-a", "yolo", &[]).is_err());
+        assert!(store_suborb_mode(&path, "nope", "task-a", "plan", &[]).is_err());
+        assert!(store_suborb_mode(&path, "../x", "task-a", "plan", &[]).is_err());
+        assert!(store_suborb_mode(&path, "planner", "a b", "plan", &[]).is_err());
+        assert!(store_suborb_mode(&path, "planner", "", "plan", &[]).is_err());
+        assert!(store_suborb_mode(&dir.join("missing.json"), "planner", "task-a", "plan", &[]).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        // First write splices one top-level key; bots and compose_mode stay as they were.
+        assert!(store_suborb_mode(&path, "planner", "task-a", "plan", &[]).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(&old[..old.len() - 2]), "{text}");
+        assert!(text.contains("\"suborb_modes\": {\"planner\":[[\"task-a\",\"plan\"]]}"), "{text}");
+        assert_eq!(text.matches("\"compose_mode\": \"btw\"").count(), 1);
+        let back = load(&path).unwrap();
+        assert_eq!(back.suborb_modes.get("planner"), Some(&vec![("task-a".to_string(), "plan".to_string())]));
+        assert_eq!(back.bots[0].compose_mode, "btw");
+        // Same mode again is not a write.
+        assert!(!store_suborb_mode(&path, "planner", "task-a", "plan", &[]).unwrap());
+        // 一般 is stored explicitly so it wins over the bot's btw on reopen.
+        assert!(store_suborb_mode(&path, "planner", "task-b", "general", &[]).unwrap());
+        assert!(store_suborb_mode(&path, "planner", "task-a", "btw", &[]).unwrap());
+        let both = load(&path).unwrap();
+        assert_eq!(
+            both.suborb_modes.get("planner"),
+            Some(&vec![("task-b".to_string(), "general".to_string()), ("task-a".to_string(), "btw".to_string())])
+        );
+        // A full settings save keeps the map.
+        save(&path, &both).unwrap();
+        assert_eq!(load(&path).unwrap().suborb_modes, both.suborb_modes);
+        // Sessions missing from the live list are pruned in the same write.
+        assert!(store_suborb_mode(&path, "planner", "task-c", "plan", &["task-a".into(), "task-c".into()]).unwrap());
+        assert_eq!(
+            load(&path).unwrap().suborb_modes.get("planner"),
+            Some(&vec![("task-a".to_string(), "btw".to_string()), ("task-c".to_string(), "plan".to_string())])
+        );
+        // The cap keeps the newest pairs.
+        for i in 0..(SUBORB_MODE_CAP + 5) {
+            store_suborb_mode(&path, "coder", &format!("s{i}"), "plan", &[]).unwrap();
+        }
+        let capped = load(&path).unwrap();
+        let coder = capped.suborb_modes.get("coder").unwrap();
+        assert_eq!(coder.len(), SUBORB_MODE_CAP);
+        assert_eq!(coder.first().unwrap().0, "s5");
+        assert_eq!(coder.last().unwrap().0, format!("s{}", SUBORB_MODE_CAP + 4));
+        assert_eq!(capped.suborb_modes.get("planner").unwrap().len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn suborb_modes_drop_junk_on_read_and_never_break_load() {
+        let dir = migration_dir("suborb-modes-junk");
+        let path = dir.join("config.json");
+        fs::write(
+            &path,
+            r#"{"version": 1, "bots": [{"profile": "planner", "display_name": "Planner"}], "suborb_modes": {"planner": [["ok", "plan"], ["bad id", "plan"], ["ok2", "debug"], ["ok3", ""], "x", [1, 2], ["dup", "plan"], ["dup", "btw"]], "../x": [["a", "plan"]], "empty": [], "notlist": {"a": "plan"}}}"#,
+        )
+        .unwrap();
+        let cfg = load(&path).unwrap();
+        assert_eq!(cfg.suborb_modes.len(), 1);
+        assert_eq!(
+            cfg.suborb_modes.get("planner"),
+            Some(&vec![("ok".to_string(), "plan".to_string()), ("dup".to_string(), "btw".to_string())])
+        );
+        fs::write(&path, r#"{"version": 1, "bots": [], "suborb_modes": "nope"}"#).unwrap();
+        assert!(load(&path).unwrap().suborb_modes.is_empty());
+        // A write drops profiles that left the roster.
+        fs::write(&path, r#"{"version": 1, "bots": [{"profile": "planner", "display_name": "Planner"}], "suborb_modes": {"gone": [["a", "plan"]]}}"#).unwrap();
+        assert!(store_suborb_mode(&path, "planner", "a", "plan", &[]).unwrap());
+        let cfg = load(&path).unwrap();
+        assert!(!cfg.suborb_modes.contains_key("gone"));
+        assert!(cfg.suborb_modes.contains_key("planner"));
+        assert_eq!(normalize_suborb_mode(" plan "), Some("plan".into()));
+        assert_eq!(normalize_suborb_mode("Plan"), None);
         let _ = fs::remove_dir_all(&dir);
     }
 

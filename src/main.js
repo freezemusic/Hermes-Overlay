@@ -5,7 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, plansIn, rememberPlan } from "./plan.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planForPanel, plansIn, rememberPlan } from "./plan.js";
 import {
   SUBORB_FADE_MS,
   emptySuborbModel,
@@ -8108,9 +8108,16 @@ function storedComposeMode(id) {
   return state.bots.find((bot) => bot.id === gatewayProfile(id))?.composeMode;
 }
 
+/** A sub-orb opens on its saved mode (R-SO-09), else the bot's mode. */
+function initialSuborbMode(id) {
+  const sub = parseSuborbId(id);
+  const saved = sub ? savedSuborbMode(state.suborbModesSaved, sub.profile, sub.sessionId) : null;
+  return saved ?? storedComposeMode(id);
+}
+
 function composeModeOf(id) {
   const stored = storedComposeMode(id);
-  const mode = isSuborbId(id) ? suborbComposeModes.of(id, stored) : stored;
+  const mode = isSuborbId(id) ? suborbComposeModes.of(id, initialSuborbMode(id)) : stored;
   return effectiveComposeMode(mode, offeredFor(id));
 }
 
@@ -8154,12 +8161,33 @@ const composeModeWrite = new Map();
 
 async function cycleComposeMode(id) {
   if (isSuborbId(id)) {
-    // Only this sub-orb panel changes. No config write, no repaint of the Bot Chat or sibling panels.
-    const prev = normalizeComposeMode(suborbComposeModes.of(id, storedComposeMode(id)));
+    // Only this sub-orb panel changes, and only its own `suborb_modes` pair is written.
+    // The Bot Chat's compose_mode and sibling panels stay as they are.
+    const prev = normalizeComposeMode(suborbComposeModes.of(id, initialSuborbMode(id)));
     const next = nextComposeMode(prev, offeredFor(id));
     if (next === prev) return;
     suborbComposeModes.set(id, next);
     paintComposeMode(id);
+    if (state.mode !== "hermes" || !inTauri()) return;
+    const sub = parseSuborbId(id);
+    const generation = (composeModeWrite.get(id) || 0) + 1;
+    composeModeWrite.set(id, generation);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const live = (threadFor(sub.profile).sessions || []).map((row) => row?.id).filter(Boolean);
+      const settings = await invoke("set_suborb_mode", {
+        profile: sub.profile,
+        sessionId: sub.sessionId,
+        mode: suborbModeWire(next),
+        live,
+      });
+      if (settings?.suborb_modes) state.suborbModesSaved = settings.suborb_modes;
+    } catch (err) {
+      if (composeModeWrite.get(id) !== generation) return;
+      suborbComposeModes.set(id, prev);
+      paintComposeMode(id);
+      showActionError(String(err));
+    }
     return;
   }
   const bot = state.bots.find((item) => item.id === id);
@@ -8482,6 +8510,7 @@ function useHermes(settings) {
   state.showBotNames = !!settings?.show_bot_names;
   state.showToolDetail = !!settings?.show_tool_detail;
   state.suborbPins = settings?.suborb_pins || {};
+  state.suborbModesSaved = settings?.suborb_modes || {};
   state.suborbModels = new Map();
   state.suborbExtra = new Map();
   state.composeCatalogs.clear();
@@ -12442,7 +12471,7 @@ function wireSuborbPanel(panel, id) {
     void cycleComposeMode(id);
   });
   // Start this panel from the bot's mode now, so a later change elsewhere does not leak in.
-  suborbComposeModes.of(id, storedComposeMode(id));
+  suborbComposeModes.of(id, initialSuborbMode(id));
   const input = role(panel, "input");
   input?.addEventListener("keydown", (event) => {
     if (event.shiftKey && (event.key === "Tab" || event.code === "Tab")) {
@@ -14983,6 +15012,7 @@ async function boot() {
     state.showBotNames = !!settings?.show_bot_names;
     state.showToolDetail = !!settings?.show_tool_detail;
     state.suborbPins = settings?.suborb_pins || {};
+    state.suborbModesSaved = settings?.suborb_modes || {};
     applyInteraction(settings.interaction);
     applySavedLook(settings);
     if (settings.mode === "mock") useMock(DEMO_BANNER, "", "demo");

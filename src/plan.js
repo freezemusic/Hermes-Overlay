@@ -157,6 +157,33 @@ export function panelComposeModes() {
   };
 }
 
+/** Most saved sub-orb modes per profile; matches SUBORB_MODE_CAP in config.rs. */
+export const SUBORB_MODE_CAP = 32;
+
+/**
+ * The saved mode for one sub-orb session from settings `suborb_modes`
+ * (`{ profile: [[session, mode], ...] }`), or null when nothing valid is saved.
+ * "general" is a real choice (一般) and comes back as "".
+ */
+export function savedSuborbMode(saved, profile, sessionId) {
+  const rows = saved && typeof saved === "object" ? saved[profile] : null;
+  if (!Array.isArray(rows)) return null;
+  let found = null;
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length !== 2 || row[0] !== sessionId) continue;
+    const mode = row[1];
+    if (mode === "general") found = COMPOSE_GENERAL;
+    else if (mode === COMPOSE_PLAN || mode === COMPOSE_BTW) found = mode;
+  }
+  return found;
+}
+
+/** Wire value for set_suborb_mode: 一般 is sent as "general" so it is stored, not removed. */
+export function suborbModeWire(mode) {
+  const id = normalizeComposeMode(mode);
+  return id || "general";
+}
+
 /** Shift+Tab and the chip advance through the modes the server still offers. */
 export function nextComposeMode(mode, offered) {
   const visible = COMPOSE_ORDER.filter((id) => {
