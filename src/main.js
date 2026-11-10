@@ -184,6 +184,18 @@ import { chromeOrbText, DEMO_BANNER_EN, DEMO_BOTS_EN, DEMO_OLD_SESSION_EN, demoC
 import { applyTextSize, createTranslator, storedLanguage, storedTextSize, textScale, translate } from "./look.js";
 import { clampPanelSize, normalizePanelSizes, panelResizeKind, resizedSize } from "./resize.js";
 import {
+  ORB_DODGE_EASE,
+  ORB_DODGE_MS,
+  clampOrbPoint,
+  dragStarted,
+  normalizeOrbPositions,
+  orbDragAllowed,
+  orbDraggable,
+  planOrbDodges,
+  snapsHome,
+  validOrbId,
+} from "./orbdrag.js";
+import {
   RECONNECT_STATUS,
   createProbeGate,
   createReconnect,
@@ -423,9 +435,48 @@ function boxSize(id) {
   return { w: PANEL_W, h: PANEL_H };
 }
 
+function orbScreen() {
+  return {
+    vw: window.innerWidth || 1280,
+    vh: window.innerHeight || 800,
+    insets: state.workInsets,
+    orb: ORB,
+  };
+}
+
+/** R-OB-08: the spot the user dragged this orb to (live, then config.json), clamped to the work area. */
+function savedOrbPoint(id) {
+  if (!validOrbId(id)) return null;
+  const live = state.orbPositions || {};
+  const saved = Object.prototype.hasOwnProperty.call(live, id)
+    ? live[id]
+    : normalizeOrbPositions(state.settings?.orb_positions)[id];
+  if (!saved) return null;
+  return clampOrbPoint(saved, orbScreen());
+}
+
+/** R-OB-08 home: the dragged spot, else the design spot. */
+function homeOrbPoint(id) {
+  return savedOrbPoint(id) || defaultOrbPoint(id);
+}
+
+/**
+ * Where the orb's centre is laid out now. A dragged-open panel's park
+ * (R-PN-03) wins, then a live orb drag, then a dodge spot (an open panel
+ * covers home), then home.
+ */
 function anchorPoint(id) {
   const saved = state.anchors[id];
   if (saved?.placed) return { x: saved.x, y: saved.y };
+  const drag = state.orbDrag;
+  if (drag?.active && drag.id === id && drag.point) return { x: drag.point.x, y: drag.point.y };
+  const dodge = state.orbDodge?.[id];
+  if (dodge) return { x: dodge.x, y: dodge.y };
+  return homeOrbPoint(id);
+}
+
+/** The design spot (edge slot or fixed orb), before any drag. */
+function defaultOrbPoint(id) {
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
   const pad = edgePadPx();
@@ -3433,6 +3484,8 @@ function settleShell(shell, target) {
     shell._settleGate = 0;
     if (target === "orb") releaseCollapseGate(shell);
     armQuietFlush(shell);
+    // R-OB-08: the panel is gone; orbs it pushed aside go home.
+    if (target === "orb") reconcileOrbDodges();
     if (shell.dataset.kind === "bot") layoutSuborbOrbs();
   });
 }
@@ -4124,6 +4177,12 @@ const state = {
   pointerHitId: "",
   /** R-PN-09 live panel sizes (id -> {w,h}, or null for a pending reset). */
   panelSizes: {},
+  /** R-OB-08 live dragged orb spots (id -> {x,y}, or null for a pending reset). */
+  orbPositions: {},
+  /** R-OB-08 dodge spots while an open panel covers an orb's home (id -> {x,y}). */
+  orbDodge: {},
+  /** R-OB-08 the orb press that may become a drag. */
+  orbDrag: null,
   heldKeys: new Set(),
   osModifierDown: false,
   modifierHeld: false,
@@ -10059,6 +10118,19 @@ function openCoverBoxes() {
   return rects;
 }
 
+/**
+ * R-OB-08: the disc that cover checks use. A gliding orb (dodge or return)
+ * counts at its destination, not at the animated point, so sliding out from
+ * under a panel does not fade it to 0 and back.
+ */
+function coverDisc(shell) {
+  const box = discBox(shell);
+  if (!shell?._orbGlide) return box;
+  const raw = getComputedStyle(shell).translate || "";
+  const [tx, ty] = raw.split(/\s+/).map((part) => Number.parseFloat(part) || 0);
+  return { x: box.x - (tx || 0), y: box.y - (ty || 0), w: box.w, h: box.h };
+}
+
 function discBox(shell) {
   const btn = shell.querySelector?.(".morph-orb");
   const box = btn?.getBoundingClientRect?.();
@@ -10107,7 +10179,7 @@ function collectHits() {
     if (shell.dataset.state === "orb") {
       // Fade and name plates follow this flag. The OS rect below stays
       // published so Ctrl+click still opens an orb under a panel (R-CT-02).
-      if (orbCoveredBy(discBox(shell), coverBoxes)) shell.dataset.orbCovered = "1";
+      if (orbCoveredBy(coverDisc(shell), coverBoxes)) shell.dataset.orbCovered = "1";
       else delete shell.dataset.orbCovered;
     } else {
       delete shell.dataset.orbCovered;
@@ -10263,6 +10335,8 @@ const orbGesture = {
   orbId: "",
   at: 0,
   opened: false,
+  /** R-OB-08: this press moved an orb, so pointerup does not open it. */
+  dragged: false,
   ctrlAtDown: null,
   ctrlSample: null,
   rejected: false,
@@ -10887,17 +10961,297 @@ function releaseCollapseGate(shell) {
   }, 1100);
 }
 
+/* ---- R-OB-08 free orb positions and panel dodge ------------------------ */
+
+function orbCentre(shell) {
+  const disc = discBox(shell);
+  return { x: disc.x + disc.w / 2, y: disc.y + disc.h / 2 };
+}
+
+/** Lay one resting orb out at anchorPoint() and repaint its idle clip. */
+function relayoutOrb(shell) {
+  const placed = placeShellElement(shell);
+  if (!placed) return;
+  paintClip(shell, insetsFor("orb", {
+    boxW: placed.width,
+    boxH: placed.height,
+    ax: placed.anchor.x,
+    ay: placed.anchor.y,
+  }), "orb");
+}
+
+/**
+ * Slide from `from` (the centre before relayout) to where the shell now is.
+ * Only the CSS `translate` property moves, so the morph's own `transform`
+ * and clip are untouched. Hit rects follow every frame (getBoundingClientRect
+ * includes the animated translate) and once more at the end.
+ */
+function glideOrb(shell, from) {
+  // Drop a glide still in flight first: `to` is the new layout without it.
+  // `from` was read before the relayout, so it already includes it.
+  shell._orbGlide?.cancel?.();
+  shell._orbGlide = null;
+  const to = orbCentre(shell);
+  const dx = from.x - to.x;
+  const dy = from.y - to.y;
+  const done = () => {
+    layoutSuborbOrbs();
+    paintOrbNames();
+    scheduleHitSync("orb-glide-end");
+  };
+  if (Math.hypot(dx, dy) < 0.5 || reducedMotion() || typeof shell.animate !== "function") {
+    done();
+    return;
+  }
+  const anim = shell.animate(
+    [{ translate: `${dx}px ${dy}px` }, { translate: "0px 0px" }],
+    { duration: ORB_DODGE_MS, easing: ORB_DODGE_EASE },
+  );
+  anim.id = "orb-glide";
+  shell._orbGlide = anim;
+  // Publish straight from this frame. scheduleHitSync from inside a rAF
+  // would cancel and re-queue its own frame every time and never publish.
+  const tick = () => {
+    if (shell._orbGlide !== anim) return;
+    flushHits("orb-glide");
+    if (anim.playState === "running") requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  anim.finished.then(() => {
+    if (shell._orbGlide !== anim) return;
+    shell._orbGlide = null;
+    done();
+  }).catch(() => { /* cancelled by a newer glide or a drag */ });
+  debugLog("orb-glide", `id=${shell.dataset.botId || ""} dx=${Math.round(-dx)} dy=${Math.round(-dy)}`);
+}
+
+function restingMainOrb(shell) {
+  if (!shell || shell.dataset.kind === "suborb") return false;
+  if (!validOrbId(shell.dataset.botId)) return false;
+  if (shell.dataset.state !== "orb") return false;
+  if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return false;
+  if (shell.dataset.rehearsal === "1" || shell.dataset.dragged === "1") return false;
+  if (state.orbDrag?.active && state.orbDrag.id === shell.dataset.botId) return false;
+  return true;
+}
+
+/**
+ * R-OB-08 dodge. An open panel (or plan) that covers an orb's home moves the
+ * orb to the nearest free spot outside every panel and clear of the other
+ * orbs. Once home is clear again the orb slides back. With no free spot the
+ * old behaviour stays: the orb fades to 0 under the panel (R-OB-05).
+ */
+function reconcileOrbDodges() {
+  if (reconcileOrbDodges.busy) return;
+  reconcileOrbDodges.busy = true;
+  try {
+    const covers = openCoverBoxes();
+    const shells = [...document.querySelectorAll(".morph")].filter(restingMainOrb);
+    // A panel or pill keeps its dodge spot (it collapses back there); a removed orb forgets it.
+    for (const id of Object.keys(state.orbDodge)) {
+      if (!shellFor(id)) delete state.orbDodge[id];
+    }
+    if (!shells.length) return;
+    shells.sort((a, b) => String(a.dataset.botId).localeCompare(String(b.dataset.botId)));
+    const orbs = shells.map((shell) => ({
+      id: shell.dataset.botId,
+      home: homeOrbPoint(shell.dataset.botId),
+      current: state.orbDodge[shell.dataset.botId] || null,
+    }));
+    const plan = planOrbDodges(orbs, covers, orbScreen());
+    let moved = 0;
+    for (const shell of shells) {
+      const id = shell.dataset.botId;
+      const entry = plan.get(id);
+      const target = entry?.dodged ? entry.spot : null;
+      const prev = state.orbDodge[id] || null;
+      if (!target && !prev) continue;
+      if (target && prev && Math.abs(target.x - prev.x) < 0.5 && Math.abs(target.y - prev.y) < 0.5) continue;
+      const from = orbCentre(shell);
+      if (target) state.orbDodge[id] = { x: target.x, y: target.y };
+      else delete state.orbDodge[id];
+      relayoutOrb(shell);
+      glideOrb(shell, from);
+      moved += 1;
+      debugLog("orb-dodge", `id=${id} to=${target ? `${target.x},${target.y}` : "home"} covers=${covers.length}`);
+    }
+    if (moved) {
+      layoutSuborbOrbs();
+      paintOrbNames();
+    }
+  } finally {
+    reconcileOrbDodges.busy = false;
+  }
+}
+
+let orbPositionWrite = 0;
+
+async function persistOrbPosition(id, point) {
+  if (!inTauri()) return;
+  const generation = ++orbPositionWrite;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const settings = await invoke("set_orb_position", {
+      orb: id,
+      x: point ? Math.max(0, Math.round(point.x)) : null,
+      y: point ? Math.max(0, Math.round(point.y)) : null,
+    });
+    if (generation !== orbPositionWrite || !settings) return;
+    state.settings = settings;
+    delete state.orbPositions[id];
+  } catch (err) {
+    if (generation !== orbPositionWrite) return;
+    setBanner(String(err), "error");
+  }
+}
+
+function orbHomeGhost() {
+  let ghost = document.getElementById("orb-home-ghost");
+  if (!ghost) {
+    ghost = document.createElement("div");
+    ghost.id = "orb-home-ghost";
+    ghost.className = "orb-home-ghost";
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.hidden = true;
+    document.body.appendChild(ghost);
+  }
+  return ghost;
+}
+
+function paintOrbHomeGhost(id, point) {
+  const ghost = orbHomeGhost();
+  if (!id) {
+    ghost.hidden = true;
+    delete ghost.dataset.near;
+    return;
+  }
+  const home = defaultOrbPoint(id);
+  ghost.style.left = `${Math.round(home.x - ORB / 2)}px`;
+  ghost.style.top = `${Math.round(home.y - ORB / 2)}px`;
+  ghost.hidden = false;
+  if (point && snapsHome(point, home)) ghost.dataset.near = "1";
+  else delete ghost.dataset.near;
+}
+
+/** pointerdown on a resting main orb: remember it; it becomes a drag after a few px. */
+function armOrbDrag(event, domId) {
+  state.orbDrag = null;
+  if (event.button !== 0 || !domId) return;
+  const shell = shellFor(domId);
+  if (!shell || !orbDraggable(shell.dataset.kind, domId, shell.dataset.state)) return;
+  if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+  if (shell.dataset.rehearsal === "1") return;
+  state.orbDrag = {
+    pointerId: event.pointerId,
+    id: domId,
+    startX: event.clientX,
+    startY: event.clientY,
+    origin: orbCentre(shell),
+    active: false,
+    blocked: false,
+    point: null,
+  };
+}
+
+function moveOrbDrag(event) {
+  const drag = state.orbDrag;
+  if (!drag || drag.pointerId !== event.pointerId || drag.blocked) return;
+  const shell = shellFor(drag.id);
+  if (!shell) {
+    state.orbDrag = null;
+    return;
+  }
+  const dx = event.clientX - drag.startX;
+  const dy = event.clientY - drag.startY;
+  if (!drag.active) {
+    if (!dragStarted(dx, dy)) return;
+    // Same modifier rule as Ctrl+click (R-CT): the press began with it down.
+    const allowed = orbDragAllowed({
+      supported: state.interaction.supported,
+      ctrlAtDown: orbGesture.ctrlAtDown === true,
+      modifierNow: orbGesture.ctrlKey === true,
+      pressFrozen: state.pressFrozen,
+    });
+    if (!allowed || shell.dataset.state !== "orb") {
+      drag.blocked = true;
+      return;
+    }
+    drag.active = true;
+    shell._orbGlide?.cancel?.();
+    shell._orbGlide = null;
+    // The dragged orb's spot is the drag now; a dodge it had is dropped.
+    drag.origin = orbCentre(shell);
+    delete state.orbDodge[drag.id];
+    shell.dataset.orbDragging = "1";
+    document.documentElement.dataset.orbDrag = "1";
+    // Same capture as a header drag: one full-view rect while the button is down.
+    state.dragHitId = shell.dataset.hitId || "";
+    debugLog("orb-drag", `phase=start id=${drag.id} at=${Math.round(drag.origin.x)},${Math.round(drag.origin.y)}`);
+  }
+  event.preventDefault?.();
+  drag.point = clampOrbPoint({ x: drag.origin.x + dx, y: drag.origin.y + dy }, orbScreen());
+  relayoutOrb(shell);
+  paintOrbHomeGhost(drag.id, drag.point);
+  if (!moveOrbDrag.frame) {
+    moveOrbDrag.frame = requestAnimationFrame(() => {
+      moveOrbDrag.frame = 0;
+      layoutSuborbOrbs();
+      paintOrbNames();
+    });
+  }
+  scheduleHitSync("orb-drag");
+}
+
+/** Drop (or cancel, which drops where it is). True when this press was a drag. */
+function endOrbDrag(event) {
+  const drag = state.orbDrag;
+  if (!drag || (event && drag.pointerId !== event.pointerId)) return false;
+  state.orbDrag = null;
+  if (!drag.active) return false;
+  const shell = shellFor(drag.id);
+  if (shell) delete shell.dataset.orbDragging;
+  delete document.documentElement.dataset.orbDrag;
+  if (state.dragHitId && shell && state.dragHitId === shell.dataset.hitId) state.dragHitId = "";
+  paintOrbHomeGhost("");
+  const point = drag.point || drag.origin;
+  const home = defaultOrbPoint(drag.id);
+  const snapped = snapsHome(point, home);
+  if (snapped) {
+    state.orbPositions[drag.id] = null;
+    void persistOrbPosition(drag.id, null);
+  } else {
+    state.orbPositions[drag.id] = { x: point.x, y: point.y };
+    void persistOrbPosition(drag.id, point);
+  }
+  debugLog("orb-drag", `phase=drop id=${drag.id} at=${Math.round(point.x)},${Math.round(point.y)} home=${snapped ? 1 : 0}`);
+  if (shell) {
+    const from = orbCentre(shell);
+    relayoutOrb(shell);
+    glideOrb(shell, from);
+  }
+  layoutShells();
+  flushHits("orb-drop");
+  return true;
+}
+
+
 let hitDeferLogged = false;
 
 function noteOrbCover() {
+  reconcileOrbDodges();
   const covers = openCoverBoxes();
   let running = false;
   document.querySelectorAll('.morph[data-state="orb"]').forEach((el) => {
-    const covered = orbCoveredBy(discBox(el), covers);
+    const covered = orbCoveredBy(coverDisc(el), covers);
     const was = el.dataset.orbCovered === "1";
     if (covered) el.dataset.orbCovered = "1";
     else delete el.dataset.orbCovered;
-    if (covered === was) return;
+    if (covered === was) {
+      // Another path (the hit flush) may have cleared the flag first. A fade
+      // still aimed at 0 on an uncovered orb would leave it invisible.
+      const clock = orbFadeClocks.get(el);
+      if (covered || !clock || clock.target !== 0 || el.dataset.orbAim === "0") return;
+    }
     const live = el.classList.contains("is-cron-live");
     if (!covered && live) {
       delete el.dataset.orbFade;
@@ -11113,7 +11467,7 @@ function applyFrames(frames, interactiveAll = false) {
     const liveCron = orbLike && el.classList.contains("is-cron-live");
     const orbShell = orbLike && !el.classList.contains("is-cron-live");
     if (orbLike && el.dataset.state === "orb") {
-      const covered = orbCoveredBy(discBox(el), covers);
+      const covered = orbCoveredBy(coverDisc(el), covers);
       if (covered) el.dataset.orbCovered = "1";
       else delete el.dataset.orbCovered;
       el.dataset.orbAim = String(value);
@@ -11620,6 +11974,7 @@ function setupProximity() {
     pointerButtons += 1;
     orbGesture.at = performance.now();
     orbGesture.opened = false;
+    orbGesture.dragged = false;
     orbGesture.rejected = false;
     orbGesture.ctrlAtDown = null;
     orbGesture.ctrlSample = null;
@@ -11645,10 +12000,19 @@ function setupProximity() {
       orbGesture.orbId = "";
     }
     abortLiveRehearsals();
+    armOrbDrag(event, domId);
     postponeOrbWork();
+  }, true);
+  window.addEventListener("pointermove", moveOrbDrag, true);
+  window.addEventListener("lostpointercapture", (event) => {
+    if (state.orbDrag?.active && state.orbDrag.pointerId === event.pointerId) {
+      orbGesture.dragged = endOrbDrag(event) || orbGesture.dragged;
+    }
   }, true);
   window.addEventListener("pointerup", (event) => {
     pointerButtons = Math.max(0, pointerButtons - 1);
+    // R-OB-08: a press that moved the orb is a drop, not a Ctrl+click open.
+    const droppedOrb = endOrbDrag(event) || orbGesture.dragged === true;
     const captured = orbGesture.pointerId === event.pointerId;
     const domId = orbIdFromEventTarget(event.target) || (captured ? orbGesture.orbId : "");
     const orbId = pressOrbId({
@@ -11660,7 +12024,7 @@ function setupProximity() {
     const finishOpen = (ctrlAtDown) => {
       if (orbGesture.at !== gestureAt) return;
       const pressed = orbGesture.orbId || orbId;
-      const open = orbOpenFromPress({
+      const open = !droppedOrb && orbOpenFromPress({
         supported: state.interaction.supported,
         button: event.button,
         captured: captured || orbGesture.pointerId === event.pointerId,
@@ -11682,6 +12046,7 @@ function setupProximity() {
   }, true);
   window.addEventListener("pointercancel", (event) => {
     pointerButtons = Math.max(0, pointerButtons - 1);
+    if (endOrbDrag(event)) orbGesture.dragged = true;
     logPointer("cancel", event, orbGesture.orbId);
     try { document.documentElement.releasePointerCapture(event.pointerId); } catch { /* not captured */ }
     orbGesture.pointerId = -1;
