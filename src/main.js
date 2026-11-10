@@ -10119,6 +10119,9 @@ function openCoverBoxes() {
     rects.push({ x: box.x, y: box.y, w: box.width, h: box.height });
   };
   document.querySelectorAll(".morph[data-state='panel']").forEach((shell) => {
+    // A collapse keeps the panel layout box until commitClosedShell. That box
+    // must not pin a dodge after the panel is already going away.
+    if (shell.classList.contains("is-collapsing") || shell.dataset.intent === "close") return;
     push(shell);
     if (shell._planHost) push(shell._planHost);
   });
@@ -11089,6 +11092,9 @@ function reconcileOrbDodges() {
     if (moved) {
       layoutSuborbOrbs();
       paintOrbNames();
+      // Collapse quiet and hit silence drop the glide's own flushes. The
+      // destination disc has to be live before that, or Ctrl+click at home misses.
+      sendHitRects(collectHits(), "orb-dodge-return", true);
     }
   } finally {
     reconcileOrbDodges.busy = false;
