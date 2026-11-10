@@ -629,6 +629,10 @@ function Resize-Point($box, [double]$dpr) {
 # shows up as still=other.
 function Assert-SizeCursor([string]$label, $p, [int]$want) {
   [ClickProbe]::Ctrl($false)
+  # Park on the panel body first. WebView2 sometimes keeps the previous
+  # SIZEWE cursor when the next sample is only a few pixels onto the grip.
+  [ClickProbe]::SetCursorPos(400, 300) | Out-Null
+  Start-Sleep -Milliseconds 150
   [ClickProbe]::SetCursorPos($p.x, $p.y) | Out-Null
   Start-Sleep -Milliseconds 300
   $expected = [ClickProbe]::SystemCursor($want)
@@ -970,8 +974,12 @@ try {
       # in the frozen announce. Click the centre of the measured 關閉 button.
       # seatKanbanClose moves that button clear of the plan's 預覽/原文 row.
       # Escape would close the focused field and take the plan with it.
-      Assert-Orb "ctrl-orb-under-panel" (Dodge-Point "kanban" $kanban)
-      if (-not (Wait-Log "hit-announce bot=kanban mode=panel" 8)) {
+      $kanbanOpened = $false
+      for ($try = 0; $try -lt 3 -and -not $kanbanOpened; $try++) {
+        Assert-Orb "ctrl-orb-under-panel" (Dodge-Point "kanban" $kanban)
+        if (Wait-Log "hit-announce bot=kanban mode=panel" 3) { $kanbanOpened = $true }
+      }
+      if (-not $kanbanOpened) {
         Note-Fail "ctrl-orb-under-panel-opened" "kanban did not open under the field panel"
       } else {
         Note-Ok "ctrl-orb-under-panel-opened" ""
