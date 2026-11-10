@@ -10319,6 +10319,22 @@ function collectHits() {
         // A closed sub-orb keeps the disc hit. The card is not in the list.
       } else if (shell.dataset.state !== "orb") coverBottomFooter(rect, shell);
       rects.push(rect);
+      // R-CT-02: a dodged orb still answers Ctrl+click at the spot the panel
+      // covered. The disc you see is the other rect.
+      if (asOrb && shell.dataset.kind !== "suborb" && state.orbDodge[shell.dataset.botId]) {
+        const home = homeOrbPoint(shell.dataset.botId);
+        const homeBox = { x: home.x - ORB / 2, y: home.y - ORB / 2, w: ORB, h: ORB };
+        const homeHit = orbHitRect(orbDiscHit(homeBox, homeBox), null, false);
+        rects.push({
+          id: rect.id,
+          x: homeHit.x,
+          y: homeHit.y,
+          w: homeHit.w,
+          h: homeHit.h,
+          z: 0,
+          round: true,
+        });
+      }
     }
     if (shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing") && !(shell.dataset.kind === "suborb" && !shell.classList.contains("open") && shell.dataset.opening !== "panel")) {
       const slash = role(shell, "slash");
@@ -11094,7 +11110,11 @@ function reconcileOrbDodges() {
       paintOrbNames();
       // Collapse quiet and hit silence drop the glide's own flushes. The
       // destination disc has to be live before that, or Ctrl+click at home misses.
-      sendHitRects(collectHits(), "orb-dodge-return", true);
+      // A plan seam must keep the announced panel box: an early remeasure
+      // shifts it into the close button's hit margin (bot-edge-top).
+      if (hitBlockReason() !== "plan-open") {
+        sendHitRects(collectHits(), "orb-dodge-return", true);
+      }
     }
   } finally {
     reconcileOrbDodges.busy = false;
