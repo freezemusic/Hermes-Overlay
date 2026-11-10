@@ -10566,7 +10566,20 @@ function releaseReopenedPlan(shell) {
   announcePanelHits(shell);
 }
 
+function armResizeLog(shell) {
+  logResizeHandles(shell);
+  if (!debugFile.enabled || !shell || shell._resizeLogged || shell._resizeLogArmed) return;
+  // Hit flushes stay deferred while the plan seam is up, so collectHits
+  // does not run again. Measure once layout has a box.
+  shell._resizeLogArmed = 1;
+  requestAnimationFrame(() => {
+    logResizeHandles(shell);
+    if (!shell._resizeLogged) setTimeout(() => logResizeHandles(shell), 400);
+  });
+}
+
 function logPlanHitBox(shell) {
+  armResizeLog(shell);
   if (!debugFile.enabled) return;
   const plan = planNode(shell);
   if (!shell || !plan || shell.dataset.planOpen !== "1") return;

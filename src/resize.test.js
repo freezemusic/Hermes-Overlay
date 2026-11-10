@@ -237,6 +237,7 @@ test("R-PN-09 Windows: the debug log names handle boxes, and the Windows CI chec
   assert.doesNotMatch(log, /contains\("is-morphing"\)/);
   assert.match(log, /debugLog\("resize-at"/);
   assert.match(main, /logResizeHandles\(shell\);/);
+  assert.match(main, /function logPlanHitBox\(shell\) \{\s*armResizeLog\(shell\);/);
   assert.match(clickthrough, /GetCursorInfo/);
   assert.match(clickthrough, /resize-at id=panel:field/);
   assert.match(clickthrough, /"resize-cursor-x"/);
