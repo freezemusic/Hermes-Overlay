@@ -1130,7 +1130,12 @@ export function placePlanHost(shell) {
   shell.dataset.planHeight = String(fitted.h);
   const z = shell.style.zIndex;
   if (z) {
-    if (host.style.zIndex !== z) host.style.zIndex = z;
+    // Same level paints the host (later sibling) over the panel. On a short
+    // runner the plan is clamped across the free edge, which hid the resize
+    // strip and its cursor (R-PN-09). One level under keeps that strip on top
+    // and leaves the plan's outer page hittable.
+    const under = String(Math.max(0, Number.parseInt(z, 10) - 1));
+    if (host.style.zIndex !== under) host.style.zIndex = under;
   } else if (host.style.zIndex) host.style.removeProperty("z-index");
   return true;
 }

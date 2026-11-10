@@ -24,6 +24,11 @@ description = "Persist one panel's dragged size (R-PN-09)."
 commands.allow = ["set_panel_size"]
 
 [[permission]]
+identifier = "allow-set-suborb-mode"
+description = "Persist one sub-orb panel's composer mode (R-SO-09)."
+commands.allow = ["set_suborb_mode"]
+
+[[permission]]
 identifier = "allow-set-compose-mode"
 description = "Persist one bot's composer mode."
 commands.allow = ["set_compose_mode"]

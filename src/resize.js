@@ -83,3 +83,69 @@ export function normalizePanelSizes(raw) {
   }
   return out;
 }
+
+/*
+ * R-PN-09 Windows fix (Devon 2026-11-10 「並沒有看到雙箭咀」). On Windows the
+ * overlay is click-through (WS_EX_TRANSPARENT) until the Rust poll sees the
+ * global cursor inside a published rect, and panels get no outside pad
+ * (interaction.rs `windows_cursor_ignored`). A grab zone must therefore sit
+ * wholly inside the panel box and be deep enough that the first mouse move
+ * after the poll flips capture still lands on it. 6px (7.5 physical px at
+ * 125%) was the last strip before click-through. These sizes are CSS px of the
+ * shell box (the handles are not under the text-size zoom). styles.css uses
+ * the same numbers through --resize-edge / --resize-corner.
+ */
+export const RESIZE_EDGE_PX = 10;
+export const RESIZE_CORNER_PX = 12;
+/** The vertical strip stops this far from the header row (close button, orb slot). */
+export const RESIZE_EDGE_INSET_PX = 48;
+
+/**
+ * Handle boxes in shell coordinates (0,0 is the shell's top-left), for the
+ * free sides of a `w`×`h` panel. Mirrors the stylesheet; used by tests and by
+ * the debug log that the Windows CI check reads.
+ */
+export function resizeHandleBoxes({ w, h, anchor = "start", header = "top" }) {
+  const edges = freeEdges(anchor, header);
+  const e = RESIZE_EDGE_PX;
+  const c = RESIZE_CORNER_PX;
+  const inset = RESIZE_EDGE_INSET_PX;
+  const xLeft = edges.x === "right" ? w - e : 0;
+  const yTop = edges.y === "bottom" ? h - e : 0;
+  // The vertical strip stops short of the header row; the horizontal one
+  // runs the full width (the header is on the other side).
+  const xTop = header === "bottom" ? 0 : inset;
+  return {
+    x: { x: xLeft, y: xTop, w: e, h: Math.max(0, h - inset) },
+    y: { x: 0, y: yTop, w, h: e },
+    xy: { x: edges.x === "right" ? w - c : 0, y: edges.y === "bottom" ? h - c : 0, w: c, h: c },
+  };
+}
+
+/**
+ * Same test as the Rust Windows path: the global cursor is integer physical
+ * px, turned into CSS px by `(screen - origin) / scale`
+ * (`css_point_from_screen`), and a panel captures only when that point is
+ * inside its rect (pad 0). Returns how many physical pixels of `box` (CSS px,
+ * view coordinates) would leave the window click-through.
+ */
+export function physicalPixelsOutside(box, rect, scale = 1, origin = { x: 0, y: 0 }) {
+  const s = scale > 0 ? scale : 1;
+  let outside = 0;
+  let total = 0;
+  const x0 = Math.floor(box.x * s + origin.x);
+  const x1 = Math.ceil((box.x + box.w) * s + origin.x);
+  const y0 = Math.floor(box.y * s + origin.y);
+  const y1 = Math.ceil((box.y + box.h) * s + origin.y);
+  for (let py = y0; py < y1; py += 1) {
+    for (let px = x0; px < x1; px += 1) {
+      const cx = (px - origin.x) / s;
+      const cy = (py - origin.y) / s;
+      if (cx < box.x || cx >= box.x + box.w || cy < box.y || cy >= box.y + box.h) continue;
+      total += 1;
+      const inside = cx >= rect.x && cx <= rect.x + rect.w && cy >= rect.y && cy <= rect.y + rect.h;
+      if (!inside) outside += 1;
+    }
+  }
+  return { total, outside };
+}

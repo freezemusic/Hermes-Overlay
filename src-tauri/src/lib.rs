@@ -254,6 +254,8 @@ struct PublicSettings {
     suborb_pins: std::collections::BTreeMap<String, Vec<String>>,
     /// R-PN-09 dragged panel sizes (empty when none).
     panel_sizes: std::collections::BTreeMap<String, config::PanelSize>,
+    /// R-SO-09 sub-orb panel compose modes, `[session, mode]` pairs per profile.
+    suborb_modes: std::collections::BTreeMap<String, Vec<(String, String)>>,
     /// R-LK-01 / R-LK-02. "" is the standard size / zh-HK.
     text_size: String,
     ui_language: String,
@@ -1107,6 +1109,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         show_tool_detail: cfg.show_tool_detail,
         suborb_pins: cfg.suborb_pins.clone(),
         panel_sizes: cfg.panel_sizes.clone(),
+        suborb_modes: cfg.suborb_modes.clone(),
         text_size: config::normalize_text_size(&cfg.text_size),
         ui_language: config::normalize_ui_language(&cfg.ui_language),
         listed_profiles: None,
@@ -1184,6 +1187,42 @@ fn set_panel_size_sync(
         Some(config::PanelSize { w: width, h: height })
     };
     config::store_panel_size(&path, panel.trim(), size)?;
+    drop(_guard);
+    drop(state);
+    load_public_settings(app)
+}
+
+/// R-SO-09. One sub-orb panel's compose mode. `live` is that profile's current
+/// session ids; saved modes for sessions missing from it are dropped.
+#[tauri::command]
+async fn set_suborb_mode(
+    app: AppHandle,
+    profile: String,
+    session_id: String,
+    mode: String,
+    live: Vec<String>,
+) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || set_suborb_mode_sync(app, profile, session_id, mode, live))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn set_suborb_mode_sync(
+    app: AppHandle,
+    profile: String,
+    session_id: String,
+    mode: String,
+    live: Vec<String>,
+) -> Result<PublicSettings, String> {
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    config::store_suborb_mode(&path, profile.trim(), session_id.trim(), mode.trim(), &live)?;
     drop(_guard);
     drop(state);
     load_public_settings(app)
@@ -1356,6 +1395,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         suborb_pins: previous.suborb_pins.clone(),
         kanban_base_url_from_gateway: previous.kanban_base_url_from_gateway,
         panel_sizes: previous.panel_sizes.clone(),
+        suborb_modes: previous.suborb_modes.clone(),
         text_size: config::normalize_text_size(
             input.text_size.as_deref().unwrap_or(&previous.text_size),
         ),
@@ -4041,6 +4081,7 @@ pub fn run() {
             set_show_tool_detail,
             set_panel_size,
             set_compose_mode,
+            set_suborb_mode,
             probe_gateway,
             discover_profiles,
             sync_profiles,

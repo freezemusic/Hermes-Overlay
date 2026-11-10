@@ -5,7 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, plansIn, rememberPlan } from "./plan.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planForPanel, plansIn, rememberPlan } from "./plan.js";
 import {
   SUBORB_FADE_MS,
   emptySuborbModel,
@@ -3907,12 +3907,35 @@ async function persistPanelSize(id, size) {
   }
 }
 
+/**
+ * R-PN-09 debug line for the Windows CI cursor check (scripts/
+ * windows-clickthrough.ps1): where each painted handle is, in CSS px, once
+ * per change. Only with HERMES_OVERLAY_DEBUG_LOG. No content, ids only.
+ */
+function logResizeHandles(shell) {
+  if (!debugFile.enabled || !shell?.querySelectorAll) return;
+  // is-morphing stays while a docked plan holds the seam. The Windows CI
+  // reads this line with the plan open, so only a collapse skips it.
+  if (shell.classList.contains("is-collapsing")) return;
+  const parts = [];
+  for (const handle of shell.querySelectorAll(":scope > .panel-resize")) {
+    const box = handle.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) continue;
+    parts.push(`${handle.dataset.dir}=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`);
+  }
+  if (!parts.length) return;
+  const anchor = shell.dataset.anchor === "end" ? "end" : "start";
+  const header = shell.dataset.header === "bottom" ? "bottom" : "top";
+  const line = `id=${shell.dataset.hitId || ""} dpr=${window.devicePixelRatio || 1} anchor=${anchor} header=${header} ${parts.join(" ")}`;
+  if (shell._resizeLogged === line) return;
+  shell._resizeLogged = line;
+  debugLog("resize-at", line);
+}
+
 function bindResizeHandle(handle, shell) {
   handle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
-    if (shell.dataset.state !== "panel"
-      || shell.classList.contains("is-morphing")
-      || shell.classList.contains("is-collapsing")) return;
+    if (shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing")) return;
     const id = shell.dataset.botId;
     const kind = panelResizeKind(id, shell.dataset.kind);
     if (!kind) return;
@@ -8101,9 +8124,24 @@ function offeredFor(id) {
   return offeredComposeModes(entry.commands, true);
 }
 
+/** Sub-orb panels keep their own mode; Shift+Tab in one panel must not flip the others. */
+const suborbComposeModes = panelComposeModes();
+
+function storedComposeMode(id) {
+  return state.bots.find((bot) => bot.id === gatewayProfile(id))?.composeMode;
+}
+
+/** A sub-orb opens on its saved mode (R-SO-09), else the bot's mode. */
+function initialSuborbMode(id) {
+  const sub = parseSuborbId(id);
+  const saved = sub ? savedSuborbMode(state.suborbModesSaved, sub.profile, sub.sessionId) : null;
+  return saved ?? storedComposeMode(id);
+}
+
 function composeModeOf(id) {
-  const stored = state.bots.find((bot) => bot.id === gatewayProfile(id))?.composeMode;
-  return effectiveComposeMode(stored, offeredFor(id));
+  const stored = storedComposeMode(id);
+  const mode = isSuborbId(id) ? suborbComposeModes.of(id, initialSuborbMode(id)) : stored;
+  return effectiveComposeMode(mode, offeredFor(id));
 }
 
 const composeCatalogLoads = new Set();
@@ -8145,6 +8183,36 @@ function paintComposeMode(id) {
 const composeModeWrite = new Map();
 
 async function cycleComposeMode(id) {
+  if (isSuborbId(id)) {
+    // Only this sub-orb panel changes, and only its own `suborb_modes` pair is written.
+    // The Bot Chat's compose_mode and sibling panels stay as they are.
+    const prev = normalizeComposeMode(suborbComposeModes.of(id, initialSuborbMode(id)));
+    const next = nextComposeMode(prev, offeredFor(id));
+    if (next === prev) return;
+    suborbComposeModes.set(id, next);
+    paintComposeMode(id);
+    if (state.mode !== "hermes" || !inTauri()) return;
+    const sub = parseSuborbId(id);
+    const generation = (composeModeWrite.get(id) || 0) + 1;
+    composeModeWrite.set(id, generation);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const live = (threadFor(sub.profile).sessions || []).map((row) => row?.id).filter(Boolean);
+      const settings = await invoke("set_suborb_mode", {
+        profile: sub.profile,
+        sessionId: sub.sessionId,
+        mode: suborbModeWire(next),
+        live,
+      });
+      if (settings?.suborb_modes) state.suborbModesSaved = settings.suborb_modes;
+    } catch (err) {
+      if (composeModeWrite.get(id) !== generation) return;
+      suborbComposeModes.set(id, prev);
+      paintComposeMode(id);
+      showActionError(String(err));
+    }
+    return;
+  }
   const bot = state.bots.find((item) => item.id === id);
   if (!bot) return;
   const prev = normalizeComposeMode(bot.composeMode);
@@ -8465,6 +8533,7 @@ function useHermes(settings) {
   state.showBotNames = !!settings?.show_bot_names;
   state.showToolDetail = !!settings?.show_tool_detail;
   state.suborbPins = settings?.suborb_pins || {};
+  state.suborbModesSaved = settings?.suborb_modes || {};
   state.suborbModels = new Map();
   state.suborbExtra = new Map();
   state.composeCatalogs.clear();
@@ -10171,6 +10240,7 @@ function collectHits() {
       pushCloseHit(rects, shell, level);
       const docked = dockedPanelOrb(shell, level);
       if (docked && !rects.some((item) => item.id === docked.id)) rects.push(docked);
+      logResizeHandles(shell);
     }
   });
   const banner = $("#conn-banner");
@@ -10496,7 +10566,20 @@ function releaseReopenedPlan(shell) {
   announcePanelHits(shell);
 }
 
+function armResizeLog(shell) {
+  logResizeHandles(shell);
+  if (!debugFile.enabled || !shell || shell._resizeLogged || shell._resizeLogArmed) return;
+  // Hit flushes stay deferred while the plan seam is up, so collectHits
+  // does not run again. Measure once layout has a box.
+  shell._resizeLogArmed = 1;
+  requestAnimationFrame(() => {
+    logResizeHandles(shell);
+    if (!shell._resizeLogged) setTimeout(() => logResizeHandles(shell), 400);
+  });
+}
+
 function logPlanHitBox(shell) {
+  armResizeLog(shell);
   if (!debugFile.enabled) return;
   const plan = planNode(shell);
   if (!shell || !plan || shell.dataset.planOpen !== "1") return;
@@ -12422,15 +12505,16 @@ function wireSuborbPanel(panel, id) {
   role(panel, "send")?.addEventListener("click", () => { void sendSuborb(id); });
   role(panel, "stop")?.addEventListener("click", () => { void stopSuborb(id); });
   role(panel, "compose-mode")?.addEventListener("click", () => {
-    const profile = gatewayProfile(id);
-    void cycleComposeMode(profile).then(() => paintComposeMode(id));
+    void cycleComposeMode(id);
   });
+  // Start this panel from the bot's mode now, so a later change elsewhere does not leak in.
+  suborbComposeModes.of(id, initialSuborbMode(id));
   const input = role(panel, "input");
   input?.addEventListener("keydown", (event) => {
     if (event.shiftKey && (event.key === "Tab" || event.code === "Tab")) {
       event.preventDefault();
-      const profile = gatewayProfile(id);
-      void cycleComposeMode(profile).then(() => paintComposeMode(id));
+      event.stopPropagation();
+      void cycleComposeMode(id);
       return;
     }
     if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
@@ -12457,7 +12541,7 @@ function paintSuborbComposeModes(profile) {
     const sub = parseSuborbId(shell.dataset.botId || "");
     if (!sub || sub.profile !== profile) return;
     const panel = shell.querySelector(".bot-panel");
-    const mode = composeModeOf(profile);
+    const mode = composeModeOf(shell.dataset.botId);
     const chip = role(panel, "compose-mode");
     const composer = panel?.querySelector(".composer");
     if (chip) {
@@ -14965,6 +15049,7 @@ async function boot() {
     state.showBotNames = !!settings?.show_bot_names;
     state.showToolDetail = !!settings?.show_tool_detail;
     state.suborbPins = settings?.suborb_pins || {};
+    state.suborbModesSaved = settings?.suborb_modes || {};
     applyInteraction(settings.interaction);
     applySavedLook(settings);
     if (settings.mode === "mock") useMock(DEMO_BANNER, "", "demo");

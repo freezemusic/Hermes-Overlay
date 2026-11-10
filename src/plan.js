@@ -132,6 +132,58 @@ export function effectiveComposeMode(mode, offered) {
   return id;
 }
 
+/**
+ * Per-panel compose mode for sub-orb panels (Shift+Tab bug, 2026-11-10).
+ * A sub-orb panel starts from its bot's stored `compose_mode` the first time it is read,
+ * then keeps its own value in memory. Changing one panel never changes another panel,
+ * and a sub-orb change writes nothing to config.json (R-SO-09: no extra key).
+ */
+export function panelComposeModes() {
+  const own = new Map();
+  return {
+    of(panelId, stored) {
+      const key = String(panelId || "");
+      if (!key) return normalizeComposeMode(stored);
+      if (!own.has(key)) own.set(key, normalizeComposeMode(stored));
+      return own.get(key);
+    },
+    set(panelId, mode) {
+      const key = String(panelId || "");
+      if (key) own.set(key, normalizeComposeMode(mode));
+    },
+    has(panelId) {
+      return own.has(String(panelId || ""));
+    },
+  };
+}
+
+/** Most saved sub-orb modes per profile; matches SUBORB_MODE_CAP in config.rs. */
+export const SUBORB_MODE_CAP = 32;
+
+/**
+ * The saved mode for one sub-orb session from settings `suborb_modes`
+ * (`{ profile: [[session, mode], ...] }`), or null when nothing valid is saved.
+ * "general" is a real choice (一般) and comes back as "".
+ */
+export function savedSuborbMode(saved, profile, sessionId) {
+  const rows = saved && typeof saved === "object" ? saved[profile] : null;
+  if (!Array.isArray(rows)) return null;
+  let found = null;
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length !== 2 || row[0] !== sessionId) continue;
+    const mode = row[1];
+    if (mode === "general") found = COMPOSE_GENERAL;
+    else if (mode === COMPOSE_PLAN || mode === COMPOSE_BTW) found = mode;
+  }
+  return found;
+}
+
+/** Wire value for set_suborb_mode: 一般 is sent as "general" so it is stored, not removed. */
+export function suborbModeWire(mode) {
+  const id = normalizeComposeMode(mode);
+  return id || "general";
+}
+
 /** Shift+Tab and the chip advance through the modes the server still offers. */
 export function nextComposeMode(mode, offered) {
   const visible = COMPOSE_ORDER.filter((id) => {
