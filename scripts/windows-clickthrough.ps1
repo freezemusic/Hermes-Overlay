@@ -757,6 +757,17 @@ function Wait-IdGone([string]$id, [int]$seconds = 8) {
   return $false
 }
 
+# A covered orb slides aside (R-OB-08) and also keeps its home disc so
+# Ctrl+click under the panel still captures. Open the one you can see.
+function Visible-Orb([string]$id, $fallback) {
+  $panel = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" } | Select-Object -Last 1)
+  foreach ($rect in @(Read-HitRects | Where-Object { $_.id -eq $id })) {
+    $p = @{ x = [int]($rect.x + $rect.w / 2); y = [int]($rect.y + $rect.h / 2) }
+    if (-not $panel -or -not (Point-Inside $p $panel)) { return $p }
+  }
+  return $fallback
+}
+
 function Assert-Orb([string]$label, $orbPoint) {
   [ClickProbe]::SetCursorPos($orbPoint.x, $orbPoint.y) | Out-Null
   [ClickProbe]::Ctrl($true)
@@ -958,7 +969,7 @@ try {
       # in the frozen announce. Click the centre of the measured 關閉 button.
       # seatKanbanClose moves that button clear of the plan's 預覽/原文 row.
       # Escape would close the focused field and take the plan with it.
-      Assert-Orb "ctrl-orb-under-panel" $kanban
+      Assert-Orb "ctrl-orb-under-panel" (Visible-Orb "bot:kanban" $kanban)
       if (-not (Wait-Log "hit-announce bot=kanban mode=panel" 8)) {
         Note-Fail "ctrl-orb-under-panel-opened" "kanban did not open under the field panel"
       } else {
@@ -1072,7 +1083,7 @@ try {
   $remain = 32 - ((Get-Date) - $revealedAt).TotalSeconds
   if ($remain -gt 0) { Start-Sleep -Seconds $remain }
   Assert-Empty "reveal+32s"
-  Assert-Orb "reveal+32s-cron" $cron
+  Assert-Orb "reveal+32s-cron" (Visible-Orb "bot:cron" $cron)
   if ((Test-Path $gwLog) -and (Select-String -Path $gwLog -Pattern "POST /api/sessions" -Quiet)) {
     Note-Fail "gateway" "startup created a session"
   }
