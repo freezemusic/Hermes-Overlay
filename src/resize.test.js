@@ -79,8 +79,11 @@ test("R-PN-09 main.js: boxSize honours the saved size, handles persist through s
   assert.match(bind, /persistPanelSize\(id, last\)/);
   assert.match(bind, /"dblclick"/);
   assert.match(bind, /persistPanelSize\(id, null\)/);
-  // Only an open, settled panel resizes.
-  assert.match(bind, /shell\.dataset\.state !== "panel"[\s\S]*is-morphing[\s\S]*is-collapsing/);
+  // An open panel resizes while is-morphing is still held for a docked plan.
+  // Collapse does not.
+  const guard = bind.slice(bind.indexOf("pointerdown"), bind.indexOf("const id = shell.dataset.botId"));
+  assert.match(guard, /shell\.dataset\.state !== "panel"[\s\S]*is-collapsing/);
+  assert.doesNotMatch(guard, /is-morphing/);
   assert.match(main, /invoke\("set_panel_size", \{\s*panel: id,\s*width: size \? size\.w : 0,\s*height: size \? size\.h : 0,/);
   // The docked plan follows the resized panel.
   const apply = main.slice(main.indexOf("function applyPanelResize("), main.indexOf("let panelSizeWrite"));
@@ -100,8 +103,8 @@ test("R-PN-09 Rust: set_panel_size is registered, allowed, and save_settings kee
 
 test("R-PN-09 handles: free side only, inside the shell box, click-through with Ctrl like the panel body", () => {
   assert.match(css, /\.morph > \.panel-resize \{[^}]*position: absolute;[^}]*display: none;[^}]*pointer-events: none;/s);
-  assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-morphing\):not\(\.is-collapsing\) > \.panel-resize \{[^}]*display: block;[^}]*pointer-events: auto;/s);
-  assert.match(css, /html\.overlay-passthrough:not\(\[data-pass="1"\]\) \.morph\[data-state="panel"\]:not\(\.is-morphing\):not\(\.is-collapsing\) > \.panel-resize \{\s*pointer-events: auto !important;/);
+  assert.match(css, /\.morph\[data-state="panel"\]:not\(\.is-collapsing\) > \.panel-resize \{[^}]*display: block;[^}]*pointer-events: auto;/s);
+  assert.match(css, /html\.overlay-passthrough:not\(\[data-pass="1"\]\) \.morph\[data-state="panel"\]:not\(\.is-collapsing\) > \.panel-resize \{\s*pointer-events: auto !important;/);
   assert.match(css, /\.morph\[data-anchor="end"\] > \.panel-resize\[data-dir="x"\] \{ right: auto; left: 0; \}/);
   assert.match(css, /\.morph\[data-header="bottom"\] > \.panel-resize\[data-dir="y"\] \{ bottom: auto; top: 0; \}/);
   // No handle carries data-hit-capture (that would beat Ctrl pass-through).
@@ -230,6 +233,8 @@ test("R-PN-09 Windows: Ctrl still passes through, and the Rust panel rule has no
 test("R-PN-09 Windows: the debug log names handle boxes, and the Windows CI checks the real cursor", () => {
   const log = main.slice(main.indexOf("function logResizeHandles("), main.indexOf("function bindResizeHandle("));
   assert.match(log, /if \(!debugFile\.enabled/);
+  assert.match(log, /classList\.contains\("is-collapsing"\)\) return;/);
+  assert.doesNotMatch(log, /contains\("is-morphing"\)/);
   assert.match(log, /debugLog\("resize-at"/);
   assert.match(main, /logResizeHandles\(shell\);/);
   assert.match(clickthrough, /GetCursorInfo/);

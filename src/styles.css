@@ -4369,11 +4369,13 @@ html[data-fan-held="1"] .suborb-orbit { opacity: 1; }
   background: transparent;
   touch-action: none;
 }
-.morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) > .panel-resize {
+/* is-morphing stays on while a docked plan holds the seam, so an open panel
+   must show its handles before queued-apply clears that class. Collapse hides them. */
+.morph[data-state="panel"]:not(.is-collapsing) > .panel-resize {
   display: block;
   pointer-events: auto;
 }
-html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-morphing):not(.is-collapsing) > .panel-resize {
+html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is-collapsing) > .panel-resize {
   pointer-events: auto !important;
 }
 /* Free vertical side: right for a start (left) orb, left for an end orb. */

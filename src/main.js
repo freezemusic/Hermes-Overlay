@@ -3914,7 +3914,9 @@ async function persistPanelSize(id, size) {
  */
 function logResizeHandles(shell) {
   if (!debugFile.enabled || !shell?.querySelectorAll) return;
-  if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+  // is-morphing stays while a docked plan holds the seam. The Windows CI
+  // reads this line with the plan open, so only a collapse skips it.
+  if (shell.classList.contains("is-collapsing")) return;
   const parts = [];
   for (const handle of shell.querySelectorAll(":scope > .panel-resize")) {
     const box = handle.getBoundingClientRect();
@@ -3933,9 +3935,7 @@ function logResizeHandles(shell) {
 function bindResizeHandle(handle, shell) {
   handle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
-    if (shell.dataset.state !== "panel"
-      || shell.classList.contains("is-morphing")
-      || shell.classList.contains("is-collapsing")) return;
+    if (shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing")) return;
     const id = shell.dataset.botId;
     const kind = panelResizeKind(id, shell.dataset.kind);
     if (!kind) return;
