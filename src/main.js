@@ -11016,16 +11016,26 @@ function orbCentre(shell) {
   return { x: disc.x + disc.w / 2, y: disc.y + disc.h / 2 };
 }
 
-/** Lay one resting orb out at anchorPoint() and repaint its idle clip. */
+/** Lay one resting orb out at anchorPoint() and repaint its idle clip.
+ *  Keep the panel-sized shell. placeShell() would refit that wide box onto
+ *  the screen and drag the disc off the dodge spot (kanban logged at 178,64
+ *  but published at 441,42). Slide the existing anchor onto the point. */
 function relayoutOrb(shell) {
-  const placed = placeShellElement(shell);
-  if (!placed) return;
-  paintClip(shell, insetsFor("orb", {
-    boxW: placed.width,
-    boxH: placed.height,
-    ax: placed.anchor.x,
-    ay: placed.anchor.y,
-  }), "orb");
+  const point = anchorPoint(shell.dataset.botId);
+  const ax = Number(shell.dataset.ax) || ORB / 2;
+  const ay = Number(shell.dataset.ay) || ORB / 2;
+  const left = `${point.x - ax}px`;
+  const top = `${point.y - ay}px`;
+  if (shell.style.left !== left || shell.style.top !== top) {
+    shell.style.left = left;
+    shell.style.top = top;
+    shell.style.right = "auto";
+    shell.style.bottom = "auto";
+    shell._geomHeld = 0;
+  }
+  const boxW = Number.parseFloat(shell.style.width) || boxSize(shell.dataset.botId).w;
+  const boxH = Number.parseFloat(shell.style.height) || boxSize(shell.dataset.botId).h;
+  paintClip(shell, insetsFor("orb", { boxW, boxH, ax, ay }), "orb");
 }
 
 /**

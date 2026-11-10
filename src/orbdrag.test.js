@@ -156,6 +156,9 @@ test("R-OB-08 main.js: anchor order, drag rule, persistence through set_orb_posi
   assert.match(move, /orbDragAllowed\(\{[\s\S]*ctrlAtDown: orbGesture\.ctrlAtDown === true/);
   assert.match(move, /state\.dragHitId = shell\.dataset\.hitId/, "full-view capture rect while dragging, like a header drag");
   assert.match(move, /scheduleHitSync\("orb-drag"\)/);
+  const relayout = main.slice(main.indexOf("function relayoutOrb(shell)"), main.indexOf("function glideOrb(shell, from)"));
+  assert.match(relayout, /point\.x - ax/);
+  assert.doesNotMatch(relayout, /placeShellElement/, "a panel-sized refit clamps the disc off the dodge spot");
   const glide = main.slice(main.indexOf("function glideOrb(shell, from)"), main.indexOf("function restingMainOrb(shell)"));
   assert.match(glide, /translate:/);
   assert.doesNotMatch(glide, /transform:/, "the morph owns transform");
