@@ -3810,6 +3810,71 @@ mod tests {
         );
     }
 
+    /// R-PN-09 (Devon 2026-11-10, no double arrow on Windows). The resize
+    /// handles are the outermost 10 CSS px inside a panel (12px corner).
+    /// At 125% the poll's integer GetCursorPos point, over the scale, must
+    /// land inside the panel rect for every physical pixel of that strip,
+    /// so the window stops ignoring the cursor there. Ctrl still passes
+    /// through, and the point just outside the edge still passes through.
+    #[test]
+    fn resize_strip_inside_panel_captures_at_125_percent() {
+        let scale = 1.25;
+        let panel = HitRect {
+            id: "panel:field".into(),
+            x: 503.09375,
+            y: 42.6,
+            w: 420.0,
+            h: 560.0,
+            z: 1,
+            round: false,
+        };
+        let rects = vec![panel.clone()];
+        let cfg = InteractionConfig::default();
+        let (view_w, view_h) = (2048.0, 1280.0);
+        let edge = 10.0;
+        let right = panel.x + panel.w;
+        let bottom = panel.y + panel.h;
+        let mut checked = 0;
+        // Right strip (free side of a start-anchored panel) and bottom strip.
+        let strips = [
+            (right - edge, panel.y + 48.0, right, bottom),
+            (panel.x, bottom - edge, right, bottom),
+        ];
+        for (x0, y0, x1, y1) in strips {
+            let px0 = (x0 * scale).floor() as i32;
+            let px1 = (x1 * scale).ceil() as i32;
+            let py0 = (y0 * scale).floor() as i32;
+            let py1 = (y1 * scale).ceil() as i32;
+            for py in (py0..py1).step_by(7) {
+                for px in px0..px1 {
+                    let (cx, cy) = css_point_from_screen(f64::from(px), f64::from(py), 0.0, 0.0, scale);
+                    if cx < x0 || cx >= x1 || cy < y0 || cy >= y1 {
+                        continue;
+                    }
+                    checked += 1;
+                    let cursor = Some((cx, cy));
+                    let frames = interaction_frame(false, &[], cursor, &rects, HIT_MARGIN_PX, &cfg);
+                    assert!(
+                        !windows_cursor_ignored(cursor, &frames, &rects, view_w, view_h, false),
+                        "physical ({px},{py}) css ({cx:.2},{cy:.2}) must capture"
+                    );
+                    let held = interaction_frame(true, &[], cursor, &rects, HIT_MARGIN_PX, &cfg);
+                    assert!(
+                        windows_cursor_ignored(cursor, &held, &rects, view_w, view_h, false),
+                        "Ctrl held at ({cx:.2},{cy:.2}) must pass through"
+                    );
+                }
+            }
+        }
+        assert!(checked > 100);
+        // One physical pixel past the right edge is click-through again.
+        let outside_px = (right * scale).ceil() as i32 + 1;
+        let (cx, cy) = css_point_from_screen(f64::from(outside_px), 400.0 * scale, 0.0, 0.0, scale);
+        let cursor = Some((cx, cy));
+        let frames = interaction_frame(false, &[], cursor, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(windows_cursor_ignored(cursor, &frames, &rects, view_w, view_h, false));
+    }
+
     #[test]
     fn windows_click_through_follows_the_cursor_not_an_open_panel() {
         let panel = HitRect {

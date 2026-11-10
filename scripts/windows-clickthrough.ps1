@@ -190,6 +190,26 @@ public static class ClickProbe {
   public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
   public const uint MOUSEEVENTF_LEFTUP = 0x0004;
   public const uint KEYEVENTF_KEYUP = 0x0002;
+  public const uint MOUSEEVENTF_MOVE = 0x0001;
+  [StructLayout(LayoutKind.Sequential)] public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT pt; }
+  [DllImport("user32")] public static extern bool GetCursorInfo(ref CURSORINFO info);
+  [DllImport("user32", EntryPoint = "LoadCursorW")] public static extern IntPtr LoadSystemCursor(IntPtr inst, IntPtr id);
+  public static long CursorId() {
+    var info = new CURSORINFO();
+    info.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+    if (!GetCursorInfo(ref info)) return 0;
+    return info.hCursor.ToInt64();
+  }
+  public static long SystemCursor(int id) {
+    return LoadSystemCursor(IntPtr.Zero, new IntPtr(id)).ToInt64();
+  }
+  public static void Nudge(int dx, int dy) {
+    var move = new INPUT { type = INPUT_MOUSE };
+    move.u.mi.dx = dx;
+    move.u.mi.dy = dy;
+    move.u.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, new[] { move }, Marshal.SizeOf(typeof(INPUT)));
+  }
   public static string ClassName(IntPtr h) {
     var buf = new StringBuilder(256);
     GetClassName(h, buf, buf.Capacity);
@@ -573,6 +593,60 @@ function Assert-Captured([string]$label, [int]$x, [int]$y) {
   Note-Ok $label "($x,$y)"
 }
 
+# R-PN-09 (Devon 2026-11-10: no double arrow on the panel edge). The page
+# logs where it painted each resize handle (resize-at, CSS px, debug log
+# only). Screen px = CSS px x dpr. IDC_SIZENWSE 32642, IDC_SIZENESW 32643,
+# IDC_SIZEWE 32644, IDC_SIZENS 32645.
+function Read-ResizeAt([string]$id) {
+  if (-not (Test-Path $log)) { return $null }
+  $hit = Select-String -Path $log -Pattern "resize-at id=$id " | Select-Object -Last 1
+  if (-not $hit) { return $null }
+  $out = @{ dpr = 1.0; anchor = "start"; header = "top" }
+  if ($hit.Line -match "dpr=([0-9.]+)") { $out.dpr = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture) }
+  if ($hit.Line -match "anchor=(start|end)") { $out.anchor = $Matches[1] }
+  if ($hit.Line -match "header=(top|bottom)") { $out.header = $Matches[1] }
+  foreach ($m in [regex]::Matches($hit.Line, ' (?<dir>xy|x|y)=(?<x>-?\d+),(?<y>-?\d+),(?<w>\d+)x(?<h>\d+)')) {
+    $out[$m.Groups['dir'].Value] = @{
+      x = [int]$m.Groups['x'].Value
+      y = [int]$m.Groups['y'].Value
+      w = [int]$m.Groups['w'].Value
+      h = [int]$m.Groups['h'].Value
+    }
+  }
+  return $out
+}
+
+function Resize-Point($box, [double]$dpr) {
+  return @{
+    x = [int][Math]::Round(($box.x + $box.w / 2) * $dpr)
+    y = [int][Math]::Round(($box.y + $box.h / 2) * $dpr)
+  }
+}
+
+# Hover the handle like a hand would: arrive, wait for the hit poll, then a
+# 1px move (Windows asks for the cursor again only on a move). The sample
+# before the move is logged so a missing refresh after the capture flip
+# shows up as still=other.
+function Assert-SizeCursor([string]$label, $p, [int]$want) {
+  [ClickProbe]::Ctrl($false)
+  [ClickProbe]::SetCursorPos($p.x, $p.y) | Out-Null
+  Start-Sleep -Milliseconds 300
+  $expected = [ClickProbe]::SystemCursor($want)
+  $still = [ClickProbe]::CursorId()
+  [ClickProbe]::Nudge(1, 0)
+  Start-Sleep -Milliseconds 80
+  [ClickProbe]::Nudge(-1, 0)
+  Start-Sleep -Milliseconds 250
+  $got = [ClickProbe]::CursorId()
+  $stillText = if ($still -eq $expected) { "sizing" } else { "other" }
+  if ($got -ne $expected) {
+    $cls = [ClickProbe]::ClassName([ClickProbe]::HitAt($p.x, $p.y))
+    Note-Fail $label "cursor $got at ($($p.x),$($p.y)) is not IDC $want ($expected); before the move it was $stillText; window under it class=$cls"
+    return
+  }
+  Note-Ok $label "($($p.x),$($p.y)) IDC $want still=$stillText"
+}
+
 function Assert-Outside([string]$label, $rect) {
   $all = @(Read-HitRects)
   $points = @(
@@ -826,6 +900,44 @@ try {
       }
       if ($inPanel -and (Clear-OfOrbs $inPanel $orbs)) {
         Assert-Captured "plain-click-panel-with-plan" $inPanel.x $inPanel.y
+      }
+      # R-PN-09: the free edge and corner of the open field panel show the
+      # Windows sizing cursor, a plain click there stays in the overlay, and
+      # with Ctrl held the same point passes through (R-CT-05).
+      $resizeDeadline = (Get-Date).AddSeconds(12)
+      $handles = $null
+      while ((Get-Date) -lt $resizeDeadline) {
+        $handles = Read-ResizeAt "panel:field"
+        if ($handles -and $handles.x -and $handles.xy) { break }
+        Start-Sleep -Milliseconds 200
+      }
+      if (-not ($handles -and $handles.x -and $handles.xy)) {
+        Note-Fail "resize-handles" "debug log has no resize-at id=panel:field with x and xy handles"
+      } else {
+        Note-Ok "resize-handles" "anchor=$($handles.anchor) header=$($handles.header) x=$($handles.x.x),$($handles.x.y),$($handles.x.w)x$($handles.x.h) dpr=$($handles.dpr)"
+        $diag = if (($handles.anchor -eq "end") -xor ($handles.header -eq "bottom")) { 32643 } else { 32642 }
+        $edgeMid = @{ x = $handles.x.x; y = $handles.x.y + [Math]::Floor($handles.x.h / 2); w = $handles.x.w; h = 1 }
+        $edgePoint = Resize-Point $edgeMid $handles.dpr
+        $cornerPoint = Resize-Point $handles.xy $handles.dpr
+        $checks = @(
+          @{ name = "resize-cursor-x"; pt = $edgePoint; idc = 32644 },
+          @{ name = "resize-cursor-corner"; pt = $cornerPoint; idc = $diag }
+        )
+        if ($handles.y) {
+          $checks += @{ name = "resize-cursor-y"; pt = (Resize-Point $handles.y $handles.dpr); idc = 32645 }
+        }
+        $resizeChecked = 0
+        foreach ($c in $checks) {
+          if (-not (Clear-OfOrbs $c.pt $orbs)) { continue }
+          $resizeChecked++
+          Assert-SizeCursor $c.name $c.pt $c.idc
+        }
+        if ($resizeChecked -lt 1) {
+          Note-Fail "resize-cursor" "no handle point clear of the orbs"
+        } elseif (Clear-OfOrbs $edgePoint $orbs) {
+          Assert-Captured "resize-plain-click" $edgePoint.x $edgePoint.y
+          Assert-ThroughHeld "resize-ctrl-through" $edgePoint.x $edgePoint.y
+        }
       }
       # Kanban's orb sits under the field panel on a 1024px runner.
       # Ctrl+click must reach that orb (R-CT-02), not the window behind.

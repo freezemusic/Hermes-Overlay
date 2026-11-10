@@ -4348,10 +4348,22 @@ html[data-fan-held="1"] .suborb-orbit { opacity: 1; }
  * orb). They sit inside the shell box, so the shell hit rect already covers
  * them (R-CT); while a drag runs the shell publishes the full-screen drag rect
  * like a header drag. Ctrl (data-pass) makes them click-through with the body.
+ * Windows (Devon 2026-11-10, no double arrow): the overlay is click-through
+ * until the Rust poll sees the cursor inside the panel rect, with no outside
+ * pad, so the grab zone is 10px deep (12px corner: the 特細 send button sits 12.8px from the corner) and wholly inside the box.
+ * z-index 9 is above the HUD corner brackets (8). The strip shows a hairline
+ * on hover and the corner keeps a visible grip, so the zone can be found.
+ * The strips run into the free corner (the old 48px gap there had no grab
+ * zone). Sizes match resize.js RESIZE_EDGE_PX / RESIZE_CORNER_PX / RESIZE_EDGE_INSET_PX.
  */
+.morph {
+  --resize-edge: 10px;
+  --resize-corner: 12px;
+  --resize-inset: 48px;
+}
 .morph > .panel-resize {
   position: absolute;
-  z-index: 6;
+  z-index: 9;
   display: none;
   pointer-events: none;
   background: transparent;
@@ -4365,26 +4377,56 @@ html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is
   pointer-events: auto !important;
 }
 /* Free vertical side: right for a start (left) orb, left for an end orb. */
-.morph > .panel-resize[data-dir="x"] { top: 48px; bottom: 48px; width: 6px; right: 0; cursor: ew-resize; }
+/* It stops short of the header row (close button) and runs into the free corner. */
+.morph > .panel-resize[data-dir="x"] { top: var(--resize-inset); bottom: 0; width: var(--resize-edge); right: 0; cursor: ew-resize; }
+.morph[data-header="bottom"] > .panel-resize[data-dir="x"] { top: 0; bottom: var(--resize-inset); }
 .morph[data-anchor="end"] > .panel-resize[data-dir="x"] { right: auto; left: 0; }
 /* Free horizontal side: bottom for a top header, top for a bottom header. */
-.morph > .panel-resize[data-dir="y"] { left: 48px; right: 48px; height: 6px; bottom: 0; cursor: ns-resize; }
+/* The header is on the other side, so it runs the full width. */
+.morph > .panel-resize[data-dir="y"] { left: 0; right: 0; height: var(--resize-edge); bottom: 0; cursor: ns-resize; }
 .morph[data-header="bottom"] > .panel-resize[data-dir="y"] { bottom: auto; top: 0; }
-/* Free corner, with a small grip so it can be found. */
-.morph > .panel-resize[data-dir="xy"] { width: 14px; height: 14px; right: 0; bottom: 0; cursor: nwse-resize; }
+/* Free corner, with a grip that stays visible so it can be found. */
+.morph > .panel-resize[data-dir="xy"] { width: var(--resize-corner); height: var(--resize-corner); right: 0; bottom: 0; cursor: nwse-resize; }
 .morph[data-anchor="end"] > .panel-resize[data-dir="xy"] { right: auto; left: 0; cursor: nesw-resize; }
 .morph[data-header="bottom"] > .panel-resize[data-dir="xy"] { bottom: auto; top: 0; cursor: nesw-resize; }
 .morph[data-anchor="end"][data-header="bottom"] > .panel-resize[data-dir="xy"] { cursor: nwse-resize; }
+/* Hover hairline on the free edge (2px, 2px in from the box edge). */
+.morph > .panel-resize[data-dir="x"]::before,
+.morph > .panel-resize[data-dir="y"]::before {
+  content: "";
+  position: absolute;
+  background: #0000f2;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.morph > .panel-resize[data-dir="x"]::before { top: 0; bottom: 0; width: 2px; right: 2px; }
+.morph[data-anchor="end"] > .panel-resize[data-dir="x"]::before { right: auto; left: 2px; }
+.morph > .panel-resize[data-dir="y"]::before { left: 0; right: 0; height: 2px; bottom: 2px; }
+.morph[data-header="bottom"] > .panel-resize[data-dir="y"]::before { bottom: auto; top: 2px; }
+.morph > .panel-resize:hover::before,
+.morph.is-resizing > .panel-resize::before { opacity: .55; }
+/* Grip: three short diagonal ticks in the free corner (drawn for the
+   bottom-right corner, mirrored for the others). */
 .morph > .panel-resize[data-dir="xy"]::after {
   content: "";
   position: absolute;
-  inset: 3px;
-  border-right: 2px solid rgb(0 0 242 / .45);
-  border-bottom: 2px solid rgb(0 0 242 / .45);
+  inset: 1px;
+  opacity: .7;
+  transition: opacity 120ms ease-out;
+  background: linear-gradient(135deg,
+    transparent 0 44%, #0000f2 44% 52%,
+    transparent 52% 62%, #0000f2 62% 70%,
+    transparent 70% 80%, #0000f2 80% 88%,
+    transparent 88%);
 }
-.morph[data-anchor="end"] > .panel-resize[data-dir="xy"]::after { border-right: 0; border-left: 2px solid rgb(0 0 242 / .45); }
-.morph[data-header="bottom"] > .panel-resize[data-dir="xy"]::after { border-bottom: 0; border-top: 2px solid rgb(0 0 242 / .45); }
-.morph > .panel-resize:hover::after,
-.morph.is-resizing > .panel-resize[data-dir="xy"]::after { border-color: #0000f2; }
+.morph[data-anchor="end"] > .panel-resize[data-dir="xy"]::after { transform: scaleX(-1); }
+.morph[data-header="bottom"] > .panel-resize[data-dir="xy"]::after { transform: scaleY(-1); }
+.morph[data-anchor="end"][data-header="bottom"] > .panel-resize[data-dir="xy"]::after { transform: scale(-1, -1); }
+.morph > .panel-resize[data-dir="xy"]:hover::after,
+.morph.is-resizing > .panel-resize[data-dir="xy"]::after { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .morph > .panel-resize::before,
+  .morph > .panel-resize::after { transition: none; }
+}
 .morph.is-resizing,
 .morph.is-resizing * { user-select: none; }

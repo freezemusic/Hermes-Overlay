@@ -3907,6 +3907,29 @@ async function persistPanelSize(id, size) {
   }
 }
 
+/**
+ * R-PN-09 debug line for the Windows CI cursor check (scripts/
+ * windows-clickthrough.ps1): where each painted handle is, in CSS px, once
+ * per change. Only with HERMES_OVERLAY_DEBUG_LOG. No content, ids only.
+ */
+function logResizeHandles(shell) {
+  if (!debugFile.enabled || !shell?.querySelectorAll) return;
+  if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+  const parts = [];
+  for (const handle of shell.querySelectorAll(":scope > .panel-resize")) {
+    const box = handle.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) continue;
+    parts.push(`${handle.dataset.dir}=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`);
+  }
+  if (!parts.length) return;
+  const anchor = shell.dataset.anchor === "end" ? "end" : "start";
+  const header = shell.dataset.header === "bottom" ? "bottom" : "top";
+  const line = `id=${shell.dataset.hitId || ""} dpr=${window.devicePixelRatio || 1} anchor=${anchor} header=${header} ${parts.join(" ")}`;
+  if (shell._resizeLogged === line) return;
+  shell._resizeLogged = line;
+  debugLog("resize-at", line);
+}
+
 function bindResizeHandle(handle, shell) {
   handle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
@@ -10217,6 +10240,7 @@ function collectHits() {
       pushCloseHit(rects, shell, level);
       const docked = dockedPanelOrb(shell, level);
       if (docked && !rects.some((item) => item.id === docked.id)) rects.push(docked);
+      logResizeHandles(shell);
     }
   });
   const banner = $("#conn-banner");
