@@ -20,6 +20,7 @@ const clickthrough = readFileSync(new URL("../scripts/windows-clickthrough.ps1",
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+const morph = readFileSync(new URL("./morph.js", import.meta.url), "utf8");
 const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const perms = readFileSync(new URL("../src-tauri/permissions/hermes.toml", import.meta.url), "utf8");
 const cap = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8"));
@@ -242,4 +243,6 @@ test("R-PN-09 Windows: the debug log names handle boxes, and the Windows CI chec
   assert.match(clickthrough, /resize-at id=panel:field/);
   assert.match(clickthrough, /"resize-cursor-x"/);
   assert.match(clickthrough, /Assert-ThroughHeld "resize-ctrl-through"/);
+  const hostZ = morph.slice(morph.indexOf("export function placePlanHost"), morph.indexOf("const PLAN_CONTROL_ROLES"));
+  assert.match(hostZ, /const under = String\(Math\.max\(0, Number\.parseInt\(z, 10\) - 1\)\);/);
 });
