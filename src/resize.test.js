@@ -242,6 +242,8 @@ test("R-PN-09 Windows: the debug log names handle boxes, and the Windows CI chec
   assert.match(clickthrough, /GetCursorInfo/);
   assert.match(clickthrough, /resize-at id=panel:field/);
   assert.match(clickthrough, /"resize-cursor-x"/);
+  assert.match(clickthrough, /\$handles\.xy\.x \+ 1/);
+  assert.match(clickthrough, /after-nudge=\$got/);
   assert.match(clickthrough, /Assert-ThroughHeld "resize-ctrl-through"/);
   const hostZ = morph.slice(morph.indexOf("export function placePlanHost"), morph.indexOf("const PLAN_CONTROL_ROLES"));
   assert.match(hostZ, /const under = String\(Math\.max\(0, Number\.parseInt\(z, 10\) - 1\)\);/);

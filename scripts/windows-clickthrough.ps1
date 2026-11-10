@@ -633,18 +633,24 @@ function Assert-SizeCursor([string]$label, $p, [int]$want) {
   Start-Sleep -Milliseconds 300
   $expected = [ClickProbe]::SystemCursor($want)
   $still = [ClickProbe]::CursorId()
-  [ClickProbe]::Nudge(1, 0)
-  Start-Sleep -Milliseconds 80
-  [ClickProbe]::Nudge(-1, 0)
-  Start-Sleep -Milliseconds 250
-  $got = [ClickProbe]::CursorId()
+  $got = $still
+  # The edge strip overlaps the grip. A single 1px nudge sometimes leaves the
+  # previous SIZEWE cursor in place, so retry until WebView2 catches up.
+  for ($try = 0; $try -lt 4; $try++) {
+    [ClickProbe]::Nudge(1, 0)
+    Start-Sleep -Milliseconds 80
+    [ClickProbe]::Nudge(-1, 0)
+    Start-Sleep -Milliseconds 180
+    $got = [ClickProbe]::CursorId()
+    if ($got -eq $expected) { break }
+  }
   $stillText = if ($still -eq $expected) { "sizing" } else { "other" }
   if ($got -ne $expected) {
     $cls = [ClickProbe]::ClassName([ClickProbe]::HitAt($p.x, $p.y))
-    Note-Fail $label "cursor $got at ($($p.x),$($p.y)) is not IDC $want ($expected); before the move it was $stillText; window under it class=$cls"
+    Note-Fail $label "cursor $got at ($($p.x),$($p.y)) is not IDC $want ($expected); before the move it was $stillText ($still); after-nudge=$got; window under it class=$cls"
     return
   }
-  Note-Ok $label "($($p.x),$($p.y)) IDC $want still=$stillText"
+  Note-Ok $label "($($p.x),$($p.y)) IDC $want still=$stillText ($still) after-nudge=$got"
 }
 
 function Assert-Outside([string]$label, $rect) {
@@ -918,7 +924,14 @@ try {
         $diag = if (($handles.anchor -eq "end") -xor ($handles.header -eq "bottom")) { 32643 } else { 32642 }
         $edgeMid = @{ x = $handles.x.x; y = $handles.x.y + [Math]::Floor($handles.x.h / 2); w = $handles.x.w; h = 1 }
         $edgePoint = Resize-Point $edgeMid $handles.dpr
-        $cornerPoint = Resize-Point $handles.xy $handles.dpr
+        # The 12px grip overlaps both edge strips. Sample 1 CSS px in from the
+        # inner corner so the hit is the grip, not the strip underneath it.
+        $cx = if ($handles.anchor -eq "end") { $handles.xy.x + $handles.xy.w - 2 } else { $handles.xy.x + 1 }
+        $cy = if ($handles.header -eq "bottom") { $handles.xy.y + $handles.xy.h - 2 } else { $handles.xy.y + 1 }
+        $cornerPoint = @{
+          x = [int][Math]::Round($cx * $handles.dpr)
+          y = [int][Math]::Round($cy * $handles.dpr)
+        }
         $checks = @(
           @{ name = "resize-cursor-x"; pt = $edgePoint; idc = 32644 },
           @{ name = "resize-cursor-corner"; pt = $cornerPoint; idc = $diag }
