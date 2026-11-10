@@ -5,7 +5,7 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planForPanel, plansIn, rememberPlan } from "./plan.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planForPanel, planNeedsFileCatchUp, plansIn, rememberPlan } from "./plan.js";
 import {
   SUBORB_FADE_MS,
   emptySuborbModel,
@@ -7029,7 +7029,10 @@ function presentMessage(m) {
     const plan = composeBubble(m.text);
     if (plan.command) return { role: "user", text: plan.text, command: plan.command };
   }
-  return { role: m.role, text: m.text };
+  const presented = { role: m.role, text: m.text };
+  const file = m.plan && String(m.plan.content || "").trim();
+  if (file) presented.plan = { path: String(m.plan.path || ""), content: String(m.plan.content) };
+  return presented;
 }
 
 function presentTranscript(list) {
@@ -7503,6 +7506,21 @@ function armWholeReplyCatchUp(id) {
     const last = [...(now.messages || [])].reverse().find((item) => item.role === "user" || item.role === "bot");
     if (last?.role === "bot") return;
     debugLog("whole-reply-catch-up", `id=${id}`);
+    void claimProfiles([id], () => refreshBotQuiet(id));
+  }, WHOLE_REPLY_CATCH_UP_MS);
+}
+
+/** Live tool events lack write_file arguments. Reread history when the turn ends. */
+function armPlanFileCatchUp(id) {
+  const thread = threadFor(id);
+  if (!planNeedsFileCatchUp(thread.messages)) return;
+  const sessionId = thread.sessionId;
+  window.setTimeout(() => {
+    if (state.mode !== "hermes" || !inTauri()) return;
+    const now = threadFor(id);
+    if (now.sessionId !== sessionId || state.busy.has(id)) return;
+    if (!planNeedsFileCatchUp(now.messages)) return;
+    debugLog("plan-file-catch-up", `id=${id}`);
     void claimProfiles([id], () => refreshBotQuiet(id));
   }, WHOLE_REPLY_CATCH_UP_MS);
 }
@@ -8060,6 +8078,7 @@ function handleHermes(payload) {
     // F5: a Bot Chat door turn may end with no live text at all. Read the
     // transcript once so the reply shows instead of an empty finished turn.
     if (payload.outcome === "completed" && !String(live?.text || "").trim()) armWholeReplyCatchUp(id);
+    if (payload.outcome === "completed") armPlanFileCatchUp(id);
     if (payload.outcome === "completed") {
       thread.queued = false;
       thread.watchReply = false;

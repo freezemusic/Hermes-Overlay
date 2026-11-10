@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, latestPlan, looksLikePlan, nextComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, planSource, plansIn, planTask, planTextHash, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, latestPlan, looksLikePlan, nextComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, PLAN_FILE_MISSING_NOTE, planNeedsFileCatchUp, planSource, plansIn, planTask, planTextHash, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
 import { continueLiveTurn, finishLiveBubble } from "./sessions.js";
 
 test("plan markdown is recognized and a short ack is not", () => {
@@ -111,7 +111,12 @@ test("a long Windows plan path opens without a heading, and a one-line mention d
   const found = plansIn([{ role: "bot", text: withSlash }]);
   assert.equal(found.length, 1);
   assert.equal(found[0].title, "mt5-wrapper-next");
-  assert.equal(plansIn([{ role: "bot", text: withEaten }]).length, 1);
+  assert.equal(found[0].fromFile, undefined);
+  assert.ok(found[0].markdown.startsWith(PLAN_FILE_MISSING_NOTE));
+  assert.ok(found[0].markdown.includes(withSlash));
+  const eatenFound = plansIn([{ role: "bot", text: withEaten }]);
+  assert.equal(eatenFound.length, 1);
+  assert.ok(eatenFound[0].markdown.startsWith(PLAN_FILE_MISSING_NOTE));
   const mention = `檔案：${win}`;
   assert.ok(mention.length < 200);
   assert.equal(mention.includes("\n"), false);
@@ -224,6 +229,7 @@ test("a streamed plan followed by clarify is a plan before the run ends", () => 
   assert.match(sync, /restBubble\(created\)/);
   const done = main.slice(main.indexOf('payload.type === "done"'), main.indexOf('payload.type === "error"'));
   assert.match(done, /renderChat\(id\)/);
+  assert.match(done, /armPlanFileCatchUp\(id\)/);
   assert.doesNotMatch(done, /replaceChildren|mountChat/);
 });
 
@@ -266,6 +272,71 @@ test("the composer mode chip cycles, and a side question skips the busy queue", 
   assert.match(lib, /set_compose_mode/);
   assert.match(lib, /bot\.compose_mode\.clone\(\)/);
   assert.doesNotMatch(lib, /set_plan_mode/);
+});
+
+
+test("write_file plan content is preferred over a chat summary that mentions the path", () => {
+  const path = String.raw`C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-11_013841-runtime-gate-status.md`;
+  const file = "# Runtime Gate Status\n\n**Goal:** 補回缺失的 health 檔，再跑 live 閘。\n";
+  const summary = [
+    "詳細計劃已寫好，呢輪沒有再跑回測。",
+    "",
+    "live 探針 t_028f1e5d 完成咗，但進程退出碼係 1，冇出 JSON。",
+    "原因係 worktree 少咗 health_default.health.json，所以 live 閘未通過。",
+    "你一取消「先停」，我就會照計劃補返嗰個檔再跑。",
+    "",
+    path,
+  ].join("\n");
+  const messages = [
+    { role: "user", text: "寫計劃", command: "plan" },
+    { role: "tool-run", text: "用咗 1 個工具 · write_file" },
+    { role: "bot", text: summary, plan: { path, content: file } },
+  ];
+  const found = plansIn(messages);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].fromFile, true);
+  assert.equal(found[0].markdown, file);
+  assert.equal(found[0].title, "Runtime Gate Status");
+  assert.equal(found[0].index, 2);
+  assert.equal(planNeedsFileCatchUp(messages), false);
+  const thread = { messages, loaded: true, planDismissed: "", planFocus: "" };
+  assert.equal(planForPanel(thread).markdown, file);
+});
+
+test("a path summary without write_file still opens, with a missing-file note", () => {
+  const path = String.raw`C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-11_013841-runtime-gate-status.md`;
+  const summary = [
+    "詳細計劃已寫好，呢輪沒有再跑回測。",
+    "",
+    "live 探針 t_028f1e5d 完成咗，但進程退出碼係 1，冇出 JSON。",
+    "原因係 worktree 少咗 health_default.health.json。",
+    path,
+  ].join("\n");
+  const found = plansIn([
+    { role: "user", text: "寫計劃", command: "plan" },
+    { role: "bot", text: summary },
+  ]);
+  assert.equal(found.length, 1);
+  assert.notEqual(found[0].fromFile, true);
+  assert.equal(found[0].title, "runtime-gate-status");
+  assert.ok(found[0].markdown.startsWith(PLAN_FILE_MISSING_NOTE));
+  assert.ok(found[0].markdown.includes("詳細計劃已寫好"));
+  assert.equal(planNeedsFileCatchUp([
+    { role: "user", text: "寫計劃", command: "plan" },
+    { role: "bot", text: summary },
+  ]), true);
+});
+
+test("a headed or fenced in-chat plan without write_file stays the body", () => {
+  const fenced = ["```markdown", "# 整理設定 Implementation Plan", "", "**Goal:** 對齊面板", "```"].join("\n");
+  const found = plansIn([{ role: "bot", text: fenced }]);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].title, "整理設定 Implementation Plan");
+  assert.equal(found[0].markdown.includes(PLAN_FILE_MISSING_NOTE), false);
+  const headed = planDemoMarkdown("整理設定");
+  const demo = plansIn([{ role: "bot", text: headed }])[0];
+  assert.equal(demo.markdown, headed);
+  assert.equal(planNeedsFileCatchUp([{ role: "user", text: "整理", command: "plan" }, { role: "bot", text: headed }]), true);
 });
 
 test("a later edit with the same opening changes the plan key", () => {

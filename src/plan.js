@@ -4,6 +4,38 @@
 const PLAN_PATH = /\.hermes[\\/]plans[\\/]([^\s)]+?)\.md/;
 const PLAN_MIN_CHARS = 200;
 
+/** Shown when a path mention opens the panel but the write_file body is not in history. */
+export const PLAN_FILE_MISSING_NOTE = "計劃檔內容唔在對話紀錄裡面。";
+
+export function isHermesPlanPath(path) {
+  return PLAN_PATH.test(String(path || ""));
+}
+
+function inChatPlanBody(text) {
+  const body = String(text || "");
+  return !!(unwrapPlan(body) || hasHeading(body) || /\*\*Goal:\*\*/i.test(body) || /implementation plan/i.test(body));
+}
+
+function planRecordFromFile(content, path) {
+  const heading = String(content || "").match(/^#{1,3}\s+(.+)$/m);
+  const title = heading
+    ? heading[1].replace(/[*_`]/g, "").trim()
+    : (planFileTitle(path) || planFileTitle(content) || "計劃");
+  return {
+    title,
+    markdown: content,
+    key: `${title}\n${content.length}\n${content.slice(0, 80)}\n${planTextHash(content)}`,
+  };
+}
+
+function messagePlanFile(message) {
+  const content = String(message?.plan?.content || "");
+  if (!content) return null;
+  const path = String(message.plan.path || "");
+  if (path && !isHermesPlanPath(path)) return null;
+  return { path, content };
+}
+
 function hasHeading(body) {
   return /^#{1,3}\s+\S/m.test(body);
 }
@@ -278,7 +310,35 @@ function planRecord(text) {
 export function plansIn(messages) {
   const list = messages || [];
   const found = [];
+  const used = new Set();
+
+  let turnBots = [];
+  let turnFile = null;
+  const flushTurn = () => {
+    if (turnFile && turnBots.length) {
+      const index = turnBots[turnBots.length - 1];
+      found.push({ ...planRecordFromFile(turnFile.content, turnFile.path), index, fromFile: true });
+      used.add(index);
+    }
+    turnBots = [];
+    turnFile = null;
+  };
   for (let index = 0; index < list.length; index += 1) {
+    const message = list[index];
+    if (!message) continue;
+    if (message.role === "user") {
+      flushTurn();
+      continue;
+    }
+    if (message.role !== "bot" || message.live) continue;
+    turnBots.push(index);
+    const file = messagePlanFile(message);
+    if (file) turnFile = file;
+  }
+  flushTurn();
+
+  for (let index = 0; index < list.length; index += 1) {
+    if (used.has(index)) continue;
     const message = list[index];
     if (!message || message.role !== "bot" || message.live) continue;
     const text = String(message.text || "").trim();
@@ -287,9 +347,28 @@ export function plansIn(messages) {
     const fromCommand = previous?.command === "plan" && text.length >= 40;
     if (!looksLikePlan(text) && !fromCommand) continue;
     const markdown = looksLikePlan(text) ? planSource(text) : text;
-    found.push({ ...planRecord(markdown), index });
+    const record = planRecord(markdown);
+    // A summary that only mentions the plan path, with no write_file body,
+    // still opens; say the file is not in history. A pasted in-chat plan keeps its body.
+    if (PLAN_PATH.test(text) && !inChatPlanBody(text)) {
+      record.markdown = `${PLAN_FILE_MISSING_NOTE}\n\n${record.markdown}`;
+    }
+    found.push({ ...record, index });
   }
+  found.sort((left, right) => left.index - right.index);
   return found;
+}
+
+/**
+ * A finished /plan turn or a path mention whose file body is not on the
+ * message yet. Live tool events do not carry write_file arguments.
+ */
+export function planNeedsFileCatchUp(messages) {
+  const list = messages || [];
+  if (plansIn(list).some((item) => item.fromFile)) return false;
+  const lastUser = [...list].reverse().find((item) => item && item.role === "user");
+  if (lastUser?.command === "plan") return true;
+  return list.some((item) => item && item.role === "bot" && !item.live && PLAN_PATH.test(String(item.text || "")));
 }
 
 /** Newest bot reply that is a plan. */
