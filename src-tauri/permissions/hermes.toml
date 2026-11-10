@@ -29,6 +29,11 @@ description = "Persist one orb's dragged spot (R-OB-08)."
 commands.allow = ["set_orb_position"]
 
 [[permission]]
+identifier = "allow-reset-orb-positions"
+description = "Move every dragged orb back home (R-OB-08)."
+commands.allow = ["reset_orb_positions"]
+
+[[permission]]
 identifier = "allow-set-suborb-mode"
 description = "Persist one sub-orb panel's composer mode (R-SO-09)."
 commands.allow = ["set_suborb_mode"]

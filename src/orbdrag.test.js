@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ORB_DRAG_THRESHOLD_PX,
-  ORB_SNAP_HOME_PX,
   clampOrbPoint,
   dragStarted,
   findDodgeSpot,
@@ -14,7 +13,6 @@ import {
   orbDraggable,
   planOrbDodges,
   pointCovered,
-  snapsHome,
   validOrbId,
 } from "./orbdrag.js";
 import { ORB, ORB_HALO_PX, orbCoveredBy } from "./morph.js";
@@ -64,12 +62,6 @@ test("R-OB-08 the drag starts after a few px and follows the Ctrl+click rule", (
   assert.ok(orbDragAllowed({ supported: true, ctrlAtDown: true }));
   assert.ok(orbDragAllowed({ supported: true, modifierNow: true }));
   assert.ok(orbDragAllowed({ supported: true, pressFrozen: true }));
-});
-
-test("R-OB-08 a drop near the design spot snaps home", () => {
-  const home = { x: 100, y: 100 };
-  assert.ok(snapsHome({ x: 100 + ORB_SNAP_HOME_PX, y: 100 }, home));
-  assert.ok(!snapsHome({ x: 100 + ORB_SNAP_HOME_PX + 1, y: 100 }, home));
 });
 
 test("R-OB-08 coverage uses the same disc + halo box as R-OB-05", () => {
@@ -176,4 +168,41 @@ test("R-OB-08 Rust: set_orb_position is registered, allowed, and save_settings k
   assert.match(perms, /identifier = "allow-set-orb-position"[\s\S]*?commands\.allow = \["set_orb_position"\]/);
   assert.match(caps, /"allow-set-orb-position"/);
   assert.match(cfg, /skip_serializing_if = "BTreeMap::is_empty",\s*deserialize_with = "lenient_orb_positions"\s*\)\]\s*pub orb_positions/);
+});
+
+test("R-OB-08 a drop stays exactly where it lands: no home ring, no snap (Devon 「我就是要到處拖」)", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const mod = readFileSync(new URL("./orbdrag.js", import.meta.url), "utf8");
+  assert.doesNotMatch(main, /snapsHome|orb-home-ghost|HomeGhost/);
+  assert.doesNotMatch(css, /orb-home-ghost/);
+  assert.doesNotMatch(mod, /export function snapsHome|ORB_SNAP_HOME_PX/);
+  const end = main.slice(main.indexOf("function endOrbDrag(event)"), main.indexOf("let hitDeferLogged"));
+  assert.match(end, /state\.orbPositions\[drag\.id\] = \{ x: point\.x, y: point\.y \};\s*void persistOrbPosition\(drag\.id, point\);/);
+  assert.doesNotMatch(end, /persistOrbPosition\(drag\.id, null\)/);
+});
+
+test("R-OB-08 Settings 「所有光球返原位」: both languages, disabled until an orb moved, one reset command", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const look = readFileSync(new URL("./look.js", import.meta.url), "utf8");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const perms = readFileSync(new URL("../src-tauri/permissions/hermes.toml", import.meta.url), "utf8");
+  const caps = readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8");
+  assert.match(html, /<button type="button" id="btn-reset-orbs" class="icon-btn" title="所有光球返原位" disabled>所有光球返原位<\/button>/);
+  assert.match(look, /"所有光球返原位": "Reset all orb positions",/);
+  assert.match(look, /"揸住 Ctrl 拖光球可以擺去任何位置。": "Hold Ctrl and drag an orb to put it anywhere\.",/);
+  const sync = main.slice(main.indexOf("function syncOrbResetButton()"), main.indexOf("async function resetAllOrbPositions()"));
+  assert.match(sync, /movedOrbIds\(\)\.length === 0/);
+  const reset = main.slice(main.indexOf("async function resetAllOrbPositions()"), main.indexOf("/** pointerdown on a resting main orb"));
+  assert.match(reset, /state\.orbPositions\[id\] = null/);
+  assert.match(reset, /glideOrb\(shell, from\)/, "slides home");
+  assert.match(reset, /invoke\("reset_orb_positions"\)/);
+  assert.match(main, /\$\("#btn-reset-orbs"\)\?\.addEventListener\("click"/);
+  assert.match(main, /function fillSettings\(settings\) \{[\s\S]*?syncOrbResetButton\(\);/);
+  assert.match(lib, /async fn reset_orb_positions\(/);
+  assert.match(lib, /config::clear_orb_positions\(&path\)\?;/);
+  assert.match(lib, /generate_handler!\[[\s\S]*\breset_orb_positions,/);
+  assert.match(perms, /identifier = "allow-reset-orb-positions"[\s\S]*?commands\.allow = \["reset_orb_positions"\]/);
+  assert.match(caps, /"allow-reset-orb-positions"/);
 });

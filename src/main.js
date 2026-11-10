@@ -192,7 +192,6 @@ import {
   orbDragAllowed,
   orbDraggable,
   planOrbDodges,
-  snapsHome,
   validOrbId,
 } from "./orbdrag.js";
 import {
@@ -8897,6 +8896,7 @@ function fillSettings(settings) {
   if (showNames) showNames.checked = !!settings?.show_bot_names;
   const showTools = $("#show-tool-detail");
   if (showTools) showTools.checked = !!settings?.show_tool_detail;
+  syncOrbResetButton();
   const support = $("#interaction-support");
   const supported = interaction.supported !== false;
     support.textContent = supported
@@ -9888,6 +9888,9 @@ function setupComposer() {
   });
   $("#show-tool-detail")?.addEventListener("change", (event) => {
     void setShowToolDetail(event.target.checked);
+  });
+  $("#btn-reset-orbs")?.addEventListener("click", () => {
+    void resetAllOrbPositions();
   });
   $("#btn-kanban-signin")?.addEventListener("click", () => {
     void signInKanban();
@@ -11102,35 +11105,64 @@ async function persistOrbPosition(id, point) {
   } catch (err) {
     if (generation !== orbPositionWrite) return;
     setBanner(String(err), "error");
+  } finally {
+    syncOrbResetButton();
   }
 }
 
-function orbHomeGhost() {
-  let ghost = document.getElementById("orb-home-ghost");
-  if (!ghost) {
-    ghost = document.createElement("div");
-    ghost.id = "orb-home-ghost";
-    ghost.className = "orb-home-ghost";
-    ghost.setAttribute("aria-hidden", "true");
-    ghost.hidden = true;
-    document.body.appendChild(ghost);
+/** R-OB-08: ids with a dragged spot (live or saved). */
+function movedOrbIds() {
+  const ids = new Set(Object.keys(normalizeOrbPositions(state.settings?.orb_positions)));
+  for (const [id, point] of Object.entries(state.orbPositions || {})) {
+    if (point) ids.add(id);
+    else ids.delete(id);
   }
-  return ghost;
+  return [...ids];
 }
 
-function paintOrbHomeGhost(id, point) {
-  const ghost = orbHomeGhost();
-  if (!id) {
-    ghost.hidden = true;
-    delete ghost.dataset.near;
-    return;
+function syncOrbResetButton() {
+  const btn = $("#btn-reset-orbs");
+  if (!btn) return;
+  const none = movedOrbIds().length === 0 || state.orbResetBusy === true;
+  if (btn.disabled !== none) btn.disabled = none;
+}
+
+/**
+ * R-OB-08 「所有光球返原位」 (Devon 2026-11-10). Every dragged orb slides to
+ * its design spot, then `reset_orb_positions` removes `orb_positions` from
+ * config.json (a file without it is not written).
+ */
+async function resetAllOrbPositions() {
+  const ids = movedOrbIds();
+  if (!ids.length || state.orbResetBusy) return;
+  state.orbResetBusy = true;
+  syncOrbResetButton();
+  for (const id of ids) state.orbPositions[id] = null;
+  for (const id of ids) {
+    const shell = shellFor(id);
+    if (!restingMainOrb(shell)) continue;
+    const from = orbCentre(shell);
+    relayoutOrb(shell);
+    glideOrb(shell, from);
   }
-  const home = defaultOrbPoint(id);
-  ghost.style.left = `${Math.round(home.x - ORB / 2)}px`;
-  ghost.style.top = `${Math.round(home.y - ORB / 2)}px`;
-  ghost.hidden = false;
-  if (point && snapsHome(point, home)) ghost.dataset.near = "1";
-  else delete ghost.dataset.near;
+  layoutShells();
+  debugLog("orb-reset", `ids=${ids.join(",")}`);
+  try {
+    if (inTauri()) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      orbPositionWrite += 1;
+      const settings = await invoke("reset_orb_positions");
+      if (settings) state.settings = settings;
+      for (const id of ids) {
+        if (state.orbPositions[id] === null) delete state.orbPositions[id];
+      }
+    }
+  } catch (err) {
+    setBanner(String(err), "error");
+  } finally {
+    state.orbResetBusy = false;
+    syncOrbResetButton();
+  }
 }
 
 /** pointerdown on a resting main orb: remember it; it becomes a drag after a few px. */
@@ -11191,7 +11223,6 @@ function moveOrbDrag(event) {
   event.preventDefault?.();
   drag.point = clampOrbPoint({ x: drag.origin.x + dx, y: drag.origin.y + dy }, orbScreen());
   relayoutOrb(shell);
-  paintOrbHomeGhost(drag.id, drag.point);
   if (!moveOrbDrag.frame) {
     moveOrbDrag.frame = requestAnimationFrame(() => {
       moveOrbDrag.frame = 0;
@@ -11212,18 +11243,13 @@ function endOrbDrag(event) {
   if (shell) delete shell.dataset.orbDragging;
   delete document.documentElement.dataset.orbDrag;
   if (state.dragHitId && shell && state.dragHitId === shell.dataset.hitId) state.dragHitId = "";
-  paintOrbHomeGhost("");
+  // Devon 2026-11-10: 「我就是要到處拖」. The orb stays exactly where it is
+  // dropped, even next to its home; only 「所有光球返原位」 goes back.
   const point = drag.point || drag.origin;
-  const home = defaultOrbPoint(drag.id);
-  const snapped = snapsHome(point, home);
-  if (snapped) {
-    state.orbPositions[drag.id] = null;
-    void persistOrbPosition(drag.id, null);
-  } else {
-    state.orbPositions[drag.id] = { x: point.x, y: point.y };
-    void persistOrbPosition(drag.id, point);
-  }
-  debugLog("orb-drag", `phase=drop id=${drag.id} at=${Math.round(point.x)},${Math.round(point.y)} home=${snapped ? 1 : 0}`);
+  state.orbPositions[drag.id] = { x: point.x, y: point.y };
+  void persistOrbPosition(drag.id, point);
+  syncOrbResetButton();
+  debugLog("orb-drag", `phase=drop id=${drag.id} at=${Math.round(point.x)},${Math.round(point.y)}`);
   if (shell) {
     const from = orbCentre(shell);
     relayoutOrb(shell);

@@ -4,8 +4,9 @@
  *
  * Free orb positions, Rainmeter-skin style: modifier+drag an orb anywhere in
  * the work area and it stays there. The spot is saved per orb in config.json
- * `orb_positions` through the app's own `set_orb_position` command. Dropping
- * it back on (or near) its design spot snaps home and removes the key.
+ * `orb_positions` through the app's own `set_orb_position` command. A drop
+ * stays exactly where it lands (Devon: 「我就是要到處拖」); Settings 「所有光球
+ * 返原位」 (`reset_orb_positions`) is the only way back to the design spots.
  *
  * Dodge: when an open panel (or plan) covers an orb's home, the orb moves to
  * the nearest free spot outside every panel, clear of the other orbs, and
@@ -17,8 +18,6 @@ import { ORB, ORB_HALO_PX, ORB_WORK_CLEAR_PX, workFrame } from "./morph.js";
 
 /** Pointer travel before a modifier press becomes a drag instead of a click. */
 export const ORB_DRAG_THRESHOLD_PX = 5;
-/** A drop this close to the design spot goes home and forgets the saved spot. */
-export const ORB_SNAP_HOME_PX = 28;
 /** Disc edge to work-area edge. */
 export const ORB_EDGE_GAP_PX = 4;
 /** Disc-to-disc clearance between two main orbs (R-SO-02 uses 12 for discs). */
@@ -101,11 +100,6 @@ export function dragStarted(dx, dy, threshold = ORB_DRAG_THRESHOLD_PX) {
 export function orbDragAllowed({ supported = true, ctrlAtDown = false, modifierNow = false, pressFrozen = false } = {}) {
   if (supported === false) return true;
   return ctrlAtDown === true || modifierNow === true || pressFrozen === true;
-}
-
-export function snapsHome(point, home, radius = ORB_SNAP_HOME_PX) {
-  if (!point || !home) return false;
-  return Math.hypot(point.x - home.x, point.y - home.y) <= radius;
 }
 
 /** Disc plus halo around a centre, as a box (same box `orbCoveredBy` measures). */

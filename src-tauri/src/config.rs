@@ -1283,6 +1283,25 @@ pub fn store_orb_position(path: &Path, id: &str, point: Option<OrbPosition>) -> 
     Ok(true)
 }
 
+/// R-OB-08 「所有光球返原位」. Removes the whole `orb_positions` key and
+/// nothing else. A file without the key (or no file) is not written, so a
+/// config that never had dragged orbs stays byte-identical. True when it wrote.
+pub fn clear_orb_positions(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let Some(span) = top_level_field(&text, "orb_positions") else {
+        return Ok(false);
+    };
+    let patched = remove_top_level_field(&text, &span);
+    if patched == text {
+        return Ok(false);
+    }
+    write_config_text(path, &patched)?;
+    Ok(true)
+}
+
 /// Writes one profile's pinned sub-orb session id.
 /// Splices only `suborb_pins`. Session id, explicit, anchor, and every other key stay put.
 /// An empty map removes the key so a file that never pinned stays byte-identical.
@@ -3225,6 +3244,39 @@ other:
         assert!(store_orb_position(&path, "../x", Some(OrbPosition { x: 1, y: 1 })).is_err());
         assert!(store_orb_position(&path, "bot:x", Some(OrbPosition { x: 1, y: 1 })).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_orb_positions_removes_only_that_key_and_leaves_untouched_files_alone() {
+        let dir = migration_dir("orb-positions-reset");
+        let path = dir.join("config.json");
+        // No file: nothing is created.
+        assert!(!clear_orb_positions(&path).unwrap());
+        assert!(!path.exists());
+        // A file that never had the key stays byte-identical (and is not rewritten).
+        let old = "{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"bots\": [],\n  \"panel_sizes\": {\"researcher\":{\"w\":560,\"h\":720}}\n}";
+        fs::write(&path, old).unwrap();
+        assert!(!clear_orb_positions(&path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        // Two dragged orbs, then reset: back to the exact old bytes.
+        assert!(store_orb_position(&path, "researcher", Some(OrbPosition { x: 640, y: 300 })).unwrap());
+        assert!(store_orb_position(&path, "kanban", Some(OrbPosition { x: 900, y: 500 })).unwrap());
+        assert_eq!(load(&path).unwrap().orb_positions.len(), 2);
+        assert!(clear_orb_positions(&path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        assert!(load(&path).unwrap().orb_positions.is_empty());
+        assert_eq!(load(&path).unwrap().panel_sizes.get("researcher"), Some(&PanelSize { w: 560, h: 720 }));
+        assert!(!clear_orb_positions(&path).unwrap());
+        // The key in the middle of the file: other keys keep their bytes and order.
+        let mid = "{\n  \"version\": 1,\n  \"orb_positions\": {\"a\":{\"x\":1,\"y\":2}},\n  \"text_size\": \"s\"\n}";
+        fs::write(&path, mid).unwrap();
+        assert!(clear_orb_positions(&path).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("orb_positions"));
+        let back = load(&path).unwrap();
+        assert_eq!(back.text_size, "s");
+        assert!(back.orb_positions.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

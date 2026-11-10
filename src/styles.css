@@ -4433,22 +4433,14 @@ html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is
 .morph.is-resizing,
 .morph.is-resizing * { user-select: none; }
 
-/* R-OB-08: the design spot while an orb is dragged. A drop inside the ring
-   snaps home and forgets the saved spot. No hit, no animation. */
-.orb-home-ghost {
-  position: fixed;
-  width: 44px;
-  height: 44px;
-  box-sizing: border-box;
-  border-radius: 50%;
-  border: 1.5px dashed rgba(97, 97, 145, 0.55);
-  pointer-events: none;
-  z-index: 2;
+/* R-OB-08 「所有光球返原位」 under the interaction toggles. */
+.orb-reset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
 }
-.orb-home-ghost[hidden] {
-  display: none;
-}
-.orb-home-ghost[data-near="1"] {
-  border-style: solid;
-  border-color: rgba(97, 97, 145, 0.9);
+.orb-reset-row .hint {
+  margin: 0;
 }

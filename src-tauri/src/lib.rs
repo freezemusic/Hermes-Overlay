@@ -1232,6 +1232,29 @@ fn set_orb_position_sync(
     load_public_settings(app)
 }
 
+/// R-OB-08 「所有光球返原位」: removes `orb_positions` only.
+#[tauri::command]
+async fn reset_orb_positions(app: AppHandle) -> Result<PublicSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || reset_orb_positions_sync(app))
+        .await
+        .map_err(|err| format!("讀唔到設定：{err}"))?
+}
+
+fn reset_orb_positions_sync(app: AppHandle) -> Result<PublicSettings, String> {
+    let state = app.try_state::<AppState>();
+    let _guard = state.as_ref().map(|state| {
+        state
+            .config_write
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    });
+    let path = config_path(&app)?;
+    config::clear_orb_positions(&path)?;
+    drop(_guard);
+    drop(state);
+    load_public_settings(app)
+}
+
 /// R-SO-09. One sub-orb panel's compose mode. `live` is that profile's current
 /// session ids; saved modes for sessions missing from it are dropped.
 #[tauri::command]
@@ -4122,6 +4145,7 @@ pub fn run() {
             set_show_tool_detail,
             set_panel_size,
             set_orb_position,
+            reset_orb_positions,
             set_compose_mode,
             set_suborb_mode,
             probe_gateway,
