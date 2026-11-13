@@ -195,6 +195,8 @@ import {
   orbDragAllowed,
   orbDraggable,
   planOrbDodges,
+  suborbRestCentre,
+  suborbTether,
   validOrbId,
 } from "./orbdrag.js";
 import {
@@ -10276,9 +10278,11 @@ function coverDisc(shell) {
   // CSS translate is not readable on the first frame, so a flush then sticks
   // on a mid-glide point and the destination never becomes clickable.
   const id = shell.dataset?.botId;
-  const spot = state.orbDodge?.[id] || homeOrbPoint(id);
+  const sub = shell.dataset?.kind === "suborb";
+  const spot = sub ? suborbLayoutCentre(shell) : (state.orbDodge?.[id] || homeOrbPoint(id));
   if (!spot) return box;
-  return { x: spot.x - ORB / 2, y: spot.y - ORB / 2, w: ORB, h: ORB };
+  const size = sub ? suborbSizePx(ORB) : ORB;
+  return { x: spot.x - size / 2, y: spot.y - size / 2, w: size, h: size };
 }
 
 function discBox(shell) {
@@ -10412,9 +10416,9 @@ function collectHits() {
           : null;
         // A dodge glide's later frames are dropped while collapse quiet holds
         // the flush. Publish the destination disc, not the in-flight point.
-        const parked = shell._orbGlide && shell.dataset.kind !== "suborb" ? coverDisc(shell) : null;
+        const parked = shell._orbGlide ? coverDisc(shell) : null;
         const circle = shell.dataset.kind === "suborb"
-          ? suborbHitCircle(orbDiscHit(box, disc))
+          ? suborbHitCircle(orbDiscHit(parked || box, parked || disc))
           : orbDiscHit(parked || box, parked || disc);
         const label = state.showBotNames && state.modifierHeld
           ? orbNameHitBox(shell.dataset.botId)
@@ -11157,7 +11161,9 @@ function orbCentre(shell) {
  *  the screen and drag the disc off the dodge spot (kanban logged at 178,64
  *  but published at 441,42). Slide the existing anchor onto the point. */
 function relayoutOrb(shell) {
-  const point = anchorPoint(shell.dataset.botId);
+  const point = shell?.dataset?.kind === "suborb"
+    ? suborbLayoutCentre(shell)
+    : anchorPoint(shell.dataset.botId);
   const ax = Number(shell.dataset.ax) || ORB / 2;
   const ay = Number(shell.dataset.ay) || ORB / 2;
   const left = `${point.x - ax}px`;
@@ -11180,6 +11186,8 @@ function relayoutOrb(shell) {
  * and clip are untouched. Hit rects follow every frame (getBoundingClientRect
  * includes the animated translate) and once more at the end.
  */
+let parentGlideHold = 0;
+
 function glideOrb(shell, from) {
   // Drop a glide still in flight first: `to` is the new layout without it.
   // `from` was read before the relayout, so it already includes it.
@@ -11197,6 +11205,17 @@ function glideOrb(shell, from) {
     done();
     return;
   }
+  const parentGlide = shell.dataset.kind !== "suborb";
+  let held = false;
+  const releaseHold = () => {
+    if (!held) return;
+    held = false;
+    parentGlideHold = Math.max(0, parentGlideHold - 1);
+  };
+  if (parentGlide) {
+    held = true;
+    parentGlideHold += 1;
+  }
   const anim = shell.animate(
     [{ translate: `${dx}px ${dy}px` }, { translate: "0px 0px" }],
     { duration: ORB_DODGE_MS, easing: ORB_DODGE_EASE },
@@ -11205,18 +11224,35 @@ function glideOrb(shell, from) {
   shell._orbGlide = anim;
   // Publish straight from this frame. scheduleHitSync from inside a rAF
   // would cancel and re-queue its own frame every time and never publish.
+  // A parent glide keeps fan-followers and the tether on the moving disc.
   const tick = () => {
     if (shell._orbGlide !== anim) return;
     flushHits("orb-glide");
+    if (parentGlide) layoutSuborbOrbs();
+    paintSuborbTethers();
     if (anim.playState === "running") requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
+  paintSuborbTethers();
   anim.finished.then(() => {
     if (shell._orbGlide !== anim) return;
     shell._orbGlide = null;
+    releaseHold();
     done();
-  }).catch(() => { /* cancelled by a newer glide or a drag */ });
+  }).catch(() => { releaseHold(); /* cancelled by a newer glide or a drag */ });
   debugLog("orb-glide", `id=${shell.dataset.botId || ""} dx=${Math.round(-dx)} dy=${Math.round(-dy)}`);
+}
+
+function restingSuborb(shell) {
+  if (!shell || shell.dataset.kind !== "suborb") return false;
+  const id = shell.dataset.botId || "";
+  if (!id.startsWith("suborb:") || !validOrbId(id)) return false;
+  if (shell.dataset.state !== "orb") return false;
+  if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return false;
+  if (shell.dataset.rehearsal === "1" || shell.dataset.dragged === "1") return false;
+  if (state.orbDrag?.active && state.orbDrag.id === id) return false;
+  if (suborbFanHidden(shell)) return false;
+  return !!suborbHomeCentre(shell);
 }
 
 function restingMainOrb(shell) {
@@ -11236,22 +11272,31 @@ function restingMainOrb(shell) {
  * old behaviour stays: the orb fades to 0 under the panel (R-OB-05).
  */
 function reconcileOrbDodges() {
+  // A parent dodge glide is already moving. Re-planning here would cancel it.
+  if (parentGlideHold > 0) return;
   if (reconcileOrbDodges.busy) return;
   reconcileOrbDodges.busy = true;
   try {
     const covers = openCoverBoxes();
-    const shells = [...document.querySelectorAll(".morph")].filter(restingMainOrb);
+    const shells = [...document.querySelectorAll(".morph")].filter((shell) => restingMainOrb(shell) || restingSuborb(shell));
     // A panel or pill keeps its dodge spot (it collapses back there); a removed orb forgets it.
+    // A tucked or collapsed sub-orb is off the rail, so its dodge spot goes too.
     for (const id of Object.keys(state.orbDodge)) {
-      if (!shellFor(id)) delete state.orbDodge[id];
+      const shell = shellFor(id);
+      if (!shell) delete state.orbDodge[id];
+      else if (shell.dataset.kind === "suborb" && !restingSuborb(shell)) delete state.orbDodge[id];
     }
     if (!shells.length) return;
     shells.sort((a, b) => String(a.dataset.botId).localeCompare(String(b.dataset.botId)));
-    const orbs = shells.map((shell) => ({
-      id: shell.dataset.botId,
-      home: homeOrbPoint(shell.dataset.botId),
-      current: state.orbDodge[shell.dataset.botId] || null,
-    }));
+    const orbs = shells.map((shell) => {
+      const sub = shell.dataset.kind === "suborb";
+      return {
+        id: shell.dataset.botId,
+        home: sub ? suborbHomeCentre(shell) : homeOrbPoint(shell.dataset.botId),
+        current: state.orbDodge[shell.dataset.botId] || null,
+        ...(sub ? { orb: suborbSizePx(ORB), halo: 0 } : {}),
+      };
+    }).filter((item) => item.home);
     const plan = planOrbDodges(orbs, covers, orbScreen());
     let moved = 0;
     for (const shell of shells) {
@@ -11333,14 +11378,29 @@ async function resetAllOrbPositions() {
   if (!ids.length || state.orbResetBusy) return;
   state.orbResetBusy = true;
   syncOrbResetButton();
+  const froms = new Map();
+  for (const id of ids) {
+    const shell = shellFor(id);
+    if (shell?.dataset?.state === "orb") froms.set(id, orbCentre(shell));
+  }
   for (const id of ids) state.orbPositions[id] = null;
   for (const id of ids) {
     const shell = shellFor(id);
     if (!restingMainOrb(shell)) continue;
-    const from = orbCentre(shell);
+    const from = froms.get(id) || orbCentre(shell);
     relayoutOrb(shell);
     glideOrb(shell, from);
   }
+  // Dragged sub-orbs lose their spot and slide back onto the fan.
+  layoutSuborbOrbs();
+  for (const id of ids) {
+    const shell = shellFor(id);
+    if (shell?.dataset?.kind !== "suborb" || shell.dataset.state !== "orb") continue;
+    const from = froms.get(id);
+    if (!from) continue;
+    glideOrb(shell, from);
+  }
+  paintSuborbTethers();
   layoutShells();
   debugLog("orb-reset", `ids=${ids.join(",")}`);
   try {
@@ -11419,13 +11479,9 @@ function moveOrbDrag(event) {
   event.preventDefault?.();
   drag.point = clampOrbPoint({ x: drag.origin.x + dx, y: drag.origin.y + dy }, orbScreen());
   relayoutOrb(shell);
-  if (!moveOrbDrag.frame) {
-    moveOrbDrag.frame = requestAnimationFrame(() => {
-      moveOrbDrag.frame = 0;
-      layoutSuborbOrbs();
-      paintOrbNames();
-    });
-  }
+  // Fan followers and tethers track this move now, not on the next frame.
+  layoutSuborbOrbs();
+  paintOrbNames();
   scheduleHitSync("orb-drag");
 }
 
@@ -12694,6 +12750,9 @@ function suborbDiscCentre(shell) {
 }
 
 function glideSuborb(shell, from) {
+  // A live drag or the reset slide already moves the shell. Restarting the
+  // 200ms disc glide on every pointermove would leave the fan behind.
+  if (state.orbDrag?.active || state.orbResetBusy || parentGlideHold > 0) return;
   if (!from || shell.dataset.state !== "orb") return;
   const disc = shell.querySelector(".suborb-disc");
   const to = suborbDiscCentre(shell);
@@ -12734,7 +12793,11 @@ function renderSuborbs() {
     if (!view) continue;
     const anchor = parentOrbBox(bot.id);
     const size = suborbSizePx(ORB);
-    const total = view.shown.length + (view.overflow.length ? 1 : 0);
+    // A dropped sub-orb is off the fan. The arc is only the ones that still follow.
+    const rows = view.shown.map((row) => ({ row, id: suborbPanelId(bot.id, row.id) }));
+    const followers = rows.filter((item) => !suborbPlacedFree(item.id));
+    const freed = rows.filter((item) => suborbPlacedFree(item.id));
+    const total = followers.length + (view.overflow.length ? 1 : 0);
     const neighbours = anchor ? fanNeighbours(bot.id) : [];
     const fan = anchor
       ? suborbFanLayout({
@@ -12755,31 +12818,41 @@ function renderSuborbs() {
     const homeOf = (slot) => (look === "collapsed" && badge ? badge : slot);
     paintFanParent(bot.id, fan, look, total, size);
     paintFanOrbit(bot, anchor, fan, look);
-    view.shown.forEach((row, index) => {
-      const id = suborbPanelId(bot.id, row.id);
+    const placeRow = (row, id, slot, fanLook) => {
       keep.add(id);
       const shell = ensureSuborbShell(bot, row);
-      const slot = homeOf(slots[index]);
       if (slot) {
         shell.dataset.homeX = String(slot.x);
         shell.dataset.homeY = String(slot.y);
         shell.dataset.edge = anchor?.edge || "right";
       }
-      setFanState(shell, look);
+      setFanState(shell, fanLook);
       paintSuborbDisc(id, row);
       if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel" && !shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")) {
         const from = suborbDiscCentre(shell);
         placeSuborbShell(shell);
         glideSuborb(shell, from);
       }
+    };
+    followers.forEach((item, index) => {
+      placeRow(item.row, item.id, homeOf(slots[index]), look);
+    });
+    // Dropped sub-orbs stay visible where they landed, including while the
+    // parent panel is open or the remaining fan has collapsed to a badge.
+    // homeX tracks that disc so a later cascade opens from the drop (R-SO-09).
+    freed.forEach((item) => {
+      const shell = ensureSuborbShell(bot, item.row);
+      const centre = suborbLayoutCentre(shell);
+      const slot = centre ? { x: centre.x - size / 2, y: centre.y - size / 2 } : null;
+      placeRow(item.row, item.id, slot, "fan");
     });
     // 「+N」 is the last fan slot. A collapsed fan turns it into the count badge.
     const moreId = `suborb-more:${bot.id}`;
-    if (view.overflow.length || (look === "collapsed" && view.shown.length)) {
+    if (view.overflow.length || (look === "collapsed" && followers.length)) {
       keep.add(moreId);
       const badgeMode = look === "collapsed";
-      const shell = ensureSuborbMore(bot, view.overflow.length, badgeMode ? view.shown.length + view.overflow.length : 0);
-      const slot = badgeMode ? badge : slots[view.shown.length];
+      const shell = ensureSuborbMore(bot, view.overflow.length, badgeMode ? followers.length + view.overflow.length : 0);
+      const slot = badgeMode ? badge : slots[followers.length];
       if (slot) {
         shell.dataset.homeX = String(slot.x);
         shell.dataset.homeY = String(slot.y);
@@ -12804,7 +12877,99 @@ function renderSuborbs() {
   });
   // R-OB-06: a sub-orb that just appeared or moved gets its plate now, not on the next paint.
   if (state.showBotNames) paintOrbNames();
+  paintSuborbTethers();
   scheduleHitSync();
+}
+
+/** Fan slot centre written by renderSuborbs. Null until the fan has placed it. */
+function suborbFanCentre(shell) {
+  const size = suborbSizePx(ORB);
+  const homeX = Number(shell?.dataset?.homeX);
+  const homeY = Number(shell?.dataset?.homeY);
+  if (!Number.isFinite(homeX) || !Number.isFinite(homeY)) return null;
+  return { x: homeX + size / 2, y: homeY + size / 2 };
+}
+
+/** Dropped spot, else the fan. This is the dodge home. */
+function suborbHomeCentre(shell) {
+  return suborbRestCentre({
+    fan: suborbFanCentre(shell),
+    saved: savedOrbPoint(shell?.dataset?.botId),
+  });
+}
+
+/** Drag, then dodge, then the drop, then the fan. */
+function suborbLayoutCentre(shell) {
+  const id = shell?.dataset?.botId || "";
+  const drag = state.orbDrag;
+  const live = drag?.active && drag.id === id && drag.point ? drag.point : null;
+  return suborbRestCentre({
+    fan: suborbFanCentre(shell),
+    saved: savedOrbPoint(id),
+    drag: live,
+    dodge: state.orbDodge?.[id] || null,
+  }) || {
+    x: 8 + suborbSizePx(ORB) / 2,
+    y: 8 + suborbSizePx(ORB) / 2,
+  };
+}
+
+/** True once this sub-orb has a drop (or a drag in progress), so it leaves the fan. */
+function suborbPlacedFree(id) {
+  if (state.orbDrag?.active && state.orbDrag.id === id) return true;
+  return !!savedOrbPoint(id);
+}
+
+/**
+ * R-OB-08 tether. One hairline from each visible sub-orb to its profile orb.
+ * Centres are the discs on screen, so a drag or a dodge glide moves the ends
+ * on that frame. The SVG is not a hit (`pointer-events: none`, no hit id).
+ */
+function paintSuborbTethers() {
+  const rail = $("#bot-rail");
+  if (!rail) return;
+  let svg = rail.querySelector(":scope > .suborb-tether");
+  const parts = [];
+  rail.querySelectorAll(".morph[data-kind='suborb']").forEach((shell) => {
+    const id = shell.dataset.botId || "";
+    if (!id.startsWith("suborb:") || shell.dataset.state !== "orb") return;
+    if (suborbFanHidden(shell)) return;
+    const sub = parseSuborbId(id);
+    if (!sub) return;
+    const line = suborbTether(parentOrbBox(sub.profile), suborbDiscCentre(shell));
+    if (line) parts.push(line);
+  });
+  if (!parts.length) {
+    svg?.remove();
+    return;
+  }
+  const ns = "http://www.w3.org/2000/svg";
+  if (!svg) {
+    svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("class", "suborb-tether");
+    svg.setAttribute("aria-hidden", "true");
+    rail.prepend(svg);
+  }
+  const w = window.innerWidth || 1280;
+  const h = window.innerHeight || 800;
+  svg.setAttribute("width", String(w));
+  svg.setAttribute("height", String(h));
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  const sig = parts.map((line) => `${line.x1.toFixed(1)},${line.y1.toFixed(1)},${line.x2.toFixed(1)},${line.y2.toFixed(1)}`).join(";");
+  if (svg.dataset.sig === sig) return;
+  svg.dataset.sig = sig;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  for (const line of parts) {
+    for (const kind of ["suborb-tether-halo", "suborb-tether-core"]) {
+      const el = document.createElementNS(ns, "line");
+      el.setAttribute("class", kind);
+      el.setAttribute("x1", String(line.x1));
+      el.setAttribute("y1", String(line.y1));
+      el.setAttribute("x2", String(line.x2));
+      el.setAttribute("y2", String(line.y2));
+      svg.appendChild(el);
+    }
+  }
 }
 
 /** Round 2: the parent orb keeps the only halo, cut to the rim the discs rest on. */
@@ -13102,8 +13267,11 @@ function placeSuborbShell(shell) {
   const homeX = Number(shell.dataset.homeX);
   const homeY = Number(shell.dataset.homeY);
   const openPanel = shell.dataset.state === "panel" || shell.dataset.opening === "panel";
-  const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2;
-  const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
+  // A resting sub-orb uses its drop, dodge, or drag. An open panel still
+  // cascades from the fan slot (R-SO-09).
+  const centre = openPanel ? null : suborbLayoutCentre(shell);
+  const cx = centre ? centre.x : (Number.isFinite(homeX) ? homeX : 8) + size / 2;
+  const cy = centre ? centre.y : (Number.isFinite(homeY) ? homeY : 8) + size / 2;
   shell.style.setProperty("--suborb-size", `${size}px`);
   const placed = placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
   const origin = openPanel ? cascadeOriginBox(shell, size, vw, vh) || placed : placed;

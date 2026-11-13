@@ -19,7 +19,7 @@
 7. 按住修飾鍵、而且游標位置已知時，所有面板必須降到靜止透明度並穿透，關閉按鈕一併穿透。作業系統 input shape 這時只包含光球，以及游標下面嘅預覽膠囊，不得包含面板矩形或 `close:`。放開修飾鍵後恢復不透明與可操作，面板矩形同關閉按鈕（連同周圍約 36px）回到命中區，第一次按下就關閉該面板。光球不得因為面板打開而變成未按修飾鍵也可點。任何 hit flush 或 input shape 公佈都要跟住而家嘅修飾鍵：修飾鍵按住而且游標喺光球或預覽膠囊上時，必須保留或重算嗰個矩形，不得公佈 n=0。指標已經按下期間亦不得清走現有命中區。呢條適用於每一條 flush，包括看板膠囊 settle 之後嗰下。權威係 Rust 嘅系統鍵監測（同驅動 Ctrl n=1 嗰個 `device_query`），唔係網頁 keydown。網頁喺穿透視窗未聚焦時撳落嘅 Ctrl 唔會有 keydown，頁面報 `ctrl=0` 都不得清走 Rust 已經睇到嘅鍵態。游標喺已公佈嘅光球或預覽膠囊上時，即使有面板蓋住，input shape 都要留住嗰個矩形。真實鍵態要交返俾頁面。滑鼠鍵同樣由 `device_query` 讀。按下如果係喺修飾鍵按住、游標喺光球上開始，就要把當時的 input shape 鎖到放開為止，期間的重新公佈不得改形狀。重新公佈時用同 n=1 一樣的 CSS 座標打新矩形；游標樣本缺失就沿用上次打中的座標。游標仍然喺上一份形狀的光球或預覽膠囊裡面時，不得公佈 n=0。設定 `HERMES_OVERLAY_DEBUG_LOG` 時，打不中或者鎖住形狀要寫 `hit-shape`（游標、候選矩形、原因）。Ctrl+光球的打開由 pointerup 開始：pointerdown 用 `setPointerCapture` 記住光球 id，不得等同一個元素的 DOM `click`。按下已被 Rust 鎖住形狀時，用 Rust 鎖住的光球 id。指標按下期間，以及距上次 pointerdown 約 300ms 內，不得開始計劃彩排，亦不得重畫光球 DOM；pointerdown 會中止進行中的彩排並延後。真實計劃接縫期間不得開始彩排，重疊的 hit flush 亦要延後。同一份記錄寫 `pointer`（phase、目標、光球 id、pointerdown 當下嘅修飾鍵）。pointerup 打開要係按下開始時修飾鍵已經按住：Rust 喺 hit check 見到 Ctrl 加按下就鎖住嗰粒光球 id，頁面遲啲先處理 pointerdown 都要跟呢個鎖，唔好改睇而家嘅鍵。DOM 嘅 ctrlKey 同樣算數。之後先至推到嘅鍵態不得取消一個開始時按住修飾鍵嘅按下。按下開始時修飾鍵已經放開（包括剛放開嗰一下）就不得打開。複製貼上組合唔算按住。系統輸入唔支援時（瀏覽器預覽）維持可以打開。修飾鍵按下或放開要由 `device_query` 監測即時推去頁面，不得等 morph、收回、彩排或 hit flush。面板（連同計劃）嘅透明要直接寫喺已經合成嘅殼上（inline opacity；仲喺殼入面嘅計劃層維持 1，免得兩層相乘；已經搬出殼外（`plan-hit-host`）嘅計劃寫同殼一樣嘅數，揸住修飾鍵時同主面板一齊淡，放手一齊返平時透明度，Devon 2026-11-02），冇 transition，唔好靠成棵樹繼承嘅自訂屬性，而且要即刻要一幀。放開後一個畫面內返到實色，按下後一個畫面內變淡，不得再閃一幀淡。呢下更新不得重畫 Bot、refresh 或 flush。透明只係按住嗰陣。Ctrl 一直按住穿過打開，打開動畫可以照舊，動畫完結之後第一幀就要套上而家按住嘅透明同穿透，之後嘅寫入不得改返實色。聚焦輸入框嘅 Enter：DOM ctrlKey 就係權威，同系統鍵態用 OR，唔好用 AND。ctrlKey 係 true 就係 Ctrl+Enter，即使系統監測未見到鍵都不得送出。系統鍵態係 true 同樣不得送出。
 8. 訊息預覽是膠囊，不是獨立 toast。它在未按住修飾鍵時必須不透明（透明度 1）而且滑鼠穿透。只有按住修飾鍵、而且游標在該膠囊上時才可點，並可以繼續展開成面板。
 9. 在其他程式或本程式輸入框按 Ctrl+C 或 Ctrl+V 時，光球與面板的透明度與穿透不得改變，也不得閃一下。這包括 C／V 先放開、Ctrl 仍按住的整段尾巴。單獨按住 Ctrl 必須在 100ms 內進入第 2 與第 7 條的互動狀態。修飾鍵若改成 Shift 或 Alt，Ctrl+C／Ctrl+V 不適用這條約束。
-10. 面板必須能在視窗內拖移：拖標題列改變該面板的 `left`／`top`。不得改成拖動整個作業系統視窗。拖移中途游標離開原矩形，拖移仍須完成。拖移只移動打開中的面板。收回成光球時必須丟掉這次拖移位置，光球回到原本的邊緣錨點，不得留在畫面中間。
+10. 面板必須能在視窗內拖移：拖標題列改變該面板的 `left`／`top`。不得改成拖動整個作業系統視窗。拖移中途游標離開原矩形，拖移仍須完成。拖移只移動打開中的面板。收回成光球時必須丟掉這次面板拖移。光球留喺 R-OB-08 記住嘅位置（未拖過就係設計位置），只會因為打開嘅面板蓋住而閃開，不得因為收埋面板就飛返邊緣錨點。
 11. 讀不到全域游標或修飾鍵時（純 Wayland），光球與面板保持可點，不得進入穿透。
 12. 冷啟動的視窗必須鋪滿所在螢幕。不得停在置中的 1280×800。光球第一眼就要喺最終位置。`skipTaskbar` 維持 false，系統匣同工作列都仲喺。Linux：視窗建立時隱藏、無裝飾、透明（`tauri.conf.json` 的 `visible: false`、`maximized: false`）。tao 會喺 `set_decorated` 之前就 map，所以第一下 `show` 只可以發生喺透明畫面畫好之後。隱藏時寫好滿螢幕位置同尺寸，頁面等到 viewport 係嗰個尺寸、光球排好、再透明畫一幀，先至 `show`。`show` 之後再公佈一次命中區，已經有嘅命中區不得清成 n=0。唔好靠 `maximized` 等第一次 configure 先放大。Windows 不得用隱藏啟動（R-CT-01 優先）：`tauri.windows.conf.json` 的 `visible: true`、`maximized: true`，鋪滿帶 `SWP_SHOWWINDOW`。穿透用 tao 的 `set_ignore_cursor_events`，唔好手寫 exstyle，亦唔好裝 `WM_NCHITTEST`。
 13. 啟動狀態列（例如「已連接設定…」）不得蓋住上緣光球。成功與資訊約 4 秒後必須消失。錯誤，以及可以點擊的提示，可以留下。
@@ -62,7 +62,7 @@
 
 本節跟 REQUIREMENTS.md 的 R-SS-01 至 R-SS-04。主光球喺啟動同每次由收合打開時都開該 profile 同 Hermes Desktop 一樣的 Bot Chat。人手 explicit 先可以蓋過。不得自動轉去最新 session。啟動同打開不得建立 session，亦不得把過時 sessionId 寫返 config.json。
 
-1. Hermes Desktop 的 Bot Chat 是該 profile 標題剛好是 `Bot Chat` 的那一條（通常 hidden）。標題查已經返回最新 child，客戶端不沿 `parent_session_id` 走。`source` 同訊息數都不計，空的 Bot Chat 都有效。主光球在啟動同每次由收合打開面板時開這條，除非 config 的 explicit 旗指向清單裡仍在的另一條。非 explicit 的已存 id，即使仍在清單，都讓給這條 Bot Chat，而且不寫回 config。隱藏列用精確標題查，`include_hidden=true` 同 `include_archived=true`。不得改跟最新 session。其他 session 之後會以子光球表示，唔係呢次。
+1. Hermes Desktop 的 Bot Chat 是該 profile 標題剛好是 `Bot Chat` 的那一條（通常 hidden）。標題查已經返回最新 child，客戶端不沿 `parent_session_id` 走。`source` 同訊息數都不計，空的 Bot Chat 都有效。主光球在啟動同每次由收合打開面板時開這條，除非 config 的 explicit 旗指向清單裡仍在的另一條。非 explicit 的已存 id，即使仍在清單，都讓給這條 Bot Chat，而且不寫回 config。隱藏列用精確標題查，`include_hidden=true` 同 `include_archived=true`。不得改跟最新 session。其他 session 用子光球（R-SO）。
 2. 啟動同打開主光球都不得建立 session，亦不得改開最近活躍的其他 session。完全沒有符合的 `Bot Chat` 時，主光球保持未有對話。只有使用者送出訊息、而當時沒有可用的 Bot Chat，先可以按 Hermes Desktop 的方式建立：`POST {root}/api/sessions`，內容為 `{ "title": "Bot Chat", "source": "api_server" }`。若 400 寫明標題已被某 session 佔用，用該 id，`source` 唔計。列表搵唔到該 id 時仍用該 id（隱藏佔用者）。建立不可行時保持未有對話，不得改開最新或其他 session。
 3. 面板必須保留 session 選擇器，其他 session 仍可手動選。標題為 `Bot Chat` 的列必須排在最頂，其餘再按最近活躍排序。手動選擇寫上 explicit，輪詢唔好把開住嘅面板彈走。收合之後再打開：有 explicit 就留喺嗰條，否則開 Desktop 的 Bot Chat。回覆進行中仍然可以轉去同一個 Bot 嘅另一個 session，或者打開另一個 Bot。手上嗰輪繼續喺伺服器行，回覆記喺原 session，返去先見到。光球保持忙碌。唔好出冇下一步嘅提示。
 4. 手動選擇寫上 explicit，直到使用者再改，或該 id 已不在列表／回 404。Bot Chat 因 cron 更新 `last_active`，不得把開住嘅手動選擇搶走。下次啟動或再打開主光球停喺呢個 explicit session。冇 explicit 就開 Desktop 的 Bot Chat。
@@ -158,3 +158,15 @@
 5. 每個 session 都可以送（R-CL-05）；批准同澄清經 WebSocket（R-CL-06）；冇 Bot Chat 時第一次送出開一條（R-CL-07）。
 6. 斜線：旁問用 `prompt.btw`（唔入歷史），Plan 同其他指令用 `command.dispatch`，插話用 `session.steer`（R-CL-08）。`skill` 同帶 `display` 嘅 `send` 送出 `message`，氣泡用 `display`（冇就用原本打嘅字）。登入成功即刻重讀開住嘅面板，句子寫「已登入 Hermes Dashboard」。
 7. Session 改動：`/title` 用 `session.title`，封存用 `session.archive`，分支 `session.branch_stored`（只送 `parent_session_id`，標題之後先改）。唔用 `PATCH /api/sessions/{id}`（0.22.5 要 revision fence）。歷史入面 `display_kind: model_switch` 嘅提示行唔顯示。
+
+## 14. 光球擺位、外觀同子光球（補 REQUIREMENTS）
+
+以下係 REQUIREMENTS 已有、本檔之前未寫低嘅實作。細節以 REQUIREMENTS 嗰條為準。
+
+1. **撰寫模式（R-SO-09）**。Shift+Tab 或者撳撰寫模式掣，只轉而家有焦點嗰塊面板。Bot Chat 用嗰個 bot 嘅 `compose_mode`。子光球面闆各自經 `set_suborb_mode` 寫入 `suborb_modes`；冇存過先至跟 bot 嘅 `compose_mode`。切換一塊不得改其他塊。
+2. **自由擺位（R-OB-08）**。主光球（Bot、看板、排程、設定）喺按下時已經揸住修飾鍵先可以拖；移動 5px 先算拖，未夠就係 Ctrl+撳打開。拖過嘅放手不得打開面板。拖緊發全畫面命中框，中心夾喺工作區（光碟邊離邊 4px，底離工作區 12px）。放手經 `set_orb_position` 寫入 `orb_positions`；舊檔冇呢個鍵就逐個位元組不變。「儲存」保留呢個鍵。冇虛線圈、冇吸返原位。設定「所有光球返原位」用 220ms 滑返設計位置，再 `reset_orb_positions` 刪走成個鍵。打開嘅面板蓋住原位就閃開到框外，面板走咗先返；搵唔到位先淡到 0。
+3. **特細、成個面板縮放、面板可以拉（R-LK-04、R-PN-09）**。文字大小有「特細」`xs`（0.8×）。打開咗嘅面板內容用 `zoom: var(--ui-scale)` 一齊縮放；面板個框、光球、光球字、光球名、預覽膠囊唔縮放。對話、看板、設定嘅自由邊同自由角可以拖，經 `set_panel_size` 寫入 `panel_sizes`；雙擊把手還原。子光球面闆同排程欄唔可以拉。
+4. **要你答（R-AP-06）**。Hermes `clarify` 出卡，小標題「要你答」，同批准卡一齊貼底。同一批 1–5 條各自一張卡，留到答完。歷史載入之後如果 live session 仲有對應請求，就要記低 `runId` 再補卡，唔好當已答。
+5. **子光球 settle（R-SO-05、R-SO-07）**。伺服器話個 run 已經唔活躍（`load_run_controls` 回 completed／failed／cancelled／canceled／expired／interrupted／gone，或者清單唔忙而且冇活躍 run）就要停運行弧。淨係清單 `busy === false`、尾頁仲等緊回覆，運行弧保持。未釘、面板收埋、已讀，停弧之後先按 3 秒收起。
+6. **黃點**。未釘選嘅子光球收起之後先至有新訊息，黃點（`--nous-yellow`）留到用戶再開嗰塊面板。收起、catch-up、或者 `message_count` 再加，都不得自動當已讀（Devon 2026-11-13）。
+7. **子光球拖曳同幼線（R-OB-08，Devon 2026-11-13 17:37 London：「子光球位置也可被移動, 但有幼線連著, 讓用戶得知是哪個 profile 的 session」）**。子光球用同主光球一樣嘅 Ctrl+5px 拖，夾喺同一個工作區，拖緊全畫面命中框，拖過嘅放手不得打開面板。冇修飾鍵就穿透。放手經 `set_orb_position` 寫入 `orb_positions`，鍵係 `suborb:<profile>:<session id>`。未拖過跟扇，包括主光球被拖、面板 dock 或者 undock。拖過就留喺放手嗰點，冇吸返去、冇虛線圈。「所有光球返原位」一併清走子光球。每粒可見子光球有一條幼線連住 profile 主光球，平時都見得到；拖任何一邊、或者主光球閃開，兩頭都跟住。幼線 `pointer-events: none`，唔入命中區。子光球被面板蓋住就同主光球一樣閃開，原位係扇位或者放手嗰點。
