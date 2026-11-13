@@ -1242,6 +1242,22 @@ export function historyNoticePending(message) {
   return message?.role === "notice" && (message.tool_name === "clarify" || message.tool_name === "approval");
 }
 
+/** The Hermes countdown on a history notice has elapsed. A sealed notice is not waiting. */
+export function historyNoticeTimedOut(message, nowMs = Date.now()) {
+  if (!historyNoticePending(message)) return false;
+  let payload = {};
+  try {
+    payload = JSON.parse(String(message?.text || ""));
+  } catch {
+    return false;
+  }
+  if (payload.unrecoverable) return false;
+  const timeout = Number(payload.timeout_s);
+  const asked = Number(payload.asked_at);
+  if (!(timeout > 0) || !(asked > 0)) return false;
+  return timeout - (nowMs / 1000 - asked) <= 0;
+}
+
 export function historyNoticeId(message) {
   if (message?.tool_call_id) return String(message.tool_call_id);
   try {

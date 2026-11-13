@@ -631,14 +631,14 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 
 **R-SO-03** 兩條狀態通道：活動（閒置圈 .45、思考中 1.2s 弧）同角標（等緊答 > 失敗 > Plan > 未讀，一次只出一個）。光碟本體嘅遠近透明度見 R-SO-08，唔再用 .45 做整粒光球嘅靜止透明度。
 **R-SO-04** sub-orb 面板用同一套 Ctrl 規則同同一塊 bot 面板（composer、撰寫模式、工具摺疊、批准／澄清卡、停止、排隊）。Header 係 breadcrumb `BOTNAME / session 標題`，加「釘住」／「取消釘住」。
-**R-SO-05** 閒置冇持續動畫；子光球只動 transform、opacity、clip-path。思考弧只喺 running 時先轉。
+**R-SO-05** 閒置冇持續動畫；子光球只動 transform、opacity、clip-path。思考弧只喺 running 時先轉。伺服器話個 run 已經唔活躍（`load_run_controls` 回 completed／failed／cancelled／canceled／expired／interrupted／gone）就要收走運行弧：清嗰粒子光球嘅 `busy`／`localBusy`、記低呢條 session 已閒置、尾頁當已 settle、狀態改「閒置」。清單／catch-up 嘅 `busy === false` 要配埋「冇未完結嘅 run」先收：客戶端仲標住 busy 但已經冇 run id，或者歷史通知逾時後再問到個 session 唔忙而且冇 run id。淨係清單 `busy === false`（旗標缺席亦係 false）、尾頁仲等緊回覆、又冇本地 busy，運行弧保持，直到回覆 settle。`busy === true`，或者 run 仲係 running／started／waiting_for_approval，就繼續轉。清單話唔忙但客戶端仲揸住一個 run id，要再問 `load_run_controls`，唔好靠清單旗標自己當閒置。歷史通知倒數到 0 只可以觸發呢次再問（現有清單 poll／catch-up 或 `load_run_controls`），唔好靠計時器清 `busy`。用戶排咗隊、尾句仲係用戶，一旦上面嘅確認話閒置而且冇活躍 run，唔好再因為呢句一直轉。未釘、面板收埋、已讀，就跟 R-SO-07 嘅 3 秒收起。釘住嘅子光球留低，但唔再轉。（2026-11-13）
 
 **R-SO-06** 子光球發現。Devon 一個任務一條 Hermes session。主光球永遠開該 bot 嘅 Desktop Bot Chat（R-SS-01），程式唔會自動把主面板轉去另一條 session，啟動亦唔建立 session。Bot Chat、主光球而家綁住嗰條、已封存、以及標題以 `_YYYYMMDDHHMM` 或 `_YYYYMMDDHHMMSS` 結尾（renew 封存名）嘅列，永遠唔做子光球。第一次 session 清單係基準：當時已存在、又未釘住嘅列唔出子光球。之後新出現嘅任務列，或者 `message_count`／`last_active` 相對基準有變嘅列，先自動出一粒未釘住嘅子光球。發現沿用而家嘅平價輪詢：只比較清單上嘅 `message_count` 同 `last_active`；有變先攞該列尾頁（最多 40 行），唔好為子光球加全對話輪詢。頁面準備好之後要再播一次而家嘅清單（唔下載全文），等啟動之後第一條外面開嘅任務唔會被當成基準，釘住嘅子光球亦唔使等下一次清單變化先出現。可見子光球最多 4 粒（R-SO-02）；再多就第 5 個位係「+N」，Ctrl+撳開該 bot 嘅 session picker。啱啱建立或者打開嘅 session 一定佔一粒可見光碟並打開面板；讓位俾最舊嗰粒未釘、未活動嘅子光球入「+N」。4 粒都釘住時仍然顯示新嗰粒。次序係釘選先，然後按建立時間，狀態唔好令佢哋跳位。已封存嘅列（清單標咗封存，或者之前喺清單出現過而家冇咗）要收起未釘同釘住嘅子光球。只有呢種情況先從 config 刪走個 pin。第一份清單未到、或者啱啱建立而下一份清單未包括，都唔好刪 pin。
 - 來源：Devon（2026-10-29）。
 - 驗收（盒）：模擬清單第一次唔出舊任務；新 id 出一粒；封存同 `標題_202610271200` 唔出；`message_count` 冇變就唔再取訊息；多過 4 粒先出「+N」。
 - 狀態：❓ / ❓（單元測試）。
 
-**R-SO-07** 釘選。Ctrl+右撳子光球（穿透規則同主光球，見 R-CT-02）出「釘住」或「取消釘住」。面板 header 同一個掣。只有釘選、取消釘選，同埋該 session 被封存，先寫 config.json 頂層 `suborb_pins`（profile → session id 陣列），用 splice，唔改 session id、explicit、anchor 同其他鍵。取消到空就刪走個鍵，檔案返到未釘之前嘅位元組。未釘選嘅子光球，只可以喺面板已經收起、任務完成（唔再思考、唔再等答，而且尾頁已 settle 或 session 已結束）兼 Devon 已讀（面板打開過）之後，再過 3000ms 先收起。3000ms 由收起面板嗰下開始計。面板開住、輸入框有焦點、或者輸入框有字，都唔好收。3 秒到就要再算一次，唔好等下一次清單變化。尾頁最後一行仲係用戶、bot 未答完，子光球保持運行弧。釘住嘅留低，即使已讀同完成。已讀之後再有新 `message_count` 就當未讀，子光球再出。
+**R-SO-07** 釘選。Ctrl+右撳子光球（穿透規則同主光球，見 R-CT-02）出「釘住」或「取消釘住」。面板 header 同一個掣。只有釘選、取消釘選，同埋該 session 被封存，先寫 config.json 頂層 `suborb_pins`（profile → session id 陣列），用 splice，唔改 session id、explicit、anchor 同其他鍵。取消到空就刪走個鍵，檔案返到未釘之前嘅位元組。未釘選嘅子光球，只可以喺面板已經收起、任務完成（唔再思考、唔再等答，而且尾頁已 settle 或 session 已結束）兼 Devon 已讀（面板打開過）之後，再過 3000ms 先收起。3000ms 由收起面板嗰下開始計。面板開住、輸入框有焦點、或者輸入框有字，都唔好收。3 秒到就要再算一次，唔好等下一次清單變化。尾頁最後一行仲係用戶、bot 未答完，子光球保持運行弧。例外（2026-11-13）：伺服器已經話個 session 唔忙、亦冇活躍 run，尾句係用戶都當已 settle，運行弧停；未釘、面板收埋、已讀，就跟上面 3 秒收起。伺服器仍然話忙就繼續轉。釘住嘅留低，即使已讀同完成；閒置時唔再轉。已讀之後再有新 `message_count` 就當未讀，子光球再出。
 - 來源：Devon（2026-10-29）。
 - 驗收（盒）：釘一次 config 只多 `suborb_pins`；取消釘選之後個鍵消失，session id 不變；面板開住唔好收；收起面板 3 秒後未釘嘅子光球消失，釘住嘅仲喺。
 - 狀態：❓ / ❓（單元測試）。

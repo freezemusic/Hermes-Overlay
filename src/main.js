@@ -22,6 +22,7 @@ import {
   composerHoldsSuborb,
   reconcileSuborbs,
   releaseSuborbNodes,
+  suborbIdleDecision,
   suborbLabel,
   suborbPublishesPanel,
   placeSuborbCascade,
@@ -129,7 +130,7 @@ import {
   clarifyTick,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, sessionReadOnlyIn, sessionSendClosed, BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE, botChatRefusalLine, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, holdsOwnTurnUser, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, sealUnrecoverableNotice, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, sessionReadOnlyIn, sessionSendClosed, BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE, botChatRefusalLine, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, holdsOwnTurnUser, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, historyNoticeTimedOut, sealUnrecoverableNotice, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -5515,15 +5516,31 @@ function tickVisibleNotices() {
   armNoticeClock();
 }
 
+function noticeThreadIds() {
+  const ids = [];
+  for (const bot of state.bots || []) ids.push(bot.id);
+  for (const id of state.threads.keys()) {
+    if (isSuborbId(id)) ids.push(id);
+  }
+  return ids;
+}
+
 function armNoticeClock() {
   const now = Date.now();
   let delay = 60000;
-  for (const bot of state.bots) {
-    const thread = threadFor(bot.id);
+  let timedOut = false;
+  for (const id of noticeThreadIds()) {
+    const thread = isSuborbId(id) ? state.threads.get(id) : threadFor(id);
     for (const message of thread?.messages || []) {
       if (!historyNoticePending(message)) continue;
+      if (historyNoticeTimedOut(message, now)) timedOut = true;
       delay = Math.min(delay, noticeTickDelay(message, now));
     }
+  }
+  // The countdown is not evidence. It only asks the server again.
+  if (timedOut && (!armNoticeClock.recheckAt || now >= armNoticeClock.recheckAt)) {
+    armNoticeClock.recheckAt = now + 15000;
+    void recheckTimedOutNotices();
   }
   const due = now + delay;
   if (armNoticeClock.due && armNoticeClock.due <= due + 50) return;
@@ -5947,6 +5964,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   thread.sessionReadOnly = locked;
   thread.sessionReadOnlyReason = locked ? (opened.read_only_reason || SESSION_READ_ONLY_REASON) : "";
   thread.sessions = sessions;
+  if (!isSuborbId(id)) noteSuborbList(id, thread.sessions, thread.sessionId || "");
   thread.loading = false;
   rememberPlan(thread, thread.messages);
   armNoticeClock();
@@ -7812,10 +7830,22 @@ async function recoverRunControls(id) {
     ));
     if (unanswered) sealUnmatchedNotices(merged);
     const gone = unanswered && (controls.length === 0 || terminalRunStatus(status) || (!asking && !approving));
+    const decision = suborbIdleDecision({
+      runStatus: status,
+      runGone: terminalRunStatus(status),
+      hasRunId: true,
+      localBusy: state.busy.has(id),
+    });
+    if (!asking && !approving && decision === "idle") {
+      releaseIdleSuborb(id);
+      reevalSuborbs();
+    }
     if (panelFor(id)) renderChat(id);
     if (approving || asking) pinChat(id);
     paintApprovalBadge(id);
-    return asking || approving ? "card" : gone ? "gone" : "unknown";
+    if (asking || approving) return "card";
+    if (decision === "idle") return "idle";
+    return gone ? "gone" : "unknown";
   } catch {
     return "unknown";
   }
@@ -9331,6 +9361,9 @@ function noteStopGate(thread, part) {
 
 function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
   const thread = threadFor(id);
+  if (!isSuborbId(id) && Array.isArray(opened?.sessions) && opened.sessions.length) {
+    noteSuborbList(id, opened.sessions, opened.session_id || thread.sessionId || "");
+  }
   const sessionId = opened.session_id || "";
   if (sessionId && thread.sessionId && sessionId !== thread.sessionId) return false;
   noteOpenedRun(id, opened);
@@ -12425,6 +12458,66 @@ function applySuborbArchive(profile, view) {
   }
 }
 
+function releaseIdleSuborb(id) {
+  if (!isSuborbId(id)) return false;
+  const sub = parseSuborbId(id);
+  const thread = state.threads.get(id);
+  if (thread && (
+    thread.messages.some(approvalPending)
+    || parkedApproval(thread)
+    || thread.messages.some(clarifyPending)
+    || parkedClarify(thread)
+  )) return false;
+  const model = suborbModel(sub.profile);
+  model.localBusy[sub.sessionId] = false;
+  model.settled[sub.sessionId] = true;
+  model.serverIdle = model.serverIdle || {};
+  model.serverIdle[sub.sessionId] = true;
+  if (!thread) return true;
+  thread.runId = "";
+  thread.queuedRunId = "";
+  thread.queued = false;
+  thread.watchReply = false;
+  if (!(state.busy.has(id) || thread.statusState === "busy")) return true;
+  setBotStatus(id, "閒置", "idle");
+  return true;
+}
+
+const suborbIdleChecks = new Map();
+
+function scheduleSuborbIdleCheck(id) {
+  const now = Date.now();
+  if ((suborbIdleChecks.get(id) || 0) > now) return;
+  suborbIdleChecks.set(id, now + 4000);
+  void recoverRunControls(id);
+}
+
+/** A history notice that reached 0 asks the server. It does not clear busy itself. */
+async function recheckTimedOutNotices() {
+  if (recheckTimedOutNotices.flight) return;
+  if (state.mode !== "hermes" || !inTauri()) return;
+  recheckTimedOutNotices.flight = true;
+  try {
+    let needList = false;
+    for (const id of noticeThreadIds()) {
+      const thread = state.threads.get(id);
+      if (!thread?.messages?.some((message) => historyNoticeTimedOut(message))) continue;
+      if (isSuborbId(id) && thread.runId) {
+        const outcome = await recoverRunControls(id);
+        if (outcome === "card" || outcome === "idle") continue;
+      }
+      needList = true;
+    }
+    if (!needList) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("seed_session_lists");
+  } catch {
+    /* The next watch poll still reconciles. */
+  } finally {
+    recheckTimedOutNotices.flight = false;
+  }
+}
+
 function noteSuborbList(profile, sessions, mainId = "") {
   if (!profile || isSuborbId(profile) || !state.suborbModels) return;
   const model = suborbModel(profile);
@@ -12437,6 +12530,31 @@ function noteSuborbList(profile, sessions, mainId = "") {
     model.failed[sub.sessionId] = thread.statusState === "error";
   }
   const listed = sessions || [];
+  for (const row of listed) {
+    if (!row?.id || row.busy !== false) continue;
+    const panelId = suborbPanelId(profile, row.id);
+    const thread = state.threads.get(panelId);
+    const locallyBusy = !!model.localBusy[row.id] || state.busy.has(panelId) || thread?.statusState === "busy";
+    const waitingReply = model.settled[row.id] === false;
+    const confirmedIdle = !!thread?.messages?.some((message) => historyNoticeTimedOut(message));
+    if (!locallyBusy && !waitingReply && !confirmedIdle) continue;
+    const decision = suborbIdleDecision({
+      sessionBusy: false,
+      localBusy: locallyBusy,
+      hasRunId: !!thread?.runId,
+      confirmedIdle,
+    });
+    if (decision === "recheck") {
+      scheduleSuborbIdleCheck(panelId);
+      continue;
+    }
+    if (decision !== "idle") continue;
+    if (!releaseIdleSuborb(panelId)) continue;
+    model.localBusy[row.id] = false;
+    model.settled[row.id] = true;
+    model.serverIdle = model.serverIdle || {};
+    model.serverIdle[row.id] = true;
+  }
   const view = reconcileSuborbs(model, {
     sessions: sessionsForSuborbs(profile, listed),
     mainId: mainId || threadFor(profile).sessionId || "",
@@ -12509,7 +12627,11 @@ async function peekSuborbTail(profile, sessionId) {
     });
     const signals = tailSignals(tail?.messages || []);
     const model = suborbModel(profile);
-    model.settled[sessionId] = !!(tail?.settled || signals.settled);
+    const listed = suborbSessionRow(profile, sessionId);
+    const holdRun = !!model.localBusy[sessionId] || listed?.busy === true;
+    model.settled[sessionId] = !holdRun && model.serverIdle?.[sessionId]
+      ? true
+      : !!(tail?.settled || signals.settled);
     if (signals.plan) model.plans[sessionId] = true;
     noteSuborbList(profile, threadFor(profile).sessions || [], threadFor(profile).sessionId || "");
   } catch {
@@ -13210,6 +13332,8 @@ async function loadSuborb(id) {
     thread.loading = false;
     noteOpenedRun(id, opened);
     rememberPlan(thread, thread.messages);
+    noteSuborbList(sub.profile, thread.sessions, threadFor(sub.profile).sessionId || "");
+    armNoticeClock();
     const model = suborbModel(sub.profile);
     model.read[sub.sessionId] = opened.message_count ?? thread.messages.length;
     if (planForPanel(thread)) model.plans[sub.sessionId] = true;
