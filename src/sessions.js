@@ -1179,6 +1179,7 @@ export function noticeTickDelay(message, nowMs = Date.now()) {
   } catch {
     payload = {};
   }
+  if (payload.unrecoverable) return 60000;
   const timeout = Number(payload.timeout_s);
   const asked = Number(payload.asked_at);
   if (!(timeout > 0) || !(asked > 0)) return 15000;
@@ -1199,6 +1200,13 @@ export function historyNoticeCopy(message, botName, nowMs = Date.now()) {
   const subject = String(payload.text || "").trim() || (kind === "approval" ? "一個指令" : "一條問題");
   const who = String(botName || "").trim() || "呢個 bot";
   const verb = kind === "approval" ? "等緊你批准" : "等緊你答";
+  if (payload.unrecoverable) {
+    return {
+      kind,
+      title: `${who} ${verb}：${subject}`,
+      detail: "呢度答唔到。打字唔會當答案送出。",
+    };
+  }
   const timeout = Number(payload.timeout_s);
   const asked = Number(payload.asked_at);
   let remain = "";
@@ -1213,6 +1221,21 @@ export function historyNoticeCopy(message, botName, nowMs = Date.now()) {
     title: `${who} ${verb}：${subject}`,
     detail: `呢度答唔到。${remain}`.trim(),
   };
+}
+
+/** The live run is gone. Drop the countdown; the overlay cannot post this as an answer. */
+export function sealUnrecoverableNotice(message) {
+  if (!historyNoticePending(message)) return false;
+  let payload = {};
+  try {
+    payload = JSON.parse(String(message.text || ""));
+  } catch {
+    payload = { text: message?.text || "" };
+  }
+  if (payload.unrecoverable) return false;
+  payload.unrecoverable = true;
+  message.text = JSON.stringify(payload);
+  return true;
 }
 
 export function historyNoticePending(message) {

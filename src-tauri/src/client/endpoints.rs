@@ -53,6 +53,10 @@ pub mod rpc {
     pub const SESSION_TITLE: &str = "session.title";
     pub const SESSION_ARCHIVE: &str = "session.archive";
     pub const SESSION_LIST: &str = "session.list";
+    /// In-memory sessions only. Does not create one (unlike `session.resume`).
+    pub const SESSION_ACTIVE_LIST: &str = "session.active_list";
+    /// Reconnect snapshot. `open_requests` is the unanswered clarify / approval list.
+    pub const SESSION_EVENTS_SINCE: &str = "session.events.since";
     pub const SESSION_INTERRUPT: &str = "session.interrupt";
     pub const PROMPT_SUBMIT: &str = "prompt.submit";
     pub const CLARIFY_LOCK: &str = "clarify.lock";

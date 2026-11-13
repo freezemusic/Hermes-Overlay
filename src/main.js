@@ -115,19 +115,21 @@ import {
 } from "./approval.js";
 import { absorbToolEvent, foldToolRuns, paintToolRun, toolRunDomSig } from "./tools.js";
 import {
+  CLARIFY_NOT_DELIVERED,
   CLARIFY_SEND_FAIL,
   CLARIFY_TIMEOUT_S,
   CLARIFY_WAIT_LABEL,
+  absorbRecoveredControls,
+  clarifyComposerRoute,
   clarifyFailure,
   clarifyKept,
   clarifyPending,
   clarifyPost,
   clarifyRequestId,
   clarifyTick,
-  mergePendingControls,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, sessionReadOnlyIn, sessionSendClosed, BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE, botChatRefusalLine, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, holdsOwnTurnUser, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, sessionReadOnlyIn, sessionSendClosed, BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE, botChatRefusalLine, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, holdsOwnTurnUser, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, sealUnrecoverableNotice, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -5877,6 +5879,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
     { id: nextId },
     quiet,
   )) return;
+  noteOpenedRun(id, opened);
   const sessions = stampKeptTitles(opened.sessions || [], thread.keptTitles);
   const sessionKey = nextId || thread.sessionId;
   const heldError = sendErrorDraft(state.sendErrors, id, sessionKey);
@@ -5914,6 +5917,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
       sessions,
     }) && thread.statusState !== "busy") {
       if (panelShowing(id)) restoreSendErrorBanner(id);
+      queueControlRecovery(id);
       return;
     }
     const reconciled = reconcileSideQuestion(thread.messages, shown, thread.sessionId, nextId || thread.sessionId, { trustServer });
@@ -5971,6 +5975,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   }
   const shell = shellFor(id);
   const openPanel = shell?.dataset.state === "panel" && !shell.classList.contains("is-collapsing");
+  queueControlRecovery(id);
   if (running) {
     if (openPanel) renderChat(id, { force: true, tag: "session-switch" });
     else if (shell) shell.dataset.chatDirty = "1";
@@ -7737,18 +7742,59 @@ async function answerClarify(id, message, answer) {
   paintApprovalBadge(id);
 }
 
+function noteOpenedRun(id, opened) {
+  const runId = String(opened?.run_id || "");
+  if (!runId) return;
+  const thread = threadFor(id);
+  if (thread.runId && state.busy.has(id)) return;
+  thread.runId = runId;
+}
+
+function queueControlRecovery(id) {
+  void recoverRunControls(id);
+}
+
+function terminalRunStatus(status) {
+  return ["completed", "failed", "cancelled", "canceled", "interrupted", "expired"].includes(String(status || ""));
+}
+
+function sealUnmatchedNotices(messages) {
+  const hasClarify = (messages || []).some(clarifyPending);
+  const hasApproval = (messages || []).some(approvalPending);
+  let sealed = false;
+  for (const message of messages || []) {
+    if (!historyNoticePending(message)) continue;
+    if (message.tool_name === "clarify" && hasClarify) continue;
+    if (message.tool_name === "approval" && hasApproval) continue;
+    if (sealUnrecoverableNotice(message)) sealed = true;
+  }
+  return sealed;
+}
+
 async function recoverRunControls(id) {
   const thread = threadFor(id);
-  if (state.mode !== "hermes" || !inTauri() || !thread.runId) return;
-  const waiting = state.busy.has(id) || thread.messages.some(approvalPending) || thread.messages.some(clarifyPending);
-  if (!waiting) return;
+  if (state.mode !== "hermes" || !inTauri()) return "unknown";
+  const notice = thread.messages.some(historyNoticePending);
+  const waiting = state.busy.has(id)
+    || notice
+    || thread.messages.some(approvalPending)
+    || thread.messages.some(clarifyPending);
+  if (!waiting) return "idle";
+  if (!thread.runId) {
+    if (notice && sealUnmatchedNotices(runMessages(id)) && panelFor(id)) renderChat(id);
+    return "gone";
+  }
+  const generation = (thread.recoverGeneration || 0) + 1;
+  thread.recoverGeneration = generation;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const snapshot = await invoke("load_run_controls", { profile: gatewayProfile(id), runId: thread.runId });
+    if (thread.recoverGeneration !== generation) return "unknown";
     const status = String(snapshot?.status || "");
     const dropMissing = status === "started" || status === "running" || status === "waiting_for_approval";
     const messages = runMessages(id);
-    const merged = mergePendingControls(messages, snapshot?.pending_controls, thread.runId, {
+    const controls = Array.isArray(snapshot?.pending_controls) ? snapshot.pending_controls : [];
+    const merged = absorbRecoveredControls(messages, controls, thread.runId, {
       dropMissing,
       now: Date.now(),
     });
@@ -7756,17 +7802,22 @@ async function recoverRunControls(id) {
     else if (thread.liveSessionId && thread.bySession?.get(thread.liveSessionId) === messages) {
       thread.bySession.set(thread.liveSessionId, merged);
     }
-    if (merged.some(clarifyPending)) armClarifyClock();
-    if (merged.some(approvalPending) || parkedApproval(thread)) {
-      setBotStatus(id, APPROVAL_WAIT_LABEL, "busy");
-    } else if (merged.some(clarifyPending) || parkedClarify(thread)) {
-      setBotStatus(id, CLARIFY_WAIT_LABEL, "busy");
-    }
+    const asking = merged.some(clarifyPending) || parkedClarify(thread);
+    const approving = merged.some(approvalPending) || parkedApproval(thread);
+    if (asking) armClarifyClock();
+    if (approving) setBotStatus(id, APPROVAL_WAIT_LABEL, "busy");
+    else if (asking) setBotStatus(id, CLARIFY_WAIT_LABEL, "busy");
+    const unanswered = merged.some((message) => historyNoticePending(message) && (
+      (message.tool_name === "clarify" && !asking) || (message.tool_name === "approval" && !approving)
+    ));
+    if (unanswered) sealUnmatchedNotices(merged);
+    const gone = unanswered && (controls.length === 0 || terminalRunStatus(status) || (!asking && !approving));
     if (panelFor(id)) renderChat(id);
-    if (merged.some(approvalPending) || merged.some(clarifyPending)) pinChat(id);
+    if (approving || asking) pinChat(id);
     paintApprovalBadge(id);
+    return asking || approving ? "card" : gone ? "gone" : "unknown";
   } catch {
-    /* the live stream still paints the cards */
+    return "unknown";
   }
 }
 
@@ -8402,19 +8453,29 @@ async function sendActive(id = state.activeId) {
     await sendSideQuestion(id, text);
     return;
   }
+  let clarifyRoute = clarifyComposerRoute(runMessages(id));
+  if (clarifyRoute.action === "recover") {
+    await recoverRunControls(id);
+    clarifyRoute = clarifyComposerRoute(runMessages(id));
+  }
+  if (clarifyRoute.action === "answer") {
+    const pendingClarify = clarifyRoute.card;
+    closeSlash();
+    input.value = "";
+    input.placeholder = "輸入訊息給呢個 Bot…";
+    state.slashArgsHint = "";
+    syncSlashGhost();
+    // Free-text while a clarify card is open answers that card (Hermes "Other"),
+    // instead of steer/queue which never reaches clarify.lock and vanishes on catch-up.
+    await answerClarify(id, pendingClarify, composeUserMessage(text).text || text);
+    return;
+  }
+  if (clarifyRoute.action === "recover") {
+    showActionError(CLARIFY_NOT_DELIVERED);
+    if (panelFor(id)) renderChat(id);
+    return;
+  }
   if (busy && action?.command !== "stop" && !composeSkipsBusyQueue(text)) {
-    const pendingClarify = runMessages(id).find((message) => clarifyPending(message) && message.status === "pending");
-    if (pendingClarify) {
-      closeSlash();
-      input.value = "";
-      input.placeholder = "輸入訊息給呢個 Bot…";
-      state.slashArgsHint = "";
-      syncSlashGhost();
-      // Free-text while a clarify card is open answers that card (Hermes "Other"),
-      // instead of steer/queue which never reaches clarify.lock and vanishes on catch-up.
-      await answerClarify(id, pendingClarify, composeUserMessage(text).text || text);
-      return;
-    }
     closeSlash();
     input.value = "";
     input.placeholder = "輸入訊息給呢個 Bot…";
@@ -9272,6 +9333,7 @@ function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
   const thread = threadFor(id);
   const sessionId = opened.session_id || "";
   if (sessionId && thread.sessionId && sessionId !== thread.sessionId) return false;
+  noteOpenedRun(id, opened);
   const incoming = presentTranscript(opened.messages);
   const busy = state.busy.has(id);
   if (append && (!busy || stopped)) {
@@ -9291,6 +9353,7 @@ function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
       thread.cancelHold = false;
     }
     if (changed && panelFor(id)) renderChat(id);
+    queueControlRecovery(id);
     return next.some((message) => message.role === "bot" || message.role === "failure");
   }
   if (busy) {
@@ -9301,6 +9364,7 @@ function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
       if (last) last.text = settled.text;
     }
     if (panelFor(id)) renderChat(id);
+    queueControlRecovery(id);
     return false;
   }
   thread.heldWatch = null;
@@ -9320,6 +9384,7 @@ function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
     }
   }
   if (changed && panelFor(id)) renderChat(id);
+  queueControlRecovery(id);
   return next.some((message) => message.role === "bot" || message.role === "failure");
 }
 
@@ -13143,12 +13208,14 @@ async function loadSuborb(id) {
     thread.sessions = opened.sessions || threadFor(sub.profile).sessions || [];
     thread.loaded = true;
     thread.loading = false;
+    noteOpenedRun(id, opened);
     rememberPlan(thread, thread.messages);
     const model = suborbModel(sub.profile);
     model.read[sub.sessionId] = opened.message_count ?? thread.messages.length;
     if (planForPanel(thread)) model.plans[sub.sessionId] = true;
     renderChat(id);
     paintSuborbDisc(id);
+    queueControlRecovery(id);
   } catch (err) {
     setBotStatus(id, "連線錯誤", "error");
     showActionError(String(err));
@@ -13174,13 +13241,24 @@ async function sendSuborb(id) {
   }
   const text = composeModeWire(typed, composeModeOf(id));
   thread.followTail = true;
+  let clarifyRoute = clarifyComposerRoute(runMessages(id));
+  if (clarifyRoute.action === "recover") {
+    await recoverRunControls(id);
+    clarifyRoute = clarifyComposerRoute(runMessages(id));
+  }
+  if (clarifyRoute.action === "answer") {
+    const pendingClarify = clarifyRoute.card;
+    await answerClarify(id, pendingClarify, composeUserMessage(text).text || text);
+    return;
+  }
+  if (clarifyRoute.action === "recover") {
+    if (input) input.value = typed;
+    showActionError(CLARIFY_NOT_DELIVERED);
+    renderChat(id);
+    return;
+  }
   const busy = state.busy.has(id);
   if (busy && !composeSkipsBusyQueue(text)) {
-    const pendingClarify = runMessages(id).find((message) => clarifyPending(message) && message.status === "pending");
-    if (pendingClarify) {
-      await answerClarify(id, pendingClarify, composeUserMessage(text).text || text);
-      return;
-    }
     appendMessage(id, composeUserMessage(text));
     await sendSuborbBusy(id, sub, thread, text);
     return;

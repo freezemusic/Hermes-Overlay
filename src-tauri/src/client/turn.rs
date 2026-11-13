@@ -59,6 +59,88 @@ pub fn split_clarify_prompt_id(prompt_id: &str) -> Option<(String, String)> {
     (!request.is_empty() && !qid.is_empty()).then(|| (request.to_string(), qid.to_string()))
 }
 
+/// `session.active_list` status values that mean a turn is still in this process.
+/// `idle` is not a run. Opening a chat must not cold-`session.resume` one into existence.
+pub fn session_run_is_live(status: &str) -> bool {
+    matches!(status.trim(), "waiting" | "working" | "streaming" | "starting")
+}
+
+fn json_field(value: &Value, key: &str) -> String {
+    value.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string()
+}
+
+fn choice_label(raw: &str) -> String {
+    raw.trim().trim_end_matches(" (Recommended)").trim().to_string()
+}
+
+fn answer_locked(params: &Value, qid: &str) -> bool {
+    params
+        .get("answers")
+        .and_then(Value::as_object)
+        .is_some_and(|answers| answers.contains_key(qid))
+}
+
+/// Hermes 0.22.5 `open_requests` (`server_requests.snapshot`) → `pending_controls`
+/// cards. One clarify request is 1–5 questions; a locked qid is already answered.
+/// `execution_generation` is 0: 9119 answers with `clarify.lock`, and the card
+/// still needs an integer so the composer can post.
+pub fn pending_controls_from_open_requests(open_requests: Option<&Value>) -> Vec<Value> {
+    let Some(rows) = open_requests.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for row in rows {
+        let id = json_field(row, "id");
+        if id.is_empty() {
+            continue;
+        }
+        let params = row.get("params").cloned().unwrap_or(Value::Null);
+        match json_field(row, "method").as_str() {
+            "clarify" => {
+                let Some(questions) = params.get("questions").and_then(Value::as_array) else {
+                    continue;
+                };
+                for question in questions {
+                    let qid = json_field(question, "qid");
+                    if qid.is_empty() || answer_locked(&params, &qid) {
+                        continue;
+                    }
+                    let choices = question
+                        .get("choices")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(choice_label)
+                                .filter(|label| !label.is_empty())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    out.push(serde_json::json!({
+                        "kind": "clarify",
+                        "prompt_id": clarify_prompt_id(&id, &qid),
+                        "question": json_field(question, "question"),
+                        "choices": choices,
+                        "multi_select": question.get("multi_select").and_then(Value::as_bool).unwrap_or(false),
+                        "execution_generation": 0,
+                    }));
+                }
+            }
+            "approval" => {
+                out.push(serde_json::json!({
+                    "kind": "approval",
+                    "prompt_id": id,
+                    "description": json_field(&params, "description"),
+                    "command": json_field(&params, "command"),
+                }));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 impl TurnMapper {
     pub fn new(run_id: String, live_sid: String, submit_status: &str, hint: bool) -> Self {
         let waiting = submit_status.trim() != "streaming";
@@ -330,6 +412,45 @@ mod tests {
     fn an_error_event_ends_the_turn_as_failed() {
         let mut m = mapper("streaming");
         assert!(matches!(m.on_event("error", "ab12", &json!({"message": "boom"})), Step::Done { failed: Some(ref t), .. } if t == "boom"));
+    }
+
+    #[test]
+    fn a_live_open_request_becomes_an_answerable_card_and_a_missing_run_does_not() {
+        assert!(session_run_is_live("waiting"));
+        assert!(session_run_is_live("working"));
+        assert!(!session_run_is_live("idle"));
+        assert!(!session_run_is_live(""));
+        let open = json!([
+            {
+                "id": "srq-c",
+                "method": "clarify",
+                "params": {
+                    "session_id": "ab12",
+                    "questions": [
+                        {"qid": "q0", "question": "下一組？", "choices": ["甲 (Recommended)", "乙"], "multi_select": false},
+                        {"qid": "q1", "question": "邊隻色？", "choices": [], "multi_select": false}
+                    ],
+                    "answers": {"q0": "甲"}
+                }
+            },
+            {
+                "id": "srq-a",
+                "method": "approval",
+                "params": {"session_id": "ab12", "description": "list files", "command": "ls"}
+            }
+        ]);
+        let cards = pending_controls_from_open_requests(Some(&open));
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0]["kind"], "clarify");
+        assert_eq!(cards[0]["prompt_id"], "srq-c~q1");
+        assert_eq!(cards[0]["question"], "邊隻色？");
+        assert_eq!(cards[0]["execution_generation"], 0);
+        assert!(crate::hermes::approval_run_id("run_ws_ab12_0").is_some());
+        assert_eq!(cards[1]["kind"], "approval");
+        assert_eq!(cards[1]["prompt_id"], "srq-a");
+        assert_eq!(cards[1]["command"], "ls");
+        assert!(pending_controls_from_open_requests(None).is_empty());
+        assert!(pending_controls_from_open_requests(Some(&json!([]))).is_empty());
     }
 }
 

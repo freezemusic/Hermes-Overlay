@@ -78,6 +78,25 @@ fn json_text(value: Option<&Value>) -> String {
     value.and_then(Value::as_str).unwrap_or("").trim().to_string()
 }
 
+/// Prefer a row that is already `waiting` when several live rows share the stored id.
+fn live_row_for<'a>(rows: &'a [Value], stored: &str) -> Option<&'a Value> {
+    let mut fallback = None;
+    for row in rows {
+        let key = json_text(row.get("session_key"));
+        let id = json_text(row.get("id"));
+        if key != stored && id != stored {
+            continue;
+        }
+        if json_text(row.get("status")) == "waiting" {
+            return Some(row);
+        }
+        if fallback.is_none() {
+            fallback = Some(row);
+        }
+    }
+    fallback
+}
+
 impl HermesClient {
     pub fn new(http: Client, load: SecretLoad, store: SecretStore) -> Arc<Self> {
         Arc::new_cyclic(|weak: &Weak<HermesClient>| {
@@ -733,13 +752,79 @@ impl HermesClient {
         })
     }
 
-    /// `{status}` for a run this client started.
+    /// Live run for a stored session, if Hermes 0.22.5 already has one.
+    /// `session.active_list` does not create a session. `session.resume` would.
+    /// Returns `(run_id, status)`. Both empty when nothing is live.
+    pub async fn bind_live_run(&self, profile: &str, stored: &str) -> (String, String) {
+        let stored = stored.trim();
+        if stored.is_empty() {
+            return (String::new(), String::new());
+        }
+        let listed = match self.call(rpc::SESSION_ACTIVE_LIST, json!({"profile": profile})).await {
+            Ok(value) => value,
+            Err(_) => return (String::new(), String::new()),
+        };
+        let Some(row) = listed
+            .get("sessions")
+            .and_then(Value::as_array)
+            .and_then(|rows| live_row_for(rows, stored))
+        else {
+            return (String::new(), String::new());
+        };
+        let live = json_text(row.get("id"));
+        let status = json_text(row.get("status"));
+        if live.is_empty() || !turn::session_run_is_live(&status) {
+            return (String::new(), String::new());
+        }
+        (self.ensure_open_run(profile, &live), status)
+    }
+
+    /// Reuse the unfinished run for this live sid, or mint `run_ws_<sid>_0`.
+    fn ensure_open_run(&self, profile: &str, live: &str) -> String {
+        let mut runs = self.runs.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some((id, _)) = runs.iter().find(|(_, info)| info.live == live && !info.done) {
+            return id.clone();
+        }
+        let run_id = turn::run_id_for(live, "0");
+        runs.insert(
+            run_id.clone(),
+            RunInfo {
+                profile: profile.to_string(),
+                live: live.to_string(),
+                done: false,
+            },
+        );
+        run_id
+    }
+
+    /// `{run_id, status, pending_controls}` for a run.
+    /// A run this process still has open is read from `session.events.since`
+    /// (`open_requests`). `last_seen` is past any live seq so the event ring is not copied.
+    /// Unknown or finished runs are `completed` with no cards.
     pub async fn fetch_run(&self, _profile: &str, run_id: &str) -> Result<Value, HermesError> {
-        Ok(match self.run(run_id) {
-            Some(info) if info.done => json!({"status": "completed"}),
-            Some(_) => json!({"status": "running"}),
-            None => json!({"status": "completed"}),
-        })
+        let Some(info) = self.run(run_id) else {
+            return Ok(json!({"run_id": run_id, "status": "completed", "pending_controls": []}));
+        };
+        if info.done {
+            return Ok(json!({"run_id": run_id, "status": "completed", "pending_controls": []}));
+        }
+        let value = self
+            .call(
+                rpc::SESSION_EVENTS_SINCE,
+                // Past any live seq, and still an exact JSON integer.
+                json!({"session_id": info.live, "last_seen": (1_i64 << 53) - 1}),
+            )
+            .await?;
+        let Some(open) = value.get("open_requests").filter(|item| item.is_array()) else {
+            return Err(HermesError::Protocol("讀唔到未答嘅卡。".into()));
+        };
+        let controls = turn::pending_controls_from_open_requests(Some(open));
+        let status = if controls.is_empty() { "running" } else { "waiting_for_approval" };
+        Ok(json!({
+            "run_id": run_id,
+            "status": status,
+            "pending_controls": controls,
+        }))
     }
 
     /// A correction into the running turn: `prompt.submit` without `queued`.

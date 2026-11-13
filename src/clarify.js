@@ -11,6 +11,7 @@ export const CLARIFY_WAIT_LABEL = "等你答";
 export const CLARIFY_ANSWERED = "已答";
 export const CLARIFY_SKIPPED = "已跳過";
 export const CLARIFY_SEND_FAIL = "答案未送出。";
+export const CLARIFY_NOT_DELIVERED = "呢句送唔到做答案。";
 export const CLARIFY_TIMEOUT_S = 600;
 
 export function clarifyPending(message) {
@@ -316,4 +317,71 @@ export function mergePendingControls(messages, controls, runId, { dropMissing = 
   // Keep every pending clarify card. A 9119 batch sends 1–5 questions in one
   // server request; each qid is its own card and every one must be locked.
   return out;
+}
+
+function noticePayload(message) {
+  try {
+    return JSON.parse(String(message?.text || ""));
+  } catch {
+    return {};
+  }
+}
+
+function noticeIsWait(message) {
+  return message?.role === "notice" && (message.tool_name === "clarify" || message.tool_name === "approval");
+}
+
+/** Clock from a history clarify notice, so a recovered card counts down from when Hermes asked. */
+export function noticeClarifyClock(messages, nowMs = Date.now()) {
+  for (const message of messages || []) {
+    if (message?.role !== "notice" || message.tool_name !== "clarify") continue;
+    const payload = noticePayload(message);
+    const timeout = Number(payload.timeout_s);
+    const asked = Number(payload.asked_at);
+    const askedAt = asked > 1e12 ? asked : asked > 0 ? asked * 1000 : 0;
+    return {
+      timeout_s: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : undefined,
+      askedAt: askedAt || nowMs,
+    };
+  }
+  return null;
+}
+
+/**
+ * Snapshot cards replace a history notice of the same kind.
+ * Empty controls leave the notice in place.
+ */
+export function absorbRecoveredControls(messages, controls, runId, options = {}) {
+  const list = Array.isArray(controls) ? controls : [];
+  const nowMs = options.now || Date.now();
+  const clock = noticeClarifyClock(messages, nowMs);
+  const stamped = list.map((item) => {
+    if (item?.kind !== "clarify" || item.timeout_s != null || clock?.timeout_s == null) return item;
+    return { ...item, timeout_s: clock.timeout_s };
+  });
+  const merged = mergePendingControls(messages, stamped, runId, {
+    ...options,
+    now: clock?.askedAt || nowMs,
+  });
+  const kinds = new Set(list.map((item) => item?.kind).filter((kind) => kind === "clarify" || kind === "approval"));
+  const out = [];
+  for (const message of merged) {
+    if (kinds.size && noticeIsWait(message) && kinds.has(message.tool_name)) continue;
+    if (message?.role === "clarify" && message.status === "pending") {
+      const left = clarifySecondsLeft(message, nowMs);
+      if (left != null && !Number.isInteger(message.remain)) message.remain = left;
+    }
+    out.push(message);
+  }
+  return out;
+}
+
+/** Composer routing while a clarify may be waiting. `recover` means try the live run first. */
+export function clarifyComposerRoute(messages) {
+  const live = (messages || []).find((message) => clarifyPending(message) && message.status === "pending");
+  if (live) return { action: "answer", card: live };
+  if ((messages || []).some((message) => message?.role === "notice" && message.tool_name === "clarify")) {
+    return { action: "recover" };
+  }
+  return { action: "send" };
 }
