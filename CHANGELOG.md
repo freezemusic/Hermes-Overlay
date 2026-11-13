@@ -18,6 +18,7 @@
 
 - 計劃視窗改為顯示同一輪 `write_file` 寫入 `.hermes/plans/` 嘅計劃檔正文，唔再把提到路徑嘅對話摘要當成計劃；對話裡冇檔案正文時會註明（R-PL-01）。
 - `/renew` 這類技能斜線指令會把 Hermes 展開的技能正文經 `prompt.submit` 送出（`command.dispatch` 的 `type: skill`）。用戶氣泡只顯示 `display`；沒有 `display` 就保留原本打的 `/renew …`。技能正文不再畫成助手回覆。Plan 模式不會把這行再包一次（R-CL-08、R-MD-07）。
+- 再開面板或重新載入歷史時，如果 bot 仲等緊澄清或批准，會用 Hermes 0.22.5 嘅 live session（`open_requests`）補一張可以答嘅卡；打字會當答案送出。補唔到就唔會靜默 steer／排隊，並講明「呢句送唔到做答案。」（R-AP-06）。
 
 下一批功能見 [README 路線圖 v0.4](README.md#路線圖) 與 [docs/ROADMAP.md](docs/ROADMAP.md)。
 

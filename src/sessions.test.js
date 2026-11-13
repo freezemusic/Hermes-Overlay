@@ -53,6 +53,7 @@ import {
   historyCountMismatch,
   noticeTickDelay,
   historyNoticeCopy,
+  sealUnrecoverableNotice,
   historyNoticePending,
   historyNoticeId,
   dropSettledHistoryNotices,
@@ -1102,6 +1103,24 @@ test("a history clarify countdown follows the Hermes default and keeps moving", 
     text: JSON.stringify({ text: "邊隻色？", asked_at: asked }),
   }, "文案助手", asked * 1000);
   assert.equal(unlimited.detail, "呢度答唔到。");
+  const pending = {
+    role: "notice",
+    tool_name: "clarify",
+    text: JSON.stringify({ text: "邊隻色？", timeout_s: 3600, asked_at: asked }),
+  };
+  assert.equal(sealUnrecoverableNotice(pending), true);
+  assert.equal(sealUnrecoverableNotice(pending), false);
+  const sealed = historyNoticeCopy(pending, "文案助手", (asked + 31 * 60) * 1000);
+  assert.equal(sealed.title, "文案助手 等緊你答：邊隻色？");
+  assert.equal(sealed.detail, "呢度答唔到。打字唔會當答案送出。");
+  assert.doesNotMatch(sealed.detail, /分鐘後逾時/);
+  const approval = {
+    role: "notice",
+    tool_name: "approval",
+    text: JSON.stringify({ text: "rm tmp", timeout_s: 600, asked_at: asked }),
+  };
+  assert.equal(sealUnrecoverableNotice(approval), true);
+  assert.equal(historyNoticeCopy(approval, "文案助手").detail, "呢度答唔到。打字唔會當答案送出。");
 });
 
 test("a notice stays a card in place, and a result-only tail repaints the closed orb", () => {

@@ -355,6 +355,11 @@ struct OpenedChat {
     message_count: Option<u64>,
     messages: Vec<hermes::UiMessage>,
     sessions: Vec<SessionChoice>,
+    /// Hermes 0.22.5 live run (`run_ws_…`) when this stored session is already in a turn.
+    /// Empty when nothing is live. Opening a chat does not start a run.
+    run_id: String,
+    /// `waiting` / `working` / `streaming` / `starting`, or empty.
+    run_status: String,
 }
 
 #[derive(Serialize)]
@@ -1815,6 +1820,7 @@ async fn open_bot(
                 .iter()
                 .find(|session| session.id == session_id)
                 .and_then(|session| session.message_count);
+            let (run_id, run_status) = chat.bind_live_run(&root, &session_id).await;
             Ok(OpenedChat {
                 sessions: session_choices(&sessions, &session_id),
                 profile,
@@ -1826,6 +1832,8 @@ async fn open_bot(
                 read_only_reason,
                 message_count,
                 messages,
+                run_id,
+                run_status,
             })
         }
         Err(err) => {
@@ -1874,6 +1882,7 @@ async fn open_explicit_session(
         .await
         .map_err(|err| explain(&err))?;
     remember_watched(watched, profile, &session_id, &messages, &listed);
+    let (run_id, run_status) = chat.bind_live_run(root, &session_id).await;
     persist_pin(
         app,
         sessions,
@@ -1896,6 +1905,8 @@ async fn open_explicit_session(
         read_only_reason,
         message_count: chosen.message_count,
         messages,
+        run_id,
+        run_status,
     })
 }
 
@@ -3603,6 +3614,7 @@ async fn open_suborb(
     .await
     .map_err(|err| explain(&err))?;
     remember_watched(&state.bot_chats, &profile, &session_id, &messages, &listed);
+    let (run_id, run_status) = chat.bind_live_run(&root, &session_id).await;
     Ok(OpenedChat {
         sessions: session_choices(&listed, &session_id),
         profile,
@@ -3614,6 +3626,8 @@ async fn open_suborb(
         read_only_reason,
         message_count: chosen.message_count,
         messages,
+        run_id,
+        run_status,
     })
 }
 

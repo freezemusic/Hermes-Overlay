@@ -234,8 +234,10 @@ export const EN = Object.freeze({
   "已答": "Answered",
   "已跳過": "Skipped",
   "答案未送出。": "Answer was not sent.",
+  "呢句送唔到做答案。": "This line could not be sent as the answer.",
   // History notices (approval / clarify asked elsewhere)
   "呢度答唔到。": "Can't answer here.",
+  "呢度答唔到。打字唔會當答案送出。": "Can't answer here. Typing will not be sent as the answer.",
   // Chat chrome
   "收起完整提示": "Hide full prompt",
   "顯示完整提示": "Show full prompt",

@@ -18,9 +18,12 @@ import {
   clarifyPost,
   clarifyRequestId,
   clarifyResultText,
+  absorbRecoveredControls,
+  clarifyComposerRoute,
   clarifyTick,
   mergePendingControls,
   renderClarifyCard,
+  CLARIFY_NOT_DELIVERED,
 } from "./clarify.js";
 
 const { document } = new JSDOM("<!doctype html><body></body>").window;
@@ -243,6 +246,82 @@ test("a choice card offers 其他 free text and keeps the typed answer on the se
   assert.equal(posted, "台北");
   assert.equal(clarifyResultText({ status: "answered", postedAnswer: "台北" }), "已答：台北");
   assert.equal(clarifyResultText({ status: "answered", postedAnswer: "" }), "已答");
+});
+
+test("a history notice becomes a live card only when the run snapshot has that control", () => {
+  const asked = 1_000;
+  const now = (asked + 120) * 1000;
+  const clarifyNotice = {
+    role: "notice",
+    tool_name: "clarify",
+    tool_call_id: "c1",
+    text: JSON.stringify({ text: "下一組？", timeout_s: 3600, asked_at: asked, tool_call_id: "c1" }),
+  };
+  const approvalNotice = {
+    role: "notice",
+    tool_name: "approval",
+    tool_call_id: "a1",
+    text: JSON.stringify({ text: "rm tmp", timeout_s: 600, asked_at: asked, tool_call_id: "a1" }),
+  };
+  assert.equal(clarifyComposerRoute([clarifyNotice]).action, "recover");
+  assert.equal(clarifyComposerRoute([approvalNotice]).action, "send");
+  const recovered = absorbRecoveredControls(
+    [clarifyNotice, approvalNotice],
+    [
+      {
+        kind: "clarify",
+        prompt_id: "srq-c~q0",
+        question: "下一組？",
+        choices: ["甲"],
+        execution_generation: 0,
+      },
+      {
+        kind: "approval",
+        prompt_id: "srq-a",
+        description: "list",
+        command: "rm tmp",
+      },
+    ],
+    "run_ws_ab12_0",
+    { dropMissing: true, now },
+  );
+  assert.equal(recovered.some((message) => message.role === "notice"), false);
+  const clarify = recovered.find((message) => message.role === "clarify");
+  assert.equal(clarify.promptId, "srq-c~q0");
+  assert.equal(clarify.executionGeneration, 0);
+  assert.equal(clarify.runId, "run_ws_ab12_0");
+  assert.equal(clarify.status, "pending");
+  assert.equal(clarify.timeoutS, 3600);
+  assert.ok(clarify.remain < 3600);
+  const approval = recovered.find((message) => message.role === "approval");
+  assert.equal(approval.requestId, "srq-a");
+  assert.equal(approval.status, "pending");
+  assert.equal(clarifyComposerRoute(recovered).action, "answer");
+  const stayed = absorbRecoveredControls(
+    [clarifyNotice, approvalNotice],
+    [],
+    "run_ws_ab12_0",
+    { dropMissing: false, now },
+  );
+  assert.equal(stayed.filter((message) => message.role === "notice").length, 2);
+  assert.equal(clarifyComposerRoute(stayed).action, "recover");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
+  const answerAt = send.indexOf("answerClarify(id, pendingClarify");
+  const blockedAt = send.indexOf("CLARIFY_NOT_DELIVERED");
+  const queueAt = send.indexOf("sendWhileBusy");
+  assert.ok(answerAt > 0 && blockedAt > answerAt && queueAt > blockedAt);
+  assert.match(send, /clarifyComposerRoute/);
+  assert.equal(CLARIFY_NOT_DELIVERED, "呢句送唔到做答案。");
+  const opened = main.slice(main.indexOf("function applyOpened"), main.indexOf("function beginBotHistory"));
+  assert.match(opened, /noteOpenedRun/);
+  assert.match(opened, /queueControlRecovery/);
+  const refresh = main.slice(main.indexOf("function mergeCaughtUp"), main.indexOf("async function catchUpSession"));
+  assert.match(refresh, /noteOpenedRun/);
+  assert.match(refresh, /queueControlRecovery/);
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const openBot = lib.slice(lib.indexOf("async fn open_bot"), lib.indexOf("async fn open_explicit_session"));
+  assert.match(openBot, /bind_live_run/);
 });
 
 test("main.js keeps batch clarify siblings and routes composer text to the open card", () => {

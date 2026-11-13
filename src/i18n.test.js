@@ -204,6 +204,8 @@ test("R-LK-02 numbered and templated strings: anchored patterns, data inside sta
     ["Planner 等緊你答：Which colour?", "Planner is waiting for your answer: Which colour?"],
     ["呢度答唔到。大約 3 分鐘後逾時。", "Can't answer here. Times out in about 3 min."],
     ["呢度答唔到。逾時時間已過，等歷史更新。", "Can't answer here. The timeout has passed; waiting for the history to update."],
+    ["呢度答唔到。打字唔會當答案送出。", "Can't answer here. Typing will not be sent as the answer."],
+    ["呢句送唔到做答案。", "This line could not be sent as the answer."],
     ["Planner，有工具等緊批准", "Planner, a tool is waiting for approval"],
     ["Planner，有問題等你答", "Planner, a question is waiting for your answer"],
     ["任務，已釘住", "Task, pinned"],
