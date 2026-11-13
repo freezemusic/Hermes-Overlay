@@ -13,8 +13,10 @@ import {
   orbDraggable,
   planOrbDodges,
   pointCovered,
+  boxCentre,
   suborbRestCentre,
   suborbTether,
+  tetherLayerPoint,
   validOrbId,
   validSuborbOrbId,
 } from "./orbdrag.js";
@@ -281,16 +283,78 @@ test("R-OB-08 tether ends follow the parent and the sub-orb and never take a hit
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   const paint = main.slice(main.indexOf("function paintSuborbTethers()"), main.indexOf("function paintFanParent("));
   assert.match(paint, /suborbTether\(parentOrbBox/);
+  assert.match(paint, /tetherLayerBox\(svg\)/);
+  assert.match(paint, /removeAttribute\("viewBox"\)/);
+  assert.doesNotMatch(paint, /setAttribute\("viewBox"/);
   assert.match(paint, /class", "suborb-tether"/);
   assert.doesNotMatch(paint, /data-hit-id|dataset\.hitId|hitId =/);
   assert.match(main, /paintSuborbTethers\(\)/);
+  assert.match(main, /visualViewport\?\.addEventListener\("resize", repaintTethers\)/);
+  assert.match(main, /visualViewport\?\.addEventListener\("scroll", repaintTethers\)/);
   const glide = main.slice(main.indexOf("function glideOrb(shell, from)"), main.indexOf("function restingSuborb(shell)"));
   assert.match(glide, /paintSuborbTethers\(\)/);
+  assert.match(css, /\.suborb-tether \{[^}]*width:\s*100%;/);
+  assert.match(css, /\.suborb-tether \{[^}]*height:\s*100%;/);
+  assert.match(css, /\.suborb-tether \{[^}]*display:\s*block;/);
   assert.match(css, /\.suborb-tether \{[^}]*pointer-events:\s*none;/);
   assert.match(css, /\.suborb-tether-core \{[^}]*stroke-width:\s*1;/);
   assert.match(css, /\.suborb-tether-halo \{[^}]*rgba\(248,\s*248,\s*252/);
   const hits = main.slice(main.indexOf("function collectHits()"), main.indexOf("function orbShellAtPoint"));
   assert.doesNotMatch(hits, /suborb-tether/);
+});
+
+test("R-OB-08 tether ends are disc centres in the SVG layer, at any DPI and window origin", () => {
+  const parent = { x: 400, y: 280 };
+  const child = { x: 360, y: 240 };
+  // Border-box centre, not the top-left. 44px disc: half is the 22px radius.
+  assert.deepEqual(boxCentre({ x: 178, y: 64, width: 44, height: 44 }), { x: 200, y: 86 });
+  // 19.8px sub-orb (0.45 × 44).
+  assert.deepEqual(boxCentre({ x: 100, y: 80, width: 19.8, height: 19.8 }), { x: 109.9, y: 89.9 });
+  assert.equal(boxCentre({ x: 10, y: 10, width: 0, height: 10 }), null);
+  assert.equal(boxCentre(null), null);
+  // Layer origin (-27, -52): writing the viewport centre straight into the
+  // SVG puts the stroke 27px left and 52px above the disc.
+  const raised = { x: -27, y: -52, w: 1280, h: 800, viewW: 1280, viewH: 800 };
+  assert.deepEqual(tetherLayerPoint(child, raised), { x: 387, y: 292 });
+  assert.deepEqual(suborbTether(parent, child, raised), {
+    x1: 427,
+    y1: 332,
+    x2: 387,
+    y2: 292,
+  });
+  const dropped = { x: 27, y: 52, w: 1280, h: 800, viewW: 1280, viewH: 800 };
+  assert.deepEqual(tetherLayerPoint({ x: 400, y: 300 }, dropped), { x: 373, y: 248 });
+  // 100%, 125%, 150%: rendered box is physical px, user space is CSS px.
+  for (const dpr of [1, 1.25, 1.5]) {
+    const css = { x: 640, y: 400 };
+    const layer = { x: 0, y: 0, w: 1280 * dpr, h: 800 * dpr, viewW: 1280, viewH: 800 };
+    const physical = { x: css.x * dpr, y: css.y * dpr };
+    const mapped = tetherLayerPoint(physical, layer);
+    assert.ok(Math.abs(mapped.x - css.x) < 1e-9);
+    assert.ok(Math.abs(mapped.y - css.y) < 1e-9);
+    const line = suborbTether(
+      { x: 200 * dpr, y: 100 * dpr },
+      { x: 80 * dpr, y: 40 * dpr },
+      layer,
+    );
+    assert.ok(Math.abs(line.x1 - 200) < 1e-9);
+    assert.ok(Math.abs(line.y1 - 100) < 1e-9);
+    assert.ok(Math.abs(line.x2 - 80) < 1e-9);
+    assert.ok(Math.abs(line.y2 - 40) < 1e-9);
+  }
+  // Window not at (0, 0), 100% DPI. Point and layer are both screen CSS px.
+  const monitor = { x: 1920, y: 0, w: 1280, h: 800, viewW: 1280, viewH: 800 };
+  assert.deepEqual(tetherLayerPoint({ x: 1920 + 200, y: 300 }, monitor), { x: 200, y: 300 });
+  // Screen physical px into a layer that is already viewport CSS.
+  const screen = { originX: 1920, originY: 80, scale: 1.25 };
+  const physicalPoint = { x: 1920 + 500 * 1.25, y: 80 + 320 * 1.25 };
+  const cssLayer = { x: 0, y: 0, w: 1280, h: 800, viewW: 1280, viewH: 800 };
+  assert.deepEqual(tetherLayerPoint(physicalPoint, cssLayer, screen), { x: 500, y: 320 });
+  // Same point when the layer box itself is still in screen physical px.
+  const physicalLayer = { x: 1920, y: 80, w: 1280 * 1.25, h: 800 * 1.25, viewW: 1280, viewH: 800 };
+  assert.deepEqual(tetherLayerPoint(physicalPoint, physicalLayer), { x: 500, y: 320 });
+  assert.equal(suborbTether(null, child, raised), null);
+  assert.equal(Number.isNaN(tetherLayerPoint({ x: Number.NaN, y: 1 }, raised).x), true);
 });
 
 test("R-OB-08 a sub-orb dodges on the same 44px disc + 34px halo as a main orb (Devon 2026-11-13 18:10)", () => {

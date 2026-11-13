@@ -4368,6 +4368,9 @@ html[data-fan-held="1"] .suborb-orbit { opacity: 1; }
   position: absolute;
   left: 0;
   top: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
   overflow: visible;
   pointer-events: none;
 }
