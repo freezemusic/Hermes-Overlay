@@ -182,6 +182,16 @@ pub struct AppConfig {
         deserialize_with = "lenient_suborb_modes"
     )]
     pub suborb_modes: BTreeMap<String, Vec<(String, String)>>,
+    /// R-SO-11. Overlay-created session rows (`api_*`) so a pinned sub-orb
+    /// can be drawn after restart even when it is outside the recent list.
+    /// Omitted while empty. Written only by `store_suborb_created` /
+    /// `drop_suborb_created`; `suborb_pins` is never rewritten here.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "lenient_suborb_created"
+    )]
+    pub suborb_created: BTreeMap<String, Vec<CreatedSuborb>>,
     /// R-LK-01 text size: "xs" (R-LK-04), "s", "l" or "xl". Empty is the standard size and is
     /// omitted, so an untouched config.json stays byte-identical.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -207,6 +217,26 @@ pub struct OrbPosition {
 
 /// Largest stored orb coordinate. The front end clamps to the work area.
 pub const ORB_MAX_COORD: u32 = 10_000;
+
+/// Overlay-created session rows kept so an `api_*` sub-orb can be drawn
+/// after a restart. Oldest rows past this cap are dropped on the next write.
+pub const SUBORB_CREATED_CAP: usize = 64;
+
+/// Metadata for one overlay-created session. Not a pin.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CreatedSuborb {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub started_at: f64,
+    #[serde(default)]
+    pub last_active: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_count: Option<u64>,
+}
 
 fn lenient_orb_positions<'de, D>(deserializer: D) -> Result<BTreeMap<String, OrbPosition>, D::Error>
 where
@@ -357,6 +387,7 @@ impl Default for AppConfig {
             panel_sizes: BTreeMap::new(),
             orb_positions: BTreeMap::new(),
             suborb_modes: BTreeMap::new(),
+            suborb_created: BTreeMap::new(),
             text_size: String::new(),
             ui_language: String::new(),
         }
@@ -1381,6 +1412,209 @@ pub fn store_suborb_pin(
         let body = serde_json::to_string(&pins).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
         insert_suborb_pins(&text, &body)?
     };
+    if patched == text {
+        return Ok(false);
+    }
+    write_config_text(path, &patched)?;
+    Ok(true)
+}
+
+fn created_row_from(item: &serde_json::Value) -> Option<CreatedSuborb> {
+    let id = item.get("id").and_then(|value| value.as_str()).unwrap_or("").trim();
+    if !valid_suborb_session(id) {
+        return None;
+    }
+    let title = item.get("title").and_then(|value| value.as_str()).unwrap_or("").trim();
+    let title: String = title.chars().take(120).collect();
+    let source = item.get("source").and_then(|value| value.as_str()).unwrap_or("").trim();
+    let source = if source.is_empty() || source.len() > 64 {
+        "api_server".to_string()
+    } else {
+        source.to_string()
+    };
+    let started_at = item
+        .get("started_at")
+        .and_then(|value| value.as_f64())
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.0);
+    let last_active = item
+        .get("last_active")
+        .and_then(|value| value.as_f64())
+        .filter(|value| value.is_finite())
+        .unwrap_or(started_at);
+    let message_count = item.get("message_count").and_then(|value| value.as_u64());
+    Some(CreatedSuborb {
+        id: id.to_string(),
+        title,
+        source,
+        started_at,
+        last_active,
+        message_count,
+    })
+}
+
+fn read_suborb_created_value(value: &serde_json::Value) -> BTreeMap<String, Vec<CreatedSuborb>> {
+    let mut out = BTreeMap::new();
+    let Some(object) = value.as_object() else {
+        return out;
+    };
+    for (profile, rows) in object {
+        if validate_profile(profile).is_err() {
+            continue;
+        }
+        let Some(list) = rows.as_array() else {
+            continue;
+        };
+        let mut kept = Vec::new();
+        for item in list {
+            let Some(row) = created_row_from(item) else {
+                continue;
+            };
+            if kept.iter().any(|have: &CreatedSuborb| have.id == row.id) {
+                continue;
+            }
+            kept.push(row);
+            if kept.len() == SUBORB_CREATED_CAP {
+                break;
+            }
+        }
+        if !kept.is_empty() {
+            out.insert(profile.clone(), kept);
+        }
+    }
+    out
+}
+
+fn read_suborb_created(root: &serde_json::Value) -> BTreeMap<String, Vec<CreatedSuborb>> {
+    match root.get("suborb_created") {
+        Some(value) => read_suborb_created_value(value),
+        None => BTreeMap::new(),
+    }
+}
+
+fn lenient_suborb_created<'de, D>(deserializer: D) -> Result<BTreeMap<String, Vec<CreatedSuborb>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(read_suborb_created_value(&value))
+}
+
+fn write_created_map(text: &str, rows: &BTreeMap<String, Vec<CreatedSuborb>>) -> Result<String, String> {
+    if rows.is_empty() {
+        return Ok(match top_level_field(text, "suborb_created") {
+            Some(span) => remove_top_level_field(text, &span),
+            None => text.to_string(),
+        });
+    }
+    let body = serde_json::to_string(rows).map_err(|err| format!("設定檔格式唔啱：{err}"))?;
+    if let Some(span) = top_level_field(text, "suborb_created") {
+        let mut out = String::with_capacity(text.len() + body.len());
+        out.push_str(&text[..span.value_start]);
+        out.push_str(&body);
+        out.push_str(&text[span.value_end..]);
+        return Ok(out);
+    }
+    insert_top_level_field(text, "suborb_created", &body)
+}
+
+fn clean_created_row(row: &CreatedSuborb) -> Result<CreatedSuborb, String> {
+    let id = row.id.trim();
+    if !valid_suborb_session(id) {
+        return Err("session 唔合法".into());
+    }
+    let title: String = row.title.trim().chars().take(120).collect();
+    let source = row.source.trim();
+    let source = if source.is_empty() || source.len() > 64 {
+        "api_server".to_string()
+    } else {
+        source.to_string()
+    };
+    Ok(CreatedSuborb {
+        id: id.to_string(),
+        title,
+        source,
+        started_at: if row.started_at.is_finite() { row.started_at } else { 0.0 },
+        last_active: if row.last_active.is_finite() { row.last_active } else { 0.0 },
+        message_count: row.message_count,
+    })
+}
+
+fn require_profile_file(path: &Path, profile: &str) -> Result<(String, serde_json::Value), String> {
+    let profile = profile.trim();
+    validate_profile(profile)?;
+    if !path.exists() {
+        return Err(format!("名單冇 profile「{profile}」"));
+    }
+    let text = fs::read_to_string(path).map_err(|err| format!("讀唔到設定：{err}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|err| format!("設定檔格式唔啱：{err}"))?;
+    if !value.is_object() {
+        return Err("設定檔格式唔啱".to_string());
+    }
+    let bots = value
+        .get("bots")
+        .and_then(|item| item.as_array())
+        .ok_or_else(|| "設定檔格式唔啱".to_string())?;
+    if !bots.iter().any(|bot| bot.get("profile").and_then(|item| item.as_str()) == Some(profile)) {
+        return Err(format!("名單冇 profile「{profile}」"));
+    }
+    Ok((text, value))
+}
+
+/// R-SO-11. Splices only `suborb_created`. Pins, session id, and every other key stay put.
+pub fn store_suborb_created(path: &Path, profile: &str, row: &CreatedSuborb) -> Result<bool, String> {
+    let profile = profile.trim();
+    let (text, value) = require_profile_file(path, profile)?;
+    let clean = clean_created_row(row)?;
+    let mut map = read_suborb_created(&value);
+    let list = map.entry(profile.to_string()).or_default();
+    if let Some(existing) = list.iter_mut().find(|item| item.id == clean.id) {
+        if existing == &clean {
+            return Ok(false);
+        }
+        *existing = clean;
+    } else {
+        list.push(clean);
+        if list.len() > SUBORB_CREATED_CAP {
+            let overflow = list.len() - SUBORB_CREATED_CAP;
+            list.drain(0..overflow);
+        }
+    }
+    let patched = write_created_map(&text, &map)?;
+    if patched == text {
+        return Ok(false);
+    }
+    write_config_text(path, &patched)?;
+    Ok(true)
+}
+
+/// Removes one created row. Splices only `suborb_created`. An empty map drops the key.
+pub fn drop_suborb_created(path: &Path, profile: &str, session_id: &str) -> Result<bool, String> {
+    let profile = profile.trim();
+    let session_id = session_id.trim();
+    if !path.exists() || validate_profile(profile).is_err() || !valid_suborb_session(session_id) {
+        return Ok(false);
+    }
+    let text = fs::read_to_string(path).map_err(|err| format!("讀唔到設定：{err}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|err| format!("設定檔格式唔啱：{err}"))?;
+    if !value.is_object() {
+        return Err("設定檔格式唔啱".to_string());
+    }
+    let mut map = read_suborb_created(&value);
+    let Some(list) = map.get_mut(profile) else {
+        return Ok(false);
+    };
+    let before = list.len();
+    list.retain(|row| row.id != session_id);
+    if list.len() == before {
+        return Ok(false);
+    }
+    if list.is_empty() {
+        map.remove(profile);
+    }
+    let patched = write_created_map(&text, &map)?;
     if patched == text {
         return Ok(false);
     }
@@ -3029,6 +3263,77 @@ other:
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
         assert!(store_suborb_pin(&path, "mt-coder", "bad id", true).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn created_suborb_rows_splice_without_touching_pins() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-overlay-suborb-created-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let before = r##"{
+  "version": 1,
+  "bots": [
+    {
+      "profile": "mt-orch",
+      "display_name": "Orch",
+      "session_id": "api_bot",
+      "session_explicit": true,
+      "session_anchor": 4.0,
+      "enabled": true
+    }
+  ],
+  "suborb_pins": {"mt-orch":["20261110_221455_d3abe7","api_1794591121_502fdcfc"]}
+}"##;
+        fs::write(&path, before).unwrap();
+        let loaded = load(&path).unwrap();
+        assert!(loaded.suborb_created.is_empty());
+        assert_eq!(
+            loaded.suborb_pins.get("mt-orch").unwrap(),
+            &vec![
+                "20261110_221455_d3abe7".to_string(),
+                "api_1794591121_502fdcfc".to_string()
+            ]
+        );
+        let row = CreatedSuborb {
+            id: "api_1794591121_502fdcfc".into(),
+            title: "API 任務".into(),
+            source: "api_server".into(),
+            started_at: 1794591121.0,
+            last_active: 1794591200.0,
+            message_count: Some(2),
+        };
+        assert!(store_suborb_created(&path, "mt-orch", &row).unwrap());
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("\"suborb_created\""));
+        assert!(written.contains("api_1794591121_502fdcfc"));
+        assert!(written.contains("\"suborb_pins\": {\"mt-orch\":[\"20261110_221455_d3abe7\",\"api_1794591121_502fdcfc\"]}"));
+        assert!(written.contains("\"session_id\": \"api_bot\""));
+        assert!(written.contains("\"session_explicit\": true"));
+        let again = load(&path).unwrap();
+        assert_eq!(again.suborb_created["mt-orch"][0].title, "API 任務");
+        assert_eq!(again.suborb_created["mt-orch"][0].message_count, Some(2));
+        assert_eq!(again.suborb_pins, loaded.suborb_pins);
+        assert!(!store_suborb_created(&path, "mt-orch", &row).unwrap());
+        assert!(drop_suborb_created(&path, "mt-orch", "api_1794591121_502fdcfc").unwrap());
+        let cleared = fs::read_to_string(&path).unwrap();
+        assert!(!cleared.contains("suborb_created"));
+        assert!(cleared.contains("\"suborb_pins\": {\"mt-orch\":[\"20261110_221455_d3abe7\",\"api_1794591121_502fdcfc\"]}"));
+        assert!(!drop_suborb_created(&path, "mt-orch", "api_1794591121_502fdcfc").unwrap());
+        let junk = r##"{
+  "version": 1,
+  "bots": [{"profile": "mt-orch", "display_name": "Orch", "enabled": true}],
+  "suborb_created": {"mt-orch": [{"id": "bad id"}, {"id": "api_ok", "title": "保留"}, "nope"], "../x": [{"id": "api_x"}]}
+}"##;
+        fs::write(&path, junk).unwrap();
+        let kept = load(&path).unwrap();
+        assert_eq!(kept.suborb_created["mt-orch"].len(), 1);
+        assert_eq!(kept.suborb_created["mt-orch"][0].id, "api_ok");
+        assert!(kept.suborb_pins.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -41,6 +41,8 @@
     "allow-stop-suborb",
     "allow-set-suborb-pin",
     "allow-seed-session-lists",
+    "allow-fetch-pinned-session",
+    "allow-forget-suborb-created",
     "allow-get-kanban-board",
     "allow-get-kanban-boards",
     "allow-set-kanban-board",

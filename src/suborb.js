@@ -17,6 +17,34 @@ export const SUBORB_SIZE_RATIO = 0.45;
 export const SUBORB_MIN_PX = 14;
 export const SUBORB_GAP_PX = 6;
 
+/** By-id fetch and list-seed retry: 1s, 2s, 4s, 8s, 16s, then 30s. */
+export function pinFetchDelayMs(attempt) {
+  const step = Math.max(0, Number(attempt) || 0);
+  const shift = Math.min(5, step);
+  return Math.min(30_000, 1000 * (2 ** shift));
+}
+
+/** One persisted overlay-created row. Junk is dropped so an old config still loads. */
+export function normalizeCreatedRow(row) {
+  if (!row || typeof row !== "object") return null;
+  const id = String(row.id || "").trim();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return null;
+  const count = row.message_count == null ? null : Number(row.message_count);
+  const started = Number(row.started_at);
+  const active = Number(row.last_active);
+  const title = String(row.title || "").trim().slice(0, 120);
+  const source = String(row.source || "").trim();
+  return {
+    id,
+    title,
+    source: source && source.length <= 64 ? source : "api_server",
+    started_at: Number.isFinite(started) ? started : 0,
+    last_active: Number.isFinite(active) ? active : (Number.isFinite(started) ? started : 0),
+    message_count: Number.isFinite(count) ? count : 0,
+    archived: false,
+  };
+}
+
 const RENEW_ARCHIVE = /_(?:\d{12}|\d{14})$/;
 
 export function isRenewArchiveTitle(title) {
@@ -445,6 +473,7 @@ export function reconcileSuborbs(model, {
   openIds = [],
   holdIds = [],
   listedIds = null,
+  goneIds = [],
   now = 0,
 } = {}) {
   const next = {
@@ -479,11 +508,15 @@ export function reconcileSuborbs(model, {
   for (const row of sessions || []) {
     if (row?.id && row.archived) dropIds.add(row.id);
   }
+  for (const id of goneIds || []) {
+    if (id) dropIds.add(id);
+  }
   if (Array.isArray(listedIds) && listedIds.length) {
     const listed = new Set(listedIds.filter(Boolean));
     for (const id of listed) next.known[id] = true;
+    // A pin missing from the recent list is not gone. Fetch it by id first (R-SO-11).
     for (const id of Object.keys(next.known)) {
-      if (!listed.has(id)) dropIds.add(id);
+      if (!listed.has(id) && !pin.has(id)) dropIds.add(id);
     }
   }
   for (const id of dropIds) {
@@ -587,6 +620,15 @@ export function reconcileSuborbs(model, {
   const ordered = orderSuborbRows(live, pinned);
   const reserved = [...open, ...Object.keys(next.forced).filter((id) => next.forced[id])];
   const capped = capSuborbs(ordered, SUBORB_CAP, reserved);
+  const present = new Set();
+  for (const row of sessions || []) {
+    if (row?.id && !dropIds.has(row.id)) present.add(row.id);
+  }
+  const missing = [];
+  for (const id of pinned || []) {
+    if (!id || dropIds.has(id) || present.has(id) || missing.includes(id)) continue;
+    missing.push(id);
+  }
   return {
     model: next,
     shown: capped.shown,
@@ -594,6 +636,7 @@ export function reconcileSuborbs(model, {
     peek,
     unpin,
     drop: [...dropIds],
+    missing,
   };
 }
 
