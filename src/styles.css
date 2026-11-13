@@ -4342,6 +4342,26 @@ html[data-fan-held="1"] .suborb-orbit { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   .suborb-orbit { transition: none; }
 }
+/* R-OB-08 tether (Devon 2026-11-13): a hairline from every visible sub-orb to
+   its profile orb. Always on, not only while Ctrl is held. The light sheath
+   shows on a dark wallpaper; the ink core shows on a light one. Never a hit. */
+.suborb-tether {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.suborb-tether .suborb-tether-halo {
+  stroke: rgba(248, 248, 252, .72);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.suborb-tether .suborb-tether-core {
+  stroke: rgba(20, 20, 43, .55);
+  stroke-width: 1;
+  stroke-linecap: round;
+}
 
 /*
  * R-PN-09: resize handles on the free sides of an open panel (away from the

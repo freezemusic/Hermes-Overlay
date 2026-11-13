@@ -181,6 +181,69 @@ test("overflow is capped at four orbs plus a +N slot (fan draft)", () => {
   assert.deepEqual(view.shown.map((row) => row.id), ["t0", "t1", "t2", "t3"]);
 });
 
+test("an unpinned sub-orb keeps the yellow unread dot after close until it is reopened", () => {
+  const base = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot, task("job", { message_count: 2, last_active: 5 })],
+    mainId: "bot-chat",
+    now: 0,
+  });
+  const seen = reconcileSuborbs(base.model, {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9, ended: true })],
+    mainId: "bot-chat",
+    openIds: ["job"],
+    now: 10,
+  });
+  seen.model.settled.job = true;
+  const open = reconcileSuborbs(seen.model, {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9, ended: true })],
+    mainId: "bot-chat",
+    openIds: ["job"],
+    now: 20,
+  });
+  assert.equal(open.model.read.job, 3);
+  assert.notEqual(open.shown[0].channels.badge, "unread");
+  const closed = reconcileSuborbs(open.model, {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9, ended: true })],
+    mainId: "bot-chat",
+    now: 30,
+  });
+  assert.equal(closed.model.read.job, 3, "close does not mark a later message read");
+  const bumped = reconcileSuborbs(closed.model, {
+    sessions: [bot, task("job", { message_count: 4, last_active: 12, ended: true })],
+    mainId: "bot-chat",
+    now: 40,
+  });
+  bumped.model.settled.job = true;
+  const unread = reconcileSuborbs(bumped.model, {
+    sessions: [bot, task("job", { message_count: 4, last_active: 12, ended: true })],
+    mainId: "bot-chat",
+    now: 50,
+  });
+  assert.equal(unread.model.read.job, 3, "a count bump does not auto-mark read");
+  assert.equal(unread.shown[0].channels.badge, "unread");
+  const caughtUp = reconcileSuborbs(unread.model, {
+    sessions: [bot, task("job", { message_count: 5, last_active: 14, ended: true })],
+    mainId: "bot-chat",
+    now: 60,
+  });
+  caughtUp.model.settled.job = true;
+  const still = reconcileSuborbs(caughtUp.model, {
+    sessions: [bot, task("job", { message_count: 5, last_active: 14, ended: true })],
+    mainId: "bot-chat",
+    now: 70,
+  });
+  assert.equal(still.model.read.job, 3, "catch-up does not auto-mark read");
+  assert.equal(still.shown[0].channels.badge, "unread");
+  const reopened = reconcileSuborbs(still.model, {
+    sessions: [bot, task("job", { message_count: 5, last_active: 14, ended: true })],
+    mainId: "bot-chat",
+    openIds: ["job"],
+    now: 80,
+  });
+  assert.equal(reopened.model.read.job, 5);
+  assert.notEqual(reopened.shown[0].channels.badge, "unread");
+});
+
 test("badges prefer waiting, then failure, then a plan, then unread", () => {
   assert.deepEqual(suborbChannels({ running: true, waiting: true, plan: true, unread: true }), {
     activity: "running",

@@ -162,9 +162,10 @@ pub struct AppConfig {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub panel_sizes: BTreeMap<String, PanelSize>,
     /// R-OB-08 orb spots the user dragged, keyed by orb id (a profile,
-    /// "kanban", "cron" or "settings"), orb centre in CSS px. Omitted while
-    /// empty so an untouched config.json stays byte-identical. Written only by
-    /// `store_orb_position`; junk entries are dropped on read.
+    /// "kanban", "cron" or "settings", or `suborb:<profile>:<session>`),
+    /// orb centre in CSS px. Omitted while empty so an untouched config.json
+    /// stays byte-identical. Written only by `store_orb_position`; junk
+    /// entries are dropped on read.
     #[serde(
         default,
         skip_serializing_if = "BTreeMap::is_empty",
@@ -227,6 +228,24 @@ pub fn valid_panel_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// R-OB-08. A main/chrome orb id, or a dragged sub-orb
+/// `suborb:<profile>:<session>` (Devon 2026-11-13). The `+N` badge is not an id.
+pub fn valid_orb_id(id: &str) -> bool {
+    if valid_panel_id(id) {
+        return true;
+    }
+    let Some(rest) = id.strip_prefix("suborb:") else {
+        return false;
+    };
+    let Some((profile, session)) = rest.split_once(':') else {
+        return false;
+    };
+    !session.is_empty()
+        && !session.contains(':')
+        && validate_profile(profile).is_ok()
+        && valid_suborb_session(session)
 }
 
 /// R-LK-01. Only the non-standard steps are stored; "m", blank and unknown
@@ -1204,7 +1223,7 @@ fn read_orb_positions(value: &serde_json::Value) -> BTreeMap<String, OrbPosition
         return out;
     };
     for (id, point) in object {
-        if !valid_panel_id(id) {
+        if !valid_orb_id(id) {
             continue;
         }
         let x = point.get("x").and_then(serde_json::Value::as_u64);
@@ -1225,7 +1244,7 @@ fn read_orb_positions(value: &serde_json::Value) -> BTreeMap<String, OrbPosition
 /// byte-identical. Coordinates are clamped to 0..=ORB_MAX_COORD.
 pub fn store_orb_position(path: &Path, id: &str, point: Option<OrbPosition>) -> Result<bool, String> {
     let id = id.trim();
-    if !valid_panel_id(id) {
+    if !valid_orb_id(id) {
         return Err("光球 id 唔合法".into());
     }
     let point = point.map(|p| OrbPosition {
@@ -3295,6 +3314,67 @@ other:
         assert_eq!(cfg.text_size, "s");
         fs::write(&path, r#"{"version": 1, "bots": [], "orb_positions": [1, 2]}"#).unwrap();
         assert!(load(&path).unwrap().orb_positions.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn orb_positions_store_a_suborb_and_reset_clears_it_without_touching_old_files() {
+        let dir = migration_dir("orb-positions-suborb");
+        let path = dir.join("config.json");
+        let old = "{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"bots\": [],\n  \"text_size\": \"s\"\n}";
+        fs::write(&path, old).unwrap();
+        // A file that never dragged a sub-orb is not rewritten by a reset,
+        // and a full save does not invent the key.
+        assert!(!clear_orb_positions(&path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        let plain = load(&path).unwrap();
+        assert!(plain.orb_positions.is_empty());
+        save(&path, &plain).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("orb_positions"));
+        fs::write(&path, old).unwrap();
+        assert!(store_orb_position(
+            &path,
+            "suborb:researcher:job1",
+            Some(OrbPosition { x: 220, y: 180 })
+        )
+        .unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"orb_positions\": {\"suborb:researcher:job1\":{\"x\":220,\"y\":180}}"));
+        assert!(text.contains("\"text_size\": \"s\""));
+        let loaded = load(&path).unwrap();
+        assert_eq!(
+            loaded.orb_positions.get("suborb:researcher:job1"),
+            Some(&OrbPosition { x: 220, y: 180 })
+        );
+        // Settings 「儲存」 keeps the sub-orb key.
+        save(&path, &loaded).unwrap();
+        assert_eq!(
+            load(&path).unwrap().orb_positions.get("suborb:researcher:job1"),
+            Some(&OrbPosition { x: 220, y: 180 })
+        );
+        // 「所有光球返原位」 drops sub-orb spots with every other dragged orb.
+        assert!(clear_orb_positions(&path).unwrap());
+        let cleared = fs::read_to_string(&path).unwrap();
+        assert!(!cleared.contains("orb_positions"));
+        assert!(cleared.contains("\"text_size\": \"s\""));
+        assert!(load(&path).unwrap().orb_positions.is_empty());
+        // Junk ids are refused. The old file is not rewritten.
+        fs::write(&path, old).unwrap();
+        assert!(store_orb_position(&path, "bot:x", Some(OrbPosition { x: 1, y: 1 })).is_err());
+        assert!(store_orb_position(&path, "suborb-more:researcher", Some(OrbPosition { x: 1, y: 1 })).is_err());
+        assert!(store_orb_position(&path, "suborb:bad id:job", Some(OrbPosition { x: 1, y: 1 })).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        fs::write(
+            &path,
+            r#"{"version": 1, "bots": [], "orb_positions": {"suborb:researcher:job1": {"x": 10, "y": 12}, "suborb:bad id:job": {"x": 1, "y": 1}, "bot:x": {"x": 3, "y": 4}}}"#,
+        )
+        .unwrap();
+        let kept = load(&path).unwrap();
+        assert_eq!(kept.orb_positions.len(), 1);
+        assert_eq!(
+            kept.orb_positions.get("suborb:researcher:job1"),
+            Some(&OrbPosition { x: 10, y: 12 })
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -13,7 +13,10 @@ import {
   orbDraggable,
   planOrbDodges,
   pointCovered,
+  suborbRestCentre,
+  suborbTether,
   validOrbId,
+  validSuborbOrbId,
 } from "./orbdrag.js";
 import { ORB, ORB_HALO_PX, orbCoveredBy } from "./morph.js";
 
@@ -28,7 +31,10 @@ test("R-OB-08 ids, draggable kinds and saved spots", () => {
   assert.ok(orbDraggable("bot", "kanban", "orb"));
   assert.ok(!orbDraggable("bot", "researcher", "panel"), "an open panel moves by its header (R-PN-03)");
   assert.ok(!orbDraggable("bot", "researcher", "pill"));
-  assert.ok(!orbDraggable("suborb", "researcher::s1", "orb"), "sub-orbs follow their parent's fan (R-SO-02)");
+  assert.ok(orbDraggable("suborb", "suborb:researcher:job1", "orb"), "a sub-orb drags like a main orb (Devon 2026-11-13)");
+  assert.ok(!orbDraggable("suborb", "suborb:researcher:job1", "panel"), "an open sub-orb panel moves by its header");
+  assert.ok(!orbDraggable("suborb", "researcher::s1", "orb"), "only a real sub-orb id drags");
+  assert.ok(!orbDraggable("suborb", "suborb-more:researcher", "orb"), "the +N badge stays on the fan");
   assert.deepEqual(normalizeOrbPositions({
     ok: { x: 640.4, y: 300.6 },
     neg: { x: -1, y: 2 },
@@ -151,7 +157,7 @@ test("R-OB-08 main.js: anchor order, drag rule, persistence through set_orb_posi
   assert.match(main, /if \(target === "orb"\) reconcileOrbDodges\(\);/);
   const closed = main.slice(main.indexOf("function commitClosedShell(shell)"), main.indexOf("function restingTransform("));
   assert.match(closed, /noteOrbCover\(\);\s*sendHitRects\(collectHits\(\), "orb-dodge-return", true\);/);
-  assert.match(main, /shell\._orbGlide && shell\.dataset\.kind !== "suborb" \? coverDisc\(shell\)/);
+  assert.match(main, /const parked = shell\._orbGlide \? coverDisc\(shell\) : null;/);
   const move = main.slice(main.indexOf("function moveOrbDrag(event)"), main.indexOf("function endOrbDrag(event)"));
   assert.match(move, /orbDragAllowed\(\{[\s\S]*ctrlAtDown: orbGesture\.ctrlAtDown === true/);
   assert.match(move, /state\.dragHitId = shell\.dataset\.hitId/, "full-view capture rect while dragging, like a header drag");
@@ -215,4 +221,96 @@ test("R-OB-08 Settings 「所有光球返原位」: both languages, disabled unt
   assert.match(lib, /generate_handler!\[[\s\S]*\breset_orb_positions,/);
   assert.match(perms, /identifier = "allow-reset-orb-positions"[\s\S]*?commands\.allow = \["reset_orb_positions"\]/);
   assert.match(caps, /"allow-reset-orb-positions"/);
+});
+
+test("R-OB-08 a sub-orb uses the same 5px drag and the Ctrl-at-down rule", () => {
+  assert.equal(ORB_DRAG_THRESHOLD_PX, 5);
+  assert.ok(validSuborbOrbId("suborb:researcher:job1"));
+  assert.ok(!validSuborbOrbId("suborb-more:researcher"));
+  assert.ok(!validSuborbOrbId("suborb:researcher:"));
+  assert.ok(!validOrbId("bot:x"));
+  assert.ok(!dragStarted(3, 3), "under 5px is still a click");
+  assert.ok(dragStarted(5, 0));
+  assert.ok(dragStarted(4, 3));
+  assert.ok(!orbDragAllowed({ supported: true }), "no modifier: click-through, no drag");
+  assert.ok(!orbDragAllowed({ supported: true, ctrlAtDown: false, modifierNow: false }));
+  assert.ok(orbDragAllowed({ supported: true, ctrlAtDown: true }));
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const move = main.slice(main.indexOf("function moveOrbDrag(event)"), main.indexOf("function endOrbDrag(event)"));
+  assert.match(move, /dragStarted\(dx, dy\)/);
+  assert.match(move, /ctrlAtDown: orbGesture\.ctrlAtDown === true/);
+  assert.match(move, /state\.dragHitId = shell\.dataset\.hitId/);
+  assert.match(move, /clampOrbPoint\(/);
+});
+
+test("R-OB-08 a dropped sub-orb is kept by profile+session and a reset returns it to the fan", () => {
+  const id = "suborb:researcher:job1";
+  const fan = { x: 80, y: 200 };
+  const movedFan = { x: 140, y: 260 };
+  const dropped = { x: 480, y: 220 };
+  assert.deepEqual(suborbRestCentre({ fan }), fan, "never dragged: the fan slot");
+  assert.deepEqual(suborbRestCentre({ fan: movedFan }), movedFan, "the fan follows the parent");
+  const stored = normalizeOrbPositions({
+    [id]: { x: dropped.x + 0.4, y: dropped.y + 0.2 },
+    "bot:x": { x: 1, y: 1 },
+  });
+  assert.deepEqual(stored[id], { x: 480, y: 220 });
+  assert.equal(stored["bot:x"], undefined);
+  assert.deepEqual(suborbRestCentre({ fan: movedFan, saved: stored[id] }), stored[id], "a drop stays put");
+  assert.deepEqual(suborbRestCentre({ fan, saved: null }), fan, "reset clears the drop");
+  assert.deepEqual(suborbRestCentre({ fan: movedFan, saved: stored[id], drag: { x: 12, y: 16 } }), { x: 12, y: 16 });
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const reset = main.slice(main.indexOf("async function resetAllOrbPositions()"), main.indexOf("/** pointerdown on a resting main orb"));
+  assert.match(reset, /layoutSuborbOrbs\(\)/);
+  assert.match(reset, /state\.orbPositions\[id\] = null/);
+  const cfg = readFileSync(new URL("../src-tauri/src/config.rs", import.meta.url), "utf8");
+  assert.match(cfg, /fn valid_orb_id\(id: &str\)/);
+  assert.match(cfg, /strip_prefix\("suborb:"\)/);
+  assert.match(cfg, /if !valid_orb_id\(id\)/);
+});
+
+test("R-OB-08 tether ends follow the parent and the sub-orb and never take a hit", () => {
+  const parent = { x: 200, y: 300 };
+  const child = { x: 260, y: 340 };
+  assert.deepEqual(suborbTether(parent, child), { x1: 200, y1: 300, x2: 260, y2: 340 });
+  assert.deepEqual(suborbTether({ x: 210, y: 280 }, child), { x1: 210, y1: 280, x2: 260, y2: 340 });
+  assert.deepEqual(suborbTether(parent, { x: 10, y: 20 }), { x1: 200, y1: 300, x2: 10, y2: 20 });
+  assert.equal(suborbTether(null, child), null);
+  assert.equal(suborbTether(parent, null), null);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const paint = main.slice(main.indexOf("function paintSuborbTethers()"), main.indexOf("function paintFanParent("));
+  assert.match(paint, /suborbTether\(parentOrbBox/);
+  assert.match(paint, /class", "suborb-tether"/);
+  assert.doesNotMatch(paint, /data-hit-id|dataset\.hitId|hitId =/);
+  assert.match(main, /paintSuborbTethers\(\)/);
+  const glide = main.slice(main.indexOf("function glideOrb(shell, from)"), main.indexOf("function restingSuborb(shell)"));
+  assert.match(glide, /paintSuborbTethers\(\)/);
+  assert.match(css, /\.suborb-tether \{[^}]*pointer-events:\s*none;/);
+  assert.match(css, /\.suborb-tether-core \{[^}]*stroke-width:\s*1;/);
+  assert.match(css, /\.suborb-tether-halo \{[^}]*rgba\(248,\s*248,\s*252/);
+  const hits = main.slice(main.indexOf("function collectHits()"), main.indexOf("function orbShellAtPoint"));
+  assert.doesNotMatch(hits, /suborb-tether/);
+});
+
+test("R-OB-08 a sub-orb dodges on the same 44px disc + 34px halo as a main orb (Devon 2026-11-13 18:10)", () => {
+  const home = { x: 500, y: 320 };
+  const bare = 20;
+  // Just outside the 20px disc, inside the 44px disc + 34px halo.
+  const panel = { x: home.x + bare / 2 + 2, y: home.y - 8, w: 30, h: 16 };
+  assert.equal(pointCovered(home, [panel], { orb: bare, halo: 0 }), false, "the bare disc misses this panel");
+  assert.equal(pointCovered(home, [panel]), true, "44px + 34px halo meets it");
+  assert.equal(ORB_HALO_PX, 34);
+  const plan = planOrbDodges([{ id: "suborb:researcher:job1", home }], [panel], SCREEN);
+  const entry = plan.get("suborb:researcher:job1");
+  assert.equal(entry.dodged, true);
+  assert.ok(entry.spot);
+  assert.equal(pointCovered(entry.spot, [panel]), false);
+  const far = { x: home.x + ORB / 2 + ORB_HALO_PX + 8, y: home.y - 4, w: 20, h: 8 };
+  assert.equal(pointCovered(home, [far]), false);
+  assert.equal(planOrbDodges([{ id: "suborb:researcher:job1", home }], [far], SCREEN).get("suborb:researcher:job1").dodged, false);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const reconcile = main.slice(main.indexOf("function reconcileOrbDodges()"), main.indexOf("let orbPositionWrite"));
+  assert.doesNotMatch(reconcile, /halo:\s*0/);
+  assert.match(reconcile, /planOrbDodges\(orbs, covers, orbScreen\(\)\)/);
 });
