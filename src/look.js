@@ -237,7 +237,7 @@ export const EN = Object.freeze({
   "呢句送唔到做答案。": "This line could not be sent as the answer.",
   // History notices (approval / clarify asked elsewhere)
   "呢度答唔到。": "Can't answer here.",
-  "呢度答唔到。打字唔會當答案送出。": "Can't answer here. Typing will not be sent as the answer.",
+  "呢輪已經完。": "That turn is over.",
   // Chat chrome
   "收起完整提示": "Hide full prompt",
   "顯示完整提示": "Show full prompt",
@@ -337,6 +337,8 @@ export const EN_PATTERNS = Object.freeze([
   // History notices (sessions.js historyNoticeCopy).
   Object.freeze([/^([\s\S]+?) 等緊你批准：([\s\S]+)$/, (who, what) => `${word(who)} is waiting for your approval: ${word(what)}`]),
   Object.freeze([/^([\s\S]+?) 等緊你答：([\s\S]+)$/, (who, what) => `${word(who)} is waiting for your answer: ${word(what)}`]),
+  Object.freeze([/^([\s\S]+?) 問過批准：([\s\S]+)$/, (who, what) => `${word(who)} asked for approval: ${word(what)}`]),
+  Object.freeze([/^([\s\S]+?) 問過：([\s\S]+)$/, (who, what) => `${word(who)} asked: ${word(what)}`]),
   Object.freeze([/^呢度答唔到。大約 (\d+) 分鐘後逾時。$/, (n) => `Can't answer here. Times out in about ${n} min.`]),
   Object.freeze([/^呢度答唔到。逾時時間已過，等歷史更新。$/, () => "Can't answer here. The timeout has passed; waiting for the history to update."]),
   // Orb tooltips / aria-labels.
