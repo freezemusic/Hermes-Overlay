@@ -17,6 +17,7 @@
 ### Fixed
 
 - 計劃視窗改為顯示同一輪 `write_file` 寫入 `.hermes/plans/` 嘅計劃檔正文，唔再把提到路徑嘅對話摘要當成計劃；對話裡冇檔案正文時會註明（R-PL-01）。
+- `/renew` 這類技能斜線指令會把 Hermes 展開的技能正文經 `prompt.submit` 送出（`command.dispatch` 的 `type: skill`）。用戶氣泡只顯示 `display`；沒有 `display` 就保留原本打的 `/renew …`。技能正文不再畫成助手回覆。Plan 模式不會把這行再包一次（R-CL-08、R-MD-07）。
 
 下一批功能見 [README 路線圖 v0.4](README.md#路線圖) 與 [docs/ROADMAP.md](docs/ROADMAP.md)。
 

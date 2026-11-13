@@ -170,6 +170,8 @@ test("compose modes prefix plan and btw, and leave slash commands alone", () => 
   assert.equal(composeModeWire("順便問", "btw"), "/btw 順便問");
   assert.equal(composeModeWire("/btw 已有", "btw"), "/btw 已有");
   assert.equal(composeModeWire("/renew 舊題", "btw"), "/renew 舊題");
+  assert.equal(composeModeWire("/renew", "plan"), "/renew");
+  assert.equal(composeModeWire("/renew 舊題", "plan"), "/renew 舊題");
   assert.equal(composeModeWire("/stop", "plan"), "/stop");
   assert.equal(composeModeWire("/title 新名", "btw"), "/title 新名");
   assert.equal(composeModeWire("/", "plan"), "/");
@@ -264,6 +266,9 @@ test("the composer mode chip cycles, and a side question skips the busy queue", 
   assert.match(bubble, /planChipText\(message\.command\)/);
   const present = main.slice(main.indexOf("function presentMessage"), main.indexOf("function presentTranscript"));
   assert.match(present, /composeBubble\(m\.text\)/);
+  assert.ok(present.indexOf("skillInvocationText(m.text)") < present.indexOf("composeBubble(m.text)"));
+  assert.match(main, /payload\.type === "user\.shown"/);
+  assert.match(main, /applySkillBubble\(message, payload\.text\)/);
   assert.equal(main.split("set_compose_mode").length - 1, 1);
   assert.doesNotMatch(main, /set_plan_mode|\/yolo|composeMode === "debug"/);
   const store = rust.slice(rust.indexOf("pub fn store_compose_mode"), rust.indexOf("pub fn fill_empty_details"));

@@ -2434,6 +2434,7 @@ fn dispatch_turn(app: &AppHandle, profile: &str, event: TurnEvent, keep_busy: bo
                 "choice": choice,
             })),
         TurnEvent::Delta(text) => stamp(serde_json::json!({"type": "delta", "profile": profile, "text": text})),
+        TurnEvent::UserShown(text) => stamp(serde_json::json!({"type": "user.shown", "profile": profile, "text": text})),
         TurnEvent::Command(command) => stamp(serde_json::json!({"type": "command", "profile": profile, "command": command})),
         TurnEvent::Commentary(text) => stamp(serde_json::json!({"type": "commentary", "profile": profile, "text": text})),
         // R-ST-05: the status line, no chat row. Back to the plain busy line when the wait ends.

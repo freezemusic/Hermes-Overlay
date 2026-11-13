@@ -11,7 +11,9 @@ import {
   inlineArgsHint,
   markerChip,
   orderSlashCommands,
+  applySkillBubble,
   parseSlashMarker,
+  skillInvocationText,
   reconnectDelayMs,
   resolveClient,
   sendBlockedWhileBusy,
@@ -59,6 +61,36 @@ test("history marker collapses to display plus command chip", () => {
   assert.equal(skill.command, "arxiv+pdf");
   assert.equal(skill.command.startsWith("skill:"), false);
   assert.equal(skill.display, "/arxiv /pdf q");
+});
+
+test("a skill scaffold collapses to the invocation and the bubble uses display", () => {
+  const body = [
+    '[IMPORTANT: The user has invoked the "renew" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+    "",
+    "SKILL BODY",
+    "The user has provided the following instruction alongside the skill invocation: keep   the title",
+    "",
+    "[Runtime note: ignore]",
+  ].join("\n");
+  assert.equal(skillInvocationText(body), "/renew keep the title");
+  assert.equal(skillInvocationText(`${body.split("\n")[0]}\n\nBODY`), "/renew");
+  assert.equal(skillInvocationText("普通一句"), null);
+  assert.equal(skillInvocationText("/renew"), null);
+  const bundle = [
+    '[IMPORTANT: The user has invoked the "/renew /tidy" stacked skill bundle, loading 2 skills together.]',
+    "",
+    "User instruction: roll it",
+    "",
+    '[Loaded as part of the stacked skill invocation "renew".]',
+    "BODY",
+  ].join("\n");
+  assert.equal(skillInvocationText(bundle), "/renew /tidy roll it");
+  const bubble = { role: "user", text: "/renew keep the title" };
+  assert.equal(applySkillBubble(bubble, "  /renew  "), true);
+  assert.equal(bubble.text, "/renew");
+  assert.equal(applySkillBubble(bubble, "  "), false);
+  assert.equal(bubble.text, "/renew");
+  assert.equal(applySkillBubble({ role: "bot", text: "x" }, "/renew"), false);
 });
 
 test("client commands map to session endpoints and prompts stay on the server", () => {

@@ -111,7 +111,7 @@
 3. 原始 HTML、事件處理器與 `javascript:` 連結必須被去掉。
 4. 連結必須用系統瀏覽器打開，不得在 overlay 裡換頁。
 5. 輸入 `/` 必須打開 overlay-slash 的指令選單（`GET /v1/overlay/commands`）。分類按首次出現順序。↑↓ 移動，Tab 補全。沒有參數提示的指令按 Enter 要補全並送出。
-6. `/new`、`/title`、`/branch`、`/model`、`/stop` 由 overlay 處理。其他指令：舊 8642 原文送出，由 plugin 改寫；9119 用 `command.dispatch`／`prompt.btw`（見 §13 第 6 點，R-CL-08）。回合進行中仍必須能送 `/stop`。
+6. `/new`、`/title`、`/branch`、`/model`、`/stop` 由 overlay 處理。其他指令：舊 8642 原文送出，由 plugin 改寫；9119 用 `command.dispatch`／`prompt.btw`（見 §13 第 6 點，R-CL-08）。`type: skill` 而且 `message` 非空時同 `send` 一樣 `prompt.submit` 嗰段 `message`；用戶氣泡顯示 `display`，冇 `display` 就留返原本打嘅字，唔好把技能正文畫成助手回覆。撰寫模式只包打字嗰行，唔好再包 dispatch 返嚟嘅正文。回合進行中仍必須能送 `/stop`。
 7. 歷史裡的 `<!-- overlay-slash: ... -->` 必須顯示成可讀的指令標籤，而不是整段註解。
 
 ## 10. 視覺（美術監督 v20）
@@ -156,5 +156,5 @@
 3. 另一部機嘅一輪即時流入面板，完咗畫返存咗嘅行（R-CL-03）。
 4. 斷線時狀態行寫「連唔到 Hermes Dashboard，等陣自動再試」，自動重連（R-CL-04）。
 5. 每個 session 都可以送（R-CL-05）；批准同澄清經 WebSocket（R-CL-06）；冇 Bot Chat 時第一次送出開一條（R-CL-07）。
-6. 斜線：旁問用 `prompt.btw`（唔入歷史），Plan 同其他指令用 `command.dispatch`，插話用 `session.steer`（R-CL-08）。登入成功即刻重讀開住嘅面板，句子寫「已登入 Hermes Dashboard」。
+6. 斜線：旁問用 `prompt.btw`（唔入歷史），Plan 同其他指令用 `command.dispatch`，插話用 `session.steer`（R-CL-08）。`skill` 同帶 `display` 嘅 `send` 送出 `message`，氣泡用 `display`（冇就用原本打嘅字）。登入成功即刻重讀開住嘅面板，句子寫「已登入 Hermes Dashboard」。
 7. Session 改動：`/title` 用 `session.title`，封存用 `session.archive`，分支 `session.branch_stored`（只送 `parent_session_id`，標題之後先改）。唔用 `PATCH /api/sessions/{id}`（0.22.5 要 revision fence）。歷史入面 `display_kind: model_switch` 嘅提示行唔顯示。
