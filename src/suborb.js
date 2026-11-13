@@ -196,6 +196,55 @@ export function suborbChannels({ running = false, waiting = false, failed = fals
   return { activity: running ? "running" : "idle", badge };
 }
 
+const LIVE_RUN_STATUS = new Set([
+  "running",
+  "started",
+  "waiting_for_approval",
+  "working",
+  "streaming",
+  "starting",
+  "busy",
+]);
+
+const TERMINAL_RUN_STATUS = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+  "canceled",
+  "interrupted",
+  "expired",
+  "gone",
+]);
+
+/**
+ * Whether a sub-orb that still looks busy can stop.
+ * "idle" — the server says the run is over. Clear local busy and settle the tail.
+ * "spin" — the session or the run is still active.
+ * "recheck" — the list says the session is not busy, but a run id is still open.
+ * Ask the server. Do not clear from the list flag alone.
+ * A history-notice countdown is not an input. The caller rechecks, then passes
+ * the run status it got back.
+ */
+export function suborbIdleDecision({
+  sessionBusy,
+  localBusy = false,
+  hasRunId = false,
+  runStatus = "",
+  runGone = false,
+  confirmedIdle = false,
+} = {}) {
+  if (sessionBusy === true) return "spin";
+  const status = String(runStatus || "").toLowerCase();
+  if (LIVE_RUN_STATUS.has(status)) return "spin";
+  if (runGone || TERMINAL_RUN_STATUS.has(status)) return "idle";
+  if (sessionBusy !== false) return "spin";
+  // A run id still on file has to be asked. The list flag alone is not enough:
+  // a stored user line keeps the arc until that reply settles.
+  if (hasRunId) return "recheck";
+  if (confirmedIdle || localBusy) return "idle";
+  return "spin";
+}
+
 export function orderSuborbRows(rows, pinned = []) {
   const pinAt = new Map(pinned.map((id, index) => [id, index]));
   return [...rows].sort((a, b) => {
@@ -226,6 +275,7 @@ export function emptySuborbModel() {
     waiting: {},
     failed: {},
     localBusy: {},
+    serverIdle: {},
     peeked: {},
   };
 }
@@ -412,6 +462,7 @@ export function reconcileSuborbs(model, {
     waiting: { ...(model?.waiting || {}) },
     failed: { ...(model?.failed || {}) },
     localBusy: { ...(model?.localBusy || {}) },
+    serverIdle: { ...(model?.serverIdle || {}) },
   };
   if (!next.seen) {
     for (const row of sessions || []) {
@@ -471,12 +522,18 @@ export function reconcileSuborbs(model, {
       && stamp.message_count === prev.message_count
     );
     if (countGrew || (isNew && count > 0)) peek.push(row.id);
+    if (row.busy === true || next.localBusy[row.id]) delete next.serverIdle[row.id];
     if (countGrew) next.settled[row.id] = false;
+    // serverIdle is set only after a run check (or a notice timeout recheck)
+    // says this session has no active run. A bare busy:false list row is not
+    // that check — a stored user line still waits for the reply.
+    const serverIdle = !!next.serverIdle[row.id] && row.busy !== true && !next.localBusy[row.id];
+    if (serverIdle) next.settled[row.id] = true;
     const awaitingReply = next.settled[row.id] === false && count > 0 && !row.ended;
     const running = !!(
       next.localBusy[row.id]
       || row.busy
-      || activeOnly
+      || (!serverIdle && activeOnly)
       || awaitingReply
       || (countGrew && next.settled[row.id] !== true)
     );
@@ -486,7 +543,7 @@ export function reconcileSuborbs(model, {
     if (open.has(row.id)) next.read[row.id] = count;
     const hasRead = next.read[row.id] != null && next.read[row.id] >= count;
     const settled = next.settled[row.id] !== false;
-    const finished = !running && !waiting && (row.ended || (count > 0 && settled && !countGrew));
+    const finished = !running && !waiting && (row.ended || (count > 0 && settled && (!countGrew || serverIdle)));
     const panelOpen = open.has(row.id);
     const held = hold.has(row.id);
     if (panelOpen) {

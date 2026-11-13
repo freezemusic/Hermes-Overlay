@@ -21,6 +21,7 @@ import {
   composerHoldsSuborb,
   reconcileSuborbs,
   suborbChannels,
+  suborbIdleDecision,
   suborbLabel,
   suborbPositions,
   suborbSizePx,
@@ -37,6 +38,7 @@ const task = (id, extra = {}) => ({
   archived: !!extra.archived,
   ended: !!extra.ended,
   source: extra.source || "api_server",
+  ...(extra.busy === true || extra.busy === false ? { busy: extra.busy } : {}),
 });
 
 test("archived rows and renew titles never become sub-orbs", () => {
@@ -214,6 +216,133 @@ test("sub-orbs sit along the parent edge and stay at least 14px", () => {
   assert.equal(row.length, 2);
   assert.ok(row[1].y > row[0].y);
   assert.ok(row.every((slot) => slot.x >= 0 && slot.y >= 0));
+});
+
+function queuedJob(base, { localBusy = false, serverIdle = false } = {}) {
+  return {
+    ...base.model,
+    settled: { ...base.model.settled, job: false },
+    localBusy: { ...base.model.localBusy, job: !!localBusy },
+    serverIdle: { ...(base.model.serverIdle || {}), ...(serverIdle ? { job: true } : {}) },
+  };
+}
+
+test("a server-idle session stops spinning and an unpinned closed sub-orb leaves after 3s", () => {
+  const base = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot, task("job", { message_count: 2, last_active: 5, title: "Fix S10 v3.00 orang" })],
+    mainId: "bot-chat",
+    now: 0,
+  });
+  const open = reconcileSuborbs(queuedJob(base, { serverIdle: true }), {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9, busy: false, title: "Fix S10 v3.00 orang" })],
+    mainId: "bot-chat",
+    openIds: ["job"],
+    now: 100,
+  });
+  assert.equal(open.shown[0].running, false);
+  assert.equal(open.shown[0].channels.activity, "idle");
+  assert.equal(open.model.settled.job, true);
+  const closed = reconcileSuborbs(open.model, {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9, busy: false, title: "Fix S10 v3.00 orang" })],
+    mainId: "bot-chat",
+    now: 100,
+  });
+  assert.equal(closed.shown.length, 1);
+  assert.equal(closed.shown[0].channels.activity, "idle");
+  const gone = reconcileSuborbs(closed.model, {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9, busy: false, title: "Fix S10 v3.00 orang" })],
+    mainId: "bot-chat",
+    now: 100 + SUBORB_DISMISS_MS,
+  });
+  assert.equal(gone.shown.length, 0);
+});
+
+test("a session the server still marks busy keeps spinning", () => {
+  const base = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot, task("job", { message_count: 2, last_active: 5 })],
+    mainId: "bot-chat",
+    now: 0,
+  });
+  const spinning = reconcileSuborbs(queuedJob(base, { localBusy: true }), {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9, busy: true })],
+    mainId: "bot-chat",
+    now: 100,
+  });
+  assert.equal(spinning.shown[0].channels.activity, "running");
+  assert.equal(spinning.model.settled.job, false);
+  const later = reconcileSuborbs(spinning.model, {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9, busy: true })],
+    mainId: "bot-chat",
+    now: 100 + SUBORB_DISMISS_MS,
+  });
+  assert.equal(later.shown.length, 1);
+  assert.equal(later.shown[0].running, true);
+  assert.equal(suborbIdleDecision({ sessionBusy: true, localBusy: true, hasRunId: true }), "spin");
+  assert.equal(suborbIdleDecision({ sessionBusy: false, localBusy: true, hasRunId: true, runStatus: "running" }), "spin");
+  assert.equal(suborbIdleDecision({ sessionBusy: false, localBusy: true, hasRunId: true, runStatus: "waiting_for_approval" }), "spin");
+});
+
+test("a queued user tail settles once the server is idle and no run is open", () => {
+  assert.equal(tailSignals([{ role: "user", text: "steer this" }]).settled, false);
+  assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: false, localBusy: true }), "idle");
+  assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: false, localBusy: false }), "spin");
+  assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: false, confirmedIdle: true }), "idle");
+  assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: true, localBusy: false }), "recheck");
+  assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: true, localBusy: true }), "recheck");
+  assert.equal(suborbIdleDecision({ hasRunId: true, localBusy: true, runStatus: "completed" }), "idle");
+  assert.equal(suborbIdleDecision({ hasRunId: true, localBusy: true, runStatus: "failed" }), "idle");
+  assert.equal(suborbIdleDecision({ hasRunId: true, localBusy: true, runStatus: "cancelled" }), "idle");
+  assert.equal(suborbIdleDecision({ hasRunId: true, localBusy: true, runStatus: "expired" }), "idle");
+  assert.equal(suborbIdleDecision({ hasRunId: true, localBusy: true, runStatus: "interrupted" }), "idle");
+  assert.equal(suborbIdleDecision({ hasRunId: true, localBusy: true, runGone: true }), "idle");
+  const base = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot, task("job", { message_count: 2, last_active: 5 })],
+    mainId: "bot-chat",
+    now: 0,
+  });
+  const idle = reconcileSuborbs(queuedJob(base, { serverIdle: true }), {
+    sessions: [bot, task("job", { message_count: 4, last_active: 12, busy: false })],
+    mainId: "bot-chat",
+    now: 20,
+  });
+  assert.equal(idle.model.settled.job, true);
+  assert.equal(idle.shown[0].running, false);
+  assert.equal(idle.shown[0].channels.activity, "idle");
+  const holding = reconcileSuborbs(queuedJob(base, { localBusy: true }), {
+    sessions: [bot, task("job", { message_count: 4, last_active: 12, busy: false })],
+    mainId: "bot-chat",
+    now: 20,
+  });
+  assert.equal(holding.shown[0].running, true);
+  assert.equal(holding.model.settled.job, false);
+});
+
+test("a pinned sub-orb stays when the server goes idle but stops spinning", () => {
+  const base = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot, task("job", { message_count: 2, last_active: 5 })],
+    mainId: "bot-chat",
+    pinned: ["job"],
+    now: 0,
+  });
+  const open = reconcileSuborbs(queuedJob(base, { serverIdle: true }), {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9, busy: false })],
+    mainId: "bot-chat",
+    pinned: ["job"],
+    openIds: ["job"],
+    now: 100,
+  });
+  assert.equal(open.shown[0].pinned, true);
+  assert.equal(open.shown[0].channels.activity, "idle");
+  const closed = reconcileSuborbs(open.model, {
+    sessions: [bot, task("job", { message_count: 3, last_active: 9, busy: false })],
+    mainId: "bot-chat",
+    pinned: ["job"],
+    now: 100 + SUBORB_DISMISS_MS,
+  });
+  assert.equal(closed.shown.length, 1);
+  assert.equal(closed.shown[0].id, "job");
+  assert.equal(closed.shown[0].pinned, true);
+  assert.equal(closed.shown[0].running, false);
 });
 
 test("a tail is a plan only when the plan detector agrees, and a bot line is settled", () => {

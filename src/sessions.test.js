@@ -55,6 +55,7 @@ import {
   historyNoticeCopy,
   sealUnrecoverableNotice,
   historyNoticePending,
+  historyNoticeTimedOut,
   historyNoticeId,
   dropSettledHistoryNotices,
   stopCatchUpMode,
@@ -1121,6 +1122,45 @@ test("a history clarify countdown follows the Hermes default and keeps moving", 
   };
   assert.equal(sealUnrecoverableNotice(approval), true);
   assert.equal(historyNoticeCopy(approval, "文案助手").detail, "呢度答唔到。打字唔會當答案送出。");
+});
+
+test("a history notice timeout asks the server again before a sub-orb goes idle", () => {
+  const asked = 1_000;
+  const message = {
+    role: "notice",
+    tool_name: "clarify",
+    text: JSON.stringify({ text: "邊隻色？", timeout_s: 3600, asked_at: asked }),
+  };
+  assert.equal(historyNoticeTimedOut(message, (asked + 3599) * 1000), false);
+  assert.equal(historyNoticeTimedOut(message, (asked + 3600) * 1000), true);
+  assert.match(historyNoticeCopy(message, "文案助手", (asked + 3600) * 1000).detail, /逾時時間已過/);
+  const sealed = {
+    ...message,
+    text: JSON.stringify({ text: "邊隻色？", timeout_s: 3600, asked_at: asked, unrecoverable: true }),
+  };
+  assert.equal(historyNoticeTimedOut(sealed, (asked + 99999) * 1000), false);
+  assert.equal(historyNoticeTimedOut({ role: "clarify", tool_name: "clarify" }, (asked + 99999) * 1000), false);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const clock = main.slice(main.indexOf("function armNoticeClock"), main.indexOf("function bubbleEl"));
+  assert.match(clock, /historyNoticeTimedOut/);
+  assert.match(clock, /recheckTimedOutNotices/);
+  const recheck = main.slice(main.indexOf("async function recheckTimedOutNotices"), main.indexOf("function noteSuborbList"));
+  assert.match(recheck, /recoverRunControls/);
+  assert.match(recheck, /seed_session_lists/);
+  assert.doesNotMatch(recheck, /setBotStatus/);
+  const recover = main.slice(main.indexOf("async function recoverRunControls"), main.indexOf("function noteTool"));
+  assert.match(recover, /suborbIdleDecision/);
+  assert.match(recover, /releaseIdleSuborb\(id\)/);
+  assert.match(recover, /decision === "idle"/);
+  const release = main.slice(main.indexOf("function releaseIdleSuborb"), main.indexOf("function scheduleSuborbIdleCheck"));
+  assert.match(release, /setBotStatus\(id, "閒置", "idle"\)/);
+  assert.match(release, /isSuborbId\(id\)/);
+  assert.match(release, /clarifyPending/);
+  const list = main.slice(main.indexOf("function noteSuborbList"), main.indexOf("function armSuborbDismiss"));
+  assert.match(list, /suborbIdleDecision/);
+  assert.match(list, /scheduleSuborbIdleCheck/);
+  const caught = main.slice(main.indexOf("function mergeCaughtUp"), main.indexOf("async function catchUpSession"));
+  assert.match(caught, /noteSuborbList/);
 });
 
 test("a notice stays a card in place, and a result-only tail repaints the closed orb", () => {
