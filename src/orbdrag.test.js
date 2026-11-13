@@ -292,3 +292,25 @@ test("R-OB-08 tether ends follow the parent and the sub-orb and never take a hit
   const hits = main.slice(main.indexOf("function collectHits()"), main.indexOf("function orbShellAtPoint"));
   assert.doesNotMatch(hits, /suborb-tether/);
 });
+
+test("R-OB-08 a sub-orb dodges on the same 44px disc + 34px halo as a main orb (Devon 2026-11-13 18:10)", () => {
+  const home = { x: 500, y: 320 };
+  const bare = 20;
+  // Just outside the 20px disc, inside the 44px disc + 34px halo.
+  const panel = { x: home.x + bare / 2 + 2, y: home.y - 8, w: 30, h: 16 };
+  assert.equal(pointCovered(home, [panel], { orb: bare, halo: 0 }), false, "the bare disc misses this panel");
+  assert.equal(pointCovered(home, [panel]), true, "44px + 34px halo meets it");
+  assert.equal(ORB_HALO_PX, 34);
+  const plan = planOrbDodges([{ id: "suborb:researcher:job1", home }], [panel], SCREEN);
+  const entry = plan.get("suborb:researcher:job1");
+  assert.equal(entry.dodged, true);
+  assert.ok(entry.spot);
+  assert.equal(pointCovered(entry.spot, [panel]), false);
+  const far = { x: home.x + ORB / 2 + ORB_HALO_PX + 8, y: home.y - 4, w: 20, h: 8 };
+  assert.equal(pointCovered(home, [far]), false);
+  assert.equal(planOrbDodges([{ id: "suborb:researcher:job1", home }], [far], SCREEN).get("suborb:researcher:job1").dodged, false);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const reconcile = main.slice(main.indexOf("function reconcileOrbDodges()"), main.indexOf("let orbPositionWrite"));
+  assert.doesNotMatch(reconcile, /halo:\s*0/);
+  assert.match(reconcile, /planOrbDodges\(orbs, covers, orbScreen\(\)\)/);
+});

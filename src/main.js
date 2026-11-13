@@ -11294,7 +11294,6 @@ function reconcileOrbDodges() {
         id: shell.dataset.botId,
         home: sub ? suborbHomeCentre(shell) : homeOrbPoint(shell.dataset.botId),
         current: state.orbDodge[shell.dataset.botId] || null,
-        ...(sub ? { orb: suborbSizePx(ORB), halo: 0 } : {}),
       };
     }).filter((item) => item.home);
     const plan = planOrbDodges(orbs, covers, orbScreen());
