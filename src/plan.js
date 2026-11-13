@@ -359,16 +359,34 @@ export function plansIn(messages) {
   return found;
 }
 
+/** Messages from the latest user turn through the end. No user row means the whole list. */
+function latestTurn(messages) {
+  const list = messages || [];
+  let start = 0;
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (list[index] && list[index].role === "user") {
+      start = index;
+      break;
+    }
+  }
+  return list.slice(start);
+}
+
 /**
- * A finished /plan turn or a path mention whose file body is not on the
- * message yet. Live tool events do not carry write_file arguments.
+ * The latest turn still has no write_file body. Live tool events do not
+ * carry write_file arguments. An older file plan does not cancel a later turn.
  */
 export function planNeedsFileCatchUp(messages) {
-  const list = messages || [];
-  if (plansIn(list).some((item) => item.fromFile)) return false;
-  const lastUser = [...list].reverse().find((item) => item && item.role === "user");
+  const turn = latestTurn(messages);
+  if (plansIn(turn).some((item) => item.fromFile)) return false;
+  const lastUser = [...turn].reverse().find((item) => item && item.role === "user");
   if (lastUser?.command === "plan") return true;
-  return list.some((item) => item && item.role === "bot" && !item.live && PLAN_PATH.test(String(item.text || "")));
+  return turn.some((item) => item && item.role === "bot" && !item.live && PLAN_PATH.test(String(item.text || "")));
+}
+
+/** A quiet reread brought the latest turn's plan file, which the panel does not have yet. */
+export function planFileCaughtUp(local, incoming) {
+  return planNeedsFileCatchUp(local) && !planNeedsFileCatchUp(incoming);
 }
 
 /** Newest bot reply that is a plan. */
