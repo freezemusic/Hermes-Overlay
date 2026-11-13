@@ -84,14 +84,63 @@ export function suborbRestCentre({ fan = null, saved = null, drag = null, dodge 
   return point(drag) || point(dodge) || point(saved) || point(fan);
 }
 
+/**
+ * Centre of a disc border box. The tether ends here, not on the top-left
+ * and not on the shell's top-left (R-OB-08).
+ */
+export function boxCentre(box) {
+  const x = Number(box?.x ?? box?.left);
+  const y = Number(box?.y ?? box?.top);
+  const w = Number(box?.width ?? box?.w);
+  const h = Number(box?.height ?? box?.h);
+  if (![x, y, w, h].every(Number.isFinite) || w < 1 || h < 1) return null;
+  return { x: x + w / 2, y: y + h / 2 };
+}
+
+/**
+ * Map a disc centre into the tether SVG's user space.
+ *
+ * `point` and `layer` (`x`, `y`, `w`, `h`) are one space: both viewport CSS
+ * pixels, or both screen pixels. `viewW` / `viewH` are the SVG user units
+ * (the CSS client size when the SVG has no viewBox). `view / box` cancels
+ * devicePixelRatio when the rendered box is physical and the user space is
+ * CSS. A non-zero layer origin is the rail, the layout viewport, or the
+ * window; writing viewport coordinates without subtracting it shifts every
+ * end by that vector.
+ *
+ * `screen` is only for a point that is still screen pixels while `layer` is
+ * already viewport CSS. `originX` / `originY` are the window position and
+ * `scale` is devicePixelRatio (1, 1.25, 1.5, …).
+ */
+export function tetherLayerPoint(point, layer = null, screen = null) {
+  let x = Number(point?.x);
+  let y = Number(point?.y);
+  if (screen) {
+    const scale = Number(screen.scale);
+    const s = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    x = (x - (Number(screen.originX) || 0)) / s;
+    y = (y - (Number(screen.originY) || 0)) / s;
+  }
+  const originX = Number(layer?.x) || 0;
+  const originY = Number(layer?.y) || 0;
+  const boxW = Number(layer?.w);
+  const boxH = Number(layer?.h);
+  const viewW = Number(layer?.viewW);
+  const viewH = Number(layer?.viewH);
+  const scaleX = boxW > 0 && viewW > 0 ? viewW / boxW : 1;
+  const scaleY = boxH > 0 && viewH > 0 ? viewH / boxH : 1;
+  return { x: (x - originX) * scaleX, y: (y - originY) * scaleY };
+}
+
 /** Hairline from a profile orb centre to a sub-orb centre. No hit of its own. */
-export function suborbTether(parent, child) {
-  const x1 = Number(parent?.x);
-  const y1 = Number(parent?.y);
-  const x2 = Number(child?.x);
-  const y2 = Number(child?.y);
-  if (![x1, y1, x2, y2].every(Number.isFinite)) return null;
-  return { x1, y1, x2, y2 };
+export function suborbTether(parent, child, layer = null, screen = null) {
+  const map = layer || screen
+    ? (point) => tetherLayerPoint(point, layer, screen)
+    : (point) => ({ x: Number(point?.x), y: Number(point?.y) });
+  const a = map(parent);
+  const b = map(child);
+  if (![a.x, a.y, b.x, b.y].every(Number.isFinite)) return null;
+  return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
 }
 
 /** `orb_positions` from settings: only valid ids with whole, in-range coordinates. */

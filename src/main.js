@@ -197,6 +197,7 @@ import {
   orbDragAllowed,
   orbDraggable,
   planOrbDodges,
+  boxCentre,
   suborbRestCentre,
   suborbTether,
   validOrbId,
@@ -12719,11 +12720,12 @@ function parentOrbBox(profile) {
   const shell = shellFor(profile);
   const orb = shell?.querySelector(".morph-orb");
   const box = orb?.getBoundingClientRect?.();
-  if (!box || box.width < 1 || box.height < 1) return null;
+  const centre = boxCentre(box);
+  if (!centre) return null;
   return {
     edge: shell.dataset.edge || "right",
-    x: box.x + box.width / 2,
-    y: box.y + box.height / 2,
+    x: centre.x,
+    y: centre.y,
     parent: box.width,
   };
 }
@@ -12762,9 +12764,7 @@ function parentPanelOpen(profile) {
 
 /** Disc centre before a re-place, so the move can glide (200ms, transform only). */
 function suborbDiscCentre(shell) {
-  const box = shell?.querySelector(".suborb-disc")?.getBoundingClientRect?.();
-  if (!box || box.width < 1 || box.height < 1) return null;
-  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  return boxCentre(shell?.querySelector(".suborb-disc")?.getBoundingClientRect?.());
 }
 
 function glideSuborb(shell, from) {
@@ -12939,25 +12939,45 @@ function suborbPlacedFree(id) {
 }
 
 /**
- * R-OB-08 tether. One hairline from each visible sub-orb to its profile orb.
- * Centres are the discs on screen, so a drag or a dodge glide moves the ends
- * on that frame. The SVG is not a hit (`pointer-events: none`, no hit id).
+ * Border box of the tether SVG, in the same space as disc
+ * getBoundingClientRect, plus the SVG's CSS user size. No viewBox: one user
+ * unit is one CSS pixel of this box, after subtracting its origin.
+ */
+function tetherLayerBox(svg) {
+  const box = svg.getBoundingClientRect?.() || {};
+  const viewW = svg.clientWidth || box.width || 0;
+  const viewH = svg.clientHeight || box.height || 0;
+  return {
+    x: Number(box.x) || 0,
+    y: Number(box.y) || 0,
+    w: Number(box.width) || 0,
+    h: Number(box.height) || 0,
+    viewW,
+    viewH,
+  };
+}
+
+/**
+ * R-OB-08 tether. One hairline from each visible sub-orb centre to its
+ * profile orb centre. Centres are the discs on screen, mapped into the SVG
+ * that actually contains the stroke, so a drag, a dodge glide, a resize, or
+ * a layer origin that is not the viewport origin moves both ends on that
+ * frame. The SVG is not a hit (`pointer-events: none`, no hit id).
  */
 function paintSuborbTethers() {
   const rail = $("#bot-rail");
   if (!rail) return;
   let svg = rail.querySelector(":scope > .suborb-tether");
-  const parts = [];
+  const shells = [];
   rail.querySelectorAll(".morph[data-kind='suborb']").forEach((shell) => {
     const id = shell.dataset.botId || "";
     if (!id.startsWith("suborb:") || shell.dataset.state !== "orb") return;
     if (suborbFanHidden(shell)) return;
     const sub = parseSuborbId(id);
     if (!sub) return;
-    const line = suborbTether(parentOrbBox(sub.profile), suborbDiscCentre(shell));
-    if (line) parts.push(line);
+    shells.push({ shell, sub });
   });
-  if (!parts.length) {
+  if (!shells.length) {
     svg?.remove();
     return;
   }
@@ -12968,12 +12988,28 @@ function paintSuborbTethers() {
     svg.setAttribute("aria-hidden", "true");
     rail.prepend(svg);
   }
-  const w = window.innerWidth || 1280;
-  const h = window.innerHeight || 800;
-  svg.setAttribute("width", String(w));
-  svg.setAttribute("height", String(h));
-  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-  const sig = parts.map((line) => `${line.x1.toFixed(1)},${line.y1.toFixed(1)},${line.x2.toFixed(1)},${line.y2.toFixed(1)}`).join(";");
+  svg.removeAttribute("width");
+  svg.removeAttribute("height");
+  svg.removeAttribute("viewBox");
+  const layer = tetherLayerBox(svg);
+  const parts = [];
+  for (const { shell, sub } of shells) {
+    const line = suborbTether(parentOrbBox(sub.profile), suborbDiscCentre(shell), layer);
+    if (line) parts.push(line);
+  }
+  if (!parts.length) {
+    svg.remove();
+    return;
+  }
+  const sig = [
+    layer.x.toFixed(1),
+    layer.y.toFixed(1),
+    layer.w.toFixed(1),
+    layer.h.toFixed(1),
+    layer.viewW.toFixed(1),
+    layer.viewH.toFixed(1),
+    parts.map((line) => `${line.x1.toFixed(1)},${line.y1.toFixed(1)},${line.x2.toFixed(1)},${line.y2.toFixed(1)}`).join(";"),
+  ].join("|");
   if (svg.dataset.sig === sig) return;
   svg.dataset.sig = sig;
   while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -15884,6 +15920,11 @@ async function boot() {
     if (event.persisted) kickGateway();
   });
   window.addEventListener("resize", layoutShells);
+  // DPI and a shifted visual viewport change the tether layer without a
+  // layout-viewport resize. Repaint from the boxes on screen.
+  const repaintTethers = () => paintSuborbTethers();
+  window.visualViewport?.addEventListener("resize", repaintTethers);
+  window.visualViewport?.addEventListener("scroll", repaintTethers);
   applyInteraction(state.interaction);
   if (!inTauri()) {
     window.__deliverCron = deliverCron;
