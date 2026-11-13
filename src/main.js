@@ -5,7 +5,8 @@
  */
 
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planForPanel, planNeedsFileCatchUp, plansIn, rememberPlan } from "./plan.js";
+import { logQuietRefreshFailure, openHistory, schedulePlanFileCatchUp } from "./history-open.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, plansIn, rememberPlan } from "./plan.js";
 import {
   SUBORB_FADE_MS,
   emptySuborbModel,
@@ -5926,7 +5927,10 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   const liveTools = thread.messages.some((message) => message.role === "tool-run" && message.running);
   if (!switching && !(running && (thread.messages.some((message) => message.live) || liveTools))) {
     const trustServer = historyCountMismatch(thread.messages, shown, opened.message_count);
-    if (quiet && !trustServer && sameChatSnapshot({
+    // Same chat text can still be missing the write_file body. A quiet reread
+    // that brought that body has to land, or 睇計劃 stays on the summary.
+    const caughtPlan = planFileCaughtUp(thread.messages, messages);
+    if (quiet && !trustServer && !caughtPlan && sameChatSnapshot({
       sessionId: thread.sessionId,
       sessionExplicit: thread.sessionExplicit,
       sessionReadOnly: thread.sessionReadOnly,
@@ -6140,7 +6144,7 @@ async function reloadOpenSession(id, token, { quiet = false } = {}) {
 
 async function loadBotHistory(id, token, { quiet = false } = {}) {
   const { invoke } = await import("@tauri-apps/api/core");
-  const opened = await invoke("open_bot", { profile: id, quiet });
+  const opened = await openHistory(invoke, id, { quiet });
   if (token !== state.reconnectToken || state.mode !== "hermes") return false;
   if (backgroundBlocked()) {
     pendingHistory.set(id, { opened, token });
@@ -6633,6 +6637,14 @@ async function tickRoster() {
   if (failedDown) noteGatewayDown();
 }
 
+function noteQuietRefreshError(id, err) {
+  logQuietRefreshFailure(id, err, {
+    debug: debugLog,
+    warn: (line) => console.warn(line),
+    gatewayDown,
+  });
+}
+
 async function refreshBotQuiet(id) {
   const token = state.reconnectToken;
   const thread = threadFor(id);
@@ -6641,6 +6653,7 @@ async function refreshBotQuiet(id) {
       await thread.historyPromise;
       return true;
     } catch (err) {
+      noteQuietRefreshError(id, err);
       return gatewayDown(String(err)) ? false : true;
     }
   }
@@ -6654,6 +6667,7 @@ async function refreshBotQuiet(id) {
     }
     return true;
   } catch (err) {
+    noteQuietRefreshError(id, err);
     return gatewayDown(String(err)) ? false : true;
   }
 }
@@ -7545,17 +7559,17 @@ function armWholeReplyCatchUp(id) {
 
 /** Live tool events lack write_file arguments. Reread history when the turn ends. */
 function armPlanFileCatchUp(id) {
-  const thread = threadFor(id);
-  if (!planNeedsFileCatchUp(thread.messages)) return;
-  const sessionId = thread.sessionId;
-  window.setTimeout(() => {
-    if (state.mode !== "hermes" || !inTauri()) return;
-    const now = threadFor(id);
-    if (now.sessionId !== sessionId || state.busy.has(id)) return;
-    if (!planNeedsFileCatchUp(now.messages)) return;
-    debugLog("plan-file-catch-up", `id=${id}`);
-    void claimProfiles([id], () => refreshBotQuiet(id));
-  }, WHOLE_REPLY_CATCH_UP_MS);
+  schedulePlanFileCatchUp({
+    id,
+    messages: () => threadFor(id).messages,
+    sessionId: () => threadFor(id).sessionId,
+    busy: () => state.busy.has(id),
+    enabled: () => state.mode === "hermes" && inTauri(),
+    schedule: (fn, ms) => window.setTimeout(fn, ms),
+    reload: (panelId) => claimProfiles([panelId], () => refreshBotQuiet(panelId)),
+    log: (panelId) => debugLog("plan-file-catch-up", `id=${panelId}`),
+    delayMs: WHOLE_REPLY_CATCH_UP_MS,
+  });
 }
 
 /** R-SS-08: Hermes' Bot Chat door refused (`bot_chat_unbound`/`bot_chat_not_local`). Rust may already have sent the plain line. */
@@ -9438,11 +9452,12 @@ async function catchUpSession(id, requested = {}) {
   });
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const opened = await invoke("open_bot", { profile: id, quiet: true });
+    const opened = await openHistory(invoke, id, { quiet: true });
     if (token !== state.reconnectToken || state.mode !== "hermes") return false;
     const mode = modeFor();
     return mergeCaughtUp(id, opened, mode);
   } catch (err) {
+    noteQuietRefreshError(id, err);
     if (modeFor().stopped) noteStopped(id);
     if (gatewayDown(String(err))) noteGatewayDown();
     return false;

@@ -204,8 +204,11 @@ test("the recover path only reads kanban, cron, profiles, and bot chat", () => {
   assert.match(body, /refreshBotQuiet/);
   assert.doesNotMatch(body, /create_session|create_bot_chat|client_command/);
   const history = main.slice(main.indexOf("async function loadBotHistory"), main.indexOf("function paintSessionSelect"));
-  assert.match(history, /invoke\("open_bot"/);
+  assert.match(history, /openHistory\(invoke, id, \{ quiet \}\)/);
   assert.doesNotMatch(history, /create_session|create_bot_chat/);
+  const opener = fs.readFileSync(new URL("./history-open.js", import.meta.url), "utf8");
+  assert.match(opener, /command: "open_bot"/);
+  assert.doesNotMatch(opener, /create_session|create_bot_chat/);
   const css = fs.readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   assert.match(css, /\.kanban-empty\.is-retry \{[^}]*color:\s*#14142b/s);
   assert.doesNotMatch(css, /\.kanban-empty\.is-retry \{[^}]*animation/s);

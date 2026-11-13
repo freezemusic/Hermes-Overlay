@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, latestPlan, looksLikePlan, nextComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planForPanel, PLAN_FILE_MISSING_NOTE, planNeedsFileCatchUp, planSource, plansIn, planTask, planTextHash, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
+import { logQuietRefreshFailure, openHistory, schedulePlanFileCatchUp } from "./history-open.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, latestPlan, looksLikePlan, nextComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, PLAN_FILE_MISSING_NOTE, planNeedsFileCatchUp, planSource, plansIn, planTask, planTextHash, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
+import { gatewayDown } from "./reconnect.js";
 import { continueLiveTurn, finishLiveBubble } from "./sessions.js";
 
 test("plan markdown is recognized and a short ack is not", () => {
@@ -342,6 +344,132 @@ test("a headed or fenced in-chat plan without write_file stays the body", () => 
   const demo = plansIn([{ role: "bot", text: headed }])[0];
   assert.equal(demo.markdown, headed);
   assert.equal(planNeedsFileCatchUp([{ role: "user", text: "整理", command: "plan" }, { role: "bot", text: headed }]), true);
+});
+
+test("an older file plan does not skip catch-up for a later summary-only turn", () => {
+  const path = String.raw`C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-11_013841-runtime-gate-status.md`;
+  const nextPath = String.raw`C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-13_202000-next-gate.md`;
+  const file = "# Runtime Gate Status\n\n**Goal:** 補回缺失的 health 檔，再跑 live 閘。\n";
+  const nextFile = "# Next Gate\n\n**Goal:** 下一輪先至寫入檔案。\n";
+  const olderSummary = ["詳細計劃已寫好。", "", path].join("\n");
+  const newerSummary = ["第二份計劃已寫好，檔案正文未在呢輪串流。", "", nextPath].join("\n");
+  const messages = [
+    { role: "user", text: "寫計劃", command: "plan" },
+    { role: "bot", text: olderSummary, plan: { path, content: file } },
+    { role: "user", text: "再寫", command: "plan" },
+    { role: "bot", text: newerSummary },
+  ];
+  assert.equal(plansIn(messages).some((item) => item.fromFile), true);
+  assert.notEqual(plansIn(messages).at(-1).fromFile, true);
+  assert.equal(planNeedsFileCatchUp(messages), true);
+  const landed = [
+    messages[0],
+    messages[1],
+    messages[2],
+    { role: "bot", text: newerSummary, plan: { path: nextPath, content: nextFile } },
+  ];
+  assert.equal(planFileCaughtUp(messages, landed), true);
+  assert.equal(planFileCaughtUp(messages, messages), false);
+  assert.equal(planNeedsFileCatchUp([
+    ...messages.slice(0, 2),
+    { role: "user", text: "唔使計劃" },
+    { role: "bot", text: "好。" },
+  ]), false);
+});
+
+test("turn-end plan catch-up for a sub-orb id calls open_suborb and not open_bot", async () => {
+  const path = String.raw`C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-13_202000-next-gate.md`;
+  const file = "# Next Gate\n\n**Goal:** 下一輪先至寫入檔案。\n";
+  const summary = ["第二份計劃已寫好，檔案正文未在呢輪串流。", "", path].join("\n");
+  const id = "suborb:mt-orch:sid-9";
+  const messages = [
+    { role: "user", text: "寫計劃", command: "plan" },
+    { role: "bot", text: "# Runtime Gate Status\n\n**Goal:** 舊檔。\n", plan: { path: ".hermes/plans/old.md", content: "# Old\n\n**Goal:** 舊。\n" } },
+    { role: "user", text: "再寫", command: "plan" },
+    { role: "bot", text: summary },
+  ];
+  const calls = [];
+  let job;
+  const armed = schedulePlanFileCatchUp({
+    id,
+    messages: () => messages,
+    sessionId: () => "sid-9",
+    busy: () => false,
+    enabled: () => true,
+    schedule(fn) { job = fn(); },
+    reload: (panelId) => openHistory(async (command, args) => {
+      calls.push({ command, args });
+      return {
+        session_id: args.sessionId,
+        session_explicit: false,
+        messages: [
+          { role: "user", text: "再寫" },
+          { role: "assistant", text: summary, plan: { path, content: file } },
+        ],
+      };
+    }, panelId, { quiet: true }),
+  });
+  assert.equal(armed, true);
+  await job;
+  assert.deepEqual(calls, [{
+    command: "open_suborb",
+    args: { profile: "mt-orch", sessionId: "sid-9" },
+  }]);
+  assert.equal(calls.some((call) => call.command === "open_bot"), false);
+
+  const profileCalls = [];
+  await openHistory(async (command, args) => {
+    profileCalls.push({ command, args });
+    return { messages: [] };
+  }, "mt-orch", { quiet: true });
+  assert.deepEqual(profileCalls, [{ command: "open_bot", args: { profile: "mt-orch", quiet: true } }]);
+
+  const skipped = [];
+  const filed = messages.slice();
+  filed[filed.length - 1] = { role: "bot", text: summary, plan: { path, content: file } };
+  const again = schedulePlanFileCatchUp({
+    id,
+    messages: () => filed,
+    sessionId: () => "sid-9",
+    busy: () => false,
+    enabled: () => true,
+    schedule(fn) { fn(); },
+    reload: () => { skipped.push("reload"); },
+  });
+  assert.equal(again, false);
+  assert.deepEqual(skipped, []);
+
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const load = main.slice(main.indexOf("async function loadBotHistory"), main.indexOf("function paintSessionSelect"));
+  const quiet = main.slice(main.indexOf("async function refreshBotQuiet"), main.indexOf("function kickGateway"));
+  const arm = main.slice(main.indexOf("function armPlanFileCatchUp"), main.indexOf("function botChatRefusal"));
+  assert.match(load, /openHistory\(invoke, id, \{ quiet \}\)/);
+  assert.doesNotMatch(load, /invoke\("open_bot"/);
+  assert.match(quiet, /noteQuietRefreshError\(id, err\)/);
+  assert.match(arm, /schedulePlanFileCatchUp\(/);
+  assert.match(arm, /refreshBotQuiet\(panelId\)/);
+});
+
+test("a failed quiet refresh is logged instead of dropped", () => {
+  const debugged = [];
+  const warned = [];
+  const failure = logQuietRefreshFailure("suborb:mt-orch:sid-9", "名單冇 profile「suborb:mt-orch:sid-9」", {
+    debug(event, detail) { debugged.push(`${event} ${detail}`); },
+    warn(line) { warned.push(line); },
+    gatewayDown,
+  });
+  assert.equal(failure.event, "refresh-quiet-error");
+  assert.match(failure.detail, /名單冇 profile「suborb:mt-orch:sid-9」/);
+  assert.deepEqual(debugged, [`refresh-quiet-error ${failure.detail}`]);
+  assert.deepEqual(warned, [`refresh-quiet-error ${failure.detail}`]);
+
+  const gatewayWarned = [];
+  logQuietRefreshFailure("mt-orch", "hermes gateway timeout", {
+    debug() {},
+    warn(line) { gatewayWarned.push(line); },
+    gatewayDown,
+  });
+  assert.deepEqual(gatewayWarned, []);
 });
 
 test("a later edit with the same opening changes the plan key", () => {
