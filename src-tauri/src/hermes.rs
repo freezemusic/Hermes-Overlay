@@ -191,6 +191,8 @@ pub enum TurnEvent {
     /// R-ST-05. `true`: this send waits behind a turn another client (phone, Desktop
     /// via 9119) is running on the same session. `false`: that wait is over.
     QueueElsewhere(bool),
+    /// User-bubble projection for a skill/bundle dispatch (`display`). Not a reply.
+    UserShown(String),
 }
 
 /// The run 「停止」 should post. A queued admission must not replace the id
@@ -1423,6 +1425,57 @@ fn push_wait_notice(out: &mut Vec<UiMessage>, item: &Value, id: &str, kind: &str
     out.push(UiMessage::new("notice", payload.to_string(), kind.into(), id.to_string()));
 }
 
+const SKILL_INVOCATION_PREFIX: &str = "[IMPORTANT: The user has invoked the ";
+const SKILL_SINGLE_MARKER: &str = "The full skill content is loaded below.]";
+const SKILL_SINGLE_INSTRUCTION: &str =
+    "The user has provided the following instruction alongside the skill invocation: ";
+const SKILL_RUNTIME_NOTE: &str = "\n\n[Runtime note:";
+const SKILL_BUNDLE_MARKER: &str = " skill bundle,";
+const SKILL_BUNDLE_INSTRUCTION: &str = "\nUser instruction: ";
+const SKILL_BUNDLE_BLOCK: &str = "\n\n[Loaded as part of the ";
+
+/// Invocation a slash-skill turn came from (`/renew` or `/renew …`), or `None`
+/// when `text` is ordinary user prose. Markers match Hermes 0.22.5
+/// `agent/skill_commands.py` / desktop `skillInvocationText`. Separator is a
+/// space, same as `_skill_scaffold_projection`.
+fn skill_invocation_text(text: &str) -> Option<String> {
+    if !text.starts_with(SKILL_INVOCATION_PREFIX) {
+        return None;
+    }
+    let name = text
+        .strip_prefix(SKILL_INVOCATION_PREFIX)?
+        .strip_prefix('"')?
+        .split_once('"')
+        .map(|(name, _)| name.trim().to_string())
+        .filter(|name| !name.is_empty())?;
+    let label = if name.starts_with('/') { name } else { format!("/{name}") };
+    let raw = if text.contains(SKILL_BUNDLE_MARKER) {
+        skill_between(text, SKILL_BUNDLE_INSTRUCTION, SKILL_BUNDLE_BLOCK, false)
+    } else if text.contains(SKILL_SINGLE_MARKER) {
+        skill_between(text, SKILL_SINGLE_INSTRUCTION, SKILL_RUNTIME_NOTE, true)
+    } else {
+        String::new()
+    };
+    let instruction = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if instruction.is_empty() {
+        Some(label)
+    } else {
+        Some(format!("{label} {instruction}"))
+    }
+}
+
+fn skill_between(text: &str, marker: &str, end: &str, from_end: bool) -> String {
+    let index = if from_end { text.rfind(marker) } else { text.find(marker) };
+    let Some(index) = index else {
+        return String::new();
+    };
+    let tail = &text[index + marker.len()..];
+    match tail.find(end) {
+        Some(stop) => tail[..stop].trim().to_string(),
+        None => tail.trim().to_string(),
+    }
+}
+
 pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
     let items = value
         .get("data")
@@ -1447,7 +1500,14 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
             .unwrap_or("")
             .trim()
             .to_string();
-        let text = content_to_text(item.get("content").unwrap_or(&Value::Null));
+        let mut text = content_to_text(item.get("content").unwrap_or(&Value::Null));
+        // Skill slash turns persist the expanded body. Project it before the
+        // 8000-char clip so the trailing instruction survives (R-CL-08).
+        if role == "user" {
+            if let Some(shown) = skill_invocation_text(&text) {
+                text = shown;
+            }
+        }
         let text = clip(&text, 8000);
         let display_kind = item
             .get("display_kind")
@@ -5995,6 +6055,31 @@ mod tests {
                 .as_deref(),
             Some("s1")
         );
+    }
+
+    #[test]
+    fn a_skill_scaffold_shows_the_invocation_not_the_body() {
+        let mut body = "[IMPORTANT: The user has invoked the \"renew\" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]\n\n".to_string();
+        body.push_str(&"x".repeat(9000));
+        body.push_str("\nThe user has provided the following instruction alongside the skill invocation: keep   the title");
+        body.push_str("\n\n[Runtime note: ignore]");
+        let value = json!({"data": [
+            {"role": "user", "content": body},
+            {"role": "assistant", "content": "done"}
+        ]});
+        let msgs = normalize_messages(&value);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[0].text, "/renew keep the title");
+        assert!(!msgs[0].text.contains('x'));
+        assert_eq!(msgs[1].role, "bot");
+        assert_eq!(msgs[1].text, "done");
+        assert_eq!(skill_invocation_text("/renew"), None);
+        assert_eq!(skill_invocation_text("普通一句"), None);
+        let bare = "[IMPORTANT: The user has invoked the \"renew\" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]\n\nBODY";
+        assert_eq!(skill_invocation_text(bare).as_deref(), Some("/renew"));
+        let bundle = "[IMPORTANT: The user has invoked the \"/renew /plan\" stacked skill bundle, loading 2 skills together.]\n\nUser instruction: roll it\n\n[Loaded as part of the stacked skill invocation \"renew\".]\nBODY";
+        assert_eq!(skill_invocation_text(bundle).as_deref(), Some("/renew /plan roll it"));
     }
 
     #[test]

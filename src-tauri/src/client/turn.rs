@@ -364,24 +364,51 @@ pub fn classify_slash(text: &str) -> Slash {
 }
 
 /// `command.dispatch` / `slash.exec` result → a message to submit, or text to show.
+///
+/// Hermes 0.22.5 skills (`tui_gateway/methods_tools.py` `_dispatch_skill`) return
+/// `{type: "skill", message, display}`. `message` is the expanded skill body and
+/// must be `prompt.submit`ted like `send`. `display` is the user-bubble projection
+/// (`/renew`), never rendered as an assistant reply. Bundles use `type: "send"`
+/// with the same `display` field.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Dispatched {
-    Send(String),
+    /// Submit `message`. `display` is the bubble override when non-empty.
+    Send { message: String, display: String },
     Show(String),
+}
+
+/// Bubble text from a dispatch `display`. `None` keeps the line the composer
+/// already painted (typed `/renew …`, or the plan/btw chip). Never the skill body.
+pub fn bubble_override(display: &str) -> Option<String> {
+    let shown = display.trim();
+    if shown.is_empty() {
+        None
+    } else {
+        Some(shown.to_string())
+    }
 }
 
 pub fn dispatched(result: &Value) -> Dispatched {
     let kind = text_of(result.get("type"));
     let message = text_of(result.get("message"));
-    if kind == "send" && !message.trim().is_empty() {
-        return Dispatched::Send(message);
+    // `skill` with a body is a send. An empty body is not submitted and is not
+    // painted as an assistant reply (Desktop: "skill payload missing message").
+    if (kind == "send" || kind == "skill") && !message.trim().is_empty() {
+        return Dispatched::Send {
+            message,
+            display: text_of(result.get("display")).trim().to_string(),
+        };
     }
     let output = text_of(result.get("output"));
     let notice = text_of(result.get("notice"));
-    let shown = [output, notice, if kind == "send" { String::new() } else { message }]
-        .into_iter()
-        .find(|t| !t.trim().is_empty())
-        .unwrap_or_else(|| "（冇輸出）".into());
+    let shown = [
+        output,
+        notice,
+        if kind == "send" || kind == "skill" { String::new() } else { message },
+    ]
+    .into_iter()
+    .find(|t| !t.trim().is_empty())
+    .unwrap_or_else(|| "（冇輸出）".into());
     Dispatched::Show(shown)
 }
 
@@ -405,8 +432,46 @@ mod slash_tests {
         assert_eq!(classify_slash("/usr/bin is a path"), Slash::Plain);
         assert_eq!(
             dispatched(&json!({"type": "send", "message": "[/plan — plan mode] x"})),
-            Dispatched::Send("[/plan — plan mode] x".into())
+            Dispatched::Send { message: "[/plan — plan mode] x".into(), display: String::new() }
         );
         assert_eq!(dispatched(&json!({"type": "exec", "output": "ok"})), Dispatched::Show("ok".into()));
+    }
+
+    #[test]
+    fn skill_dispatch_submits_the_body_and_keeps_display() {
+        let body = "[IMPORTANT: The user has invoked the \"renew\" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]\n\nSKILL";
+        assert_eq!(
+            dispatched(&json!({"type": "skill", "message": body, "display": "/renew"})),
+            Dispatched::Send { message: body.into(), display: "/renew".into() }
+        );
+        assert_eq!(
+            dispatched(&json!({"type": "skill", "message": body, "name": "renew", "display": "  /renew 舊題  "})),
+            Dispatched::Send { message: body.into(), display: "/renew 舊題".into() }
+        );
+        assert_eq!(
+            dispatched(&json!({"type": "send", "message": "bundle body", "notice": "Loading", "display": "/clean /work"})),
+            Dispatched::Send { message: "bundle body".into(), display: "/clean /work".into() }
+        );
+        assert_eq!(bubble_override("/renew"), Some("/renew".into()));
+        assert_eq!(bubble_override("  "), None);
+        assert_eq!(bubble_override(""), None);
+    }
+
+    #[test]
+    fn an_empty_skill_message_is_not_submitted_or_shown_as_the_body() {
+        assert_eq!(
+            dispatched(&json!({"type": "skill", "message": "  ", "display": "/renew"})),
+            Dispatched::Show("（冇輸出）".into())
+        );
+        assert_eq!(
+            dispatched(&json!({"type": "skill", "message": "", "output": "missing"})),
+            Dispatched::Show("missing".into())
+        );
+        assert_eq!(
+            dispatched(&json!({"type": "send", "message": ""})),
+            Dispatched::Show("（冇輸出）".into())
+        );
+        let shown = dispatched(&json!({"type": "skill", "message": "   ", "notice": "no skill"}));
+        assert_eq!(shown, Dispatched::Show("no skill".into()));
     }
 }

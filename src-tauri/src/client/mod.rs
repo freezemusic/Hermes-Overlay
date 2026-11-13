@@ -524,7 +524,16 @@ impl HermesClient {
             }
             turn::Slash::Command { name, arg } => {
                 match self.dispatch_slash(&live, &name, &arg, &text).await? {
-                    turn::Dispatched::Send(message) => text = message,
+                    turn::Dispatched::Send { message, display } => {
+                        // `message` is the model-facing skill/plan body. Submit it
+                        // unchanged. Compose-mode wrapping already ran on the typed
+                        // line in the page; wrapping this body (it does not start
+                        // with `/`) would prefix `/plan` a second time.
+                        if let Some(shown) = turn::bubble_override(&display) {
+                            on_event(TurnEvent::UserShown(shown));
+                        }
+                        text = message;
+                    }
                     turn::Dispatched::Show(shown) => {
                         let run_id = turn::run_id_for(&live, &format!("cmd{}", self.cmd_seq()));
                         on_event(TurnEvent::Started { run_id: run_id.clone() });

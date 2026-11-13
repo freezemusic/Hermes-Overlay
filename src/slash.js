@@ -310,3 +310,47 @@ export function parseSlashMarker(text) {
     rest: nl === -1 ? "" : raw.slice(nl + 1),
   };
 }
+
+const SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the ";
+const SKILL_SINGLE_MARKER = "The full skill content is loaded below.]";
+const SKILL_SINGLE_INSTRUCTION = "The user has provided the following instruction alongside the skill invocation: ";
+const SKILL_RUNTIME_NOTE = "\n\n[Runtime note:";
+const SKILL_BUNDLE_MARKER = " skill bundle,";
+const SKILL_BUNDLE_INSTRUCTION = "\nUser instruction: ";
+const SKILL_BUNDLE_BLOCK = "\n\n[Loaded as part of the ";
+const SKILL_NAME_RE = /^\[IMPORTANT: The user has invoked the "([^"]*)"/;
+
+function skillBetween(text, marker, end, fromEnd) {
+  const index = fromEnd ? text.lastIndexOf(marker) : text.indexOf(marker);
+  if (index < 0) return "";
+  const tail = text.slice(index + marker.length);
+  const stop = tail.indexOf(end);
+  return (stop >= 0 ? tail.slice(0, stop) : tail).trim();
+}
+
+/**
+ * The invocation a skill scaffold came from (`/renew` or `/renew …`), or null
+ * when `text` is ordinary prose. Markers match Hermes 0.22.5 `skill_commands.py`.
+ */
+export function skillInvocationText(text) {
+  const raw = String(text ?? "");
+  if (!raw.startsWith(SKILL_INVOCATION_PREFIX)) return null;
+  const name = (SKILL_NAME_RE.exec(raw)?.[1] ?? "").trim();
+  if (!name) return null;
+  const label = name.startsWith("/") ? name : `/${name}`;
+  const instruction = raw.includes(SKILL_BUNDLE_MARKER)
+    ? skillBetween(raw, SKILL_BUNDLE_INSTRUCTION, SKILL_BUNDLE_BLOCK, false)
+    : raw.includes(SKILL_SINGLE_MARKER)
+      ? skillBetween(raw, SKILL_SINGLE_INSTRUCTION, SKILL_RUNTIME_NOTE, true)
+      : "";
+  const collapsed = instruction.replace(/\s+/g, " ").trim();
+  return collapsed ? `${label} ${collapsed}` : label;
+}
+
+/** User bubble after dispatch. Non-empty `display` wins; otherwise the typed line stays. */
+export function applySkillBubble(message, display) {
+  const shown = String(display ?? "").trim();
+  if (!shown || !message || message.role !== "user") return false;
+  message.text = shown;
+  return true;
+}

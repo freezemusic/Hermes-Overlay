@@ -210,6 +210,8 @@ import {
   moveSlashIndex,
   orderSlashCommands,
   parseSlashMarker,
+  applySkillBubble,
+  skillInvocationText,
   resolveClient,
   shouldRefreshCatalog,
   bareNewSubmits,
@@ -7026,6 +7028,8 @@ function presentMessage(m) {
         expanded: false,
       };
     }
+    const invocation = skillInvocationText(m.text);
+    if (invocation) return { role: "user", text: invocation };
     const plan = composeBubble(m.text);
     if (plan.command) return { role: "user", text: plan.text, command: plan.command };
   }
@@ -7936,6 +7940,21 @@ function handleHermes(payload) {
     }
     if (panelFor(id)) renderChat(id);
     paintApprovalBadge(id);
+    return;
+  }
+  if (payload.type === "user.shown") {
+    const thread = threadFor(id);
+    const messages = runMessages(id);
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role !== "user" || message.side || message.remote || message.command === "btw") continue;
+      if (!applySkillBubble(message, payload.text)) break;
+      if (thread.ownTurnTail) thread.ownTurnTail.userText = message.text;
+      if (thread.queuedTurnTail) thread.queuedTurnTail.userText = message.text;
+      if (pendingSend(state.pendingSends, id, thread.sessionId)) holdOutgoing(id, message.text);
+      if (runIsOnScreen(id) && panelFor(id)) renderChat(id);
+      break;
+    }
     return;
   }
   if (payload.type === "delta") {
