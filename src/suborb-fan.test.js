@@ -137,7 +137,7 @@ test("hit circle is 24px on the disc centre and never smaller than the disc", ()
 test("main.js: hidden fan shells publish no hit and no plate; Ctrl edge re-renders", () => {
   const hits = main.slice(main.indexOf("function collectHits()"), main.indexOf("function collectHits()") + 1200);
   assert.match(hits, /suborbFanHidden\(shell\)\) return;/);
-  assert.match(main, /suborbHitCircle\(orbDiscHit\(box, disc\)\)/);
+  assert.match(main, /suborbHitCircle\(orbDiscHit\(parked \|\| box, parked \|\| disc\)\)/);
   const names = main.slice(main.indexOf("function paintOrbNames()"), main.indexOf("function paintOrbNames()") + 1400);
   assert.match(names, /suborbFanHidden\(shell\)/);
   const accept = main.slice(main.indexOf("function acceptModifier("), main.indexOf("const orbFadeClocks"));

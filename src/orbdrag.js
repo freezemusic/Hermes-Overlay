@@ -32,17 +32,66 @@ export const ORB_DODGE_KEEP_PX = 40;
 /** Largest stored coordinate. The live clamp is the monitor work area. */
 export const ORB_MAX_COORD = 10000;
 
-/** Same rule as the Rust side (`config::valid_panel_id`). */
-export function validOrbId(id) {
+const PROFILE_ID = /^[A-Za-z0-9_.\-]+$/;
+const SESSION_ID = /^[A-Za-z0-9_\-]+$/;
+
+/**
+ * R-OB-08 (Devon 2026-11-13): a sub-orb id is `suborb:<profile>:<session>`.
+ * Same charset as a profile (1–64) and a pinned session (1–128). The `+N`
+ * badge (`suborb-more:…`) is not a session and has no saved spot.
+ */
+export function validSuborbOrbId(id) {
   const text = String(id ?? "");
-  return text.length > 0 && text.length <= 128 && /^[A-Za-z0-9_.\-]+$/.test(text);
+  if (!text.startsWith("suborb:")) return false;
+  const rest = text.slice("suborb:".length);
+  const cut = rest.indexOf(":");
+  if (cut <= 0 || cut >= rest.length - 1) return false;
+  const profile = rest.slice(0, cut);
+  const session = rest.slice(cut + 1);
+  if (profile.length > 64 || session.length > 128 || session.includes(":")) return false;
+  if (profile === "." || profile === "..") return false;
+  return PROFILE_ID.test(profile) && SESSION_ID.test(session);
 }
 
-/** Sub-orbs follow their parent's fan (R-SO-02); they have no free spot. */
+/** `orb_positions` key: a profile / chrome orb, or one dragged sub-orb. */
+export function validOrbId(id) {
+  const text = String(id ?? "");
+  if (text.startsWith("suborb:")) return validSuborbOrbId(text);
+  return text.length > 0 && text.length <= 128 && PROFILE_ID.test(text);
+}
+
+/**
+ * Resting orbs drag. A sub-orb drags like a main orb (Devon 2026-11-13);
+ * one that has never been dragged still follows the fan until that drop.
+ * An open panel moves by its header, not by this gesture.
+ */
 export function orbDraggable(kind, id, visual) {
-  if (kind === "suborb") return false;
   if (visual !== "orb") return false;
+  if (kind === "suborb") return validSuborbOrbId(id);
   return validOrbId(id);
+}
+
+/**
+ * Where a sub-orb centre sits. No saved drop → the fan slot (it follows the
+ * parent). A drop stays put when the fan moves. A live drag or a dodge wins.
+ */
+export function suborbRestCentre({ fan = null, saved = null, drag = null, dodge = null } = {}) {
+  const point = (value) => {
+    const x = Number(value?.x);
+    const y = Number(value?.y);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  };
+  return point(drag) || point(dodge) || point(saved) || point(fan);
+}
+
+/** Hairline from a profile orb centre to a sub-orb centre. No hit of its own. */
+export function suborbTether(parent, child) {
+  const x1 = Number(parent?.x);
+  const y1 = Number(parent?.y);
+  const x2 = Number(child?.x);
+  const y2 = Number(child?.y);
+  if (![x1, y1, x2, y2].every(Number.isFinite)) return null;
+  return { x1, y1, x2, y2 };
 }
 
 /** `orb_positions` from settings: only valid ids with whole, in-range coordinates. */
@@ -129,9 +178,12 @@ function spotFree(point, covers, others, bounds, opts) {
   const box = haloBox(point, opts);
   const padded = { x: box.x - gap, y: box.y - gap, w: box.w + gap * 2, h: box.h + gap * 2 };
   if ((covers || []).some((cover) => validCover(cover) && intersects(padded, cover))) return false;
-  const orb = opts.orb ?? ORB;
-  const apart = orb + ORB_DISC_GAP_PX;
-  return !(others || []).some((other) => other && Math.hypot(other.x - point.x, other.y - point.y) < apart);
+  const radius = (opts.orb ?? ORB) / 2;
+  return !(others || []).some((other) => {
+    if (!other) return false;
+    const otherR = Number.isFinite(other.r) ? other.r : radius;
+    return Math.hypot(other.x - point.x, other.y - point.y) < radius + otherR + ORB_DISC_GAP_PX;
+  });
 }
 
 /**
@@ -205,31 +257,37 @@ export function findDodgeSpot(home, { covers = [], others = [], screen = {}, orb
  * that is already parked on a still-valid spot keeps it, so a panel that
  * grows by a pixel does not make the orbs hop. `null` spot = no room (fade).
  */
+function dodgeMeasure(item, opts) {
+  const orb = Number(item?.orb) > 0 ? item.orb : (opts.orb ?? ORB);
+  const halo = item && Object.prototype.hasOwnProperty.call(item, "halo") ? item.halo : (opts.halo ?? ORB_HALO_PX);
+  return { orb, halo, gap: opts.gap ?? ORB_DODGE_GAP_PX };
+}
+
 export function planOrbDodges(orbs, covers, screen = {}, opts = {}) {
   const list = (orbs || []).filter((item) => item && item.id && item.home);
   const out = new Map();
   const taken = [];
   const covered = [];
   for (const item of list) {
-    if (pointCovered(item.home, covers, opts)) covered.push(item);
+    const own = dodgeMeasure(item, opts);
+    if (pointCovered(item.home, covers, own)) covered.push(item);
     else {
       out.set(item.id, { spot: item.home, dodged: false });
-      taken.push(item.home);
+      taken.push({ x: item.home.x, y: item.home.y, r: own.orb / 2 });
     }
   }
-  const bounds = orbBounds({ ...screen, orb: opts.orb ?? ORB });
   for (const item of covered) {
-    const orb = opts.orb ?? ORB;
-    const halo = opts.halo ?? ORB_HALO_PX;
-    const fresh = findDodgeSpot(item.home, { covers, others: taken, screen, ...opts });
+    const own = dodgeMeasure(item, opts);
+    const bounds = orbBounds({ ...screen, orb: own.orb });
+    const fresh = findDodgeSpot(item.home, { covers, others: taken, screen, ...own });
     const parked = item.current
       && !(Math.abs(item.current.x - item.home.x) < 0.5 && Math.abs(item.current.y - item.home.y) < 0.5)
-      && spotFree(item.current, covers, taken, bounds, { orb, halo, gap: 0 });
+      && spotFree(item.current, covers, taken, bounds, { orb: own.orb, halo: own.halo, gap: 0 });
     const far = (p) => Math.hypot(p.x - item.home.x, p.y - item.home.y);
     // Hysteresis: a parked orb stays unless the new spot is clearly nearer home.
     const spot = parked && (!fresh || far(item.current) <= far(fresh) + ORB_DODGE_KEEP_PX) ? item.current : fresh;
     out.set(item.id, { spot, dodged: true });
-    if (spot) taken.push(spot);
+    if (spot) taken.push({ x: spot.x, y: spot.y, r: own.orb / 2 });
   }
   return out;
 }
