@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
+import { sealUnrecoverableNotice } from "./sessions.js";
 import {
   CLARIFY_HEADING,
   CLARIFY_SEND_FAIL,
@@ -20,6 +21,7 @@ import {
   clarifyResultText,
   absorbRecoveredControls,
   clarifyComposerRoute,
+  clarifyRouteAfterRecover,
   clarifyTick,
   mergePendingControls,
   renderClarifyCard,
@@ -322,6 +324,38 @@ test("a history notice becomes a live card only when the run snapshot has that c
   const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   const openBot = lib.slice(lib.indexOf("async fn open_bot"), lib.indexOf("async fn open_explicit_session"));
   assert.match(openBot, /bind_live_run/);
+});
+
+test("a sealed clarify notice sends, recovery gone sends, and a live card still answers", () => {
+  const sealed = {
+    role: "notice",
+    tool_name: "clarify",
+    text: JSON.stringify({ text: "邊隻色？", unrecoverable: true }),
+  };
+  assert.equal(clarifyComposerRoute([sealed]).action, "send");
+  const open = {
+    role: "notice",
+    tool_name: "clarify",
+    text: JSON.stringify({ text: "邊隻色？", timeout_s: 600, asked_at: 1 }),
+  };
+  assert.equal(clarifyComposerRoute([open]).action, "recover");
+  assert.equal(sealUnrecoverableNotice(open), true);
+  assert.equal(clarifyComposerRoute([open]).action, "send");
+  assert.equal(clarifyRouteAfterRecover({ action: "recover" }, "gone").action, "send");
+  const live = { role: "clarify", status: "pending", question: "邊隻色？", promptId: "q0" };
+  const answered = clarifyComposerRoute([sealed, live]);
+  assert.equal(answered.action, "answer");
+  assert.equal(answered.card, live);
+  assert.equal(clarifyRouteAfterRecover(answered, "gone").action, "answer");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const active = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
+  const sub = main.slice(main.indexOf("async function sendSuborb("), main.indexOf("async function sendSuborbBusy"));
+  for (const [name, send] of [["sendActive", active], ["sendSuborb", sub]]) {
+    const goneAt = send.indexOf("clarifyRouteAfterRecover");
+    const answerAt = send.indexOf("answerClarify");
+    const blockedAt = send.indexOf("CLARIFY_NOT_DELIVERED");
+    assert.ok(goneAt > 0 && answerAt > goneAt && blockedAt > answerAt, name);
+  }
 });
 
 test("main.js keeps batch clarify siblings and routes composer text to the open card", () => {

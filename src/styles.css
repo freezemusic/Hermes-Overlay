@@ -1737,6 +1737,25 @@ html, body {
   font: 500 13px/1.4 var(--font-body);
 }
 
+.bubble.notice.sealed {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 92%;
+  padding: 1px 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font: 400 var(--fs-meta)/1.4 var(--font-mono);
+}
+
+.bubble.notice.sealed .history-notice-title,
+.bubble.notice.sealed .history-notice-detail {
+  color: var(--text-muted);
+  font: 400 var(--fs-meta)/1.4 var(--font-mono);
+}
+
 .bubble.clarify {
   align-self: flex-start;
   display: flex;

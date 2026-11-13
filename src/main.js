@@ -122,6 +122,7 @@ import {
   CLARIFY_WAIT_LABEL,
   absorbRecoveredControls,
   clarifyComposerRoute,
+  clarifyRouteAfterRecover,
   clarifyFailure,
   clarifyKept,
   clarifyPending,
@@ -130,7 +131,7 @@ import {
   clarifyTick,
   renderClarifyCard,
 } from "./clarify.js";
-import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, sessionReadOnlyIn, sessionSendClosed, BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE, botChatRefusalLine, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, holdsOwnTurnUser, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeId, historyNoticeTimedOut, sealUnrecoverableNotice, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
+import { CLOSED_SESSION_LINE, GATEWAY_FORK_TITLE, MOVED_SESSION_LINE, SESSION_READ_ONLY_REASON, UNSENT_MARK, bannerOwner, catchUpAfterStop, catchUpMessages, clearRunSession, closedSwitchTarget, continueLiveTurn, continueSideTurn, dedupeShownReply, finishApplies, finishLiveBubble, idleAfterConflict, sideAnchor, isClosedSendText, isPermissionDeniedText, markUnsentDraft, mergePendingSend, mergeSendError, mergeUnsentDraft, noteRunSession, noteRunStarted, orderSessions, pendingSend, promoteQueuedRun, permissionDeniedMessage, previewLine, readOnlyLocked, readOnlyNote, refusedSessionIds, rememberDenied, rememberPendingSend, rememberSendError, rememberUnsent, rememberView, reconcileSideQuestion, resolveSession, keepManualSession, runTranscript, sendErrorDraft, sendErrorKeepsConnected, sendErrorKind, sendErrorSwitch, sessionEnded, sessionMenuKey, sessionReadOnly, sessionReadOnlyIn, sessionSendClosed, BOT_CHAT_UNBOUND_LINE, BOT_CHAT_NOT_LOCAL_LINE, botChatRefusalLine, showSession, stampKeptTitles, stopAfterMiss, streamingRunId, finishWatchedRows, holdWatchedTail, holdsOwnTurnUser, releaseHeldWatch, historyNoticeCopy, historyNoticePending, historyNoticeSealed, historyNoticeId, historyNoticeTimedOut, sealUnrecoverableNotice, dropSettledHistoryNotices, stopCatchUpMode, markStoppedTurn, releaseStoppedTurn, retireStoppedTurn, dropRetiredTurn, keepStoppedRows, historyCountMismatch, noticeTickDelay, unseenMessages, unsentDraft, viewingRun, writeSessionMenu, writableContinuation } from "./sessions.js";
 import { applyBotColor, NOUS } from "./botcolor.js";
 import {
   KANBAN_EMPTY,
@@ -5481,7 +5482,10 @@ function toolRunHooks(id) {
 function paintHistoryNotice(node, message, id) {
   const bot = state.bots.find((item) => item.id === id);
   const copy = historyNoticeCopy(message, bot?.name);
-  const want = message.tool_name === "approval" ? "bubble approval" : "bubble clarify";
+  const sealed = historyNoticeSealed(message);
+  const want = sealed
+    ? "bubble notice sealed"
+    : (message.tool_name === "approval" ? "bubble approval" : "bubble clarify");
   if (node.className !== want) node.className = want;
   let title = node.querySelector(".history-notice-title");
   let detail = node.querySelector(".history-notice-detail");
@@ -8485,8 +8489,8 @@ async function sendActive(id = state.activeId) {
   }
   let clarifyRoute = clarifyComposerRoute(runMessages(id));
   if (clarifyRoute.action === "recover") {
-    await recoverRunControls(id);
-    clarifyRoute = clarifyComposerRoute(runMessages(id));
+    const outcome = await recoverRunControls(id);
+    clarifyRoute = clarifyRouteAfterRecover(clarifyComposerRoute(runMessages(id)), outcome);
   }
   if (clarifyRoute.action === "answer") {
     const pendingClarify = clarifyRoute.card;
@@ -13367,8 +13371,8 @@ async function sendSuborb(id) {
   thread.followTail = true;
   let clarifyRoute = clarifyComposerRoute(runMessages(id));
   if (clarifyRoute.action === "recover") {
-    await recoverRunControls(id);
-    clarifyRoute = clarifyComposerRoute(runMessages(id));
+    const outcome = await recoverRunControls(id);
+    clarifyRoute = clarifyRouteAfterRecover(clarifyComposerRoute(runMessages(id)), outcome);
   }
   if (clarifyRoute.action === "answer") {
     const pendingClarify = clarifyRoute.card;
