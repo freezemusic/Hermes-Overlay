@@ -71,6 +71,7 @@
 7. 送出時用而家面板開住嘅 session。該 id 回 404 時清掉，再解析已存在的 Bot Chat。沒有 Bot Chat 先至建立；呢個係送出，唔係打開或啟動。建立不可行就保持未有對話，不得改開最新或其他 session。啟動同 `open_bot` 不得呼叫建立。
 8. Overlay 必須輪詢每個已顯示且有金鑰的 profile 的 Bot Chat。新訊息到達後：面板若正開着該 session，訊息必須即時出現在對話，而且不得把面板收成膠囊；光球收起時必須展開預覽膠囊（24 小時 `HH:MM`，約 5 秒）。面板若開着其他 session，新訊息只記在 Bot Chat，不得打亂目前畫面，也不得把面板收成膠囊。
 9. 伺服器結束咗嘅對話（`ended_at` 或 `end_reason`）跟 R-SS-09：唔可以傳、選單標「（已結束）」。Hermes 會自己再開返嘅意外結束（`agent_close`、`ws_orphan_reap`、`superseded_by_resume`、`startup_orphan_reap`）唔算結束，照樣可以傳、冇「（已結束）」。主 Bot Chat 唔標「（隱藏）」或者「（已結束）」。「轉去 Bot Chat」先去呢個 profile 嘅主 Bot Chat。
+10. 歷史入面封咗嘅 clarify／approval notice（`unrecoverable`）跟 R-AP-06 同 Hermes Desktop（`bf0203a`，`ClarifyTool` 喺 turn 完、冇 live request 時交 `ToolFallback`）：留低問題，樣式係靜態工具列（`bubble notice sealed`，標題「問過」／「問過批准」，明細「呢輪已經完。」），唔係「等緊你答」卡。`clarifyComposerRoute` 對封咗嘅卡返 `send`。`recoverRunControls` 返回 `gone` 之後 `clarifyRouteAfterRecover` 都係 `send`，`sendActive` 同 `sendSuborb` 都當普通新訊息送出。live `clarify` pending 卡仍然走 `answerClarify`。Devon（2026-11-13）：「你可以看看 Hermes Desktop 怎樣做嗎, 人家不會有事, 你就不應該有事」。
 
 ## 6. 光球顏色與計劃預覽
 

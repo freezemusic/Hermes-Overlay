@@ -1112,16 +1112,21 @@ test("a history clarify countdown follows the Hermes default and keeps moving", 
   assert.equal(sealUnrecoverableNotice(pending), true);
   assert.equal(sealUnrecoverableNotice(pending), false);
   const sealed = historyNoticeCopy(pending, "文案助手", (asked + 31 * 60) * 1000);
-  assert.equal(sealed.title, "文案助手 等緊你答：邊隻色？");
-  assert.equal(sealed.detail, "呢度答唔到。打字唔會當答案送出。");
-  assert.doesNotMatch(sealed.detail, /分鐘後逾時/);
+  assert.equal(sealed.title, "文案助手 問過：邊隻色？");
+  assert.equal(sealed.detail, "呢輪已經完。");
+  assert.doesNotMatch(sealed.detail, /打字唔會當答案|分鐘後逾時/);
   const approval = {
     role: "notice",
     tool_name: "approval",
     text: JSON.stringify({ text: "rm tmp", timeout_s: 600, asked_at: asked }),
   };
   assert.equal(sealUnrecoverableNotice(approval), true);
-  assert.equal(historyNoticeCopy(approval, "文案助手").detail, "呢度答唔到。打字唔會當答案送出。");
+  assert.equal(historyNoticeCopy(approval, "文案助手").title, "文案助手 問過批准：rm tmp");
+  assert.equal(historyNoticeCopy(approval, "文案助手").detail, "呢輪已經完。");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const paint = main.slice(main.indexOf("function paintHistoryNotice"), main.indexOf("function tickVisibleNotices"));
+  assert.match(paint, /historyNoticeSealed/);
+  assert.match(paint, /bubble notice sealed/);
 });
 
 test("a history notice timeout asks the server again before a sub-orb goes idle", () => {

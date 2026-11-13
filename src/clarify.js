@@ -1,3 +1,5 @@
+import { historyNoticeSealed } from "./sessions.js";
+
 /** Hand answers for Hermes clarify. The overlay never answers a card by itself. */
 
 export const CLARIFY_HEADING = "要你答";
@@ -376,12 +378,21 @@ export function absorbRecoveredControls(messages, controls, runId, options = {})
   return out;
 }
 
-/** Composer routing while a clarify may be waiting. `recover` means try the live run first. */
+/** Composer routing while a clarify may be waiting. `recover` means try the live run first.
+ *  A sealed notice is history: Desktop does not park a request on it, so Send is a normal message. */
 export function clarifyComposerRoute(messages) {
   const live = (messages || []).find((message) => clarifyPending(message) && message.status === "pending");
   if (live) return { action: "answer", card: live };
-  if ((messages || []).some((message) => message?.role === "notice" && message.tool_name === "clarify")) {
-    return { action: "recover" };
-  }
+  const recoverable = (messages || []).some((message) => (
+    message?.role === "notice" && message.tool_name === "clarify" && !historyNoticeSealed(message)
+  ));
+  if (recoverable) return { action: "recover" };
   return { action: "send" };
+}
+
+/** Recovery said the run is gone. A notice that is still marked recover must not block Send. */
+export function clarifyRouteAfterRecover(route, outcome) {
+  if (route?.action === "answer") return route;
+  if (outcome === "gone") return { action: "send" };
+  return route || { action: "send" };
 }

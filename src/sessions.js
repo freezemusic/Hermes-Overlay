@@ -1201,10 +1201,11 @@ export function historyNoticeCopy(message, botName, nowMs = Date.now()) {
   const who = String(botName || "").trim() || "呢個 bot";
   const verb = kind === "approval" ? "等緊你批准" : "等緊你答";
   if (payload.unrecoverable) {
+    const asked = kind === "approval" ? "問過批准" : "問過";
     return {
       kind,
-      title: `${who} ${verb}：${subject}`,
-      detail: "呢度答唔到。打字唔會當答案送出。",
+      title: `${who} ${asked}：${subject}`,
+      detail: "呢輪已經完。",
     };
   }
   const timeout = Number(payload.timeout_s);
@@ -1223,7 +1224,17 @@ export function historyNoticeCopy(message, botName, nowMs = Date.now()) {
   };
 }
 
-/** The live run is gone. Drop the countdown; the overlay cannot post this as an answer. */
+/** True once recovery has sealed this notice. Desktop treats that row as history, not a live question. */
+export function historyNoticeSealed(message) {
+  if (message?.role !== "notice") return false;
+  try {
+    return JSON.parse(String(message.text || "")).unrecoverable === true;
+  } catch {
+    return false;
+  }
+}
+
+/** The live run is gone. Drop the countdown. The question stays as history; Send is a new message. */
 export function sealUnrecoverableNotice(message) {
   if (!historyNoticePending(message)) return false;
   let payload = {};
