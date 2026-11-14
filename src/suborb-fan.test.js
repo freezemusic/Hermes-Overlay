@@ -157,7 +157,7 @@ test("round 2 css: no sub-orb halo or glyph glow, solid glass disc, 45° status 
   assert.match(r2, /\.suborb-disc \.orb-core \{\s*display: none;/);
   assert.match(r2, /background: rgba\(248, 248, 252, \.92\);[^}]*border: 1\.5px dashed rgb\(var\(--bot-rgb\)\);/);
   assert.match(r2, /\.orb-glyph \{\s*font: 500 11px\/1 "Noto Sans HK", sans-serif;\s*color: #14142b;\s*text-shadow: none;/);
-  assert.match(r2, /width: 6px;\s*height: 6px;\s*box-shadow: 0 0 0 1\.5px #fff, 0 0 0 2px rgba\(20, 20, 43, \.25\);/);
+  assert.match(r2, /width: 6px;\s*height: 6px;\s*opacity: 1;\s*background: #f2f200;[\s\S]*?box-shadow: 0 0 0 1px #fff, 0 0 0 1\.5px rgba\(20, 20, 43, \.35\);/);
   assert.match(r2, /\.35355/);
   assert.match(r2, /suborb-more \{\s*border: 1\.5px dashed #616191;\s*font: 600 11px\/1 "Barlow Condensed", sans-serif;\s*color: #14142b;/);
   assert.match(r2, /\.morph-orb\.has-fan::before \{\s*inset: calc\(var\(--bot-size, 44px\) \/ 2 - var\(--fan-rim/);
@@ -174,7 +174,7 @@ test("round 3 css (AD 9/10 pre-push): CSS border kept, disc lift, crowded badge 
   assert.doesNotMatch(main.slice(main.indexOf("function renderSuborbs("), main.indexOf("function renderSuborbs(") + 6000), /createElementNS\([^)]*"circle"/);
   // 3. static disc shadow, kept under the failed inset ring.
   assert.match(r2, /border: 1\.5px dashed rgb\(var\(--bot-rgb\)\);[^}]*box-shadow: 0 1px 2px rgba\(20, 20, 43, \.18\);/);
-  assert.match(r2, /\.suborb-disc\.is-failed \{\s*box-shadow: inset 0 0 0 1\.5px #e5484d, 0 1px 2px rgba\(20, 20, 43, \.18\);/);
+  assert.match(r2, /\.suborb-disc\.is-failed \.suborb-face \{\s*box-shadow: inset 0 0 0 1\.5px #e5484d, 0 1px 2px rgba\(20, 20, 43, \.18\);/);
   // 1. the crowded badge uses the +N look.
   assert.match(r2, /suborb-more\.is-fan-badge \{[^}]*border: 1\.5px dashed #616191;[^}]*font: 600 11px\/1 "Barlow Condensed", sans-serif;\s*color: #14142b;/);
   // 2. dot only for a reconciled badge; idle (data-badge "") has none.

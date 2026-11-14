@@ -200,8 +200,10 @@ import {
   orbDraggable,
   planOrbDodges,
   boxCentre,
+  separateSuborbDrop,
   suborbRestCentre,
   suborbTether,
+  tetherStyle,
   validOrbId,
 } from "./orbdrag.js";
 import {
@@ -4791,6 +4793,32 @@ function fillOrb(btn) {
   badge.className = "approval-badge";
   badge.setAttribute("aria-hidden", "true");
   btn.append(hit, core, glyph, spinner, unread, badge);
+}
+
+/** Bowl, glyph and spinner fade together. The unread dot stays a sibling at opacity 1. */
+function ensureSuborbFace(btn) {
+  if (!btn || btn.querySelector(".suborb-face")) return btn?.querySelector(".suborb-face") || null;
+  const face = document.createElement("span");
+  face.className = "suborb-face";
+  face.setAttribute("aria-hidden", "true");
+  for (const name of [".orb-core", ".orb-glyph", ".spinner"]) {
+    const node = btn.querySelector(name);
+    if (node) face.appendChild(node);
+  }
+  const unread = btn.querySelector(".unread-dot");
+  if (unread) btn.insertBefore(face, unread);
+  else btn.appendChild(face);
+  return face;
+}
+
+function suborbFadeNode(el) {
+  if (el?.dataset?.kind !== "suborb" || el.dataset.state !== "orb") return el;
+  const face = el.querySelector(".suborb-face");
+  if (!face) return el;
+  if (el.style.opacity !== "1") el.style.opacity = "1";
+  if (el.style.getPropertyValue("--hit-opacity")) el.style.removeProperty("--hit-opacity");
+  delete el.dataset.orbFade;
+  return face;
 }
 
 function renderKanbanOrb() {
@@ -11521,7 +11549,18 @@ function endOrbDrag(event) {
   if (state.dragHitId && shell && state.dragHitId === shell.dataset.hitId) state.dragHitId = "";
   // Devon 2026-11-10: 「我就是要到處拖」. The orb stays exactly where it is
   // dropped, even next to its home; only 「所有光球返原位」 goes back.
-  const point = drag.point || drag.origin;
+  let point = drag.point || drag.origin;
+  if (isSuborbId(drag.id)) {
+    const radius = suborbSizePx(ORB) / 2;
+    const others = [];
+    document.querySelectorAll(".morph[data-kind='suborb']").forEach((node) => {
+      if ((node.dataset.botId || "") === drag.id) return;
+      if (node.dataset.state !== "orb" || suborbFanHidden(node)) return;
+      const centre = suborbDiscCentre(node);
+      if (centre) others.push(centre);
+    });
+    point = clampOrbPoint(separateSuborbDrop(point, others, { radius }), orbScreen());
+  }
   state.orbPositions[drag.id] = { x: point.x, y: point.y };
   void persistOrbPosition(drag.id, point);
   syncOrbResetButton();
@@ -11787,14 +11826,15 @@ function applyFrames(frames, interactiveAll = false) {
       // A panel that meets the disc plus its halo fades this orb to 0.
       const aim = el.dataset.orbCovered === "1" ? 0 : value;
       const suborbFade = el.dataset.kind === "suborb";
+      const fadeNode = suborbFade ? suborbFadeNode(el) : el;
       const stepped = suborbFade
         ? applyOrbFadeFrame(
-          el,
+          fadeNode,
           orbFadeClocks.get(el) || null,
           performance.now(),
           aim,
           reducedMotion() ? 1 : SUBORB_FADE_MS,
-          readOrbOpacity(el),
+          readOrbOpacity(fadeNode),
           planEase,
         )
         : applyOrbFadeFrame(
@@ -11877,7 +11917,8 @@ function syncOrbNameFade() {
       continue;
     }
     const covered = shell.dataset.orbCovered === "1";
-    const next = shell.style.opacity || (covered ? "0.00" : String(orbRestOpacity()));
+    const fadeNode = shell.dataset.kind === "suborb" ? (shell.querySelector(".suborb-face") || shell) : shell;
+    const next = fadeNode.style.opacity || (covered ? "0.00" : String(orbRestOpacity()));
     if (label.style.opacity !== next) label.style.opacity = next;
     const settled = covered && Number.parseFloat(next) <= 0.01;
     if (settled) label.hidden = true;
@@ -12070,9 +12111,10 @@ function tickOrbFades() {
     const clock = orbFadeClocks.get(el);
     if (!clock || clock.settled) return;
     const suborbFade = el.dataset.kind === "suborb";
+    const fadeNode = suborbFade ? suborbFadeNode(el) : el;
     const duration = reducedMotion() ? 1 : (suborbFade ? SUBORB_FADE_MS : ORB_FADE_MS);
     const stepped = suborbFade
-      ? applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el), planEase)
+      ? applyOrbFadeFrame(fadeNode, clock, now, clock.target, duration, readOrbOpacity(fadeNode), planEase)
       : applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el));
     orbFadeClocks.set(el, stepped.clock);
     if (stepped.running) running = true;
@@ -13133,10 +13175,19 @@ function paintSuborbTethers() {
   svg.removeAttribute("height");
   svg.removeAttribute("viewBox");
   const layer = tetherLayerBox(svg);
+  const parentR = ORB / 2;
+  const childR = suborbSizePx(ORB) / 2;
   const parts = [];
   for (const { shell, sub } of shells) {
-    const line = suborbTether(parentOrbBox(sub.profile), suborbDiscCentre(shell), layer);
-    if (line) parts.push(line);
+    const line = suborbTether(parentOrbBox(sub.profile), suborbDiscCentre(shell), layer, null, {
+      parentRadius: parentR,
+      childRadius: childR,
+    });
+    if (!line) continue;
+    const rgb = profileBotRgb(sub.profile);
+    const dragging = shell.dataset.orbDragging === "1";
+    const length = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
+    parts.push({ id: shell.dataset.botId || "", line, rgb, style: tetherStyle({ length, dragging }) });
   }
   if (!parts.length) {
     svg.remove();
@@ -13149,22 +13200,72 @@ function paintSuborbTethers() {
     layer.h.toFixed(1),
     layer.viewW.toFixed(1),
     layer.viewH.toFixed(1),
-    parts.map((line) => `${line.x1.toFixed(1)},${line.y1.toFixed(1)},${line.x2.toFixed(1)},${line.y2.toFixed(1)}`).join(";"),
+    parts.map((part) => `${part.id}:${part.rgb}:${part.style.dash}:${part.style.opacity}:${part.style.fade}:${part.line.x1.toFixed(1)},${part.line.y1.toFixed(1)},${part.line.x2.toFixed(1)},${part.line.y2.toFixed(1)}`).join(";"),
   ].join("|");
   if (svg.dataset.sig === sig) return;
   svg.dataset.sig = sig;
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
-  for (const line of parts) {
-    for (const kind of ["suborb-tether-halo", "suborb-tether-core"]) {
-      const el = document.createElementNS(ns, "line");
-      el.setAttribute("class", kind);
-      el.setAttribute("x1", String(line.x1));
-      el.setAttribute("y1", String(line.y1));
-      el.setAttribute("x2", String(line.x2));
-      el.setAttribute("y2", String(line.y2));
+  let defs = svg.querySelector("defs");
+  if (!defs) {
+    defs = document.createElementNS(ns, "defs");
+    svg.insertBefore(defs, svg.firstChild);
+  }
+  const keep = new Set();
+  parts.forEach((part, index) => {
+    keep.add(part.id);
+    let el = [...svg.querySelectorAll("line")].find((node) => node.dataset.suborb === part.id);
+    if (!el) {
+      el = document.createElementNS(ns, "line");
+      el.dataset.suborb = part.id;
       svg.appendChild(el);
     }
-  }
+    el.setAttribute("x1", String(part.line.x1));
+    el.setAttribute("y1", String(part.line.y1));
+    el.setAttribute("x2", String(part.line.x2));
+    el.setAttribute("y2", String(part.line.y2));
+    if (part.style.dash) el.setAttribute("stroke-dasharray", part.style.dash);
+    else el.removeAttribute("stroke-dasharray");
+    el.setAttribute("stroke-opacity", String(part.style.opacity));
+    if (part.style.fade) {
+      const gradId = `tether-fade-${index}`;
+      let grad = defs.querySelector(`#${gradId}`);
+      if (!grad) {
+        grad = document.createElementNS(ns, "linearGradient");
+        grad.id = gradId;
+        defs.appendChild(grad);
+      }
+      grad.setAttribute("gradientUnits", "userSpaceOnUse");
+      grad.setAttribute("x1", String(part.line.x1));
+      grad.setAttribute("y1", String(part.line.y1));
+      grad.setAttribute("x2", String(part.line.x2));
+      grad.setAttribute("y2", String(part.line.y2));
+      const stops = [
+        ["0", part.style.end],
+        ["0.5", part.style.mid],
+        ["1", part.style.end],
+      ];
+      grad.replaceChildren();
+      for (const [offset, opacity] of stops) {
+        const stop = document.createElementNS(ns, "stop");
+        stop.setAttribute("offset", offset);
+        stop.setAttribute("stop-color", `rgb(${part.rgb})`);
+        stop.setAttribute("stop-opacity", String(opacity));
+        grad.appendChild(stop);
+      }
+      el.setAttribute("stroke", `url(#${gradId})`);
+    } else {
+      el.setAttribute("stroke", `rgb(${part.rgb})`);
+    }
+  });
+  svg.querySelectorAll("line").forEach((node) => {
+    if (!keep.has(node.dataset.suborb || "")) node.remove();
+  });
+}
+
+function profileBotRgb(profile) {
+  const node = shellFor(profile)?.querySelector(".morph-orb") || shellFor(profile);
+  const raw = node?.style?.getPropertyValue?.("--bot-rgb") || "";
+  const text = String(raw || "").trim();
+  return text || "0, 0, 242";
 }
 
 /** Round 2: the parent orb keeps the only halo, cut to the rim the discs rest on. */
@@ -13321,6 +13422,7 @@ function ensureSuborbShell(bot, row) {
   btn.className = "bot-btn morph-orb suborb-disc";
   btn.dataset.botId = id;
   fillOrb(btn);
+  ensureSuborbFace(btn);
   shell.append(stroke, fill, btn, previewNode());
   const tpl = document.getElementById("bot-panel-template");
   if (tpl) {

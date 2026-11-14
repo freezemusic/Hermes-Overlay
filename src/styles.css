@@ -3895,6 +3895,7 @@ html[data-pass="1"] .plan-hit-host * {
 .morph[data-state="panel"]:not(.is-collapsing) {
   z-index: 6;
 }
+.morph[data-state="orb"] { z-index: 1; }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) {
   z-index: 2;
 }
@@ -4290,16 +4291,27 @@ html[data-text-size] .morph-pill time { font-size: 11px; }
   display: none;
 }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+/* The bowl fades with proximity. The unread dot is a sibling of this face, so it stays at 1. */
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-face {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-sizing: border-box;
   background: rgba(248, 248, 252, .92);
   /* 1.5px CSS border (AD r3: no SVG); Chromium/WebView2 may round it to a whole px. */
   border: 1.5px dashed rgb(var(--bot-rgb));
   /* r3: static lift so the disc reads on any wallpaper. */
   box-shadow: 0 1px 2px rgba(20, 20, 43, .18);
+  pointer-events: none;
 }
-.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc.is-failed {
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc.is-failed .suborb-face {
   box-shadow: inset 0 0 0 1.5px #e5484d, 0 1px 2px rgba(20, 20, 43, .18);
 }
-.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc[data-pinned="1"] {
+.morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc[data-pinned="1"] .suborb-face {
   border-style: solid;
 }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc .orb-glyph {
@@ -4314,7 +4326,7 @@ html[data-text-size] .morph-pill time { font-size: 11px; }
 .morph[data-kind="suborb"] .suborb-disc[data-badge="unread"] .unread-dot,
 .morph[data-kind="suborb"] .suborb-disc[data-badge="plan"] .unread-dot { display: block; }
 .morph[data-kind="suborb"] .suborb-disc[data-badge="plan"] .unread-dot { background: rgb(var(--bot-rgb)); }
-.morph[data-kind="suborb"] .suborb-disc[data-badge="unread"] .unread-dot { background: var(--nous-yellow); }
+.morph[data-kind="suborb"] .suborb-disc[data-badge="unread"] .unread-dot { background: #f2f200; opacity: 1; }
 .morph[data-kind="suborb"] .suborb-disc:not([data-badge="waiting"]) .approval-badge { display: none; }
 .morph[data-kind="suborb"][data-state="orb"] .suborb-disc .unread-dot,
 .morph[data-kind="suborb"][data-state="orb"] .suborb-disc .approval-badge {
@@ -4324,7 +4336,10 @@ html[data-text-size] .morph-pill time { font-size: 11px; }
   bottom: auto;
   width: 6px;
   height: 6px;
-  box-shadow: 0 0 0 1.5px #fff, 0 0 0 2px rgba(20, 20, 43, .25);
+  opacity: 1;
+  background: #f2f200;
+  /* 1px white ring, then .5px dark outline outside it. Never follows the disc fade. */
+  box-shadow: 0 0 0 1px #fff, 0 0 0 1.5px rgba(20, 20, 43, .35);
 }
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .suborb-disc.suborb-more {
   border: 1.5px dashed #616191;
@@ -4361,28 +4376,28 @@ html[data-fan-held="1"] .suborb-orbit { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   .suborb-orbit { transition: none; }
 }
-/* R-OB-08 tether (Devon 2026-11-13): a hairline from every visible sub-orb to
-   its profile orb. Always on, not only while Ctrl is held. The light sheath
-   shows on a dark wallpaper; the ink core shows on a light one. Never a hit. */
+/* R-OB-08 tether: one 1px line in the parent bot colour. Below every orb.
+   Resting opacity .6; a drag is dashed at .8; a line longer than 160px
+   fades its middle in the stroke gradient. Never a hit. */
 .suborb-tether {
   position: absolute;
   left: 0;
   top: 0;
+  z-index: 0;
   width: 100%;
   height: 100%;
   display: block;
   overflow: visible;
   pointer-events: none;
 }
-.suborb-tether .suborb-tether-halo {
-  stroke: rgba(248, 248, 252, .72);
-  stroke-width: 3;
-  stroke-linecap: round;
-}
-.suborb-tether .suborb-tether-core {
-  stroke: rgba(20, 20, 43, .55);
+.suborb-tether line {
+  fill: none;
   stroke-width: 1;
-  stroke-linecap: round;
+  stroke-linecap: butt;
+  transition: stroke-opacity 150ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .suborb-tether line { transition: none; }
 }
 
 /*
