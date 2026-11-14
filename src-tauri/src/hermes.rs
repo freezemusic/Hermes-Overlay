@@ -1077,6 +1077,53 @@ pub fn session_route_matches(session: &SessionSummary) -> bool {
     key.rsplit(':').next() == Some(id)
 }
 
+fn session_from_item(item: &Value) -> Option<SessionSummary> {
+    let id = item
+        .get("id")
+        .or_else(|| item.get("session_id"))
+        .and_then(Value::as_str)?
+        .trim()
+        .to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let title = item.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+    let hidden = json_flag(item, "hidden");
+    let archived = json_flag(item, "archived").unwrap_or(false)
+        || json_flag(item, "is_archived").unwrap_or(false);
+    let parent_session_id = item
+        .get("parent_session_id")
+        .or_else(|| item.get("parentSessionId"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let started_at = json_f64(item, "started_at");
+    let last_active = item.get("last_active").and_then(Value::as_f64).unwrap_or(started_at);
+    let preview = item.get("preview").and_then(Value::as_str).unwrap_or("").to_string();
+    let source = item.get("source").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let (ended, end_reason) = session_closed(item);
+    let session_key = routing_key_of(item);
+    let busy = session_busy(item);
+    Some(SessionSummary {
+        id,
+        title,
+        hidden,
+        last_active,
+        preview,
+        source,
+        started_at,
+        message_count: message_count_of(item),
+        delivery: row_marks_delivery(item),
+        parent_session_id,
+        archived,
+        ended,
+        end_reason,
+        session_key,
+        busy,
+    })
+}
+
 pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
     let items = value
         .get("data")
@@ -1085,71 +1132,7 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
         .cloned()
         .or_else(|| value.as_array().cloned())
         .unwrap_or_default();
-    let mut sessions: Vec<SessionSummary> = items
-        .iter()
-        .filter_map(|item| {
-            let id = item
-                .get("id")
-                .or_else(|| item.get("session_id"))
-                .and_then(Value::as_str)?
-                .trim()
-                .to_string();
-            if id.is_empty() {
-                return None;
-            }
-            let title = item
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let hidden = json_flag(item, "hidden");
-            let archived = json_flag(item, "archived").unwrap_or(false)
-                || json_flag(item, "is_archived").unwrap_or(false);
-            let parent_session_id = item
-                .get("parent_session_id")
-                .or_else(|| item.get("parentSessionId"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let started_at = json_f64(item, "started_at");
-            let last_active = item
-                .get("last_active")
-                .and_then(Value::as_f64)
-                .unwrap_or(started_at);
-            let preview = item
-                .get("preview")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let source = item
-                .get("source")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let (ended, end_reason) = session_closed(item);
-            let session_key = routing_key_of(item);
-            let busy = session_busy(item);
-            Some(SessionSummary {
-                id,
-                title,
-                hidden,
-                last_active,
-                preview,
-                source,
-                started_at,
-                message_count: message_count_of(item),
-                delivery: row_marks_delivery(item),
-                parent_session_id,
-                archived,
-                ended,
-                end_reason,
-                session_key,
-                busy,
-            })
-        })
-        .collect();
+    let mut sessions: Vec<SessionSummary> = items.iter().filter_map(session_from_item).collect();
     if let Some(id) = envelope_delivery_id(value) {
         for session in &mut sessions {
             if session.id == id {
@@ -1158,6 +1141,30 @@ pub fn parse_session_list(value: &Value) -> Vec<SessionSummary> {
         }
     }
     sessions
+}
+
+/// One row from `GET /api/sessions/{id}`. The dashboard may return the session
+/// object, `{session: ...}`, `{data: ...}`, or a one-element list.
+pub fn parse_session_value(value: &Value) -> Option<SessionSummary> {
+    if let Some(session) = value.get("session").filter(|item| item.is_object()) {
+        if let Some(row) = session_from_item(session) {
+            return Some(row);
+        }
+    }
+    if let Some(data) = value.get("data").filter(|item| item.is_object()) {
+        if let Some(row) = session_from_item(data) {
+            return Some(row);
+        }
+    }
+    if value.get("id").and_then(Value::as_str).is_some()
+        || value.get("session_id").and_then(Value::as_str).is_some()
+    {
+        if let Some(row) = session_from_item(value) {
+            return Some(row);
+        }
+    }
+    let mut rows = parse_session_list(value);
+    if rows.len() == 1 { rows.pop() } else { None }
 }
 
 /// Title-query rows fill in hidden Bot Chats the blanket list omits.
@@ -4620,6 +4627,32 @@ mod tests {
     }
 
     #[test]
+    fn one_session_get_parses_the_row_wrappers() {
+        let row = json!({
+            "id": "20261110_221455_d3abe7",
+            "title": "舊任務",
+            "source": "cli",
+            "message_count": 4,
+            "started_at": 10.0,
+            "last_active": 12.0,
+            "archived": false
+        });
+        let direct = parse_session_value(&row).unwrap();
+        assert_eq!(direct.id, "20261110_221455_d3abe7");
+        assert_eq!(direct.message_count, Some(4));
+        assert!(!direct.archived);
+        let wrapped = parse_session_value(&json!({"session": row.clone()})).unwrap();
+        assert_eq!(wrapped.title, "舊任務");
+        let data = parse_session_value(&json!({"data": {"session_id": "api_1794591121_502fdcfc", "title": "API", "archived": true}})).unwrap();
+        assert_eq!(data.id, "api_1794591121_502fdcfc");
+        assert!(data.archived);
+        let listed = parse_session_value(&json!({"data": [row]})).unwrap();
+        assert_eq!(listed.id, "20261110_221455_d3abe7");
+        assert!(parse_session_value(&json!({"data": []})).is_none());
+        assert!(parse_session_value(&json!({})).is_none());
+    }
+
+    #[test]
     fn a_bot_chat_watch_uses_message_count_before_downloading() {
         let listed = parse_session_list(&json!({
             "data": [{
@@ -5390,6 +5423,7 @@ mod tests {
             panel_sizes: std::collections::BTreeMap::new(),
             orb_positions: std::collections::BTreeMap::new(),
             suborb_modes: std::collections::BTreeMap::new(),
+            suborb_created: std::collections::BTreeMap::new(),
             text_size: String::new(),
             ui_language: String::new(),
             bots: vec![

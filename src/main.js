@@ -19,6 +19,8 @@ import {
   sessionCreateError,
   uniqueTaskTitle,
   parseSuborbId,
+  pinFetchDelayMs,
+  normalizeCreatedRow,
   dispatchOrbClick,
   composerHoldsSuborb,
   reconcileSuborbs,
@@ -198,8 +200,10 @@ import {
   orbDraggable,
   planOrbDodges,
   boxCentre,
+  separateSuborbDrop,
   suborbRestCentre,
   suborbTether,
+  tetherStyle,
   validOrbId,
 } from "./orbdrag.js";
 import {
@@ -4791,6 +4795,32 @@ function fillOrb(btn) {
   btn.append(hit, core, glyph, spinner, unread, badge);
 }
 
+/** Bowl, glyph and spinner fade together. The unread dot stays a sibling at opacity 1. */
+function ensureSuborbFace(btn) {
+  if (!btn || btn.querySelector(".suborb-face")) return btn?.querySelector(".suborb-face") || null;
+  const face = document.createElement("span");
+  face.className = "suborb-face";
+  face.setAttribute("aria-hidden", "true");
+  for (const name of [".orb-core", ".orb-glyph", ".spinner"]) {
+    const node = btn.querySelector(name);
+    if (node) face.appendChild(node);
+  }
+  const unread = btn.querySelector(".unread-dot");
+  if (unread) btn.insertBefore(face, unread);
+  else btn.appendChild(face);
+  return face;
+}
+
+function suborbFadeNode(el) {
+  if (el?.dataset?.kind !== "suborb" || el.dataset.state !== "orb") return el;
+  const face = el.querySelector(".suborb-face");
+  if (!face) return el;
+  if (el.style.opacity !== "1") el.style.opacity = "1";
+  if (el.style.getPropertyValue("--hit-opacity")) el.style.removeProperty("--hit-opacity");
+  delete el.dataset.orbFade;
+  return face;
+}
+
 function renderKanbanOrb() {
   ensureChrome();
   const shell = shellFor("kanban");
@@ -5975,6 +6005,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   thread.sessionReadOnly = locked;
   thread.sessionReadOnlyReason = locked ? (opened.read_only_reason || SESSION_READ_ONLY_REASON) : "";
   thread.sessions = sessions;
+  thread.listReady = true;
   if (!isSuborbId(id)) noteSuborbList(id, thread.sessions, thread.sessionId || "");
   thread.loading = false;
   rememberPlan(thread, thread.messages);
@@ -7211,8 +7242,9 @@ function deliverSessions(id, payload) {
   const thread = threadFor(id);
   const sessions = stampKeptTitles(payload?.sessions || [], thread.keptTitles);
   thread.sessions = sessions;
+  thread.listReady = true;
   paintSessionSelect(id);
-  noteSuborbList(id, sessions, thread.sessionId || payload?.session_id || "");
+  noteSuborbList(id, sessions, thread.sessionId || payload?.session_id || "", payload?.gone_pins || []);
   const nextId = String(payload?.session_id || "");
   if (
     !thread.loaded
@@ -8748,7 +8780,7 @@ function useHermes(settings) {
   state.suborbPins = settings?.suborb_pins || {};
   state.suborbModesSaved = settings?.suborb_modes || {};
   state.suborbModels = new Map();
-  state.suborbExtra = new Map();
+  state.suborbExtra = hydrateCreatedSuborbs(settings?.suborb_created);
   state.composeCatalogs.clear();
   state.bots = botsFromSettings(settings);
   state.threads = new Map();
@@ -9383,6 +9415,7 @@ function noteStopGate(thread, part) {
 function mergeCaughtUp(id, opened, { append = false, stopped = false } = {}) {
   const thread = threadFor(id);
   if (!isSuborbId(id) && Array.isArray(opened?.sessions) && opened.sessions.length) {
+    thread.listReady = true;
     noteSuborbList(id, opened.sessions, opened.session_id || thread.sessionId || "");
   }
   const sessionId = opened.session_id || "";
@@ -11516,7 +11549,18 @@ function endOrbDrag(event) {
   if (state.dragHitId && shell && state.dragHitId === shell.dataset.hitId) state.dragHitId = "";
   // Devon 2026-11-10: 「我就是要到處拖」. The orb stays exactly where it is
   // dropped, even next to its home; only 「所有光球返原位」 goes back.
-  const point = drag.point || drag.origin;
+  let point = drag.point || drag.origin;
+  if (isSuborbId(drag.id)) {
+    const radius = suborbSizePx(ORB) / 2;
+    const others = [];
+    document.querySelectorAll(".morph[data-kind='suborb']").forEach((node) => {
+      if ((node.dataset.botId || "") === drag.id) return;
+      if (node.dataset.state !== "orb" || suborbFanHidden(node)) return;
+      const centre = suborbDiscCentre(node);
+      if (centre) others.push(centre);
+    });
+    point = clampOrbPoint(separateSuborbDrop(point, others, { radius }), orbScreen());
+  }
   state.orbPositions[drag.id] = { x: point.x, y: point.y };
   void persistOrbPosition(drag.id, point);
   syncOrbResetButton();
@@ -11782,14 +11826,15 @@ function applyFrames(frames, interactiveAll = false) {
       // A panel that meets the disc plus its halo fades this orb to 0.
       const aim = el.dataset.orbCovered === "1" ? 0 : value;
       const suborbFade = el.dataset.kind === "suborb";
+      const fadeNode = suborbFade ? suborbFadeNode(el) : el;
       const stepped = suborbFade
         ? applyOrbFadeFrame(
-          el,
+          fadeNode,
           orbFadeClocks.get(el) || null,
           performance.now(),
           aim,
           reducedMotion() ? 1 : SUBORB_FADE_MS,
-          readOrbOpacity(el),
+          readOrbOpacity(fadeNode),
           planEase,
         )
         : applyOrbFadeFrame(
@@ -11872,7 +11917,8 @@ function syncOrbNameFade() {
       continue;
     }
     const covered = shell.dataset.orbCovered === "1";
-    const next = shell.style.opacity || (covered ? "0.00" : String(orbRestOpacity()));
+    const fadeNode = shell.dataset.kind === "suborb" ? (shell.querySelector(".suborb-face") || shell) : shell;
+    const next = fadeNode.style.opacity || (covered ? "0.00" : String(orbRestOpacity()));
     if (label.style.opacity !== next) label.style.opacity = next;
     const settled = covered && Number.parseFloat(next) <= 0.01;
     if (settled) label.hidden = true;
@@ -12065,9 +12111,10 @@ function tickOrbFades() {
     const clock = orbFadeClocks.get(el);
     if (!clock || clock.settled) return;
     const suborbFade = el.dataset.kind === "suborb";
+    const fadeNode = suborbFade ? suborbFadeNode(el) : el;
     const duration = reducedMotion() ? 1 : (suborbFade ? SUBORB_FADE_MS : ORB_FADE_MS);
     const stepped = suborbFade
-      ? applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el), planEase)
+      ? applyOrbFadeFrame(fadeNode, clock, now, clock.target, duration, readOrbOpacity(fadeNode), planEase)
       : applyOrbFadeFrame(el, clock, now, clock.target, duration, readOrbOpacity(el));
     orbFadeClocks.set(el, stepped.clock);
     if (stepped.running) running = true;
@@ -12516,6 +12563,7 @@ function applySuborbArchive(profile, view) {
   if (drop.size) {
     const extra = (state.suborbExtra.get(profile) || []).filter((row) => row?.id && !drop.has(row.id));
     state.suborbExtra.set(profile, extra);
+    for (const sessionId of drop) forgetCreatedSuborb(profile, sessionId);
   }
   const unpin = view?.unpin || [];
   if (!unpin.length) return;
@@ -12523,6 +12571,7 @@ function applySuborbArchive(profile, view) {
   state.suborbPins = { ...state.suborbPins, [profile]: nextPins };
   if (state.mode !== "hermes" || !inTauri()) return;
   for (const sessionId of unpin) {
+    pinFetch.delete(`${profile}:${sessionId}`);
     void import("@tauri-apps/api/core").then(({ invoke }) => invoke("set_suborb_pin", {
       profile,
       sessionId,
@@ -12530,6 +12579,127 @@ function applySuborbArchive(profile, view) {
     })).then((settings) => {
       if (settings?.suborb_pins) state.suborbPins = settings.suborb_pins;
     }).catch(() => {});
+  }
+}
+
+function hydrateCreatedSuborbs(created) {
+  const map = new Map();
+  if (!created || typeof created !== "object") return map;
+  for (const [profile, rows] of Object.entries(created)) {
+    if (!Array.isArray(rows)) continue;
+    const clean = rows.map(normalizeCreatedRow).filter(Boolean);
+    if (clean.length) map.set(profile, clean);
+  }
+  return map;
+}
+
+function rememberCreatedLocal(profile, row) {
+  if (!row?.id) return;
+  if (!state.settings || typeof state.settings !== "object") state.settings = {};
+  const map = { ...(state.settings.suborb_created || {}) };
+  const rows = (Array.isArray(map[profile]) ? map[profile] : []).filter((item) => item?.id !== row.id);
+  rows.push(row);
+  map[profile] = rows;
+  state.settings.suborb_created = map;
+}
+
+function forgetCreatedSuborb(profile, sessionId) {
+  const map = { ...(state.settings?.suborb_created || {}) };
+  const rows = Array.isArray(map[profile]) ? map[profile] : [];
+  if (!rows.some((item) => item?.id === sessionId)) return;
+  const next = rows.filter((item) => item?.id !== sessionId);
+  if (next.length) map[profile] = next;
+  else delete map[profile];
+  if (!state.settings || typeof state.settings !== "object") state.settings = {};
+  state.settings.suborb_created = map;
+  if (state.mode !== "hermes" || !inTauri()) return;
+  void import("@tauri-apps/api/core").then(({ invoke }) => invoke("forget_suborb_created", {
+    profile,
+    sessionId,
+  })).catch(() => {});
+}
+
+function rememberPinnedRows(profile, listed) {
+  const pins = new Set(pinsFor(profile));
+  const extra = new Map();
+  for (const row of state.suborbExtra.get(profile) || []) {
+    if (row?.id) extra.set(row.id, row);
+  }
+  for (const row of listed || []) {
+    if (row?.id && pins.has(row.id) && !row.archived) extra.set(row.id, row);
+  }
+  state.suborbExtra.set(profile, [...extra.values()]);
+}
+
+const pinFetch = new Map();
+
+function sessionListKey(rows) {
+  return (rows || []).map((row) => row?.id).filter(Boolean).join("\n");
+}
+
+function schedulePinFetch(profile, sessionId, attempt) {
+  const key = `${profile}:${sessionId}`;
+  const prev = pinFetch.get(key) || {};
+  if (prev.timer) return;
+  const wait = pinFetchDelayMs(attempt);
+  const timer = window.setTimeout(() => {
+    const row = pinFetch.get(key) || {};
+    pinFetch.set(key, { ...row, timer: 0, inflight: false });
+    void restoreMissingPins(profile, threadFor(profile).sessions || []);
+  }, wait);
+  pinFetch.set(key, { attempt, timer, inflight: false, status: "error", listKey: prev.listKey || "" });
+  console.warn(`pinned session fetch failed; retry in ${wait}ms`);
+}
+
+async function restoreMissingPins(profile, listed) {
+  if (state.mode !== "hermes" || !inTauri()) return;
+  if (!threadFor(profile).listReady) return;
+  const have = new Set((listed || []).map((row) => row?.id).filter(Boolean));
+  const missing = pinsFor(profile).filter((id) => id && !have.has(id));
+  if (!missing.length) return;
+  const listKey = sessionListKey(listed);
+  let invoke;
+  try {
+    ({ invoke } = await import("@tauri-apps/api/core"));
+  } catch (err) {
+    console.warn("pinned session fetch unavailable");
+    return;
+  }
+  for (const sessionId of missing) {
+    const key = `${profile}:${sessionId}`;
+    const prev = pinFetch.get(key);
+    if (prev?.inflight || prev?.timer) continue;
+    if (prev?.status === "found" && prev.listKey === listKey && suborbSessionRow(profile, sessionId)) continue;
+    pinFetch.set(key, { ...(prev || {}), inflight: true, listKey, status: "inflight" });
+    try {
+      const result = await invoke("fetch_pinned_session", { profile, sessionId });
+      const status = String(result?.status || "");
+      if (status === "gone") {
+        pinFetch.set(key, { status: "gone", inflight: false, listKey });
+        noteSuborbList(profile, threadFor(profile).sessions || [], threadFor(profile).sessionId || "", [sessionId]);
+        continue;
+      }
+      if (status === "archived" && result?.session) {
+        pinFetch.set(key, { status: "archived", inflight: false, listKey });
+        const row = { ...result.session, archived: true };
+        noteSuborbList(profile, [...(threadFor(profile).sessions || []), row], threadFor(profile).sessionId || "");
+        continue;
+      }
+      if (status === "found" && result?.session?.id) {
+        const row = { ...result.session, archived: false };
+        const extra = (state.suborbExtra.get(profile) || []).filter((item) => item?.id !== row.id);
+        extra.push(row);
+        state.suborbExtra.set(profile, extra);
+        pinFetch.set(key, { status: "found", inflight: false, listKey, attempt: 0 });
+        noteSuborbList(profile, threadFor(profile).sessions || [], threadFor(profile).sessionId || "");
+        continue;
+      }
+      const nextAttempt = prev?.status === "error" ? (prev.attempt || 0) + 1 : (prev?.attempt || 0);
+      schedulePinFetch(profile, sessionId, nextAttempt);
+    } catch {
+      const nextAttempt = prev?.status === "error" ? (prev.attempt || 0) + 1 : (prev?.attempt || 0);
+      schedulePinFetch(profile, sessionId, nextAttempt);
+    }
   }
 }
 
@@ -12587,13 +12757,13 @@ async function recheckTimedOutNotices() {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("seed_session_lists");
   } catch {
-    /* The next watch poll still reconciles. */
+    console.warn("seed_session_lists failed");
   } finally {
     recheckTimedOutNotices.flight = false;
   }
 }
 
-function noteSuborbList(profile, sessions, mainId = "") {
+function noteSuborbList(profile, sessions, mainId = "", goneIds = []) {
   if (!profile || isSuborbId(profile) || !state.suborbModels) return;
   const model = suborbModel(profile);
   for (const [id, thread] of state.threads) {
@@ -12605,6 +12775,7 @@ function noteSuborbList(profile, sessions, mainId = "") {
     model.failed[sub.sessionId] = thread.statusState === "error";
   }
   const listed = sessions || [];
+  rememberPinnedRows(profile, listed);
   for (const row of listed) {
     if (!row?.id || row.busy !== false) continue;
     const panelId = suborbPanelId(profile, row.id);
@@ -12637,6 +12808,9 @@ function noteSuborbList(profile, sessions, mainId = "") {
     openIds: suborbOpenSessionIds(profile),
     holdIds: suborbHoldIds(profile),
     listedIds: listed.map((row) => row?.id).filter(Boolean),
+    goneIds: Array.isArray(goneIds) ? goneIds : [],
+    // The server list is the baseline. A reconcile before it arrives must not lock one.
+    lockBaseline: threadFor(profile).listReady === true,
     now: Date.now(),
   });
   applySuborbArchive(profile, view);
@@ -12649,6 +12823,7 @@ function noteSuborbList(profile, sessions, mainId = "") {
   }
   renderSuborbs();
   armSuborbDismiss();
+  if (threadFor(profile).listReady) void restoreMissingPins(profile, listed);
 }
 
 function armSuborbDismiss() {
@@ -12665,11 +12840,19 @@ function armSuborbDismiss() {
 
 async function seedSessionLists() {
   if (state.mode !== "hermes" || !inTauri()) return;
+  const attempt = seedSessionLists.attempt || 0;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("seed_session_lists");
+    seedSessionLists.attempt = 0;
   } catch {
-    /* The next list change still reconciles. */
+    const wait = pinFetchDelayMs(attempt);
+    seedSessionLists.attempt = attempt + 1;
+    console.warn(`seed_session_lists failed; retry in ${wait}ms`);
+    window.clearTimeout(seedSessionLists.timer);
+    seedSessionLists.timer = window.setTimeout(() => {
+      void seedSessionLists();
+    }, wait);
   }
 }
 
@@ -12992,10 +13175,19 @@ function paintSuborbTethers() {
   svg.removeAttribute("height");
   svg.removeAttribute("viewBox");
   const layer = tetherLayerBox(svg);
+  const parentR = ORB / 2;
+  const childR = suborbSizePx(ORB) / 2;
   const parts = [];
   for (const { shell, sub } of shells) {
-    const line = suborbTether(parentOrbBox(sub.profile), suborbDiscCentre(shell), layer);
-    if (line) parts.push(line);
+    const line = suborbTether(parentOrbBox(sub.profile), suborbDiscCentre(shell), layer, null, {
+      parentRadius: parentR,
+      childRadius: childR,
+    });
+    if (!line) continue;
+    const rgb = profileBotRgb(sub.profile);
+    const dragging = shell.dataset.orbDragging === "1";
+    const length = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
+    parts.push({ id: shell.dataset.botId || "", line, rgb, style: tetherStyle({ length, dragging }) });
   }
   if (!parts.length) {
     svg.remove();
@@ -13008,22 +13200,72 @@ function paintSuborbTethers() {
     layer.h.toFixed(1),
     layer.viewW.toFixed(1),
     layer.viewH.toFixed(1),
-    parts.map((line) => `${line.x1.toFixed(1)},${line.y1.toFixed(1)},${line.x2.toFixed(1)},${line.y2.toFixed(1)}`).join(";"),
+    parts.map((part) => `${part.id}:${part.rgb}:${part.style.dash}:${part.style.opacity}:${part.style.fade}:${part.line.x1.toFixed(1)},${part.line.y1.toFixed(1)},${part.line.x2.toFixed(1)},${part.line.y2.toFixed(1)}`).join(";"),
   ].join("|");
   if (svg.dataset.sig === sig) return;
   svg.dataset.sig = sig;
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
-  for (const line of parts) {
-    for (const kind of ["suborb-tether-halo", "suborb-tether-core"]) {
-      const el = document.createElementNS(ns, "line");
-      el.setAttribute("class", kind);
-      el.setAttribute("x1", String(line.x1));
-      el.setAttribute("y1", String(line.y1));
-      el.setAttribute("x2", String(line.x2));
-      el.setAttribute("y2", String(line.y2));
+  let defs = svg.querySelector("defs");
+  if (!defs) {
+    defs = document.createElementNS(ns, "defs");
+    svg.insertBefore(defs, svg.firstChild);
+  }
+  const keep = new Set();
+  parts.forEach((part, index) => {
+    keep.add(part.id);
+    let el = [...svg.querySelectorAll("line")].find((node) => node.dataset.suborb === part.id);
+    if (!el) {
+      el = document.createElementNS(ns, "line");
+      el.dataset.suborb = part.id;
       svg.appendChild(el);
     }
-  }
+    el.setAttribute("x1", String(part.line.x1));
+    el.setAttribute("y1", String(part.line.y1));
+    el.setAttribute("x2", String(part.line.x2));
+    el.setAttribute("y2", String(part.line.y2));
+    if (part.style.dash) el.setAttribute("stroke-dasharray", part.style.dash);
+    else el.removeAttribute("stroke-dasharray");
+    el.setAttribute("stroke-opacity", String(part.style.opacity));
+    if (part.style.fade) {
+      const gradId = `tether-fade-${index}`;
+      let grad = defs.querySelector(`#${gradId}`);
+      if (!grad) {
+        grad = document.createElementNS(ns, "linearGradient");
+        grad.id = gradId;
+        defs.appendChild(grad);
+      }
+      grad.setAttribute("gradientUnits", "userSpaceOnUse");
+      grad.setAttribute("x1", String(part.line.x1));
+      grad.setAttribute("y1", String(part.line.y1));
+      grad.setAttribute("x2", String(part.line.x2));
+      grad.setAttribute("y2", String(part.line.y2));
+      const stops = [
+        ["0", part.style.end],
+        ["0.5", part.style.mid],
+        ["1", part.style.end],
+      ];
+      grad.replaceChildren();
+      for (const [offset, opacity] of stops) {
+        const stop = document.createElementNS(ns, "stop");
+        stop.setAttribute("offset", offset);
+        stop.setAttribute("stop-color", `rgb(${part.rgb})`);
+        stop.setAttribute("stop-opacity", String(opacity));
+        grad.appendChild(stop);
+      }
+      el.setAttribute("stroke", `url(#${gradId})`);
+    } else {
+      el.setAttribute("stroke", `rgb(${part.rgb})`);
+    }
+  });
+  svg.querySelectorAll("line").forEach((node) => {
+    if (!keep.has(node.dataset.suborb || "")) node.remove();
+  });
+}
+
+function profileBotRgb(profile) {
+  const node = shellFor(profile)?.querySelector(".morph-orb") || shellFor(profile);
+  const raw = node?.style?.getPropertyValue?.("--bot-rgb") || "";
+  const text = String(raw || "").trim();
+  return text || "0, 0, 242";
 }
 
 /** Round 2: the parent orb keeps the only halo, cut to the rim the discs rest on. */
@@ -13180,6 +13422,7 @@ function ensureSuborbShell(bot, row) {
   btn.className = "bot-btn morph-orb suborb-disc";
   btn.dataset.botId = id;
   fillOrb(btn);
+  ensureSuborbFace(btn);
   shell.append(stroke, fill, btn, previewNode());
   const tpl = document.getElementById("bot-panel-template");
   if (tpl) {
@@ -13716,6 +13959,7 @@ async function createTaskSession(profile, rawTitle, fromId = "") {
     const extra = state.suborbExtra.get(profile) || [];
     extra.push(row);
     state.suborbExtra.set(profile, extra);
+    rememberCreatedLocal(profile, row);
     suborbModel(profile).forced[sessionId] = true;
     noteSuborbList(profile, threadFor(profile).sessions || [], threadFor(profile).sessionId || "");
     openSuborbPanel(suborbPanelId(profile, sessionId));

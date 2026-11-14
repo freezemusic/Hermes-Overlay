@@ -148,6 +148,13 @@ struct AppState {
     interaction: Arc<interaction::InteractionHub>,
     /// All chat goes through this (R-CL-01).
     client: Arc<client::HermesClient>,
+    /// Per-profile attempt count for `seed_session_lists` retries (R-SO-11).
+    seed_attempts: Arc<Mutex<HashMap<String, SeedAttempt>>>,
+}
+
+struct SeedAttempt {
+    n: u32,
+    pending: bool,
 }
 
 /// The chat client, pointed at the dashboard address in `cfg`.
@@ -258,6 +265,8 @@ struct PublicSettings {
     orb_positions: std::collections::BTreeMap<String, config::OrbPosition>,
     /// R-SO-09 sub-orb panel compose modes, `[session, mode]` pairs per profile.
     suborb_modes: std::collections::BTreeMap<String, Vec<(String, String)>>,
+    /// R-SO-11 overlay-created session rows. Empty when none.
+    suborb_created: std::collections::BTreeMap<String, Vec<config::CreatedSuborb>>,
     /// R-LK-01 / R-LK-02. "" is the standard size / zh-HK.
     text_size: String,
     ui_language: String,
@@ -831,6 +840,25 @@ fn persist_pin(
     let _ = config::save(&path, &cfg);
 }
 
+fn choice_of(session: &hermes::SessionSummary) -> SessionChoice {
+    let title = session.title.trim();
+    SessionChoice {
+        id: session.id.clone(),
+        title: if title.is_empty() { session.id.clone() } else { title.to_string() },
+        last_active: session.last_active,
+        hidden: session.hidden.unwrap_or(false),
+        preview: session.preview.clone(),
+        source: session.source.clone(),
+        archived: session.archived,
+        ended: session.ended,
+        end_reason: session.end_reason.clone(),
+        kept_title: String::new(),
+        message_count: session.message_count,
+        started_at: session.started_at,
+        busy: session.busy,
+    }
+}
+
 fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<SessionChoice> {
     let mut rows: Vec<SessionChoice> = hermes::session_menu_order(sessions)
         .into_iter()
@@ -1118,6 +1146,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         panel_sizes: cfg.panel_sizes.clone(),
         orb_positions: cfg.orb_positions.clone(),
         suborb_modes: cfg.suborb_modes.clone(),
+        suborb_created: cfg.suborb_created.clone(),
         text_size: config::normalize_text_size(&cfg.text_size),
         ui_language: config::normalize_ui_language(&cfg.ui_language),
         listed_profiles: None,
@@ -1465,6 +1494,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         panel_sizes: previous.panel_sizes.clone(),
         orb_positions: previous.orb_positions.clone(),
         suborb_modes: previous.suborb_modes.clone(),
+        suborb_created: previous.suborb_created.clone(),
         text_size: config::normalize_text_size(
             input.text_size.as_deref().unwrap_or(&previous.text_size),
         ),
@@ -3576,6 +3606,24 @@ async fn create_task_session(
             HermesError::Http { status: 400, .. } => "開唔到新對話。".into(),
             _ => hermes::explain(&err),
         })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0);
+    if let Ok(path) = config_path(&app) {
+        let _guard = state.config_write.lock().unwrap_or_else(|err| err.into_inner());
+        let row = config::CreatedSuborb {
+            id: session_id.clone(),
+            title: title.clone(),
+            source: "api_server".into(),
+            started_at: now,
+            last_active: now,
+            message_count: Some(0),
+        };
+        if let Err(_err) = config::store_suborb_created(&path, &profile, &row) {
+            eprintln!("suborb_created: profile {profile} 寫入失敗");
+        }
+    }
     Ok(CreatedSession { session_id, title })
 }
 
@@ -3887,8 +3935,140 @@ async fn set_suborb_pin(
     .map_err(|err| format!("讀唔到設定：{err}"))?
 }
 
+fn hermes_error_kind(err: &HermesError) -> String {
+    match err {
+        HermesError::Http { status, .. } => format!("http {status}"),
+        HermesError::Connect(_) => "connect".into(),
+        HermesError::Timeout(_) => "timeout".into(),
+        HermesError::Transport(_) => "transport".into(),
+        HermesError::Protocol(_) => "protocol".into(),
+        HermesError::Cancelled => "cancelled".into(),
+    }
+}
+
+fn take_seed_retry(state: &AppState, profile: &str) -> Option<u64> {
+    let mut map = state.seed_attempts.lock().unwrap_or_else(|err| err.into_inner());
+    let row = map.entry(profile.to_string()).or_insert(SeedAttempt { n: 0, pending: false });
+    if row.pending {
+        return None;
+    }
+    let wait = client::seed_backoff_ms(row.n);
+    row.n = row.n.saturating_add(1);
+    row.pending = true;
+    Some(wait)
+}
+
+fn finish_seed_wait(state: &AppState, profile: &str) {
+    let mut map = state.seed_attempts.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(row) = map.get_mut(profile) {
+        row.pending = false;
+    }
+}
+
+fn clear_seed_attempt(state: &AppState, profile: &str) {
+    let mut map = state.seed_attempts.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(row) = map.get_mut(profile) {
+        row.n = 0;
+        row.pending = false;
+    }
+}
+
+/// Pins missing from the recent list are fetched by id. 404 and archived
+/// rows are returned so the page can unpin. Any other error keeps the pin.
+async fn attach_pinned_sessions(
+    chat: &client::HermesClient,
+    profile: &str,
+    sessions: &mut Vec<hermes::SessionSummary>,
+    pins: &[String],
+) -> Vec<String> {
+    let mut gone = Vec::new();
+    for id in pins {
+        let id = id.trim();
+        if id.is_empty() || sessions.iter().any(|row| row.id == id) {
+            continue;
+        }
+        match chat.get_session(profile, id).await {
+            Ok(client::SessionGet::Found(session)) => {
+                if session.archived {
+                    gone.push(id.to_string());
+                }
+                sessions.push(session);
+            }
+            Ok(client::SessionGet::Missing) => gone.push(id.to_string()),
+            Err(err) => {
+                let kind = hermes_error_kind(&err);
+                eprintln!("seed_session_lists: profile {profile} session {id} 讀取失敗（{kind}），保留釘選");
+            }
+        }
+    }
+    gone
+}
+
+async fn seed_profile(
+    app: &AppHandle,
+    state: &AppState,
+    profile: &str,
+    pins: &[String],
+) -> Result<(), HermesError> {
+    let mut sessions = state.client.list_sessions_for_bot_chat(profile).await?;
+    let gone = attach_pinned_sessions(&state.client, profile, &mut sessions, pins).await;
+    let pin = load_pin(app, state, profile);
+    let resolved = hermes::session_for_startup(&sessions, &pin.id, pin.explicit, pin.anchor)
+        .map(|session| session.id);
+    let mut rows = session_choices(&sessions, resolved.as_deref().unwrap_or(""));
+    for session in &sessions {
+        let pinned = pins.iter().any(|id| id == &session.id);
+        if pinned && !session.archived && !rows.iter().any(|row| row.id == session.id) {
+            rows.push(choice_of(session));
+        }
+    }
+    emit(
+        app,
+        serde_json::json!({
+            "type": "sessions",
+            "profile": profile,
+            "session_id": resolved.clone().unwrap_or_default(),
+            "sessions": rows,
+            "gone_pins": gone,
+        }),
+    );
+    Ok(())
+}
+
+async fn seed_profile_by_name(app: &AppHandle, state: &AppState, profile: &str) -> Result<(), HermesError> {
+    let cfg = load_config(app).map_err(|_| HermesError::Protocol("讀唔到設定".into()))?;
+    let Some(bot) = cfg.bots.iter().find(|bot| bot.profile == profile && bot.enabled) else {
+        return Ok(());
+    };
+    let pins = cfg.suborb_pins.get(profile).cloned().unwrap_or_default();
+    seed_profile(app, state, &bot.profile, &pins).await
+}
+
+fn note_seed_list_failure(app: &AppHandle, state: &AppState, profile: &str, err: &HermesError) {
+    let kind = hermes_error_kind(err);
+    let Some(wait) = take_seed_retry(state, profile) else {
+        eprintln!("seed_session_lists: profile {profile} 清單失敗（{kind}），再試已排定");
+        return;
+    };
+    eprintln!("seed_session_lists: profile {profile} 清單失敗（{kind}），{wait}ms 後再試");
+    let app = app.clone();
+    let profile = profile.to_string();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        let Some(state) = app.try_state::<AppState>() else {
+            return;
+        };
+        finish_seed_wait(&state, &profile);
+        match seed_profile_by_name(&app, &state, &profile).await {
+            Ok(()) => clear_seed_attempt(&state, &profile),
+            Err(err) => note_seed_list_failure(&app, &state, &profile, &err),
+        }
+    });
+}
+
 /// Re-send each profile's session list once the page is ready.
 /// Clears the watcher fingerprint so the next poll also emits, without downloading transcripts.
+/// A failed list is logged and retried with backoff. It does not emit an empty list, so pins stay.
 #[tauri::command]
 async fn seed_session_lists(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let cfg = load_config(&app)?;
@@ -3902,24 +4082,67 @@ async fn seed_session_lists(app: AppHandle, state: State<'_, AppState>) -> Resul
         }
     }
     for bot in cfg.bots.iter().filter(|bot| bot.enabled) {
-        let root = bot.profile.clone();
-        let Ok(sessions) = state.client.list_sessions_for_bot_chat(&root).await else {
-            continue;
-        };
-        let pin = load_pin(&app, &state, &bot.profile);
-        let resolved = hermes::session_for_startup(&sessions, &pin.id, pin.explicit, pin.anchor)
-            .map(|session| session.id);
-        emit(
-            &app,
-            serde_json::json!({
-                "type": "sessions",
-                "profile": bot.profile,
-                "session_id": resolved.clone().unwrap_or_default(),
-                "sessions": session_choices(&sessions, resolved.as_deref().unwrap_or("")),
-            }),
-        );
+        let pins = cfg.suborb_pins.get(&bot.profile).cloned().unwrap_or_default();
+        match seed_profile(&app, &state, &bot.profile, &pins).await {
+            Ok(()) => clear_seed_attempt(&state, &bot.profile),
+            Err(err) => note_seed_list_failure(&app, &state, &bot.profile, &err),
+        }
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct PinnedSessionFetch {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session: Option<SessionChoice>,
+}
+
+/// `GET /api/sessions/{id}` for one pin the recent list omitted (R-SO-11).
+/// `gone` is HTTP 404. `archived` is a row the server marked archived.
+/// Any other failure is returned so the page keeps the pin and retries.
+#[tauri::command]
+async fn fetch_pinned_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    session_id: String,
+) -> Result<PinnedSessionFetch, String> {
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("未揀對話".into());
+    }
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?.clone();
+    let chat = chat_client(&state, &cfg);
+    match chat.get_session(&bot.profile, &session_id).await {
+        Ok(client::SessionGet::Missing) => Ok(PinnedSessionFetch { status: "gone".into(), session: None }),
+        Ok(client::SessionGet::Found(session)) => {
+            let archived = session.archived;
+            Ok(PinnedSessionFetch {
+                status: if archived { "archived".into() } else { "found".into() },
+                session: Some(choice_of(&session)),
+            })
+        }
+        Err(err) => Err(explain(&err)),
+    }
+}
+
+/// Drop one overlay-created row. Does not rewrite `suborb_pins`.
+#[tauri::command]
+async fn forget_suborb_created(
+    app: AppHandle,
+    profile: String,
+    session_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = config_path(&app)?;
+        config::drop_suborb_created(&path, profile.trim(), session_id.trim())?;
+        Ok(())
+    })
+    .await
+    .map_err(|err| format!("讀唔到設定：{err}"))?
 }
 
 /// Orb id latched when the hit check saw Ctrl+press. The page reads this
@@ -4081,6 +4304,7 @@ pub fn run() {
             config_write: Arc::new(Mutex::new(())),
             command_cache: Mutex::new(HashMap::new()),
             interaction: Arc::new(interaction::InteractionHub::new()),
+            seed_attempts: Arc::new(Mutex::new(HashMap::new())),
         }})
         .setup(|app| {
             if debug_log_enabled() {
@@ -4184,6 +4408,8 @@ pub fn run() {
             stop_suborb,
             set_suborb_pin,
             seed_session_lists,
+            fetch_pinned_session,
+            forget_suborb_created,
             get_kanban_board,
             get_kanban_boards,
             get_kanban_task,

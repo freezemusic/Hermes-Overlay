@@ -132,15 +132,99 @@ export function tetherLayerPoint(point, layer = null, screen = null) {
   return { x: (x - originX) * scaleX, y: (y - originY) * scaleY };
 }
 
-/** Hairline from a profile orb centre to a sub-orb centre. No hit of its own. */
-export function suborbTether(parent, child, layer = null, screen = null) {
+/** Parent disc radius plus this gap: the tether starts outside the parent disc. */
+export const TETHER_PARENT_GAP = 2;
+/** Sub-orb radius plus this gap: the tether stops outside the sub-orb circle. */
+export const TETHER_CHILD_GAP = 1;
+export const TETHER_SOLID_OPACITY = 0.6;
+export const TETHER_DRAG_OPACITY = 0.8;
+export const TETHER_DRAG_DASH = "4 3";
+/** Longer than this, the middle of a resting tether fades. */
+export const TETHER_LONG_PX = 160;
+export const TETHER_LONG_MID_OPACITY = 0.35;
+/** Edge-to-edge air kept after a sub-orb drop. */
+export const SUBORB_DROP_GAP_PX = 8;
+
+/**
+ * Shorten a centre-to-centre segment so it starts `parentRadius + parentGap`
+ * out from the parent and stops `childRadius + childGap` short of the child.
+ * Gaps are in the same units as the points (CSS px after the layer map).
+ */
+export function insetTetherEnds(parent, child, {
+  parentRadius = 22,
+  childRadius = 9.9,
+  parentGap = TETHER_PARENT_GAP,
+  childGap = TETHER_CHILD_GAP,
+} = {}) {
+  const x1 = Number(parent?.x);
+  const y1 = Number(parent?.y);
+  const x2 = Number(child?.x);
+  const y2 = Number(child?.y);
+  if (![x1, y1, x2, y2].every(Number.isFinite)) return null;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  if (!(len > 0)) return { x1, y1, x2: x1, y2: y1 };
+  const ux = dx / len;
+  const uy = dy / len;
+  const start = Math.min(Math.max(0, parentRadius + parentGap), len / 2);
+  const end = Math.min(Math.max(0, childRadius + childGap), len / 2);
+  return {
+    x1: x1 + ux * start,
+    y1: y1 + uy * start,
+    x2: x2 - ux * end,
+    y2: y2 - uy * end,
+  };
+}
+
+/** Resting, dragging, or long-line paint. Opacity is the stroke's own. */
+export function tetherStyle({ length = 0, dragging = false } = {}) {
+  if (dragging) return { dash: TETHER_DRAG_DASH, opacity: TETHER_DRAG_OPACITY, fade: false };
+  if (Number(length) > TETHER_LONG_PX) {
+    return { dash: "", opacity: 1, fade: true, end: TETHER_SOLID_OPACITY, mid: TETHER_LONG_MID_OPACITY };
+  }
+  return { dash: "", opacity: TETHER_SOLID_OPACITY, fade: false };
+}
+
+/**
+ * Push only the dropped centre until its disc is `gap` px clear of every
+ * other disc (edge to edge). Other centres stay put. Already-clear drops
+ * are returned unchanged.
+ */
+export function separateSuborbDrop(point, others, { radius = 9.9, gap = SUBORB_DROP_GAP_PX } = {}) {
+  let x = Number(point?.x);
+  let y = Number(point?.y);
+  if (![x, y].every(Number.isFinite)) return { x: 0, y: 0 };
+  const min = Math.max(0, radius) * 2 + Math.max(0, gap);
+  const list = (others || []).filter((item) => Number.isFinite(Number(item?.x)) && Number.isFinite(Number(item?.y)));
+  for (let pass = 0; pass < 8; pass += 1) {
+    let moved = false;
+    for (const other of list) {
+      const dx = x - Number(other.x);
+      const dy = y - Number(other.y);
+      const dist = Math.hypot(dx, dy);
+      if (dist >= min - 1e-6) continue;
+      const push = min - dist;
+      const ux = dist < 1e-6 ? 1 : dx / dist;
+      const uy = dist < 1e-6 ? 0 : dy / dist;
+      x += ux * push;
+      y += uy * push;
+      moved = true;
+    }
+    if (!moved) break;
+  }
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+/** One tether from outside the parent disc to outside the sub-orb. No hit of its own. */
+export function suborbTether(parent, child, layer = null, screen = null, radii = null) {
   const map = layer || screen
     ? (point) => tetherLayerPoint(point, layer, screen)
     : (point) => ({ x: Number(point?.x), y: Number(point?.y) });
   const a = map(parent);
   const b = map(child);
   if (![a.x, a.y, b.x, b.y].every(Number.isFinite)) return null;
-  return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+  return insetTetherEnds(a, b, radii || {});
 }
 
 /** `orb_positions` from settings: only valid ids with whole, in-range coordinates. */

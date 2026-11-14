@@ -14,9 +14,12 @@ import {
   planOrbDodges,
   pointCovered,
   boxCentre,
+  insetTetherEnds,
+  separateSuborbDrop,
   suborbRestCentre,
   suborbTether,
   tetherLayerPoint,
+  tetherStyle,
   validOrbId,
   validSuborbOrbId,
 } from "./orbdrag.js";
@@ -274,11 +277,23 @@ test("R-OB-08 a dropped sub-orb is kept by profile+session and a reset returns i
 test("R-OB-08 tether ends follow the parent and the sub-orb and never take a hit", () => {
   const parent = { x: 200, y: 300 };
   const child = { x: 260, y: 340 };
-  assert.deepEqual(suborbTether(parent, child), { x1: 200, y1: 300, x2: 260, y2: 340 });
-  assert.deepEqual(suborbTether({ x: 210, y: 280 }, child), { x1: 210, y1: 280, x2: 260, y2: 340 });
-  assert.deepEqual(suborbTether(parent, { x: 10, y: 20 }), { x1: 200, y1: 300, x2: 10, y2: 20 });
+  assert.deepEqual(suborbTether(parent, child), insetTetherEnds(parent, child));
+  assert.deepEqual(suborbTether({ x: 210, y: 280 }, child), insetTetherEnds({ x: 210, y: 280 }, child));
+  assert.deepEqual(suborbTether(parent, { x: 10, y: 20 }), insetTetherEnds(parent, { x: 10, y: 20 }));
   assert.equal(suborbTether(null, child), null);
   assert.equal(suborbTether(parent, null), null);
+  assert.deepEqual(insetTetherEnds({ x: 0, y: 0 }, { x: 100, y: 0 }, { parentRadius: 22, childRadius: 10 }), {
+    x1: 24,
+    y1: 0,
+    x2: 89,
+    y2: 0,
+  });
+  assert.deepEqual(tetherStyle({ length: 40 }), { dash: "", opacity: 0.6, fade: false });
+  assert.deepEqual(tetherStyle({ length: 200 }), { dash: "", opacity: 1, fade: true, end: 0.6, mid: 0.35 });
+  assert.deepEqual(tetherStyle({ length: 200, dragging: true }), { dash: "4 3", opacity: 0.8, fade: false });
+  assert.deepEqual(separateSuborbDrop({ x: 0, y: 0 }, [{ x: 20, y: 0 }], { radius: 10, gap: 8 }), { x: -8, y: 0 });
+  assert.deepEqual(separateSuborbDrop({ x: 0, y: 0 }, [{ x: 40, y: 0 }], { radius: 10, gap: 8 }), { x: 0, y: 0 });
+  assert.equal(separateSuborbDrop({ x: 0, y: 0 }, [{ x: 0, y: 0 }], { radius: 10, gap: 8 }).x, 28);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   const paint = main.slice(main.indexOf("function paintSuborbTethers()"), main.indexOf("function paintFanParent("));
@@ -297,8 +312,12 @@ test("R-OB-08 tether ends follow the parent and the sub-orb and never take a hit
   assert.match(css, /\.suborb-tether \{[^}]*height:\s*100%;/);
   assert.match(css, /\.suborb-tether \{[^}]*display:\s*block;/);
   assert.match(css, /\.suborb-tether \{[^}]*pointer-events:\s*none;/);
-  assert.match(css, /\.suborb-tether-core \{[^}]*stroke-width:\s*1;/);
-  assert.match(css, /\.suborb-tether-halo \{[^}]*rgba\(248,\s*248,\s*252/);
+  assert.match(css, /\.suborb-tether line \{[^}]*stroke-width:\s*1;/);
+  assert.match(css, /\.suborb-tether \{[^}]*z-index:\s*0;/);
+  assert.doesNotMatch(css, /\.suborb-tether-halo/);
+  assert.doesNotMatch(paint, /suborb-tether-halo|suborb-tether-core/);
+  assert.match(paint, /tetherStyle/);
+  assert.match(main, /separateSuborbDrop/);
   const hits = main.slice(main.indexOf("function collectHits()"), main.indexOf("function orbShellAtPoint"));
   assert.doesNotMatch(hits, /suborb-tether/);
 });
@@ -316,12 +335,10 @@ test("R-OB-08 tether ends are disc centres in the SVG layer, at any DPI and wind
   // SVG puts the stroke 27px left and 52px above the disc.
   const raised = { x: -27, y: -52, w: 1280, h: 800, viewW: 1280, viewH: 800 };
   assert.deepEqual(tetherLayerPoint(child, raised), { x: 387, y: 292 });
-  assert.deepEqual(suborbTether(parent, child, raised), {
-    x1: 427,
-    y1: 332,
-    x2: 387,
-    y2: 292,
-  });
+  assert.deepEqual(suborbTether(parent, child, raised), insetTetherEnds(
+    tetherLayerPoint(parent, raised),
+    tetherLayerPoint(child, raised),
+  ));
   const dropped = { x: 27, y: 52, w: 1280, h: 800, viewW: 1280, viewH: 800 };
   assert.deepEqual(tetherLayerPoint({ x: 400, y: 300 }, dropped), { x: 373, y: 248 });
   // 100%, 125%, 150%: rendered box is physical px, user space is CSS px.
@@ -332,15 +349,14 @@ test("R-OB-08 tether ends are disc centres in the SVG layer, at any DPI and wind
     const mapped = tetherLayerPoint(physical, layer);
     assert.ok(Math.abs(mapped.x - css.x) < 1e-9);
     assert.ok(Math.abs(mapped.y - css.y) < 1e-9);
+    const mappedParent = tetherLayerPoint({ x: 200 * dpr, y: 100 * dpr }, layer);
+    const mappedChild = tetherLayerPoint({ x: 80 * dpr, y: 40 * dpr }, layer);
     const line = suborbTether(
       { x: 200 * dpr, y: 100 * dpr },
       { x: 80 * dpr, y: 40 * dpr },
       layer,
     );
-    assert.ok(Math.abs(line.x1 - 200) < 1e-9);
-    assert.ok(Math.abs(line.y1 - 100) < 1e-9);
-    assert.ok(Math.abs(line.x2 - 80) < 1e-9);
-    assert.ok(Math.abs(line.y2 - 40) < 1e-9);
+    assert.deepEqual(line, insetTetherEnds(mappedParent, mappedChild));
   }
   // Window not at (0, 0), 100% DPI. Point and layer are both screen CSS px.
   const monitor = { x: 1920, y: 0, w: 1280, h: 800, viewW: 1280, viewH: 800 };

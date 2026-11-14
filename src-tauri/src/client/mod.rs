@@ -36,6 +36,38 @@ const REST_WAIT: Duration = Duration::from_secs(20);
 /// REST `GET /api/sessions` caps `limit` at 100 on 0.22.5.
 const LIST_LIMIT: &str = "100";
 
+/// One `GET /api/sessions/{id}`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionGet {
+    Found(SessionSummary),
+    /// The server said this id does not exist (HTTP 404).
+    Missing,
+}
+
+/// What to do with a pin after a by-id fetch. A transport or other error
+/// retries; only a definitive miss or an archived row unpins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinRestore {
+    Show,
+    Unpin,
+    Retry,
+}
+
+pub fn pin_restore_from(result: &Result<SessionGet, HermesError>) -> PinRestore {
+    match result {
+        Ok(SessionGet::Missing) => PinRestore::Unpin,
+        Ok(SessionGet::Found(session)) if session.archived => PinRestore::Unpin,
+        Ok(SessionGet::Found(_)) => PinRestore::Show,
+        Err(_) => PinRestore::Retry,
+    }
+}
+
+/// List-seed retry. 1s, 2s, 4s, 8s, 16s, then 30s.
+pub fn seed_backoff_ms(attempt: u32) -> u64 {
+    let shift = u32::min(attempt, 5);
+    1000u64.saturating_mul(1u64 << shift).min(30_000)
+}
+
 /// Another device's turn on a session the overlay shows (R-CL-03).
 #[derive(Debug, Clone, PartialEq)]
 pub enum RemoteTurn {
@@ -295,6 +327,25 @@ impl HermesClient {
                 Ok(hermes::merge_sessions(sessions, rows))
             }
             Err(_) => Ok(sessions),
+        }
+    }
+
+    /// `GET /api/sessions/{id}` for a pin the recent list did not include.
+    /// HTTP 404 is [`SessionGet::Missing`]. Any other failure stays an error
+    /// so the caller can keep the pin and retry. The body is not logged here.
+    pub async fn get_session(&self, profile: &str, session_id: &str) -> Result<SessionGet, HermesError> {
+        let id = session_id.trim();
+        if id.is_empty() {
+            return Err(HermesError::Protocol("未有 session".into()));
+        }
+        let path = format!("{}{}", rest::session(id), query(profile, &[]));
+        match self.rest(Method::GET, &path, None, REST_WAIT).await {
+            Ok(value) => match hermes::parse_session_value(&value) {
+                Some(session) => Ok(SessionGet::Found(session)),
+                None => Err(HermesError::Protocol("session 回應冇 id".into())),
+            },
+            Err(HermesError::Http { status: 404, .. }) => Ok(SessionGet::Missing),
+            Err(err) => Err(err),
         }
     }
 
@@ -966,6 +1017,45 @@ pub fn parse_slash_items(value: &Value) -> Vec<OverlayCommand> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_session(id: &str, archived: bool) -> SessionSummary {
+        SessionSummary {
+            id: id.into(),
+            title: id.into(),
+            hidden: None,
+            last_active: 2.0,
+            preview: String::new(),
+            source: "api_server".into(),
+            started_at: 1.0,
+            message_count: Some(3),
+            delivery: false,
+            parent_session_id: String::new(),
+            archived,
+            ended: false,
+            end_reason: String::new(),
+            session_key: String::new(),
+            busy: false,
+        }
+    }
+
+    #[test]
+    fn a_pin_fetch_unpins_only_on_404_or_archived() {
+        let live = Ok(SessionGet::Found(sample_session("20261110_221455_d3abe7", false)));
+        assert_eq!(pin_restore_from(&live), PinRestore::Show);
+        let archived = Ok(SessionGet::Found(sample_session("api_1794591121_502fdcfc", true)));
+        assert_eq!(pin_restore_from(&archived), PinRestore::Unpin);
+        let missing: Result<SessionGet, HermesError> = Ok(SessionGet::Missing);
+        assert_eq!(pin_restore_from(&missing), PinRestore::Unpin);
+        let offline: Result<SessionGet, HermesError> = Err(HermesError::Connect("down".into()));
+        assert_eq!(pin_restore_from(&offline), PinRestore::Retry);
+        let http: Result<SessionGet, HermesError> = Err(HermesError::Http { status: 500, body: "nope".into() });
+        assert_eq!(pin_restore_from(&http), PinRestore::Retry);
+        assert_eq!(seed_backoff_ms(0), 1_000);
+        assert_eq!(seed_backoff_ms(1), 2_000);
+        assert_eq!(seed_backoff_ms(4), 16_000);
+        assert_eq!(seed_backoff_ms(5), 30_000);
+        assert_eq!(seed_backoff_ms(9), 30_000);
+    }
 
     #[test]
     fn rpc_session_not_found_maps_to_404() {

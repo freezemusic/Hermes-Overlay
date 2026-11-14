@@ -12,6 +12,8 @@ import {
   SUBORB_MIN_OPACITY,
   defaultTaskTitle,
   eligibleSuborb,
+  normalizeCreatedRow,
+  pinFetchDelayMs,
   emptySuborbModel,
   isRenewArchiveTitle,
   normalizeTaskTitle,
@@ -461,8 +463,20 @@ test("a new disc stays visible and an archived row drops its pin", () => {
     pinned: ["gone"],
     now: 5,
   });
-  assert.deepEqual(dropped.unpin, ["gone"]);
-  assert.equal(dropped.shown.some((item) => item.id === "gone"), false);
+  // Leaving the recent list is not a definitive delete (R-SO-11).
+  assert.deepEqual(dropped.unpin, []);
+  assert.equal(dropped.shown.some((item) => item.id === "gone"), true);
+  const unpinned = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot, task("temp")],
+    listedIds: ["bot-chat", "temp"],
+    now: 4,
+  });
+  const tempGone = reconcileSuborbs(unpinned.model, {
+    sessions: [bot],
+    listedIds: ["bot-chat"],
+    now: 5,
+  });
+  assert.equal(tempGone.shown.some((item) => item.id === "temp"), false);
   const pending = reconcileSuborbs(dropped.model, {
     sessions: [bot, task("brand")],
     listedIds: ["bot-chat"],
@@ -472,6 +486,164 @@ test("a new disc stays visible and an archived row drops its pin", () => {
   assert.equal(pending.unpin.includes("brand"), false);
   assert.equal(pending.shown.some((item) => item.id === "brand"), true);
   assert.equal(capSuborbs(born.shown, 5, ["fresh"]).shown.some((item) => item.id === "fresh"), true);
+});
+
+test("pinned sub-orbs outside the recent list survive a restart", () => {
+  const recent = Array.from({ length: 100 }, (_, i) => task(`recent_${i}`, { started_at: 1000 + i, message_count: 1 }));
+  const old = task("20261110_221455_d3abe7", { title: "舊任務", message_count: 4, started_at: 10 });
+  const api = task("api_1794591121_502fdcfc", { title: "API 任務", message_count: 2, started_at: 20 });
+  const listedIds = ["bot-chat", ...recent.map((row) => row.id)];
+  const cold = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [api],
+    listedIds: [],
+    pinned: [api.id],
+    now: 1,
+  });
+  assert.equal(cold.shown.some((row) => row.id === api.id), true);
+  assert.deepEqual(cold.unpin, []);
+  assert.equal(cold.model.read[api.id], undefined);
+  const pending = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot, ...recent],
+    mainId: "bot-chat",
+    listedIds,
+    pinned: [old.id, api.id],
+    now: 2,
+  });
+  assert.deepEqual(pending.missing, [old.id, api.id]);
+  assert.deepEqual(pending.unpin, []);
+  const restarted = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [bot, ...recent, old, api],
+    mainId: "bot-chat",
+    listedIds,
+    pinned: [old.id, api.id],
+    now: 50_000,
+  });
+  assert.equal(restarted.shown.some((row) => row.id === old.id), true);
+  assert.equal(restarted.shown.some((row) => row.id === api.id), true);
+  assert.deepEqual(restarted.unpin, []);
+  assert.deepEqual(restarted.missing, []);
+  const oldRow = restarted.shown.find((row) => row.id === old.id);
+  assert.equal(oldRow.channels.badge, "unread");
+  assert.equal(restarted.model.read[old.id], undefined);
+  assert.equal(restarted.model.read[api.id], undefined);
+  const failed = reconcileSuborbs(restarted.model, {
+    sessions: [bot, old, api],
+    listedIds: null,
+    pinned: [old.id, api.id],
+    now: 60_000,
+  });
+  assert.equal(failed.shown.some((row) => row.id === old.id), true);
+  assert.equal(failed.shown.some((row) => row.id === api.id), true);
+  assert.deepEqual(failed.unpin, []);
+  const missing = reconcileSuborbs(failed.model, {
+    sessions: [bot, api],
+    listedIds: ["bot-chat"],
+    pinned: [old.id, api.id],
+    goneIds: [old.id],
+    now: 70_000,
+  });
+  assert.equal(missing.unpin.includes(old.id), true);
+  assert.equal(missing.shown.some((row) => row.id === old.id), false);
+  assert.equal(missing.shown.some((row) => row.id === api.id), true);
+  const archived = reconcileSuborbs(missing.model, {
+    sessions: [bot, task(api.id, { archived: true, message_count: 2, title: "API 任務" })],
+    listedIds: ["bot-chat", api.id],
+    pinned: [api.id],
+    now: 80_000,
+  });
+  assert.equal(archived.unpin.includes(api.id), true);
+  assert.equal(archived.shown.some((row) => row.id === api.id), false);
+  assert.equal(normalizeCreatedRow({ id: "api_1794591121_502fdcfc", title: "API 任務", source: "api_server", message_count: 2 }).id, api.id);
+  assert.equal(normalizeCreatedRow({ id: "bad id" }), null);
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 8].map(pinFetchDelayMs), [1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const seeded = rust.slice(rust.indexOf("fn hermes_error_kind"), rust.indexOf("fn armed_press"));
+  assert.match(seeded, /list_sessions_for_bot_chat/);
+  assert.match(seeded, /get_session/);
+  assert.match(seeded, /eprintln!/);
+  assert.match(seeded, /seed_backoff_ms/);
+  assert.doesNotMatch(seeded, /let Ok\(sessions\)/);
+  const logs = seeded.split("\n").filter((line) => line.includes("eprintln!"));
+  assert.ok(logs.length >= 3);
+  for (const line of logs) {
+    assert.doesNotMatch(line, /Authorization|Bearer|api_key|\{err\}|access_token|session_cookie/);
+  }
+  const seedJs = main.slice(main.indexOf("async function seedSessionLists"), main.indexOf("function reevalSuborbs"));
+  assert.match(seedJs, /console\.warn/);
+  assert.match(seedJs, /pinFetchDelayMs/);
+  assert.doesNotMatch(seedJs, /The next list change still reconciles/);
+  const created = rust.slice(rust.indexOf("async fn create_task_session"), rust.indexOf("async fn open_suborb"));
+  assert.match(created, /store_suborb_created/);
+  assert.doesNotMatch(created, /store_suborb_pin|persist_pin/);
+  const boot = main.slice(main.indexOf("function useHermes"), main.indexOf("async function connectHermes"));
+  assert.match(boot, /hydrateCreatedSuborbs/);
+  assert.match(boot, /suborb_created/);
+  assert.doesNotMatch(boot, /noteSuborbList\(bot\.id, \[\]/);
+  assert.doesNotMatch(boot, /reset_orb_positions/);
+  const note = main.slice(main.indexOf("function noteSuborbList"), main.indexOf("function armSuborbDismiss"));
+  assert.match(note, /lockBaseline: threadFor\(profile\)\.listReady === true/);
+  const restore = main.slice(main.indexOf("async function restoreMissingPins"), main.indexOf("function noteSuborbList"));
+  assert.match(restore, /fetch_pinned_session/);
+  assert.match(restore, /schedulePinFetch/);
+  assert.doesNotMatch(restore, /model\.read\[/);
+  const tether = main.slice(main.indexOf("function paintSuborbTethers"), main.indexOf("function paintFanParent"));
+  assert.match(tether, /suborbTether/);
+});
+
+test("a restart does not turn the recent idle list into sub-orbs", () => {
+  const recent = Array.from({ length: 100 }, (_, i) => task(`idle_${i}`, {
+    title: i === 0 ? "舊任務" : "f",
+    message_count: 3,
+    last_active: 1000 + i,
+    started_at: i + 1,
+    ended: true,
+  }));
+  const pinned = task("20261110_221455_d3abe7", { title: "M", message_count: 4, started_at: 5, ended: true });
+  const created = task("api_1794591121_502fdcfc", { title: "C", message_count: 2, started_at: 8, ended: true });
+  const preview = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [],
+    pinned: [pinned.id, created.id],
+    listedIds: [],
+    lockBaseline: false,
+    now: 0,
+  });
+  assert.equal(preview.model.seen, false);
+  assert.equal(Object.keys(preview.model.baseline).length, 0);
+  assert.equal(preview.shown.length, 0);
+  const listedIds = ["bot-chat", ...recent.map((row) => row.id)];
+  const restarted = reconcileSuborbs(preview.model, {
+    sessions: [bot, ...recent, pinned, created],
+    mainId: "bot-chat",
+    listedIds,
+    pinned: [pinned.id, created.id],
+    lockBaseline: true,
+    now: 2,
+  });
+  assert.equal(restarted.model.seen, true);
+  assert.deepEqual(restarted.shown.map((row) => row.id).sort(), [created.id, pinned.id].sort());
+  assert.equal(restarted.overflow.length, 0);
+  assert.equal(restarted.shown.some((row) => row.id.startsWith("idle_")), false);
+  const again = reconcileSuborbs(restarted.model, {
+    sessions: [bot, ...recent, pinned, created],
+    mainId: "bot-chat",
+    listedIds,
+    pinned: [pinned.id, created.id],
+    now: 3,
+  });
+  assert.deepEqual(again.shown.map((row) => row.id).sort(), [created.id, pinned.id].sort());
+  const unread = task("fresh_unread", { title: "新訊息", message_count: 2, started_at: 9000 });
+  const later = reconcileSuborbs(again.model, {
+    sessions: [bot, ...recent, pinned, created, unread],
+    mainId: "bot-chat",
+    listedIds: [...listedIds, unread.id],
+    pinned: [pinned.id, created.id],
+    now: 4,
+  });
+  assert.equal(later.shown.some((row) => row.id === unread.id), true);
+  assert.equal(later.shown.find((row) => row.id === unread.id).channels.badge, "unread");
+  assert.equal(later.shown.some((row) => row.id.startsWith("idle_")), false);
+  assert.equal(later.model.read[unread.id], undefined);
 });
 
 test("the sub-orb fade uses the plan curve and a 0.18 floor", () => {

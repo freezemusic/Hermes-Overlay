@@ -101,9 +101,10 @@ test("startup seed shows a pin immediately and the next outside session is a sub
   const reset = hermes.indexOf("state.suborbModels = new Map");
   const seed = hermes.indexOf("seedSessionLists");
   assert.ok(reset >= 0 && seed > reset);
-  const seededFn = rust.slice(rust.indexOf("async fn seed_session_lists"), rust.indexOf("fn armed_press"));
+  const seededFn = rust.slice(rust.indexOf("fn hermes_error_kind"), rust.indexOf("fn armed_press"));
   assert.match(seededFn, /list_sessions_for_bot_chat/);
   assert.match(seededFn, /fingerprint\.clear/);
+  assert.match(seededFn, /get_session/);
   assert.doesNotMatch(seededFn, /fetch_counted_messages|persist_pin|create_session/);
 });
 

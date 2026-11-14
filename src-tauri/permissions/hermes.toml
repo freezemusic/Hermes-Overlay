@@ -139,6 +139,16 @@ description = "Re-emit session lists once the overlay page is ready."
 commands.allow = ["seed_session_lists"]
 
 [[permission]]
+identifier = "allow-fetch-pinned-session"
+description = "Read one pinned session by id when it is missing from the recent list."
+commands.allow = ["fetch_pinned_session"]
+
+[[permission]]
+identifier = "allow-forget-suborb-created"
+description = "Drop one overlay-created session row without rewriting pins."
+commands.allow = ["forget_suborb_created"]
+
+[[permission]]
 identifier = "allow-get-kanban-board"
 description = "Read the kanban board from hermes serve on port 9119."
 commands.allow = ["get_kanban_board"]
