@@ -474,6 +474,9 @@ export function reconcileSuborbs(model, {
   holdIds = [],
   listedIds = null,
   goneIds = [],
+  // False while the server list has not arrived. An empty preview must not
+  // lock the baseline, or the real list is treated as all-new (R-SO-06).
+  lockBaseline = true,
   now = 0,
 } = {}) {
   const next = {
@@ -493,7 +496,7 @@ export function reconcileSuborbs(model, {
     localBusy: { ...(model?.localBusy || {}) },
     serverIdle: { ...(model?.serverIdle || {}) },
   };
-  if (!next.seen) {
+  if (!next.seen && lockBaseline !== false) {
     for (const row of sessions || []) {
       if (!row?.id || next.baseline[row.id]) continue;
       next.baseline[row.id] = stampOf(row);

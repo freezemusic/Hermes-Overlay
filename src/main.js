@@ -8769,11 +8769,6 @@ function useHermes(settings) {
     setBanner("已連接設定。點頭像載入該 Bot 嘅 Bot Chat。", "ok");
   }
   renderBots();
-  for (const bot of state.bots) {
-    const pinned = pinsFor(bot.id).length > 0;
-    const created = (state.suborbExtra.get(bot.id) || []).length > 0;
-    if (pinned || created) noteSuborbList(bot.id, [], "");
-  }
   renderSuborbs();
   void seedSessionLists();
   prefetchBotChats();
@@ -12772,6 +12767,8 @@ function noteSuborbList(profile, sessions, mainId = "", goneIds = []) {
     holdIds: suborbHoldIds(profile),
     listedIds: listed.map((row) => row?.id).filter(Boolean),
     goneIds: Array.isArray(goneIds) ? goneIds : [],
+    // The server list is the baseline. A reconcile before it arrives must not lock one.
+    lockBaseline: threadFor(profile).listReady === true,
     now: Date.now(),
   });
   applySuborbArchive(profile, view);

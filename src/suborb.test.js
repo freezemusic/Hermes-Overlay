@@ -579,13 +579,71 @@ test("pinned sub-orbs outside the recent list survive a restart", () => {
   const boot = main.slice(main.indexOf("function useHermes"), main.indexOf("async function connectHermes"));
   assert.match(boot, /hydrateCreatedSuborbs/);
   assert.match(boot, /suborb_created/);
+  assert.doesNotMatch(boot, /noteSuborbList\(bot\.id, \[\]/);
   assert.doesNotMatch(boot, /reset_orb_positions/);
+  const note = main.slice(main.indexOf("function noteSuborbList"), main.indexOf("function armSuborbDismiss"));
+  assert.match(note, /lockBaseline: threadFor\(profile\)\.listReady === true/);
   const restore = main.slice(main.indexOf("async function restoreMissingPins"), main.indexOf("function noteSuborbList"));
   assert.match(restore, /fetch_pinned_session/);
   assert.match(restore, /schedulePinFetch/);
   assert.doesNotMatch(restore, /model\.read\[/);
   const tether = main.slice(main.indexOf("function paintSuborbTethers"), main.indexOf("function paintFanParent"));
   assert.match(tether, /suborbTether/);
+});
+
+test("a restart does not turn the recent idle list into sub-orbs", () => {
+  const recent = Array.from({ length: 100 }, (_, i) => task(`idle_${i}`, {
+    title: i === 0 ? "舊任務" : "f",
+    message_count: 3,
+    last_active: 1000 + i,
+    started_at: i + 1,
+    ended: true,
+  }));
+  const pinned = task("20261110_221455_d3abe7", { title: "M", message_count: 4, started_at: 5, ended: true });
+  const created = task("api_1794591121_502fdcfc", { title: "C", message_count: 2, started_at: 8, ended: true });
+  const preview = reconcileSuborbs(emptySuborbModel(), {
+    sessions: [],
+    pinned: [pinned.id, created.id],
+    listedIds: [],
+    lockBaseline: false,
+    now: 0,
+  });
+  assert.equal(preview.model.seen, false);
+  assert.equal(Object.keys(preview.model.baseline).length, 0);
+  assert.equal(preview.shown.length, 0);
+  const listedIds = ["bot-chat", ...recent.map((row) => row.id)];
+  const restarted = reconcileSuborbs(preview.model, {
+    sessions: [bot, ...recent, pinned, created],
+    mainId: "bot-chat",
+    listedIds,
+    pinned: [pinned.id, created.id],
+    lockBaseline: true,
+    now: 2,
+  });
+  assert.equal(restarted.model.seen, true);
+  assert.deepEqual(restarted.shown.map((row) => row.id).sort(), [created.id, pinned.id].sort());
+  assert.equal(restarted.overflow.length, 0);
+  assert.equal(restarted.shown.some((row) => row.id.startsWith("idle_")), false);
+  const again = reconcileSuborbs(restarted.model, {
+    sessions: [bot, ...recent, pinned, created],
+    mainId: "bot-chat",
+    listedIds,
+    pinned: [pinned.id, created.id],
+    now: 3,
+  });
+  assert.deepEqual(again.shown.map((row) => row.id).sort(), [created.id, pinned.id].sort());
+  const unread = task("fresh_unread", { title: "新訊息", message_count: 2, started_at: 9000 });
+  const later = reconcileSuborbs(again.model, {
+    sessions: [bot, ...recent, pinned, created, unread],
+    mainId: "bot-chat",
+    listedIds: [...listedIds, unread.id],
+    pinned: [pinned.id, created.id],
+    now: 4,
+  });
+  assert.equal(later.shown.some((row) => row.id === unread.id), true);
+  assert.equal(later.shown.find((row) => row.id === unread.id).channels.badge, "unread");
+  assert.equal(later.shown.some((row) => row.id.startsWith("idle_")), false);
+  assert.equal(later.model.read[unread.id], undefined);
 });
 
 test("the sub-orb fade uses the plan curve and a 0.18 floor", () => {
