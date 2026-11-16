@@ -922,26 +922,37 @@ function Assert-GrowDrag([string]$label, [string]$bot = "field") {
   } else {
     Note-Ok "$label-saved" "panel_sizes.$bot $($saved.w)x$($saved.h)"
   }
+  # The panel box before and after, from the grip and the logged sizes. The
+  # anchored sides stay put. An open plan can flip to the other side when the
+  # grown panel leaves no room for it, so the published union need not widen
+  # by the full drag; it must cover the whole grown panel box.
+  if ($sx -gt 0) { $pl = $handles.xy.x + $handles.xy.w - $size.fw; $nl = $pl } else { $pl = $handles.xy.x; $nl = $pl + $size.fw - $size.tw }
+  if ($sy -gt 0) { $pt = $handles.xy.y + $handles.xy.h - $size.fh; $nt = $pt } else { $pt = $handles.xy.y; $nt = $pt + $size.fh - $size.th }
+  $box = @{ x = $nl; y = $nt; w = $size.tw; h = $size.th }
   $grown = $null
   $deadline = (Get-Date).AddSeconds(5)
   while ((Get-Date) -lt $deadline) {
-    $grown = @(Read-HitRects | Where-Object { $_.id -eq $id -and $_.w -ge ($old.w + 100) -and $_.w -lt ($w - 2) } | Select-Object -First 1)
+    $grown = @(Read-HitRects | Where-Object {
+      $_.id -eq $id -and $_.w -lt ($w - 2) -and
+      $_.x -le ($box.x + 2) -and $_.y -le ($box.y + 2) -and
+      ($_.x + $_.w) -ge ($box.x + $box.w - 2) -and ($_.y + $_.h) -ge ($box.y + $box.h - 2)
+    } | Select-Object -First 1)
     if ($grown) { break }
     Start-Sleep -Milliseconds 200
   }
   if (-not $grown) {
     $now = @(Read-HitRects | Where-Object { $_.id -eq $id } | Select-Object -First 1)
     $nowText = if ($now) { "$($now[0].x),$($now[0].y) $($now[0].w)x$($now[0].h)" } else { "missing" }
-    Note-Fail "$label-hit" "$id stayed $nowText, was $($old.x),$($old.y) $($old.w)x$($old.h)"
+    Note-Fail "$label-hit" "$id is $nowText, does not cover the grown panel $($box.x),$($box.y) $($box.w)x$($box.h) (was $($old.x),$($old.y) $($old.w)x$($old.h))"
   } else {
     $grown = $grown[0]
-    Note-Ok "$label-hit" "$($old.w)x$($old.h) -> $($grown.w)x$($grown.h)"
+    Note-Ok "$label-hit" "$id $($old.x),$($old.y) $($old.w)x$($old.h) -> $($grown.x),$($grown.y) $($grown.w)x$($grown.h) covers panel $($box.x),$($box.y) $($box.w)x$($box.h)"
     $orbs = @(Read-HitRects | Where-Object { $_.id -like "bot:*" })
-    $half = [int][Math]::Floor(($grown.w - $old.w) / 2)
-    $nx = if ($sx -gt 0) { [int]($old.x + $old.w + $half) } else { [int]($old.x - $half) }
+    $half = [int][Math]::Floor(($size.tw - $size.fw) / 2)
+    $nx = if ($sx -gt 0) { [int]($pl + $size.fw + $half) } else { [int]($pl - $half) }
     $probe = $null
     foreach ($f in @(0.5, 0.35, 0.65, 0.8)) {
-      $cand = @{ x = $nx; y = [int]($grown.y + $grown.h * $f) }
+      $cand = @{ x = [int][Math]::Round($nx * $handles.dpr); y = [int][Math]::Round(($box.y + $box.h * $f) * $handles.dpr) }
       if ($cand.x -lt 2 -or $cand.y -lt 2 -or $cand.x -ge ($w - 2) -or $cand.y -ge ($h - 48)) { continue }
       if (-not (Point-Inside $cand $grown)) { continue }
       if (-not (Clear-OfOrbs $cand $orbs)) { continue }
