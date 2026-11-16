@@ -37,6 +37,8 @@ const SESSIONS = [
   { id: "bot-chat", title: "Bot Chat", source: "api_server", last_active: 40, started_at: 1 },
   { id: "saved-field", title: "notes", source: "api_server", last_active: 10, started_at: 1 },
   { id: "newest", title: "System Architect", source: "api_server", last_active: 900, started_at: 1 },
+  // Pinned as a sub-orb of field in the CI config (R-PN-09 sub-orb grow). Oldest row, never the main one.
+  { id: "side-task", title: "Side task", source: "api_server", last_active: 5, started_at: 1 },
 ];
 
 // Kanban board the kanban orb opens. Columns are the 0.22.5 order; the board

@@ -194,8 +194,10 @@ import {
   dragCaptureRects,
   normalizePanelSizes,
   panelResizeKind,
+  panelSizeKey,
   resizedSize,
   settledDragRects,
+  SUBORB_PANEL_KEY,
 } from "./resize.js";
 import {
   ORB_DODGE_EASE,
@@ -446,6 +448,7 @@ function boxSize(id) {
   const vh = window.innerHeight || 800;
   const custom = savedPanelSize(id, vw, vh);
   if (custom) return custom;
+  if (String(id ?? "").startsWith("suborb:")) return suborbPanelSize(vw, vh);
   if (id === "kanban") return { w: Math.min(960, vw * 0.8), h: Math.min(vh * 0.8, 760) };
   if (id === "cron") {
     const fitted = state.cronBoxH > 0 ? state.cronBoxH : 140;
@@ -3925,7 +3928,7 @@ const RESIZE_TIP = "拖拉改大小，雙擊還原";
 
 function ensureResizeHandles(shell) {
   if (!shell || shell._resizeBound) return;
-  if (!panelResizeKind(shell.dataset?.botId, shell.dataset?.kind)) return;
+  if (!panelSizeKey(shell.dataset?.botId, shell.dataset?.kind)) return;
   shell._resizeBound = 1;
   for (const dir of ["x", "y", "xy"]) {
     const handle = document.createElement("div");
@@ -4015,9 +4018,11 @@ function bindResizeHandle(handle, shell) {
   handle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     if (shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing")) return;
-    const id = shell.dataset.botId;
-    const kind = panelResizeKind(id, shell.dataset.kind);
-    if (!kind) return;
+    const bot = shell.dataset.botId;
+    const kind = panelResizeKind(bot, shell.dataset.kind);
+    // Sub-orb session panels share one panel_sizes key (SUBORB_PANEL_KEY).
+    const id = panelSizeKey(bot, shell.dataset.kind);
+    if (!kind || !id) return;
     event.preventDefault();
     event.stopPropagation();
     const dir = handle.dataset.dir || "xy";
@@ -4067,7 +4072,7 @@ function bindResizeHandle(handle, shell) {
       shell.classList.remove("is-resizing");
       separateOpenShells([...document.querySelectorAll(".morph")]);
       settleDragHits(shell, "resize-end");
-      debugLog("panel-resized", `bot=${id} hit=${shell.dataset.hitId || ""} from=${Math.round(start.w)}x${Math.round(start.h)} to=${last.w}x${last.h}`);
+      debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} from=${Math.round(start.w)}x${Math.round(start.h)} to=${last.w}x${last.h} key=${id}`);
       logResizeHandles(shell);
       void persistPanelSize(id, last);
     };
@@ -4082,8 +4087,9 @@ function bindResizeHandle(handle, shell) {
   });
   handle.addEventListener("dblclick", (event) => {
     if (shell.dataset.state !== "panel") return;
-    const id = shell.dataset.botId;
-    if (!panelResizeKind(id, shell.dataset.kind)) return;
+    const bot = shell.dataset.botId;
+    const id = panelSizeKey(bot, shell.dataset.kind);
+    if (!panelResizeKind(bot, shell.dataset.kind) || !id) return;
     event.preventDefault();
     event.stopPropagation();
     const anchor = shell.dataset.anchor === "end" ? "end" : "start";
@@ -4096,7 +4102,7 @@ function bindResizeHandle(handle, shell) {
     applyPanelResize(shell, boxSize(id), anchorScreen, anchor, header);
     separateOpenShells([...document.querySelectorAll(".morph")]);
     settleDragHits(shell, "resize-reset");
-    debugLog("panel-resized", `bot=${id} hit=${shell.dataset.hitId || ""} reset=1`);
+    debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} reset=1 key=${id}`);
     logResizeHandles(shell);
     void persistPanelSize(id, null);
   });
@@ -13644,10 +13650,12 @@ function releaseSuborbGlow(shell) {
 
 function placeSuborbShell(shell) {
   if (!shell) return null;
+  ensureResizeHandles(shell);
   if (shell.dataset.dragged === "1") return clampDraggedShell(shell);
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
   const size = suborbSizePx(ORB);
+  const panelBox = suborbPanelSize(vw, vh);
   const homeX = Number(shell.dataset.homeX);
   const homeY = Number(shell.dataset.homeY);
   const openPanel = shell.dataset.state === "panel" || shell.dataset.opening === "panel";
@@ -13657,7 +13665,7 @@ function placeSuborbShell(shell) {
   const cx = centre ? centre.x : (Number.isFinite(homeX) ? homeX : 8) + size / 2;
   const cy = centre ? centre.y : (Number.isFinite(homeY) ? homeY : 8) + size / 2;
   shell.style.setProperty("--suborb-size", `${size}px`);
-  const placed = placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
+  const placed = placeShell(cx, cy, panelBox.w, panelBox.h, vw, vh);
   const origin = openPanel ? cascadeOriginBox(shell, size, vw, vh) || placed : placed;
   const box = openPanel
     ? placeSuborbCascade({
@@ -13668,8 +13676,8 @@ function placeSuborbShell(shell) {
       index: openSuborbPanelIndex(shell),
       screenW: vw,
       screenH: vh,
-      panelW: PANEL_W,
-      panelH: PANEL_H,
+      panelW: panelBox.w,
+      panelH: panelBox.h,
       insetTop: state.workInsets?.top || 0,
       insetRight: state.workInsets?.right || 0,
       insetBottom: state.workInsets?.bottom || 0,
@@ -13793,14 +13801,19 @@ function openSuborbPanelIndex(shell) {
 }
 
 /** The panel box at the first open sub-orb's disc home; every cascade step starts there. */
-function cascadeOriginBox(shell, size, vw, vh) {
+function cascadeOriginBox(shell, size, vw, vh, box = suborbPanelSize(vw, vh)) {
   const first = suborbCascadeOrigin(openSuborbShells(), shell);
   if (!first) return null;
   const homeX = Number(first.dataset.homeX);
   const homeY = Number(first.dataset.homeY);
   const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2;
   const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
-  return placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
+  return placeShell(cx, cy, box.w, box.h, vw, vh);
+}
+
+/** R-PN-09: every sub-orb session panel uses the one saved size, else the design size. */
+function suborbPanelSize(vw, vh) {
+  return savedPanelSize(SUBORB_PANEL_KEY, vw, vh) || { w: PANEL_W, h: PANEL_H };
 }
 
 function openSuborbPanel(id) {

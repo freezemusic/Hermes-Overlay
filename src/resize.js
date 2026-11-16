@@ -4,8 +4,9 @@
  * The orb stays where it is (the header slot is the anchor), so only the box
  * grows. Sizes are saved per panel in config.json `panel_sizes` through the
  * app's own `set_panel_size` command; a double-click on a handle goes back to
- * the design size. Sub-orb panels (cascade) and the schedule column (fits its
- * content) are not resizable.
+ * the design size. Sub-orb session panels resize too and share one size
+ * (SUBORB_PANEL_KEY, 2026-11-16); the schedule column (fits its content) does
+ * not resize.
  */
 
 /** Smallest box a drag may leave, per panel kind. */
@@ -24,9 +25,24 @@ export function validPanelId(id) {
   return text.length > 0 && text.length <= 128 && /^[A-Za-z0-9_.\-]+$/.test(text);
 }
 
+/**
+ * One `panel_sizes` key for every sub-orb session panel (Devon 2026-11-16
+ * 「你有確認子球框能拉嗎」). A sub-orb id is `suborb:<profile>:<session>`, which
+ * is not a valid panel id (no `:`), and per-session keys would pile up in
+ * config.json as sessions come and go. The cascade keeps one shared size.
+ */
+export const SUBORB_PANEL_KEY = "_suborb";
+
+/** The `panel_sizes` key a shell's size is stored under ("" = not resizable). */
+export function panelSizeKey(id, kind = "bot") {
+  if (kind === "suborb") return String(id ?? "").startsWith("suborb:") ? SUBORB_PANEL_KEY : "";
+  return panelResizeKind(id, kind) ? String(id) : "";
+}
+
 /** "" when the panel cannot be resized. */
 export function panelResizeKind(id, kind = "bot") {
-  if (kind === "suborb") return "";
+  // A sub-orb session panel is a chat panel; the +N chip has no panel.
+  if (kind === "suborb") return String(id ?? "").startsWith("suborb:") ? "chat" : "";
   if (id === "cron") return "";
   if (id === "kanban") return "kanban";
   if (id === "settings") return "settings";
