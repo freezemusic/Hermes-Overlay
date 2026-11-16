@@ -3680,6 +3680,39 @@ async fn open_suborb(
 }
 
 #[derive(Serialize)]
+struct SessionRunCheck {
+    live: bool,
+    status: String,
+}
+
+/// R-SO-05: does this stored session have a live run on the server right now?
+/// Read-only `session.active_list`; mints no run, resumes nothing. An RPC
+/// failure is an error so the sub-orb keeps its arc and retries.
+#[tauri::command]
+async fn check_session_run(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    session_id: String,
+) -> Result<SessionRunCheck, String> {
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("未揀對話".into());
+    }
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?.clone();
+    let chat = chat_client(&state, &cfg);
+    let found = chat.live_session_run(&bot.profile, &session_id)
+        .await
+        .map_err(|err| explain(&err))?;
+    Ok(match found {
+        Some((_, status)) => SessionRunCheck { live: true, status },
+        None => SessionRunCheck { live: false, status: String::new() },
+    })
+}
+
+#[derive(Serialize)]
 struct SessionTail {
     session_id: String,
     message_count: u64,
@@ -4404,6 +4437,7 @@ pub fn run() {
             create_task_session,
             open_suborb,
             peek_session_tail,
+            check_session_run,
             send_suborb,
             stop_suborb,
             set_suborb_pin,

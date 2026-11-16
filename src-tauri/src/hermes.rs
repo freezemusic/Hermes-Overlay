@@ -901,6 +901,11 @@ pub fn session_list_fingerprint(sessions: &[SessionSummary]) -> String {
     parts.join("\n")
 }
 
+/// A list row's own run flags. Hermes 0.22.5 REST `is_active` is NOT one of
+/// them: it is `ended_at is None and last_active < 300 s ago`
+/// (`web_routers/sessions.py` `_is_active`), so it stays true for five minutes
+/// after a finished turn. Run liveness comes from `session.active_list`
+/// (`HermesClient::live_session_run`, R-SO-05).
 fn session_busy(item: &Value) -> bool {
     for key in ["running", "busy", "active", "in_progress", "has_active_run"] {
         if json_flag(item, key) == Some(true) {
@@ -4597,6 +4602,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn rest_is_active_is_recent_activity_not_a_live_run() {
+        let rows = parse_session_list(&json!({"sessions": [
+            {"id": "s1", "title": "t", "is_active": true, "last_active": 10.0, "message_count": 4},
+            {"id": "s2", "title": "t", "running": true, "message_count": 4},
+        ]}));
+        let s1 = rows.iter().find(|row| row.id == "s1").unwrap();
+        let s2 = rows.iter().find(|row| row.id == "s2").unwrap();
+        assert!(!s1.busy, "is_active is a 300 s recency window (R-SO-05)");
+        assert!(s2.busy);
+    }
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;

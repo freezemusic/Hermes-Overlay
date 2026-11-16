@@ -260,6 +260,7 @@ export function suborbIdleDecision({
   runStatus = "",
   runGone = false,
   confirmedIdle = false,
+  sessionRun = "",
 } = {}) {
   if (sessionBusy === true) return "spin";
   const status = String(runStatus || "").toLowerCase();
@@ -270,7 +271,50 @@ export function suborbIdleDecision({
   // a stored user line keeps the arc until that reply settles.
   if (hasRunId) return "recheck";
   if (confirmedIdle || localBusy) return "idle";
-  return "spin";
+  // R-SO-05 (2026-11-16): no run id and no local busy. Ask the server once per
+  // list stamp (session.active_list). "none" stops the arc; "live" keeps it.
+  if (sessionRun === "none") return "idle";
+  if (sessionRun === "live") return "spin";
+  return "check";
+}
+
+/** Retry gap for a failed or still-live session run check. */
+export const SUBORB_RUN_RECHECK_MS = 10_000;
+/** A message-count rise this soon after a release is the final reply flush. */
+export const SUBORB_IDLE_GRACE_MS = 10_000;
+/** Panel label while the server says this session still has a live run. */
+export const SUBORB_SERVER_RUN_LABEL = "行緊…";
+
+const RESTING_LABELS = new Set(["閒置", "等候中", ""]);
+
+/**
+ * R-SO-03 / R-SO-05: the panel label and the arc read the same server answer.
+ * When the server says the session run is live and the panel has no busy,
+ * error, or other state of its own, the label says busy instead of 閒置.
+ */
+export function suborbStatusLabel({ text = "", statusState = "idle", serverLive = false } = {}) {
+  const raw = String(text ?? "");
+  const tone = statusState || "idle";
+  if (serverLive && tone !== "busy" && tone !== "error" && RESTING_LABELS.has(raw)) {
+    return { text: SUBORB_SERVER_RUN_LABEL, state: "busy" };
+  }
+  return { text: raw, state: tone };
+}
+
+/** Stamp key a session run check answers for (count and last activity). */
+export function suborbRunStampKey(row) {
+  return `${row?.message_count ?? "x"}:${row?.last_active ?? 0}`;
+}
+
+/**
+ * What the last session run check says for this stamp: "live", "none", or ""
+ * (not asked yet, failed, or a live answer older than the recheck gap).
+ */
+export function suborbSessionRun(checked, key, now = 0) {
+  if (!checked || checked.key !== key) return "";
+  if (checked.result === "none") return "none";
+  if (checked.result === "live" && now - (checked.at || 0) < SUBORB_RUN_RECHECK_MS) return "live";
+  return "";
 }
 
 export function orderSuborbRows(rows, pinned = []) {
@@ -305,6 +349,10 @@ export function emptySuborbModel() {
     localBusy: {},
     serverIdle: {},
     peeked: {},
+    idleStamp: {},
+    idleAt: {},
+    serverLive: {},
+    runChecked: {},
   };
 }
 
@@ -495,6 +543,10 @@ export function reconcileSuborbs(model, {
     failed: { ...(model?.failed || {}) },
     localBusy: { ...(model?.localBusy || {}) },
     serverIdle: { ...(model?.serverIdle || {}) },
+    idleStamp: { ...(model?.idleStamp || {}) },
+    idleAt: { ...(model?.idleAt || {}) },
+    serverLive: { ...(model?.serverLive || {}) },
+    runChecked: { ...(model?.runChecked || {}) },
   };
   if (!next.seen && lockBaseline !== false) {
     for (const row of sessions || []) {
@@ -559,6 +611,19 @@ export function reconcileSuborbs(model, {
     );
     if (countGrew || (isNew && count > 0)) peek.push(row.id);
     if (row.busy === true || next.localBusy[row.id]) delete next.serverIdle[row.id];
+    // R-SO-05: an idle confirmation holds for the stamp it was made at. The
+    // first list after a release (or a rise inside the grace, the final reply
+    // flush) records that stamp; a later message-count rise means a new run.
+    if (next.serverIdle[row.id]) {
+      const at = next.idleAt[row.id] || 0;
+      const inGrace = !!(at && now && now - at < SUBORB_IDLE_GRACE_MS);
+      if (!next.idleStamp[row.id] || inGrace) next.idleStamp[row.id] = key;
+      else if (countGrew && next.idleStamp[row.id] !== key) {
+        delete next.serverIdle[row.id];
+        delete next.idleStamp[row.id];
+        delete next.idleAt[row.id];
+      }
+    }
     if (countGrew) next.settled[row.id] = false;
     // serverIdle is set only after a run check (or a notice timeout recheck)
     // says this session has no active run. A bare busy:false list row is not
@@ -566,9 +631,11 @@ export function reconcileSuborbs(model, {
     const serverIdle = !!next.serverIdle[row.id] && row.busy !== true && !next.localBusy[row.id];
     if (serverIdle) next.settled[row.id] = true;
     const awaitingReply = next.settled[row.id] === false && count > 0 && !row.ended;
+    const serverLive = !!next.serverLive[row.id] && !serverIdle;
     const running = !!(
       next.localBusy[row.id]
       || row.busy
+      || serverLive
       || (!serverIdle && activeOnly)
       || awaitingReply
       || (countGrew && next.settled[row.id] !== true)
