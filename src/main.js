@@ -13509,6 +13509,7 @@ function paintSuborbTabs(bot, view) {
 }
 
 function layoutSuborbOrbs() {
+  if (debugFile.enabled) debugLog("suborb-layout", `call=${callerTag("layoutSuborbOrbs")}`);
   renderSuborbs();
 }
 
@@ -16267,6 +16268,13 @@ async function boot() {
       closeCron();
     });
   }
+  // Debug log only: a throw inside a frame callback is otherwise silent.
+  window.addEventListener("error", (event) => {
+    if (debugFile.enabled) debugLog("js-error", `${event.message || "error"} at ${event.lineno || 0}:${event.colno || 0}`);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    if (debugFile.enabled) debugLog("js-reject", String(event.reason?.message || event.reason || "rejected").slice(0, 200));
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopKanbanPoll();
