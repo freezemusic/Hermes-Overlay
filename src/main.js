@@ -3851,6 +3851,8 @@ async function runShellMorph(shell, target) {
     const ok = await playClip(shell, current, step.state, reducedMotion() ? 0 : step.ms, token, step.ease || EASE);
     if (!ok || !alive()) {
       if (alive() && target === "orb") {
+        // The clip stopped early but this close is still current: land it.
+        if (shell.dataset.state !== "orb") commitClosedShell(shell);
         settleShell(shell, "orb");
         return true;
       }
