@@ -869,12 +869,18 @@ export function modifierEngages({
  * Modifier changes must not drop the first keys typed into a focused composer.
  * `remember` keeps the field. `type` leaves the event on the focused field.
  * `insert` writes the character when focus was lost before this keydown.
+ * Enter follows Hermes Desktop `apps/desktop/src/app/chat/composer/index.tsx`
+ * (`handleEditorKeyDown`): an IME Enter (`isComposing`, keyCode 229) only
+ * commits the word, Shift+Enter is a new line (`newline`), plain Enter sends.
  */
 export function composerKeyAction({
   key = "",
   ctrlKey = false,
   altKey = false,
   metaKey = false,
+  shiftKey = false,
+  isComposing = false,
+  keyCode = 0,
   activeIsComposer = false,
   composerConnected = false,
   osModifierDown = null,
@@ -889,16 +895,25 @@ export function composerKeyAction({
   if (ctrl || altKey || metaKey) return "ignore";
   // Enter is not a character. The field listener sends when focus is still
   // there; `send` covers the seam stealing focus after the click.
-  if (key === "Enter") return "send";
+  if (key === "Enter") {
+    if (isComposing || keyCode === 229) return "ignore";
+    return shiftKey ? "newline" : "send";
+  }
   if (key.length !== 1) return "ignore";
   return activeIsComposer ? "type" : "insert";
+}
+
+/** Text a window-level fallback writes into the composer for one action. */
+export function composerKeyText(action, key) {
+  return action === "newline" ? "\n" : String(key ?? "");
 }
 
 /**
  * A streaming reply leaves 停止 visible. During the open clip and the seam,
  * the focused field's default insert never lands (a click can also hit 停止
  * and forget the composer). Own the character so it queues in the input.
- * Enter stays on the send path. A settled panel keeps native typing.
+ * Enter stays on the send path; Shift+Enter's new line is owned like a key.
+ * A settled panel keeps native typing.
  */
 export function ownComposerKey({
   action = "ignore",
@@ -906,7 +921,18 @@ export function ownComposerKey({
   settling = false,
 } = {}) {
   if (!busy || !settling) return false;
-  return action === "type" || action === "insert";
+  return action === "type" || action === "insert" || action === "newline";
+}
+
+/** Composer max height, same as Hermes Desktop `--composer-input-max-height: 9.375rem`. */
+export const COMPOSER_MAX_PX = 150;
+export const COMPOSER_MIN_PX = 36;
+
+/** Auto-grow height for the composer textarea: content height clamped to [min, max]. */
+export function composerFitHeight({ scrollHeight = 0, border = 0, min = COMPOSER_MIN_PX, max = COMPOSER_MAX_PX } = {}) {
+  const want = Math.ceil(Number(scrollHeight) || 0) + (Number(border) || 0);
+  const height = Math.min(max, Math.max(min, want));
+  return { height, scroll: want > max };
 }
 
 export function modifierLabel(kind) {

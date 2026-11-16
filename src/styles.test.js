@@ -534,8 +534,8 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(css, /\.kanban-board-pick \{[^}]*#616191/s);
   assert.match(css, /\.kanban-board-pick \{[^}]*appearance:\s*none/s);
   assert.match(css, /\.kanban-done-chevron \{[^}]*var\(--nous-blue\)/s);
-  assert.match(css, /\.composer input:disabled \{[^}]*#616191/s);
-  assert.match(css, /\.composer input:disabled::placeholder \{[^}]*#616191/s);
+  assert.match(css, /\.composer textarea:disabled \{[^}]*#616191/s);
+  assert.match(css, /\.composer textarea:disabled::placeholder \{[^}]*#616191/s);
   assert.match(css, /\.send-btn:disabled[^{]*\{[^}]*#616191/s);
   assert.match(css, /\.send-btn:disabled[^{]*\{[^}]*rgb\(97 97 145 \/ \.16\)/s);
   assert.doesNotMatch(css, /\.send-btn:disabled[^{]*\{[^}]*#0000f2/s);
@@ -546,7 +546,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.ok(contrast("#3a3a68", mix("#616191", "#f8f8fc", 0.16)) >= 4.5);
   assert.match(css, /\.approval-actions button\.approval-primary \{[^}]*#0000f2/s);
   assert.match(css, /\.approval-actions button\.approval-secondary \{[^}]*#616191/s);
-  assert.doesNotMatch(css, /\.composer input:disabled \{[^}]*rgb\(255 255 255/s);
+  assert.doesNotMatch(css, /\.composer textarea:disabled \{[^}]*rgb\(255 255 255/s);
   assert.match(css, /#conn-banner\[data-parked="panel"\] \{[^}]*overflow-wrap:\s*anywhere/s);
   assert.match(css, /\.kanban-col\[data-status="done"\] > \.kanban-col-head \{[^}]*cursor:\s*pointer/s);
   assert.match(css, /\.settings-panel \.bot-row input\[type="checkbox"\] \{[^}]*width:\s*14px/s);

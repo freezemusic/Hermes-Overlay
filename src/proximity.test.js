@@ -40,6 +40,10 @@ import {
   latchedElementIds,
   linuxAltWarning,
   composerKeyAction,
+  composerKeyText,
+  composerFitHeight,
+  COMPOSER_MAX_PX,
+  COMPOSER_MIN_PX,
   escapeTarget,
   ownComposerKey,
   modifierMatches,
@@ -993,4 +997,73 @@ test("settings show three see-through fields that read the same way", () => {
   assert.match(main, /\$\("#interaction-min-opacity"\)\.value = String\(100 - Math\.round\(Number\(min\) \* 100\)\)/);
   assert.match(main, /orb_rest_transparency: percentToTransparency/);
   assert.match(main, /panel_rest_transparency: percentToTransparency/);
+});
+
+test("R-CT-08 composer Enter follows Hermes Desktop: Shift+Enter is a new line, IME Enter never sends", () => {
+  const on = { composerConnected: true, activeIsComposer: true };
+  assert.equal(composerKeyAction({ key: "Enter", ...on }), "send");
+  assert.equal(composerKeyAction({ key: "Enter", shiftKey: true, ...on }), "newline");
+  assert.equal(composerKeyAction({ key: "Enter", shiftKey: true, composerConnected: true }), "newline");
+  assert.equal(composerKeyAction({ key: "Enter", isComposing: true, ...on }), "ignore");
+  assert.equal(composerKeyAction({ key: "Enter", keyCode: 229, ...on }), "ignore");
+  assert.equal(composerKeyAction({ key: "Enter", shiftKey: true, isComposing: true, ...on }), "ignore");
+  assert.equal(composerKeyAction({ key: "Enter", shiftKey: true, ctrlKey: true, ...on }), "ignore");
+  assert.equal(composerKeyAction({ key: "Enter", shiftKey: true, osModifierDown: true, ...on }), "ignore");
+  assert.equal(composerKeyAction({ key: "Enter", shiftKey: true, composerConnected: false }), "ignore");
+  // Shift alone still only remembers the field; a shifted character still types.
+  assert.equal(composerKeyAction({ key: "Shift", shiftKey: true, ...on }), "remember");
+  assert.equal(composerKeyAction({ key: "A", shiftKey: true, ...on }), "type");
+});
+
+test("R-CT-08 the window fallback writes a real new line and owns it while settling", () => {
+  assert.equal(composerKeyText("newline", "Enter"), "\n");
+  assert.equal(composerKeyText("insert", "a"), "a");
+  assert.equal(composerKeyText("type", "字"), "字");
+  assert.equal(ownComposerKey({ action: "newline", busy: true, settling: true }), true);
+  assert.equal(ownComposerKey({ action: "newline", busy: true, settling: false }), false);
+  assert.equal(ownComposerKey({ action: "send", busy: true, settling: true }), false);
+});
+
+test("R-CT-08 composer grows with its text to 150px, then scrolls", () => {
+  assert.equal(COMPOSER_MIN_PX, 36);
+  assert.equal(COMPOSER_MAX_PX, 150);
+  assert.deepEqual(composerFitHeight({ scrollHeight: 0, border: 2 }), { height: 36, scroll: false });
+  assert.deepEqual(composerFitHeight({ scrollHeight: 34, border: 2 }), { height: 36, scroll: false });
+  assert.deepEqual(composerFitHeight({ scrollHeight: 54, border: 2 }), { height: 56, scroll: false });
+  assert.deepEqual(composerFitHeight({ scrollHeight: 148, border: 2 }), { height: 150, scroll: false });
+  assert.deepEqual(composerFitHeight({ scrollHeight: 300, border: 2 }), { height: 150, scroll: true });
+  assert.deepEqual(composerFitHeight({ scrollHeight: 53.4, border: 2, min: 30, max: 120 }), { height: 56, scroll: false });
+});
+
+test("R-CT-08 both composers are textareas that send on Enter and keep Shift+Enter", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  assert.match(html, /<textarea data-role="input" rows="1"[^>]*><\/textarea>/);
+  assert.doesNotMatch(html, /<input data-role="input"/);
+  assert.match(css, /\.composer textarea \{[^}]*max-height: 150px[^}]*resize: none/s);
+  assert.match(css, /\.composer \{[^}]*align-items: flex-end/s);
+  const sends = main.slice(main.indexOf("function composerEnterSends"), main.indexOf("function fitComposer"));
+  assert.match(sends, /shiftKey: event\.shiftKey/);
+  assert.match(sends, /isComposing: event\.isComposing/);
+  assert.match(sends, /keyCode: event\.keyCode/);
+  assert.match(sends, /=== "send"/);
+  const botKeys = main.slice(main.indexOf('input?.addEventListener("keydown"'), main.indexOf("async function loadSoul"));
+  assert.match(botKeys, /if \(composerEnterSends\(event\)\) \{\s*event\.preventDefault\(\);\s*sendActive\(id\);/);
+  assert.match(botKeys, /event\.key === "Enter" && !event\.shiftKey && !event\.isComposing && event\.keyCode !== 229/);
+  const subStart = main.indexOf("suborbComposeModes.of(id, initialSuborbMode(id));");
+  const subKeys = main.slice(subStart, main.indexOf("function paintSuborbPin"));
+  assert.match(subKeys, /if \(composerEnterSends\(event\)\) \{\s*event\.preventDefault\(\);\s*void sendSuborb\(id\);/);
+  assert.match(subKeys, /installComposerFit\(input\)/);
+  assert.match(main, /input\?\.addEventListener\("click", syncSlashGhost\);\s*installComposerFit\(input\);/);
+  assert.match(main, /function logComposerAt\(shell\)/);
+  assert.match(main, /debugLog\("composer-at", line\)/);
+  const fallback = main.slice(main.indexOf("function setupComposer"), main.indexOf('window.addEventListener("keyup"', main.indexOf("function setupComposer")));
+  assert.match(fallback, /shiftKey: event\.shiftKey,\s*isComposing: event\.isComposing,\s*keyCode: event\.keyCode/);
+  assert.match(fallback, /action === "newline" && composerOwnsNewline && event\.target !== composerField/);
+  assert.match(fallback, /insertComposerKey\(composerField, composerKeyText\(action, event\.key\)\)/);
+  const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));
+  assert.ok((send.match(/fitComposer\(input\)/g) || []).length >= 4);
+  const sub = main.slice(main.indexOf("async function sendSuborb"), main.indexOf("async function sendSuborb") + 600);
+  assert.match(sub, /input\.value = "";\s*fitComposer\(input\);/);
 });

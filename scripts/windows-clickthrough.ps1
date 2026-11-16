@@ -261,6 +261,12 @@ public static class ClickProbe {
     input.u.ki.dwFlags = down ? 0u : KEYEVENTF_KEYUP;
     SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT)));
   }
+  public static void Key(ushort vk, bool down) {
+    var input = new INPUT { type = INPUT_KEYBOARD };
+    input.u.ki.wVk = vk;
+    input.u.ki.dwFlags = down ? 0u : KEYEVENTF_KEYUP;
+    SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT)));
+  }
   public static void Tap(ushort vk) {
     var down = new INPUT { type = INPUT_KEYBOARD };
     down.u.ki.wVk = vk;
@@ -1282,6 +1288,43 @@ try {
         }
       }
     }
+  }
+  # R-CT-08 (Devon 2026-11-16 18:12 London 「跟 Desktop」): the composer is a
+  # textarea. Shift+Enter is a new line and does not send; the field grows to
+  # two lines (composer-fit lines=2) and no later fit shrinks it back (a send
+  # clears it to one line). Backspace x3 leaves it empty for the steps below.
+  $composerLine = Select-String -Path $log -Pattern "composer-at id=panel:field " -ErrorAction SilentlyContinue | Select-Object -Last 1
+  if (-not $composerLine -or $composerLine.Line -notmatch "dpr=([0-9.]+) at=(-?\d+),(-?\d+),(\d+)x(\d+)") {
+    Note-Fail "composer-newline" "no composer-at line for panel:field"
+  } else {
+    $cdpr = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
+    $cx = [int][Math]::Round(([int]$Matches[2] + [int]$Matches[4] / 2) * $cdpr)
+    $cy = [int][Math]::Round(([int]$Matches[3] + [int]$Matches[5] / 2) * $cdpr)
+    Assert-Captured "composer-click" $cx $cy
+    Start-Sleep -Milliseconds 300
+    $fitBefore = Count-Log "composer-fit id=field "
+    $twoBefore = Count-Log "composer-fit id=field h=\d+ lines=2 "
+    [ClickProbe]::Tap(0x41)
+    Start-Sleep -Milliseconds 120
+    [ClickProbe]::Key(0x10, $true)
+    [ClickProbe]::Tap(0x0D)
+    [ClickProbe]::Key(0x10, $false)
+    Start-Sleep -Milliseconds 120
+    [ClickProbe]::Tap(0x42)
+    if (-not (Wait-Count "composer-fit id=field h=\d+ lines=2 " $twoBefore 5)) {
+      Note-Fail "composer-newline" "Shift+Enter did not grow the composer to two lines (click $cx,$cy)"
+    } else {
+      Start-Sleep -Milliseconds 800
+      $fits = @(Select-String -Path $log -Pattern "composer-fit id=field " | Select-Object -Skip $fitBefore)
+      $shrunk = @($fits | Where-Object { $_.Line -match " lines=1 " })
+      if ($shrunk.Count -gt 0) {
+        Note-Fail "composer-newline" "composer went back to one line after Shift+Enter (sent?) $($shrunk[-1].Line)"
+      } else {
+        Note-Ok "composer-newline" "($cx,$cy) $($fits[-1].Line)"
+      }
+    }
+    foreach ($n in 1..3) { [ClickProbe]::Tap(0x08); Start-Sleep -Milliseconds 60 }
+    Start-Sleep -Milliseconds 300
   }
   $focus = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" -or $_.id -eq "settings" } | Select-Object -First 1)
   if ($focus) {
