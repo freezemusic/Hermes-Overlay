@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- 澄清卡（要你答）自己打字嗰格撳 Enter 冇反應：格仔冇任何送出鍵，Enter 只係換行。而家跟 Hermes Desktop：Ctrl／Cmd+Enter 送出，Enter 照舊換行，輸入法選字嗰下唔送；「送出」掣 tooltip 提示「Ctrl+Enter 送出」（R-AP-06）。
 - 減少動畫（`prefers-reduced-motion`）或者零長度收合時，面板收返光球之後殼仍然係 `data-state=panel`，所以佢嘅子光球扇一直收埋、唔喺命中區，蓋住嘅光球亦唔淡返；而家即時收合同動畫收合一樣寫入收起狀態（R-PN-08）。
 - 子光球 session 面板都可以拉大／拉細（之前冇把手），所有子光球面板共用 config.json `panel_sizes._suborb`；Windows CI 加假子光球拉大測試（R-PN-09、R-SO-09）。
 - 面板拉唔大（拉細得）：計劃窗開住或者命中區凍住時，拖把手嗰下嘅全畫面命中框冇送出，滑鼠一出舊框 Windows 就穿透。而家拖把手同拖標題列第一下就送，放手用新大小重新公佈；Rust 再加保險，喺面板撳落嘅掣揸住期間唔會穿透。Windows CI 真係拖自由角向外 150px（有計劃、冇計劃各一次）（R-PN-09）。
