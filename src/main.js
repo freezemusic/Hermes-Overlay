@@ -13089,6 +13089,13 @@ function setFanState(shell, look) {
 }
 
 function renderSuborbs() {
+  if (debugFile.enabled) {
+    const entry = `views=${state.suborbViews ? [...state.suborbViews.keys()].join(",") : "none"} rail=${$("#bot-rail") ? 1 : 0} bots=${state.bots.map((bot) => bot.id).join(",")}`;
+    if (renderSuborbs.logged !== entry) {
+      renderSuborbs.logged = entry;
+      debugLog("suborb-render", entry);
+    }
+  }
   if (!state.suborbViews) return;
   const rail = $("#bot-rail");
   if (!rail) return;
@@ -13121,7 +13128,9 @@ function renderSuborbs() {
     const parentOpen = parentPanelOpen(bot.id);
     const look = suborbFanState({ mode: fan?.mode, held, parentOpen });
     if (debugFile.enabled) {
-      const fanLine = `bot=${bot.id} look=${look} mode=${fan?.mode || "-"} anchor=${anchor ? 1 : 0} parentOpen=${parentOpen ? 1 : 0} shown=${rows.length}`;
+      const parentShells = [...document.querySelectorAll(`.morph[data-bot-id="${cssEscape(bot.id)}"]`)];
+      const parentLook = parentShells.map((item) => `${item.dataset.kind || "-"}/${item.dataset.state || "-"}/${item.dataset.opening || "-"}`).join("+");
+      const fanLine = `bot=${bot.id} look=${look} mode=${fan?.mode || "-"} anchor=${anchor ? 1 : 0} parentOpen=${parentOpen ? 1 : 0} parent=${parentLook} shown=${rows.length}`;
       state.suborbFanLogged = state.suborbFanLogged || new Map();
       if (state.suborbFanLogged.get(bot.id) !== fanLine) {
         state.suborbFanLogged.set(bot.id, fanLine);
