@@ -1058,6 +1058,10 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       playContentIn(shell, 0);
       return moveOrbToHeader(shell, token).then(() => shell.dataset.morphToken === token);
     }
+    // No clip clock to finish: commit the closed state here, as the animated
+    // path does. Without it the shell kept state=panel after a reduced-motion
+    // close, so its sub-orb fan stayed tucked and off the hit list (R-SO-04).
+    if (toState === "orb") commitClosedShell(shell);
     return Promise.resolve(true);
   }
   if (armedDone) {
@@ -1206,6 +1210,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       playContentIn(shell, 0);
       return moveOrbToHeader(shell, token).then(() => shell.dataset.morphToken === token);
     }
+    if (toState === "orb" && shell.dataset.morphToken === token) commitClosedShell(shell);
     return Promise.resolve(shell.dataset.morphToken === token);
   }
   // Hits were announced before this clip. A per-frame hit rAF would stop
@@ -3852,6 +3857,8 @@ async function runShellMorph(shell, target) {
     const ok = await playClip(shell, current, step.state, reducedMotion() ? 0 : step.ms, token, step.ease || EASE);
     if (!ok || !alive()) {
       if (alive() && target === "orb") {
+        // The clip stopped early but this close is still current: land it.
+        if (shell.dataset.state !== "orb") commitClosedShell(shell);
         settleShell(shell, "orb");
         return true;
       }
@@ -3948,6 +3955,14 @@ function ensureResizeHandles(shell) {
 }
 
 /** Box for a new size. The anchor (orb centre) keeps its screen point. */
+/** Debug log only: the shell box after a resize. A sub-orb panel re-cascades
+ *  inside the work area, so its corner can move; CI checks this box. */
+function resizedBoxTag(shell) {
+  if (!debugFile.enabled || !shell) return "";
+  const box = shell.getBoundingClientRect();
+  return ` box=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`;
+}
+
 function applyPanelResize(shell, size, anchorScreen, anchor, header) {
   if (shell.dataset.dragged === "1") {
     const ax = anchor === "end" ? size.w - ORB / 2 : ORB / 2;
@@ -3970,6 +3985,8 @@ function applyPanelResize(shell, size, anchorScreen, anchor, header) {
     ay: placed?.anchor?.y || Number(shell.dataset.ay) || ORB / 2,
   }), "panel");
   if (shell.dataset.planOpen === "1") hostOpenPlan(shell);
+  // The plan can move with the box: log its new rect and × point (debug only).
+  if (shell.dataset.planOpen === "1" && debugFile.enabled) requestAnimationFrame(() => logPlanHitBox(shell));
   scheduleHitSync();
 }
 
@@ -4078,7 +4095,7 @@ function bindResizeHandle(handle, shell) {
       shell.classList.remove("is-resizing");
       separateOpenShells([...document.querySelectorAll(".morph")]);
       settleDragHits(shell, "resize-end");
-      debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} from=${Math.round(start.w)}x${Math.round(start.h)} to=${last.w}x${last.h} key=${id}`);
+      debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} from=${Math.round(start.w)}x${Math.round(start.h)} to=${last.w}x${last.h} key=${id}${resizedBoxTag(shell)}`);
       logResizeHandles(shell);
       void persistPanelSize(id, last);
     };
@@ -4108,7 +4125,7 @@ function bindResizeHandle(handle, shell) {
     applyPanelResize(shell, boxSize(id), anchorScreen, anchor, header);
     separateOpenShells([...document.querySelectorAll(".morph")]);
     settleDragHits(shell, "resize-reset");
-    debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} reset=1 key=${id}`);
+    debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} reset=1 key=${id}${resizedBoxTag(shell)}`);
     logResizeHandles(shell);
     void persistPanelSize(id, null);
   });
@@ -10850,6 +10867,7 @@ function hitsBlocked() {
 let stablePanelHits = null;
 
 function sendHitRects(rects, tag, force = false) {
+  if (debugFile.enabled) logMovedPlans();
   if (tag === "orb-dodge-return" && hitBlockReason() === "plan-open" && stablePanelHits?.length) {
     const orbs = rects.filter((rect) => {
       const id = String(rect.id || "");
@@ -11792,6 +11810,20 @@ function flushHits(tag = "flush") {
   publishHits(tag);
 }
 
+/** Debug log only: re-log plan-rect / plan-close-at when an open plan's box
+ *  moved (a re-cascaded sub-orb panel carries its plan). Once per change. */
+function logMovedPlans() {
+  document.querySelectorAll(".morph[data-plan-open='1']").forEach((shell) => {
+    const box = planNode(shell)?.getBoundingClientRect?.();
+    if (!box || box.width < 1 || box.height < 1) return;
+    const key = `${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`;
+    if (shell._planLoggedBox === key) return;
+    const first = !shell._planLoggedBox;
+    shell._planLoggedBox = key;
+    if (!first) logPlanHitBox(shell);
+  });
+}
+
 function modifierKeyName() {
   const kind = state.interaction?.modifier || "ctrl";
   if (kind === "shift") return "Shift";
@@ -12683,6 +12715,18 @@ function suborbOpenSessionIds(profile) {
   return ids;
 }
 
+/** Debug-only: why a sub-orb is or is not on the rail. Ids only, once per change. */
+function logSuborbView(profile, view, listed, mainId) {
+  if (!debugFile.enabled) return;
+  const shown = (view?.shown || []).map((row) => row.id).join(",");
+  const pins = pinsFor(profile).join(",");
+  const line = `profile=${profile} shown=${shown || "-"} pins=${pins || "-"} main=${mainId || "-"} listed=${(listed || []).length} parentOpen=${parentPanelOpen(profile) ? 1 : 0}`;
+  state.suborbViewLogged = state.suborbViewLogged || new Map();
+  if (state.suborbViewLogged.get(profile) === line) return;
+  state.suborbViewLogged.set(profile, line);
+  debugLog("suborb-view", line);
+}
+
 function sessionsForSuborbs(profile, listed) {
   const extra = state.suborbExtra.get(profile) || [];
   const seen = new Set((listed || []).map((row) => row.id));
@@ -13032,6 +13076,7 @@ function noteSuborbList(profile, sessions, mainId = "", goneIds = []) {
   state.suborbModels.set(profile, view.model);
   state.suborbViews = state.suborbViews || new Map();
   state.suborbViews.set(profile, view);
+  logSuborbView(profile, view, listed, mainId || threadFor(profile).sessionId || "");
   for (const row of view.peek) {
     void peekSuborbTail(profile, row);
   }
@@ -13228,6 +13273,16 @@ function renderSuborbs() {
     const slots = anchor ? fan.slots : [];
     const parentOpen = parentPanelOpen(bot.id);
     const look = suborbFanState({ mode: fan?.mode, held, parentOpen });
+    if (debugFile.enabled) {
+      const parentShells = [...document.querySelectorAll(`.morph[data-bot-id="${cssEscape(bot.id)}"]`)];
+      const parentLook = parentShells.map((item) => `${item.dataset.kind || "-"}/${item.dataset.state || "-"}/${item.dataset.opening || "-"}`).join("+");
+      const fanLine = `bot=${bot.id} look=${look} mode=${fan?.mode || "-"} anchor=${anchor ? 1 : 0} parentOpen=${parentOpen ? 1 : 0} parent=${parentLook} shown=${rows.length}`;
+      state.suborbFanLogged = state.suborbFanLogged || new Map();
+      if (state.suborbFanLogged.get(bot.id) !== fanLine) {
+        state.suborbFanLogged.set(bot.id, fanLine);
+        debugLog("suborb-fan", fanLine);
+      }
+    }
     state.suborbFanModes.set(bot.id, fan?.mode || "fan");
     const badge = fan?.badge;
     const homeOf = (slot) => (look === "collapsed" && badge ? badge : slot);
@@ -16367,6 +16422,13 @@ async function boot() {
       closeCron();
     });
   }
+  // Debug log only: a throw inside a frame callback is otherwise silent.
+  window.addEventListener("error", (event) => {
+    if (debugFile.enabled) debugLog("js-error", `${event.message || "error"} at ${event.lineno || 0}:${event.colno || 0}`);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    if (debugFile.enabled) debugLog("js-reject", String(event.reason?.message || event.reason || "rejected").slice(0, 200));
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopKanbanPoll();
