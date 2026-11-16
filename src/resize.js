@@ -149,3 +149,45 @@ export function physicalPixelsOutside(box, rect, scale = 1, origin = { x: 0, y: 
   }
   return { total, outside };
 }
+
+/*
+ * R-PN-09 grow fix (Devon 2026-11-16 「到而家都未可以拉大個框」). Windows
+ * passes the cursor through unless it sits inside a published rect. A resize
+ * or header drag publishes one full-view rect for its shell so the pointer
+ * stays in the overlay once it leaves the old box. While hits are frozen (plan
+ * seam, announce silence, collapse, motion) the normal flush is skipped, so
+ * these two helpers build the list from the last published one instead.
+ */
+
+/** A rect that is the whole view (the drag capture shape). */
+export function coversView(rect, vw, vh) {
+  if (!rect || !(vw >= 1) || !(vh >= 1)) return false;
+  return rect.x <= 1 && rect.y <= 1 && rect.w >= vw - 2 && rect.h >= vh - 2;
+}
+
+function keepOthers(previous, ids, vw, vh) {
+  const drop = new Set((ids || []).filter(Boolean));
+  return (previous || [])
+    .filter((rect) => rect && !drop.has(rect.id) && !coversView(rect, vw, vh))
+    .map((rect) => ({ ...rect }));
+}
+
+/**
+ * Drag start: every other published rect stays, this shell's rects (panel,
+ * close) are replaced by one full-view rect under `id` (z 1000).
+ */
+export function dragCaptureRects({ previous = [], ids = [], id, vw, vh }) {
+  const out = keepOthers(previous, [id, ...ids], vw, vh);
+  out.push({ id, x: 0, y: 0, w: vw, h: vh, z: 1000, round: false });
+  return out;
+}
+
+/**
+ * Drag end: the full-view rect goes, and the shell's box at its new size or
+ * position (`rect`) takes its place, so the area a grow added catches clicks.
+ */
+export function settledDragRects({ previous = [], ids = [], rect, vw, vh }) {
+  const out = keepOthers(previous, [rect?.id, ...ids], vw, vh);
+  if (rect && rect.w >= 1 && rect.h >= 1) out.push({ ...rect });
+  return out;
+}

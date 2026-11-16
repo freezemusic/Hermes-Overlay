@@ -189,7 +189,14 @@ import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkd
 import { DEMO_BANNER, SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
 import { chromeOrbText, DEMO_BANNER_EN, DEMO_BOTS_EN, DEMO_OLD_SESSION_EN, demoCommandEn, demoCronEn, demoKanbanEn, demoPlanEn, demoReplyEn, PREVIEW_BANNER, PREVIEW_BANNER_EN } from "./demo.js";
 import { applyTextSize, createTranslator, storedLanguage, storedTextSize, textScale, translate } from "./look.js";
-import { clampPanelSize, normalizePanelSizes, panelResizeKind, resizedSize } from "./resize.js";
+import {
+  clampPanelSize,
+  dragCaptureRects,
+  normalizePanelSizes,
+  panelResizeKind,
+  resizedSize,
+  settledDragRects,
+} from "./resize.js";
 import {
   ORB_DODGE_EASE,
   ORB_DODGE_MS,
@@ -3972,6 +3979,7 @@ async function persistPanelSize(id, size) {
     if (generation !== panelSizeWrite || !settings) return;
     state.settings = settings;
     delete state.panelSizes[id];
+    debugLog("panel-size-saved", size ? `bot=${id} w=${size.w} h=${size.h}` : `bot=${id} reset=1`);
   } catch (err) {
     if (generation !== panelSizeWrite) return;
     setBanner(String(err), "error");
@@ -4037,7 +4045,9 @@ function bindResizeHandle(handle, shell) {
         state.dragHitId = shell.dataset.hitId || "";
         shell.classList.add("is-resizing");
         raisePanel(shell);
-        flushHits();
+        // Not flushHits: a plan seam or announce silence would skip it and
+        // leave the old box as the only capture, so a grow went click-through.
+        captureDragHits(shell, "resize-start");
       }
       const vw = window.innerWidth || 1280;
       const vh = window.innerHeight || 800;
@@ -4056,7 +4066,9 @@ function bindResizeHandle(handle, shell) {
       state.dragHitId = "";
       shell.classList.remove("is-resizing");
       separateOpenShells([...document.querySelectorAll(".morph")]);
-      flushHits();
+      settleDragHits(shell, "resize-end");
+      debugLog("panel-resized", `bot=${id} hit=${shell.dataset.hitId || ""} from=${Math.round(start.w)}x${Math.round(start.h)} to=${last.w}x${last.h}`);
+      logResizeHandles(shell);
       void persistPanelSize(id, last);
     };
     handle.addEventListener("pointermove", move);
@@ -4083,7 +4095,9 @@ function bindResizeHandle(handle, shell) {
     state.panelSizes[id] = null;
     applyPanelResize(shell, boxSize(id), anchorScreen, anchor, header);
     separateOpenShells([...document.querySelectorAll(".morph")]);
-    flushHits();
+    settleDragHits(shell, "resize-reset");
+    debugLog("panel-resized", `bot=${id} hit=${shell.dataset.hitId || ""} reset=1`);
+    logResizeHandles(shell);
     void persistPanelSize(id, null);
   });
 }
@@ -4117,7 +4131,7 @@ function bindPanelDrag(panel) {
         clearInnerPanelBox(panel, shell);
         state.dragHitId = shell.dataset.hitId || "";
         raisePanel(shell);
-        flushHits();
+        captureDragHits(shell, "header-drag-start");
         origin = shell.getBoundingClientRect();
         shell.style.right = "auto";
         shell.style.bottom = "auto";
@@ -4144,7 +4158,7 @@ function bindPanelDrag(panel) {
       rememberAnchor(shell);
       layoutShell(shell);
       separateOpenShells([...document.querySelectorAll(".morph")]);
-      flushHits();
+      settleDragHits(shell, "header-drag-end");
     };
     header.addEventListener("pointermove", move);
     header.addEventListener("pointerup", up);
@@ -10805,7 +10819,7 @@ function sendHitRects(rects, tag, force = false) {
       return id.startsWith("bot:") || id.startsWith("pill:");
     });
     rects = orbs.concat(stablePanelHits.map((rect) => ({ ...rect })));
-  } else if (tag !== "orb-dodge-return") {
+  } else if (tag !== "orb-dodge-return" && tag !== "drag-capture") {
     const kept = rects.filter((rect) => {
       const id = String(rect.id || "");
       return id && !id.startsWith("bot:") && !id.startsWith("pill:");
@@ -10976,32 +10990,7 @@ function seatKanbanClose() {
 function announcePanelHits(shell) {
   seatKanbanClose();
   const id = hitFor(shell.dataset.botId, "panel");
-  const host = shell.getBoundingClientRect();
-  const rect = {
-    id,
-    x: host.x,
-    y: host.y,
-    w: host.width,
-    h: host.height,
-    z: 1,
-    round: false,
-  };
-  if (shell.dataset.planOpen === "1" && host.width >= 1) {
-    const width = Number(shell.dataset.planWidth) || planWidthPx();
-    const fitted = fittedPlanPane(host, width);
-    const union = unionOpenPlanRect(rect, {
-      open: true,
-      x: fitted.x,
-      y: fitted.y,
-      w: fitted.w,
-      h: fitted.h,
-    });
-    rect.x = union.x;
-    rect.y = union.y;
-    rect.w = union.w;
-    rect.h = union.h;
-  }
-  coverBottomFooter(rect, shell);
+  const rect = panelHitRect(shell);
   const closeId = `close:${shell.dataset.botId || ""}`;
   const docked = dockedPanelOrb(shell);
   const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id && item.id !== closeId && item.id !== docked?.id);
@@ -11039,6 +11028,39 @@ function announcePanelHits(shell) {
       );
     }));
   }
+}
+
+/** The panel's published box: the shell, plus a docked open plan, plus a
+ *  bottom header's footer. announcePanelHits and a settled drag share it. */
+function panelHitRect(shell) {
+  const id = hitFor(shell.dataset.botId, "panel");
+  const host = shell.getBoundingClientRect();
+  const rect = {
+    id,
+    x: host.x,
+    y: host.y,
+    w: host.width,
+    h: host.height,
+    z: 1,
+    round: false,
+  };
+  if (shell.dataset.planOpen === "1" && host.width >= 1) {
+    const width = Number(shell.dataset.planWidth) || planWidthPx();
+    const fitted = fittedPlanPane(host, width);
+    const union = unionOpenPlanRect(rect, {
+      open: true,
+      x: fitted.x,
+      y: fitted.y,
+      w: fitted.w,
+      h: fitted.h,
+    });
+    rect.x = union.x;
+    rect.y = union.y;
+    rect.w = union.w;
+    rect.h = union.h;
+  }
+  coverBottomFooter(rect, shell);
+  return rect;
 }
 
 function announceOrbHits(shell) {
@@ -11636,6 +11658,70 @@ function scheduleHitSync(tag = "schedule") {
 function pauseHitSync() {
   cancelAnimationFrame(hitFrame);
   hitFrame = 0;
+}
+
+/** Ids a dragged shell publishes: its own hit id, its panel id, its close. */
+function dragShellIds(shell) {
+  const bot = shell.dataset.botId || "";
+  return [shell.dataset.hitId || "", hitFor(bot, "panel"), `close:${bot}`];
+}
+
+/**
+ * R-PN-09 / R-PN-03: a resize or header drag owns the pointer from its first
+ * move. Unblocked, the normal flush already publishes the full-view drag rect
+ * (collectHits, state.dragHitId). Blocked by a plan seam, announce silence,
+ * a collapse or motion, that flush is skipped, so send the full-view rect
+ * over the frozen list directly. Without it a grow left the old box as the
+ * only capture and Windows went click-through after a few px.
+ */
+function captureDragHits(shell, tag = "drag-start") {
+  const id = shell?.dataset?.hitId || "";
+  if (!id) return;
+  const blocked = hitBlockReason();
+  if (!blocked) {
+    flushHits(tag);
+    return;
+  }
+  const rects = dragCaptureRects({
+    previous: lastHitList.length ? lastHitList : collectHits(),
+    ids: dragShellIds(shell),
+    id,
+    vw: window.innerWidth,
+    vh: window.innerHeight,
+  });
+  debugLog("hit-drag-capture", `bot=${shell.dataset.botId || ""} tag=${tag} reason=${blocked}`);
+  sendHitRects(rects, "drag-capture", true);
+}
+
+/**
+ * Drag end. Unblocked, a normal flush. Still frozen, replace the full-view
+ * rect with the panel's box at its new size and place, so the area a grow
+ * added catches clicks until the freeze ends and the next flush runs.
+ */
+function settleDragHits(shell, tag = "drag-end") {
+  if (!shell) return;
+  const blocked = hitBlockReason();
+  if (!blocked) {
+    flushHits(tag);
+    return;
+  }
+  if (shell.dataset.state !== "panel") {
+    flushHits(tag);
+    return;
+  }
+  const rect = panelHitRect(shell);
+  const rects = settledDragRects({
+    previous: lastHitList.length ? lastHitList : collectHits(),
+    ids: dragShellIds(shell),
+    rect,
+    vw: window.innerWidth,
+    vh: window.innerHeight,
+  });
+  debugLog(
+    "hit-drag-settle",
+    `bot=${shell.dataset.botId || ""} tag=${tag} reason=${blocked} x=${Math.round(rect.x)} y=${Math.round(rect.y)} w=${Math.round(rect.w)} h=${Math.round(rect.h)}`,
+  );
+  sendHitRects(rects, "drag-settle", true);
 }
 
 function flushHits(tag = "flush") {

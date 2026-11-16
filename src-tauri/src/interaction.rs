@@ -3070,6 +3070,77 @@ pub fn windows_cursor_ignored(
     !hot
 }
 
+/// R-PN-09 safety net (Devon 2026-11-16 「到而家都未可以拉大個框」).
+/// A press that began on a panel the window was capturing keeps the window
+/// until the button goes up, even after the cursor leaves every published
+/// rect. Growing a panel drags the cursor out of the old box before the page
+/// can publish its full-view drag rect, and Windows click-through then cut
+/// the drag after a few px. Ctrl+click still passes through: a panel frame
+/// does not capture while the modifier is held, so that press never latches.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+static PANEL_PRESS: AtomicBool = AtomicBool::new(false);
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+static PANEL_PRESS_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Next latch value. Only the sample where the button goes down can start
+/// it; any sample with the button up ends it.
+pub fn panel_press_latch(was_down: bool, pointer_down: bool, latched: bool, began_on_panel: bool) -> bool {
+    if !pointer_down {
+        return false;
+    }
+    if !was_down {
+        return began_on_panel;
+    }
+    latched
+}
+
+/// The cursor is on (or within the orb pad of) a panel rect whose frame is
+/// capturing. A full-view drag rect does not count.
+pub fn cursor_on_captured_panel(
+    cursor: Option<(f64, f64)>,
+    frames: &[ElementFrame],
+    rects: &[HitRect],
+    view_w: f64,
+    view_h: f64,
+) -> bool {
+    let Some((x, y)) = cursor else {
+        return false;
+    };
+    frames.iter().any(|frame| {
+        frame.capture
+            && rects.iter().any(|rect| {
+                rect.id == frame.id
+                    && is_panel_hit(rect)
+                    && !rect_covers_view(rect, view_w, view_h)
+                    && distance_to_hit(x, y, rect) <= HIT_MARGIN_PX
+            })
+    })
+}
+
+/// `windows_cursor_ignored`, plus the panel press latch. `was_capturing` is
+/// the state the previous sample applied (`Some(false)` = not ignoring).
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn windows_cursor_ignored_latched(
+    was_capturing: bool,
+    cursor: Option<(f64, f64)>,
+    frames: &[ElementFrame],
+    rects: &[HitRect],
+    view_w: f64,
+    view_h: f64,
+    pointer_down: bool,
+) -> bool {
+    let was_down = PANEL_PRESS_WAS_DOWN.swap(pointer_down, Ordering::Relaxed);
+    let began = was_capturing && cursor_on_captured_panel(cursor, frames, rects, view_w, view_h);
+    let before = PANEL_PRESS.load(Ordering::Relaxed);
+    let latched = panel_press_latch(was_down, pointer_down, before, began);
+    if latched != before {
+        PANEL_PRESS.store(latched, Ordering::Relaxed);
+        crate::trace_debug("panel-press", &format!("latched={}", u8::from(latched)));
+    }
+    let ignore = windows_cursor_ignored(cursor, frames, rects, view_w, view_h, pointer_down);
+    ignore && !latched
+}
+
 fn sync_os_hit_region(
     app: &AppHandle,
     window: &tauri::WebviewWindow,
@@ -3147,7 +3218,15 @@ fn sync_os_hit_region(
             defer_shrink,
         );
         let (view_w, view_h) = view_css_size(window);
-        let ignore = windows_cursor_ignored(cursor, frames, rects, view_w, view_h, pointer_down);
+        let ignore = windows_cursor_ignored_latched(
+            *ignoring == Some(false),
+            cursor,
+            frames,
+            rects,
+            view_w,
+            view_h,
+            pointer_down,
+        );
         let shape_n = frames.iter().filter(|item| item.capture).count();
         if *ignoring != Some(ignore) && apply_ignore_cursor(window, ignore, shape_n) {
             *ignoring = Some(ignore);
@@ -3304,8 +3383,10 @@ pub fn reapply_live_input_shape(app: &AppHandle, hub: &InteractionHub) {
     #[cfg(not(target_os = "linux"))]
     {
         let (view_w, view_h) = view_css_size(&window);
-        let ignore =
-            windows_cursor_ignored(cursor, &frames, &rects, view_w, view_h, pointer_down);
+        // Read the press latch, do not advance it: the poll owns the edges.
+        let latched = pointer_down && PANEL_PRESS.load(Ordering::Relaxed);
+        let ignore = windows_cursor_ignored(cursor, &frames, &rects, view_w, view_h, pointer_down)
+            && !latched;
         let shape_n = frames.iter().filter(|item| item.capture).count();
         let _ = apply_ignore_cursor(&window, ignore, shape_n);
     }
@@ -3873,6 +3954,96 @@ mod tests {
         let cursor = Some((cx, cy));
         let frames = interaction_frame(false, &[], cursor, &rects, HIT_MARGIN_PX, &cfg);
         assert!(windows_cursor_ignored(cursor, &frames, &rects, view_w, view_h, false));
+    }
+
+    #[test]
+    fn panel_press_latch_starts_only_on_the_press_edge_and_ends_on_release() {
+        // Button goes down on a captured panel: latched.
+        assert!(panel_press_latch(false, true, false, true));
+        // Button goes down elsewhere: not latched.
+        assert!(!panel_press_latch(false, true, false, false));
+        // Held: keeps whatever the press edge decided, wherever the cursor is.
+        assert!(panel_press_latch(true, true, true, false));
+        assert!(!panel_press_latch(true, true, false, true));
+        // Released: always ends.
+        assert!(!panel_press_latch(true, false, true, true));
+        assert!(!panel_press_latch(false, false, true, true));
+    }
+
+    #[test]
+    fn panel_press_counts_a_captured_panel_not_an_orb_or_the_drag_rect() {
+        let cfg = InteractionConfig::default();
+        let panel = HitRect {
+            id: "panel:field".into(),
+            x: 200.0,
+            y: 40.0,
+            w: 420.0,
+            h: 560.0,
+            z: 1,
+            round: false,
+        };
+        let rects = vec![panel.clone()];
+        // The free corner grip sits 1px inside the box.
+        let grip = Some((619.0, 599.0));
+        let frames = interaction_frame(false, &[], grip, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(cursor_on_captured_panel(grip, &frames, &rects, 1024.0, 768.0));
+        // Ctrl held: the panel frame does not capture, so no latch (R-CT-05).
+        let held = interaction_frame(true, &[], grip, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(!cursor_on_captured_panel(grip, &held, &rects, 1024.0, 768.0));
+        // Far outside the panel: no latch.
+        let away = Some((900.0, 700.0));
+        let frames = interaction_frame(false, &[], away, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(!cursor_on_captured_panel(away, &frames, &rects, 1024.0, 768.0));
+        // An orb is not a panel.
+        let orb = vec![HitRect {
+            id: "bot:field".into(),
+            x: 100.0,
+            y: 100.0,
+            w: 44.0,
+            h: 44.0,
+            z: 0,
+            round: true,
+        }];
+        let on_orb = Some((122.0, 122.0));
+        let frames = interaction_frame(false, &[], on_orb, &orb, HIT_MARGIN_PX, &cfg);
+        assert!(!cursor_on_captured_panel(on_orb, &frames, &orb, 1024.0, 768.0));
+        // The full-view drag rect is not where a press began.
+        let full = vec![HitRect {
+            id: "panel:field".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 1024.0,
+            h: 768.0,
+            z: 1000,
+            round: false,
+        }];
+        let frames = interaction_frame(false, &[], away, &full, HIT_MARGIN_PX, &cfg);
+        assert!(!cursor_on_captured_panel(away, &frames, &full, 1024.0, 768.0));
+    }
+
+    #[test]
+    fn a_grow_drag_that_leaves_the_frozen_panel_rect_keeps_the_window() {
+        // R-PN-09: the frozen rect is the old 420x560 box. The cursor is 150px
+        // past its free corner with the button still down. Without the latch
+        // the window goes click-through; with it, it keeps capturing.
+        let cfg = InteractionConfig::default();
+        let rects = vec![HitRect {
+            id: "panel:field".into(),
+            x: 200.0,
+            y: 40.0,
+            w: 420.0,
+            h: 560.0,
+            z: 1,
+            round: false,
+        }];
+        let out = Some((770.0, 749.0));
+        let frames = interaction_frame(false, &[], out, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(windows_cursor_ignored(out, &frames, &rects, 1024.0, 768.0, true));
+        let latched = panel_press_latch(true, true, true, false);
+        assert!(!(windows_cursor_ignored(out, &frames, &rects, 1024.0, 768.0, true) && !latched));
+        // After release the same point is click-through again.
+        let released = panel_press_latch(true, false, latched, false);
+        assert!(windows_cursor_ignored(out, &frames, &rects, 1024.0, 768.0, false) && !released);
     }
 
     #[test]
