@@ -1358,15 +1358,17 @@ try {
         # The plan follows the re-cascaded box a beat after the reset (about
         # 2s on the runner). Read its × once it sits inside the published hit.
         $subCloser = $null
-        $deadline = (Get-Date).AddSeconds(8)
+        $prev = ""
+        $deadline = (Get-Date).AddSeconds(10)
         while ((Get-Date) -lt $deadline) {
+          Start-Sleep -Milliseconds 700
           $subCloser = Read-PlanClose $subBot
           $subHit = @(Read-HitRects | Where-Object { $_.id -eq "panel:$subBot" } | Select-Object -First 1)
-          if ($subCloser -and $subHit -and (Point-Inside $subCloser $subHit[0])) { break }
-          Start-Sleep -Milliseconds 250
+          $now = if ($subCloser -and $subHit) { "$($subCloser.x),$($subCloser.y) $($subHit[0].x),$($subHit[0].y),$($subHit[0].w)x$($subHit[0].h)" } else { "" }
+          # Same × and same hit on two reads 0.7s apart, and the × inside it.
+          if ($now -and $now -eq $prev -and (Point-Inside $subCloser $subHit[0])) { break }
+          $prev = $now
         }
-        Start-Sleep -Milliseconds 300
-        $subCloser = Read-PlanClose $subBot
         $subDrops = Count-Log "plan-hit-drop bot=$subBot "
         if ($subCloser) {
           Assert-Captured "suborb-plan-close" $subCloser.x $subCloser.y

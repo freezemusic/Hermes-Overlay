@@ -10836,6 +10836,7 @@ function hitsBlocked() {
 let stablePanelHits = null;
 
 function sendHitRects(rects, tag, force = false) {
+  if (debugFile.enabled) logMovedPlans();
   if (tag === "orb-dodge-return" && hitBlockReason() === "plan-open" && stablePanelHits?.length) {
     const orbs = rects.filter((rect) => {
       const id = String(rect.id || "");
@@ -11755,7 +11756,6 @@ function flushHits(tag = "flush") {
   }
   cancelAnimationFrame(hitFrame);
   publishHits(tag);
-  if (debugFile.enabled) logMovedPlans();
 }
 
 /** Debug log only: re-log plan-rect / plan-close-at when an open plan's box
