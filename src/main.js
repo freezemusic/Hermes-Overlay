@@ -273,6 +273,10 @@ import {
   botIdFromHit,
   POINTER_QUIET_MS,
   composerKeyAction,
+  composerKeyText,
+  composerFitHeight,
+  COMPOSER_MAX_PX,
+  COMPOSER_MIN_PX,
   chooseEscapePanel,
   escapeTarget,
   keepOverlayKeyTarget,
@@ -4022,6 +4026,7 @@ function logResizeHandles(shell) {
   // is-morphing stays while a docked plan holds the seam. The Windows CI
   // reads this line with the plan open, so only a collapse skips it.
   if (shell.classList.contains("is-collapsing")) return;
+  logComposerAt(shell);
   const parts = [];
   for (const handle of shell.querySelectorAll(":scope > .panel-resize")) {
     const box = handle.getBoundingClientRect();
@@ -4035,6 +4040,18 @@ function logResizeHandles(shell) {
   if (shell._resizeLogged === line) return;
   shell._resizeLogged = line;
   debugLog("resize-at", line);
+}
+
+/** R-CT-08 debug line for the Windows CI new-line check: where the composer is, in CSS px. No content. */
+function logComposerAt(shell) {
+  const field = shell.querySelector?.(".bot-panel [data-role='input']");
+  if (!field || field.tagName !== "TEXTAREA") return;
+  const box = field.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return;
+  const line = `id=${shell.dataset.hitId || ""} dpr=${window.devicePixelRatio || 1} at=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`;
+  if (shell._composerLogged === line) return;
+  shell._composerLogged = line;
+  debugLog("composer-at", line);
 }
 
 function bindResizeHandle(handle, shell) {
@@ -7015,6 +7032,7 @@ function wireBotPanel(panel, id) {
   });
   input?.addEventListener("keyup", syncSlashGhost);
   input?.addEventListener("click", syncSlashGhost);
+  installComposerFit(input);
   input?.addEventListener("keydown", (event) => {
     state.activeId = id;
     state.slashPanelId = id;
@@ -7032,7 +7050,7 @@ function wireBotPanel(panel, id) {
         renderSlashPopup();
         return;
       }
-      if (event.key === "Tab" || event.key === "Enter") {
+      if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229)) {
         const items = activeSlashItems();
         const picked = items[state.slashIndex];
         if (picked && picked.enabled !== false) {
@@ -7050,15 +7068,11 @@ function wireBotPanel(panel, id) {
         return;
       }
     }
-    if (event.key === "Enter" && composerKeyAction({
-      key: "Enter",
-      ctrlKey: event.ctrlKey,
-      altKey: event.altKey,
-      metaKey: event.metaKey,
-      activeIsComposer: true,
-      composerConnected: true,
-      osModifierDown: state.osModifierDown,
-    }) === "send") sendActive(id);
+    // Hermes Desktop composer: Enter sends, Shift+Enter is a new line, IME Enter commits.
+    if (composerEnterSends(event)) {
+      event.preventDefault();
+      sendActive(id);
+    }
   });
   installSessionMenu(panel, id);
   installNewSessionButton(panel, id);
@@ -8569,6 +8583,7 @@ async function sendActive(id = state.activeId) {
   if (action) {
     closeSlash();
     input.value = "";
+    fitComposer(input);
     input.placeholder = "輸入訊息給呢個 Bot…";
     state.slashArgsHint = "";
     syncSlashGhost();
@@ -8597,6 +8612,7 @@ async function sendActive(id = state.activeId) {
   if (busy && composeSkipsBusyQueue(text)) {
     closeSlash();
     input.value = "";
+    fitComposer(input);
     input.placeholder = "輸入訊息給呢個 Bot…";
     state.slashArgsHint = "";
     syncSlashGhost();
@@ -8612,6 +8628,7 @@ async function sendActive(id = state.activeId) {
     const pendingClarify = clarifyRoute.card;
     closeSlash();
     input.value = "";
+    fitComposer(input);
     input.placeholder = "輸入訊息給呢個 Bot…";
     state.slashArgsHint = "";
     syncSlashGhost();
@@ -8628,6 +8645,7 @@ async function sendActive(id = state.activeId) {
   if (busy && action?.command !== "stop" && !composeSkipsBusyQueue(text)) {
     closeSlash();
     input.value = "";
+    fitComposer(input);
     input.placeholder = "輸入訊息給呢個 Bot…";
     state.slashArgsHint = "";
     syncSlashGhost();
@@ -8636,6 +8654,7 @@ async function sendActive(id = state.activeId) {
   }
   closeSlash();
   input.value = "";
+  fitComposer(input);
   input.placeholder = "輸入訊息給呢個 Bot…";
   state.slashArgsHint = "";
   syncSlashGhost();
@@ -9708,15 +9727,24 @@ function syncSlashGhost() {
     ghost.textContent = "";
     return;
   }
+  const style = getComputedStyle(input);
+  // The args hint sits on the first line. A multi-line or scrolled textarea has nowhere to put it.
+  if (input.value.includes("\n") || input.scrollTop > 0) {
+    ghost.hidden = true;
+    ghost.textContent = "";
+    return;
+  }
   ghost.hidden = false;
   ghost.textContent = hint;
-  const style = getComputedStyle(input);
   const caret = input.selectionStart ?? input.value.length;
   const width = measureInputText(input.value.slice(0, caret), style);
   const pad = Number.parseFloat(style.paddingLeft) || 0;
   ghost.style.left = `${input.offsetLeft + pad + width - input.scrollLeft}px`;
+  const line = (Number.parseFloat(style.lineHeight) || 20)
+    + (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0)
+    + (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0);
   ghost.style.top = `${input.offsetTop}px`;
-  ghost.style.height = `${input.offsetHeight}px`;
+  ghost.style.height = `${Math.min(input.offsetHeight, Math.round(line))}px`;
   ghost.style.font = style.font;
 }
 
@@ -9803,6 +9831,7 @@ function completeSlash(command) {
   const input = slashInput();
   if (!input) return;
   input.value = completionText(command);
+  fitComposer(input);
   input.placeholder = "輸入訊息給呢個 Bot…";
   state.slashArgsHint = String(command.args_hint || "");
   input.focus();
@@ -9946,6 +9975,54 @@ function composerIsBusy(field) {
   return !!id && state.busy.has(id);
 }
 
+/** Field-level Enter for a bot or sub-orb composer (same rule as the window fallback). */
+function composerEnterSends(event) {
+  if (event.key !== "Enter") return false;
+  return composerKeyAction({
+    key: "Enter",
+    ctrlKey: event.ctrlKey,
+    altKey: event.altKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    isComposing: event.isComposing,
+    keyCode: event.keyCode,
+    activeIsComposer: true,
+    composerConnected: true,
+    osModifierDown: state.osModifierDown,
+  }) === "send";
+}
+
+/** Grow the composer textarea with its text up to COMPOSER_MAX_PX, then scroll. */
+function fitComposer(field) {
+  if (!field || field.tagName !== "TEXTAREA" || !field.isConnected) return;
+  const style = getComputedStyle(field);
+  const min = Number.parseFloat(style.minHeight) || COMPOSER_MIN_PX;
+  const max = Number.parseFloat(style.maxHeight) || COMPOSER_MAX_PX;
+  const border = (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0);
+  const before = field.offsetHeight;
+  field.style.height = "auto";
+  const fit = composerFitHeight({ scrollHeight: field.scrollHeight, border, min, max });
+  field.style.height = `${fit.height}px`;
+  field.style.overflowY = fit.scroll ? "auto" : "hidden";
+  field.dataset.fitWidth = String(field.clientWidth);
+  if (fit.height !== before) {
+    debugLog("composer-fit", `id=${field.closest(".morph")?.dataset?.botId || ""} h=${fit.height} lines=${field.value.split("\n").length} scroll=${fit.scroll ? 1 : 0}`);
+    scheduleHitSync();
+  }
+}
+
+function installComposerFit(field) {
+  if (!field || field.dataset.fit === "1") return;
+  field.dataset.fit = "1";
+  field.addEventListener("input", () => fitComposer(field));
+  field.addEventListener("focus", () => fitComposer(field));
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(() => {
+      if (field.dataset.fitWidth !== String(field.clientWidth)) fitComposer(field);
+    }).observe(field);
+  }
+}
+
 function setupComposer() {
   window.addEventListener("keydown", (event) => {
     if (!foreignFieldFocus() && event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
@@ -9957,6 +10034,9 @@ function setupComposer() {
       ctrlKey: event.ctrlKey,
       altKey: event.altKey,
       metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      isComposing: event.isComposing,
+      keyCode: event.keyCode,
       activeIsComposer: !!composerField && (document.activeElement === composerField || event.target === composerField),
       composerConnected: composerHostOpen(composerField),
       osModifierDown: state.osModifierDown,
@@ -9966,14 +10046,15 @@ function setupComposer() {
       return;
     }
     const shell = composerField?.closest?.(".morph");
-    if (!event.isComposing && !foreignFieldFocus() && composerField && ownComposerKey({
+    const composerOwnsNewline = composerField?.dataset?.role === "input";
+    if (!event.isComposing && !foreignFieldFocus() && composerField && (action !== "newline" || composerOwnsNewline) && ownComposerKey({
       action,
       busy: composerIsBusy(composerField),
       settling: composerShellSettling(shell),
     })) {
       event.preventDefault();
       restoreComposer();
-      insertComposerKey(composerField, event.key);
+      insertComposerKey(composerField, composerKeyText(action, event.key));
       debugLog("composer-own", `key=${event.key} busy=1 settling=1`);
       return;
     }
@@ -9992,6 +10073,12 @@ function setupComposer() {
         insertComposerKey(composerField, event.key);
         event.preventDefault();
       }
+    }
+    // Shift+Enter after focus slipped off the composer still lands as a new line in it.
+    if (action === "newline" && composerOwnsNewline && event.target !== composerField && !foreignFieldFocus() && !slashPopupOpen()) {
+      event.preventDefault();
+      restoreComposer();
+      insertComposerKey(composerField, composerKeyText(action, event.key));
     }
   }, true);
   window.addEventListener("keyup", (event) => {
@@ -13929,11 +14016,12 @@ function wireSuborbPanel(panel, id) {
       void cycleComposeMode(id);
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    if (composerEnterSends(event)) {
       event.preventDefault();
       void sendSuborb(id);
     }
   });
+  installComposerFit(input);
   installNewSessionButton(panel, id);
   // The panel is not registered yet, so paint the pin on this panel directly (it was blank).
   paintSuborbPin(id, panel);
@@ -14095,6 +14183,7 @@ async function sendSuborb(id) {
   if (!typed || !sub) return;
   const thread = threadFor(id);
   if (input) input.value = "";
+  fitComposer(input);
   const action = resolveClient(typed, state.catalog || []);
   if (action?.command === "stop") {
     await stopSuborb(id);
@@ -14118,6 +14207,7 @@ async function sendSuborb(id) {
   }
   if (clarifyRoute.action === "recover") {
     if (input) input.value = typed;
+    fitComposer(input);
     showActionError(CLARIFY_NOT_DELIVERED);
     renderChat(id);
     return;

@@ -125,9 +125,9 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 驗收（Windows）：高速錄影或者鍵盤事件時間戳對畫面，量 20 次，中位數 ≤100ms。
 - 狀態：❓ / ❓。盒：e3db750 app 段 ≤22ms ✅；總延遲 82.8ms（盒，v79）。
 
-**R-CT-08** 已聚焦嘅輸入框唔會因為撳／放 Ctrl 而失焦；放 Ctrl 後打嘅第一個字入到輸入框。Ctrl+Enter **唔送出**。
-- 來源：SPEC §1.6–1.7。
-- 驗收（兩邊）：Enter 送 10/10；Ctrl+Enter 送 0/6。
+**R-CT-08** 已聚焦嘅輸入框唔會因為撳／放 Ctrl 而失焦；放 Ctrl 後打嘅第一個字入到輸入框。Ctrl+Enter **唔送出**。Bot 面板同子光球面板嘅輸入框係多行 `textarea`，跟 Hermes Desktop composer：Enter 送出；Shift+Enter 換行（唔送）；中文輸入法選字嗰下 Enter（`isComposing`／keyCode 229）唔送；輸入框跟內容長高，最高 150px（Desktop `--composer-input-max-height: 9.375rem`），再多就喺框入面捲。斜線選單開住時 Enter／Tab 照舊揀指令（Shift+Enter 唔揀，換行）；Shift+Tab 照舊轉撰寫模式；有 live 澄清卡時送出照舊當答案（R-AP-06）；焦點唔喺輸入框時，視窗層 Enter 後備照舊送出，Shift+Enter 就喺輸入框加一行。送出之後輸入框縮返一行。
+- 來源：SPEC §1.6–1.7。Devon（2026-11-16 18:12 London）：「為什麼我不能在訊息輸入下一行」，決定「跟 Desktop」。Desktop 證據（NousResearch/hermes-agent `bf0203a794a07aac3ff764972ab9087baa4e4f4e`）：`apps/desktop/src/app/chat/composer/index.tsx:672-683`（composing 時 Enter 唔送）、`:703-705`（keyCode 229 唔送）、`:986-987`（`Enter && !shiftKey` 先 `preventDefault` 送出，Shift+Enter 落返原生換行）、`:1166`（`max-h-(--composer-input-max-height)`、`overflow-y-auto`、`whitespace-pre-wrap`）；`apps/desktop/src/styles.css:550-551`（最矮 1.625rem、最高 9.375rem）。Desktop 嘅 Ctrl+Enter 喺忙緊時排隊（`index.tsx:967-984`），overlay 保留 R-CT-08 嘅 Ctrl+Enter 唔送，冇跟。
+- 驗收（兩邊）：Enter 送 10/10；Ctrl+Enter 送 0/6。Shift+Enter 換行唔送；輸入法 Enter 唔送；打到超過 150px 出捲軸；子光球面板一樣。單元：`proximity.test.js`「R-CT-08 …」。Windows CI：撳 Bot 面板輸入框，打 `a`、Shift+Enter、`b`，debug log `composer-fit` 見 `lines=2`，而且冇送出。
 - 狀態：❓ / ✅(盒)。
 
 **R-CT-09** 讀唔到全域游標／修飾鍵（純 Wayland）時，overlay 保持可撳，唔入穿透。

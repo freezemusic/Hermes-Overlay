@@ -247,10 +247,10 @@ test("the composer mode chip cycles, and a side question skips the busy queue", 
   assert.doesNotMatch(html, /Debug|\/yolo|\/debug/);
   assert.match(css, /\.compose-mode-chip\[aria-pressed="true"\][^}]*background:\s*var\(--bot-10\)/);
   assert.match(css, /\.compose-mode-chip\[aria-pressed="true"\][^}]*#0000f2/);
-  assert.match(css, /\.composer\.is-compose-mode input[^}]*#0000f2/);
+  assert.match(css, /\.composer\.is-compose-mode textarea[^}]*#0000f2/);
   const keys = main.slice(main.indexOf('input?.addEventListener("keydown"'), main.indexOf("async function loadSoul"));
   const shift = keys.indexOf('event.shiftKey && (event.key === "Tab" || event.code === "Tab")');
-  const slashTab = keys.indexOf('event.key === "Tab" || event.key === "Enter"');
+  const slashTab = keys.indexOf('event.key === "Tab" || (event.key === "Enter" && !event.shiftKey');
   assert.ok(shift >= 0 && shift < slashTab);
   assert.match(keys, /cycleComposeMode\(id\)/);
   const send = main.slice(main.indexOf("async function sendActive"), main.indexOf("async function continueApiSession"));

@@ -1849,7 +1849,7 @@ html, body {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
-  align-items: center;
+  align-items: flex-end;
 }
 
 .readonly-note {
@@ -1877,7 +1877,7 @@ html, body {
   cursor: default;
 }
 
-.composer input,
+.composer textarea,
 .field input,
 .field select,
 .bot-row input {
@@ -1893,9 +1893,23 @@ html, body {
   transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
 }
 
-.composer input { flex: 1; min-width: 0; }
+/* Multi-line composer (Hermes Desktop: min 1 line, max 9.375rem = 150px, then
+   scroll). fitComposer sets the height; 7 + 20 + 7 + 2px border = 36px. */
+.composer textarea {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  min-height: 36px;
+  max-height: 150px;
+  padding: 7px var(--sp-3);
+  line-height: 20px;
+  overflow-y: hidden;
+  resize: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
-.composer input:disabled {
+.composer textarea:disabled {
   background: rgb(97 97 145 / .16);
   color: #616191;
   border-color: rgb(97 97 145 / .45);
@@ -1903,16 +1917,16 @@ html, body {
   cursor: default;
 }
 
-.composer input:disabled::placeholder {
+.composer textarea:disabled::placeholder {
   color: #616191;
 }
 
-.composer input::placeholder,
+.composer textarea::placeholder,
 .field input::placeholder,
 .bot-row input::placeholder,
 textarea::placeholder { color: var(--text-muted); font-weight: 400; }
 
-.composer input:focus,
+.composer textarea:focus,
 .field input:focus,
 .field select:focus,
 .session-select:focus,
@@ -1942,8 +1956,8 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   box-shadow: 0 0 0 1px #0000f2;
 }
 
-.composer.is-compose-mode input,
-.composer.is-compose-mode input:focus {
+.composer.is-compose-mode textarea,
+.composer.is-compose-mode textarea:focus {
   border-color: #0000f2;
   box-shadow: 0 0 0 3px var(--bot-10);
 }
