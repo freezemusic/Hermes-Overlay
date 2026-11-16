@@ -3,16 +3,21 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   clampPanelSize,
+  coversView,
+  dragCaptureRects,
   freeEdges,
   normalizePanelSizes,
   PANEL_MIN,
   panelResizeKind,
+  panelSizeKey,
   physicalPixelsOutside,
   RESIZE_CORNER_PX,
   RESIZE_EDGE_INSET_PX,
   RESIZE_EDGE_PX,
   resizeHandleBoxes,
   resizedSize,
+  settledDragRects,
+  SUBORB_PANEL_KEY,
   validPanelId,
 } from "./resize.js";
 const interactionRs = readFileSync(new URL("../src-tauri/src/interaction.rs", import.meta.url), "utf8");
@@ -248,4 +253,122 @@ test("R-PN-09 Windows: the debug log names handle boxes, and the Windows CI chec
   assert.match(clickthrough, /Assert-ThroughHeld "resize-ctrl-through"/);
   const hostZ = morph.slice(morph.indexOf("export function placePlanHost"), morph.indexOf("const PLAN_CONTROL_ROLES"));
   assert.match(hostZ, /const under = String\(Math\.max\(0, Number\.parseInt\(z, 10\) - 1\)\);/);
+});
+
+test("R-PN-09 grow: drag start swaps this panel's rects for one full-view rect and keeps the rest", () => {
+  const previous = [
+    { id: "bot:kanban", x: 490, y: 42, w: 44, h: 44, z: 0, round: true },
+    { id: "panel:field", x: 120, y: 42, w: 740, h: 560, z: 1, round: false },
+    { id: "close:field", x: 500, y: 50, w: 24, h: 24, z: 2, round: false },
+    { id: "settings", x: 300, y: 100, w: 400, h: 400, z: 1, round: false },
+  ];
+  const out = dragCaptureRects({
+    previous,
+    ids: ["panel:field", "panel:field", "close:field"],
+    id: "panel:field",
+    vw: 1024,
+    vh: 768,
+  });
+  assert.deepEqual(out.map((r) => r.id), ["bot:kanban", "settings", "panel:field"]);
+  assert.deepEqual(out.at(-1), { id: "panel:field", x: 0, y: 0, w: 1024, h: 768, z: 1000, round: false });
+  assert.ok(coversView(out.at(-1), 1024, 768));
+  // The frozen list itself is not changed.
+  assert.equal(previous.length, 4);
+  assert.equal(previous[1].w, 740);
+});
+
+test("R-PN-09 grow: drag end puts the panel back at its new size, never the full-view rect", () => {
+  const previous = [
+    { id: "bot:kanban", x: 490, y: 42, w: 44, h: 44, z: 0, round: true },
+    { id: "panel:field", x: 0, y: 0, w: 1024, h: 768, z: 1000, round: false },
+  ];
+  const grown = { id: "panel:field", x: 120, y: 42, w: 890, h: 690, z: 1, round: false };
+  const out = settledDragRects({ previous, ids: ["panel:field", "close:field"], rect: grown, vw: 1024, vh: 768 });
+  assert.deepEqual(out, [previous[0], grown]);
+  assert.ok(!out.some((r) => coversView(r, 1024, 768)));
+  // A point in the strip the grow added (old right edge 860, new 1010) is inside.
+  const strip = { x: 930, y: 300 };
+  const panel = out.find((r) => r.id === "panel:field");
+  assert.ok(strip.x >= panel.x && strip.x < panel.x + panel.w && strip.y >= panel.y && strip.y < panel.y + panel.h);
+  // An empty rect only drops the drag rect.
+  assert.deepEqual(settledDragRects({ previous, ids: ["panel:field"], rect: { id: "panel:field", x: 0, y: 0, w: 0, h: 0 }, vw: 1024, vh: 768 }), [previous[0]]);
+  assert.ok(!coversView({ x: 150, y: 66, w: 680, h: 660 }, 1024, 768));
+});
+
+test("R-PN-09 grow: resize and header drags capture and settle even while hits are frozen", () => {
+  const bind = main.slice(main.indexOf("function bindResizeHandle("), main.indexOf("function bindPanelDrag("));
+  assert.match(bind, /captureDragHits\(shell, "resize-start"\)/);
+  assert.match(bind, /settleDragHits\(shell, "resize-end"\)/);
+  assert.match(bind, /settleDragHits\(shell, "resize-reset"\)/);
+  assert.match(bind, /debugLog\("panel-resized"/);
+  const drag = main.slice(main.indexOf("function bindPanelDrag("), main.indexOf("function removeBotPanels("));
+  assert.match(drag, /captureDragHits\(shell, "header-drag-start"\)/);
+  assert.match(drag, /settleDragHits\(shell, "header-drag-end"\)/);
+  assert.doesNotMatch(drag, /flushHits\(\)/);
+  const capture = main.slice(main.indexOf("function captureDragHits("), main.indexOf("function settleDragHits("));
+  // Blocked or not, the full-view rect is sent; blocked goes straight to sendHitRects with force.
+  assert.match(capture, /const blocked = hitBlockReason\(\);/);
+  assert.match(capture, /dragCaptureRects\(/);
+  assert.match(capture, /sendHitRects\(rects, "drag-capture", true\)/);
+  const settle = main.slice(main.indexOf("function settleDragHits("), main.indexOf("function flushHits("));
+  assert.match(settle, /panelHitRect\(shell\)/);
+  assert.match(settle, /settledDragRects\(/);
+  assert.match(settle, /sendHitRects\(rects, "drag-settle", true\)/);
+  // The full-view capture never becomes the stable panel list a plan-open dodge reuses.
+  assert.match(main, /tag !== "orb-dodge-return" && tag !== "drag-capture"/);
+  assert.match(main, /debugLog\("panel-size-saved"/);
+});
+
+test("R-PN-09 grow: Rust keeps the window while a press that began on a panel is held", () => {
+  assert.match(interactionRs, /pub fn panel_press_latch\(/);
+  assert.match(interactionRs, /pub fn cursor_on_captured_panel\(/);
+  assert.match(interactionRs, /let ignore = windows_cursor_ignored_latched\(\s*\*ignoring == Some\(false\)/);
+  assert.match(interactionRs, /ignore && !latched/);
+});
+
+test("R-PN-09 grow: the Windows CI drags a free corner 150px out, with a plan open and with none", () => {
+  assert.match(clickthrough, /function Assert-GrowDrag\(/);
+  assert.match(clickthrough, /Assert-GrowDrag "grow-with-plan"/);
+  assert.match(clickthrough, /Assert-GrowDrag "grow-no-plan"/);
+  assert.match(clickthrough, /panel_sizes/);
+  assert.match(clickthrough, /\[ClickProbe\]::MoveTo\(/);
+});
+
+test("R-PN-09 sub-orb session panels resize and share one valid panel_sizes key", () => {
+  assert.equal(panelResizeKind("suborb:field:side-task", "suborb"), "chat");
+  assert.equal(panelSizeKey("suborb:field:side-task", "suborb"), SUBORB_PANEL_KEY);
+  assert.equal(panelSizeKey("suborb:researcher:api_123", "suborb"), SUBORB_PANEL_KEY);
+  assert.ok(validPanelId(SUBORB_PANEL_KEY));
+  // The +N chip has no panel.
+  assert.equal(panelResizeKind("suborb-more:field", "suborb"), "");
+  assert.equal(panelSizeKey("suborb-more:field", "suborb"), "");
+  // Main panels keep their own key; the schedule column still does not resize.
+  assert.equal(panelSizeKey("field"), "field");
+  assert.equal(panelSizeKey("kanban"), "kanban");
+  assert.equal(panelSizeKey("cron"), "");
+  // The raw sub-orb id is not a panel id, so it can never reach set_panel_size.
+  assert.ok(!validPanelId("suborb:field:side-task"));
+  // Sub-orb placement reads the shared size for the cascade and the box.
+  const place = main.slice(main.indexOf("function placeSuborbShell"), main.indexOf("function wireSuborbPanel"));
+  assert.match(place, /ensureResizeHandles\(shell\)/);
+  assert.match(place, /const panelBox = suborbPanelSize\(vw, vh\)/);
+  assert.match(place, /placeShell\(cx, cy, panelBox\.w, panelBox\.h, vw, vh\)/);
+  assert.match(place, /panelW: panelBox\.w,\s*panelH: panelBox\.h,/);
+  assert.match(main, /function suborbPanelSize\(vw, vh\) \{\s*return savedPanelSize\(SUBORB_PANEL_KEY, vw, vh\)/);
+  const bind = main.slice(main.indexOf("function bindResizeHandle("), main.indexOf("function bindPanelDrag("));
+  assert.match(bind, /const id = panelSizeKey\(bot, shell\.dataset\.kind\)/);
+  assert.match(main, /function ensureResizeHandles\(shell\) \{[^}]*panelSizeKey\(/s);
+});
+
+test("R-PN-09 the Windows CI grows a pinned fake sub-orb panel too", () => {
+  assert.match(clickthrough, /"suborb_pins": \{ "field": \["side-task"\] \}/);
+  assert.match(clickthrough, /Assert-GrowDrag "grow-suborb-no-plan" \$subBot "_suborb"/);
+  assert.match(clickthrough, /Assert-GrowDrag "grow-suborb-with-plan" \$subBot "_suborb"/);
+  const dash = readFileSync(new URL("../scripts/ci-fake-dashboard.mjs", import.meta.url), "utf8");
+  assert.match(dash, /id: "side-task"/);
+});
+
+test("R-PN-08 an instant (reduced-motion) collapse still commits the closed orb state", () => {
+  const instant = main.slice(main.indexOf("if (reducedMotion() || !(duration > 0)) {"), main.indexOf("if (armedDone) {"));
+  assert.match(instant, /if \(toState === "orb"\) commitClosedShell\(shell\);/);
 });

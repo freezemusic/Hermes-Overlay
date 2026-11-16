@@ -4,8 +4,9 @@
  * The orb stays where it is (the header slot is the anchor), so only the box
  * grows. Sizes are saved per panel in config.json `panel_sizes` through the
  * app's own `set_panel_size` command; a double-click on a handle goes back to
- * the design size. Sub-orb panels (cascade) and the schedule column (fits its
- * content) are not resizable.
+ * the design size. Sub-orb session panels resize too and share one size
+ * (SUBORB_PANEL_KEY, 2026-11-16); the schedule column (fits its content) does
+ * not resize.
  */
 
 /** Smallest box a drag may leave, per panel kind. */
@@ -24,9 +25,24 @@ export function validPanelId(id) {
   return text.length > 0 && text.length <= 128 && /^[A-Za-z0-9_.\-]+$/.test(text);
 }
 
+/**
+ * One `panel_sizes` key for every sub-orb session panel (Devon 2026-11-16
+ * 「你有確認子球框能拉嗎」). A sub-orb id is `suborb:<profile>:<session>`, which
+ * is not a valid panel id (no `:`), and per-session keys would pile up in
+ * config.json as sessions come and go. The cascade keeps one shared size.
+ */
+export const SUBORB_PANEL_KEY = "_suborb";
+
+/** The `panel_sizes` key a shell's size is stored under ("" = not resizable). */
+export function panelSizeKey(id, kind = "bot") {
+  if (kind === "suborb") return String(id ?? "").startsWith("suborb:") ? SUBORB_PANEL_KEY : "";
+  return panelResizeKind(id, kind) ? String(id) : "";
+}
+
 /** "" when the panel cannot be resized. */
 export function panelResizeKind(id, kind = "bot") {
-  if (kind === "suborb") return "";
+  // A sub-orb session panel is a chat panel; the +N chip has no panel.
+  if (kind === "suborb") return String(id ?? "").startsWith("suborb:") ? "chat" : "";
   if (id === "cron") return "";
   if (id === "kanban") return "kanban";
   if (id === "settings") return "settings";
@@ -148,4 +164,46 @@ export function physicalPixelsOutside(box, rect, scale = 1, origin = { x: 0, y: 
     }
   }
   return { total, outside };
+}
+
+/*
+ * R-PN-09 grow fix (Devon 2026-11-16 「到而家都未可以拉大個框」). Windows
+ * passes the cursor through unless it sits inside a published rect. A resize
+ * or header drag publishes one full-view rect for its shell so the pointer
+ * stays in the overlay once it leaves the old box. While hits are frozen (plan
+ * seam, announce silence, collapse, motion) the normal flush is skipped, so
+ * these two helpers build the list from the last published one instead.
+ */
+
+/** A rect that is the whole view (the drag capture shape). */
+export function coversView(rect, vw, vh) {
+  if (!rect || !(vw >= 1) || !(vh >= 1)) return false;
+  return rect.x <= 1 && rect.y <= 1 && rect.w >= vw - 2 && rect.h >= vh - 2;
+}
+
+function keepOthers(previous, ids, vw, vh) {
+  const drop = new Set((ids || []).filter(Boolean));
+  return (previous || [])
+    .filter((rect) => rect && !drop.has(rect.id) && !coversView(rect, vw, vh))
+    .map((rect) => ({ ...rect }));
+}
+
+/**
+ * Drag start: every other published rect stays, this shell's rects (panel,
+ * close) are replaced by one full-view rect under `id` (z 1000).
+ */
+export function dragCaptureRects({ previous = [], ids = [], id, vw, vh }) {
+  const out = keepOthers(previous, [id, ...ids], vw, vh);
+  out.push({ id, x: 0, y: 0, w: vw, h: vh, z: 1000, round: false });
+  return out;
+}
+
+/**
+ * Drag end: the full-view rect goes, and the shell's box at its new size or
+ * position (`rect`) takes its place, so the area a grow added catches clicks.
+ */
+export function settledDragRects({ previous = [], ids = [], rect, vw, vh }) {
+  const out = keepOthers(previous, [rect?.id, ...ids], vw, vh);
+  if (rect && rect.w >= 1 && rect.h >= 1) out.push({ ...rect });
+  return out;
 }

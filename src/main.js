@@ -189,7 +189,16 @@ import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkd
 import { DEMO_BANNER, SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
 import { chromeOrbText, DEMO_BANNER_EN, DEMO_BOTS_EN, DEMO_OLD_SESSION_EN, demoCommandEn, demoCronEn, demoKanbanEn, demoPlanEn, demoReplyEn, PREVIEW_BANNER, PREVIEW_BANNER_EN } from "./demo.js";
 import { applyTextSize, createTranslator, storedLanguage, storedTextSize, textScale, translate } from "./look.js";
-import { clampPanelSize, normalizePanelSizes, panelResizeKind, resizedSize } from "./resize.js";
+import {
+  clampPanelSize,
+  dragCaptureRects,
+  normalizePanelSizes,
+  panelResizeKind,
+  panelSizeKey,
+  resizedSize,
+  settledDragRects,
+  SUBORB_PANEL_KEY,
+} from "./resize.js";
 import {
   ORB_DODGE_EASE,
   ORB_DODGE_MS,
@@ -439,6 +448,7 @@ function boxSize(id) {
   const vh = window.innerHeight || 800;
   const custom = savedPanelSize(id, vw, vh);
   if (custom) return custom;
+  if (String(id ?? "").startsWith("suborb:")) return suborbPanelSize(vw, vh);
   if (id === "kanban") return { w: Math.min(960, vw * 0.8), h: Math.min(vh * 0.8, 760) };
   if (id === "cron") {
     const fitted = state.cronBoxH > 0 ? state.cronBoxH : 140;
@@ -1042,6 +1052,10 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       playContentIn(shell, 0);
       return moveOrbToHeader(shell, token).then(() => shell.dataset.morphToken === token);
     }
+    // No clip clock to finish: commit the closed state here, as the animated
+    // path does. Without it the shell kept state=panel after a reduced-motion
+    // close, so its sub-orb fan stayed tucked and off the hit list (R-SO-04).
+    if (toState === "orb") commitClosedShell(shell);
     return Promise.resolve(true);
   }
   if (armedDone) {
@@ -1190,6 +1204,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       playContentIn(shell, 0);
       return moveOrbToHeader(shell, token).then(() => shell.dataset.morphToken === token);
     }
+    if (toState === "orb" && shell.dataset.morphToken === token) commitClosedShell(shell);
     return Promise.resolve(shell.dataset.morphToken === token);
   }
   // Hits were announced before this clip. A per-frame hit rAF would stop
@@ -3836,6 +3851,8 @@ async function runShellMorph(shell, target) {
     const ok = await playClip(shell, current, step.state, reducedMotion() ? 0 : step.ms, token, step.ease || EASE);
     if (!ok || !alive()) {
       if (alive() && target === "orb") {
+        // The clip stopped early but this close is still current: land it.
+        if (shell.dataset.state !== "orb") commitClosedShell(shell);
         settleShell(shell, "orb");
         return true;
       }
@@ -3918,7 +3935,7 @@ const RESIZE_TIP = "拖拉改大小，雙擊還原";
 
 function ensureResizeHandles(shell) {
   if (!shell || shell._resizeBound) return;
-  if (!panelResizeKind(shell.dataset?.botId, shell.dataset?.kind)) return;
+  if (!panelSizeKey(shell.dataset?.botId, shell.dataset?.kind)) return;
   shell._resizeBound = 1;
   for (const dir of ["x", "y", "xy"]) {
     const handle = document.createElement("div");
@@ -3932,6 +3949,14 @@ function ensureResizeHandles(shell) {
 }
 
 /** Box for a new size. The anchor (orb centre) keeps its screen point. */
+/** Debug log only: the shell box after a resize. A sub-orb panel re-cascades
+ *  inside the work area, so its corner can move; CI checks this box. */
+function resizedBoxTag(shell) {
+  if (!debugFile.enabled || !shell) return "";
+  const box = shell.getBoundingClientRect();
+  return ` box=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`;
+}
+
 function applyPanelResize(shell, size, anchorScreen, anchor, header) {
   if (shell.dataset.dragged === "1") {
     const ax = anchor === "end" ? size.w - ORB / 2 : ORB / 2;
@@ -3954,6 +3979,8 @@ function applyPanelResize(shell, size, anchorScreen, anchor, header) {
     ay: placed?.anchor?.y || Number(shell.dataset.ay) || ORB / 2,
   }), "panel");
   if (shell.dataset.planOpen === "1") hostOpenPlan(shell);
+  // The plan can move with the box: log its new rect and × point (debug only).
+  if (shell.dataset.planOpen === "1" && debugFile.enabled) requestAnimationFrame(() => logPlanHitBox(shell));
   scheduleHitSync();
 }
 
@@ -3972,6 +3999,7 @@ async function persistPanelSize(id, size) {
     if (generation !== panelSizeWrite || !settings) return;
     state.settings = settings;
     delete state.panelSizes[id];
+    debugLog("panel-size-saved", size ? `bot=${id} w=${size.w} h=${size.h}` : `bot=${id} reset=1`);
   } catch (err) {
     if (generation !== panelSizeWrite) return;
     setBanner(String(err), "error");
@@ -4007,9 +4035,11 @@ function bindResizeHandle(handle, shell) {
   handle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     if (shell.dataset.state !== "panel" || shell.classList.contains("is-collapsing")) return;
-    const id = shell.dataset.botId;
-    const kind = panelResizeKind(id, shell.dataset.kind);
-    if (!kind) return;
+    const bot = shell.dataset.botId;
+    const kind = panelResizeKind(bot, shell.dataset.kind);
+    // Sub-orb session panels share one panel_sizes key (SUBORB_PANEL_KEY).
+    const id = panelSizeKey(bot, shell.dataset.kind);
+    if (!kind || !id) return;
     event.preventDefault();
     event.stopPropagation();
     const dir = handle.dataset.dir || "xy";
@@ -4037,7 +4067,9 @@ function bindResizeHandle(handle, shell) {
         state.dragHitId = shell.dataset.hitId || "";
         shell.classList.add("is-resizing");
         raisePanel(shell);
-        flushHits();
+        // Not flushHits: a plan seam or announce silence would skip it and
+        // leave the old box as the only capture, so a grow went click-through.
+        captureDragHits(shell, "resize-start");
       }
       const vw = window.innerWidth || 1280;
       const vh = window.innerHeight || 800;
@@ -4056,7 +4088,9 @@ function bindResizeHandle(handle, shell) {
       state.dragHitId = "";
       shell.classList.remove("is-resizing");
       separateOpenShells([...document.querySelectorAll(".morph")]);
-      flushHits();
+      settleDragHits(shell, "resize-end");
+      debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} from=${Math.round(start.w)}x${Math.round(start.h)} to=${last.w}x${last.h} key=${id}${resizedBoxTag(shell)}`);
+      logResizeHandles(shell);
       void persistPanelSize(id, last);
     };
     handle.addEventListener("pointermove", move);
@@ -4070,8 +4104,9 @@ function bindResizeHandle(handle, shell) {
   });
   handle.addEventListener("dblclick", (event) => {
     if (shell.dataset.state !== "panel") return;
-    const id = shell.dataset.botId;
-    if (!panelResizeKind(id, shell.dataset.kind)) return;
+    const bot = shell.dataset.botId;
+    const id = panelSizeKey(bot, shell.dataset.kind);
+    if (!panelResizeKind(bot, shell.dataset.kind) || !id) return;
     event.preventDefault();
     event.stopPropagation();
     const anchor = shell.dataset.anchor === "end" ? "end" : "start";
@@ -4083,7 +4118,9 @@ function bindResizeHandle(handle, shell) {
     state.panelSizes[id] = null;
     applyPanelResize(shell, boxSize(id), anchorScreen, anchor, header);
     separateOpenShells([...document.querySelectorAll(".morph")]);
-    flushHits();
+    settleDragHits(shell, "resize-reset");
+    debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} reset=1 key=${id}${resizedBoxTag(shell)}`);
+    logResizeHandles(shell);
     void persistPanelSize(id, null);
   });
 }
@@ -4117,7 +4154,7 @@ function bindPanelDrag(panel) {
         clearInnerPanelBox(panel, shell);
         state.dragHitId = shell.dataset.hitId || "";
         raisePanel(shell);
-        flushHits();
+        captureDragHits(shell, "header-drag-start");
         origin = shell.getBoundingClientRect();
         shell.style.right = "auto";
         shell.style.bottom = "auto";
@@ -4144,7 +4181,7 @@ function bindPanelDrag(panel) {
       rememberAnchor(shell);
       layoutShell(shell);
       separateOpenShells([...document.querySelectorAll(".morph")]);
-      flushHits();
+      settleDragHits(shell, "header-drag-end");
     };
     header.addEventListener("pointermove", move);
     header.addEventListener("pointerup", up);
@@ -10799,13 +10836,14 @@ function hitsBlocked() {
 let stablePanelHits = null;
 
 function sendHitRects(rects, tag, force = false) {
+  if (debugFile.enabled) logMovedPlans();
   if (tag === "orb-dodge-return" && hitBlockReason() === "plan-open" && stablePanelHits?.length) {
     const orbs = rects.filter((rect) => {
       const id = String(rect.id || "");
       return id.startsWith("bot:") || id.startsWith("pill:");
     });
     rects = orbs.concat(stablePanelHits.map((rect) => ({ ...rect })));
-  } else if (tag !== "orb-dodge-return") {
+  } else if (tag !== "orb-dodge-return" && tag !== "drag-capture") {
     const kept = rects.filter((rect) => {
       const id = String(rect.id || "");
       return id && !id.startsWith("bot:") && !id.startsWith("pill:");
@@ -10976,32 +11014,7 @@ function seatKanbanClose() {
 function announcePanelHits(shell) {
   seatKanbanClose();
   const id = hitFor(shell.dataset.botId, "panel");
-  const host = shell.getBoundingClientRect();
-  const rect = {
-    id,
-    x: host.x,
-    y: host.y,
-    w: host.width,
-    h: host.height,
-    z: 1,
-    round: false,
-  };
-  if (shell.dataset.planOpen === "1" && host.width >= 1) {
-    const width = Number(shell.dataset.planWidth) || planWidthPx();
-    const fitted = fittedPlanPane(host, width);
-    const union = unionOpenPlanRect(rect, {
-      open: true,
-      x: fitted.x,
-      y: fitted.y,
-      w: fitted.w,
-      h: fitted.h,
-    });
-    rect.x = union.x;
-    rect.y = union.y;
-    rect.w = union.w;
-    rect.h = union.h;
-  }
-  coverBottomFooter(rect, shell);
+  const rect = panelHitRect(shell);
   const closeId = `close:${shell.dataset.botId || ""}`;
   const docked = dockedPanelOrb(shell);
   const keep = collectHits().filter((item) => item.id !== shell.dataset.hitId && item.id !== id && item.id !== closeId && item.id !== docked?.id);
@@ -11039,6 +11052,39 @@ function announcePanelHits(shell) {
       );
     }));
   }
+}
+
+/** The panel's published box: the shell, plus a docked open plan, plus a
+ *  bottom header's footer. announcePanelHits and a settled drag share it. */
+function panelHitRect(shell) {
+  const id = hitFor(shell.dataset.botId, "panel");
+  const host = shell.getBoundingClientRect();
+  const rect = {
+    id,
+    x: host.x,
+    y: host.y,
+    w: host.width,
+    h: host.height,
+    z: 1,
+    round: false,
+  };
+  if (shell.dataset.planOpen === "1" && host.width >= 1) {
+    const width = Number(shell.dataset.planWidth) || planWidthPx();
+    const fitted = fittedPlanPane(host, width);
+    const union = unionOpenPlanRect(rect, {
+      open: true,
+      x: fitted.x,
+      y: fitted.y,
+      w: fitted.w,
+      h: fitted.h,
+    });
+    rect.x = union.x;
+    rect.y = union.y;
+    rect.w = union.w;
+    rect.h = union.h;
+  }
+  coverBottomFooter(rect, shell);
+  return rect;
 }
 
 function announceOrbHits(shell) {
@@ -11638,6 +11684,70 @@ function pauseHitSync() {
   hitFrame = 0;
 }
 
+/** Ids a dragged shell publishes: its own hit id, its panel id, its close. */
+function dragShellIds(shell) {
+  const bot = shell.dataset.botId || "";
+  return [shell.dataset.hitId || "", hitFor(bot, "panel"), `close:${bot}`];
+}
+
+/**
+ * R-PN-09 / R-PN-03: a resize or header drag owns the pointer from its first
+ * move. Unblocked, the normal flush already publishes the full-view drag rect
+ * (collectHits, state.dragHitId). Blocked by a plan seam, announce silence,
+ * a collapse or motion, that flush is skipped, so send the full-view rect
+ * over the frozen list directly. Without it a grow left the old box as the
+ * only capture and Windows went click-through after a few px.
+ */
+function captureDragHits(shell, tag = "drag-start") {
+  const id = shell?.dataset?.hitId || "";
+  if (!id) return;
+  const blocked = hitBlockReason();
+  if (!blocked) {
+    flushHits(tag);
+    return;
+  }
+  const rects = dragCaptureRects({
+    previous: lastHitList.length ? lastHitList : collectHits(),
+    ids: dragShellIds(shell),
+    id,
+    vw: window.innerWidth,
+    vh: window.innerHeight,
+  });
+  debugLog("hit-drag-capture", `bot=${shell.dataset.botId || ""} tag=${tag} reason=${blocked}`);
+  sendHitRects(rects, "drag-capture", true);
+}
+
+/**
+ * Drag end. Unblocked, a normal flush. Still frozen, replace the full-view
+ * rect with the panel's box at its new size and place, so the area a grow
+ * added catches clicks until the freeze ends and the next flush runs.
+ */
+function settleDragHits(shell, tag = "drag-end") {
+  if (!shell) return;
+  const blocked = hitBlockReason();
+  if (!blocked) {
+    flushHits(tag);
+    return;
+  }
+  if (shell.dataset.state !== "panel") {
+    flushHits(tag);
+    return;
+  }
+  const rect = panelHitRect(shell);
+  const rects = settledDragRects({
+    previous: lastHitList.length ? lastHitList : collectHits(),
+    ids: dragShellIds(shell),
+    rect,
+    vw: window.innerWidth,
+    vh: window.innerHeight,
+  });
+  debugLog(
+    "hit-drag-settle",
+    `bot=${shell.dataset.botId || ""} tag=${tag} reason=${blocked} x=${Math.round(rect.x)} y=${Math.round(rect.y)} w=${Math.round(rect.w)} h=${Math.round(rect.h)}`,
+  );
+  sendHitRects(rects, "drag-settle", true);
+}
+
 function flushHits(tag = "flush") {
   const blocked = hitBlockReason();
   if (blocked) {
@@ -11646,6 +11756,20 @@ function flushHits(tag = "flush") {
   }
   cancelAnimationFrame(hitFrame);
   publishHits(tag);
+}
+
+/** Debug log only: re-log plan-rect / plan-close-at when an open plan's box
+ *  moved (a re-cascaded sub-orb panel carries its plan). Once per change. */
+function logMovedPlans() {
+  document.querySelectorAll(".morph[data-plan-open='1']").forEach((shell) => {
+    const box = planNode(shell)?.getBoundingClientRect?.();
+    if (!box || box.width < 1 || box.height < 1) return;
+    const key = `${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`;
+    if (shell._planLoggedBox === key) return;
+    const first = !shell._planLoggedBox;
+    shell._planLoggedBox = key;
+    if (!first) logPlanHitBox(shell);
+  });
 }
 
 function modifierKeyName() {
@@ -12539,6 +12663,18 @@ function suborbOpenSessionIds(profile) {
   return ids;
 }
 
+/** Debug-only: why a sub-orb is or is not on the rail. Ids only, once per change. */
+function logSuborbView(profile, view, listed, mainId) {
+  if (!debugFile.enabled) return;
+  const shown = (view?.shown || []).map((row) => row.id).join(",");
+  const pins = pinsFor(profile).join(",");
+  const line = `profile=${profile} shown=${shown || "-"} pins=${pins || "-"} main=${mainId || "-"} listed=${(listed || []).length} parentOpen=${parentPanelOpen(profile) ? 1 : 0}`;
+  state.suborbViewLogged = state.suborbViewLogged || new Map();
+  if (state.suborbViewLogged.get(profile) === line) return;
+  state.suborbViewLogged.set(profile, line);
+  debugLog("suborb-view", line);
+}
+
 function sessionsForSuborbs(profile, listed) {
   const extra = state.suborbExtra.get(profile) || [];
   const seen = new Set((listed || []).map((row) => row.id));
@@ -12818,6 +12954,7 @@ function noteSuborbList(profile, sessions, mainId = "", goneIds = []) {
   state.suborbModels.set(profile, view.model);
   state.suborbViews = state.suborbViews || new Map();
   state.suborbViews.set(profile, view);
+  logSuborbView(profile, view, listed, mainId || threadFor(profile).sessionId || "");
   for (const row of view.peek) {
     void peekSuborbTail(profile, row);
   }
@@ -13014,6 +13151,16 @@ function renderSuborbs() {
     const slots = anchor ? fan.slots : [];
     const parentOpen = parentPanelOpen(bot.id);
     const look = suborbFanState({ mode: fan?.mode, held, parentOpen });
+    if (debugFile.enabled) {
+      const parentShells = [...document.querySelectorAll(`.morph[data-bot-id="${cssEscape(bot.id)}"]`)];
+      const parentLook = parentShells.map((item) => `${item.dataset.kind || "-"}/${item.dataset.state || "-"}/${item.dataset.opening || "-"}`).join("+");
+      const fanLine = `bot=${bot.id} look=${look} mode=${fan?.mode || "-"} anchor=${anchor ? 1 : 0} parentOpen=${parentOpen ? 1 : 0} parent=${parentLook} shown=${rows.length}`;
+      state.suborbFanLogged = state.suborbFanLogged || new Map();
+      if (state.suborbFanLogged.get(bot.id) !== fanLine) {
+        state.suborbFanLogged.set(bot.id, fanLine);
+        debugLog("suborb-fan", fanLine);
+      }
+    }
     state.suborbFanModes.set(bot.id, fan?.mode || "fan");
     const badge = fan?.badge;
     const homeOf = (slot) => (look === "collapsed" && badge ? badge : slot);
@@ -13557,10 +13704,12 @@ function releaseSuborbGlow(shell) {
 
 function placeSuborbShell(shell) {
   if (!shell) return null;
+  ensureResizeHandles(shell);
   if (shell.dataset.dragged === "1") return clampDraggedShell(shell);
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
   const size = suborbSizePx(ORB);
+  const panelBox = suborbPanelSize(vw, vh);
   const homeX = Number(shell.dataset.homeX);
   const homeY = Number(shell.dataset.homeY);
   const openPanel = shell.dataset.state === "panel" || shell.dataset.opening === "panel";
@@ -13570,7 +13719,7 @@ function placeSuborbShell(shell) {
   const cx = centre ? centre.x : (Number.isFinite(homeX) ? homeX : 8) + size / 2;
   const cy = centre ? centre.y : (Number.isFinite(homeY) ? homeY : 8) + size / 2;
   shell.style.setProperty("--suborb-size", `${size}px`);
-  const placed = placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
+  const placed = placeShell(cx, cy, panelBox.w, panelBox.h, vw, vh);
   const origin = openPanel ? cascadeOriginBox(shell, size, vw, vh) || placed : placed;
   const box = openPanel
     ? placeSuborbCascade({
@@ -13581,8 +13730,8 @@ function placeSuborbShell(shell) {
       index: openSuborbPanelIndex(shell),
       screenW: vw,
       screenH: vh,
-      panelW: PANEL_W,
-      panelH: PANEL_H,
+      panelW: panelBox.w,
+      panelH: panelBox.h,
       insetTop: state.workInsets?.top || 0,
       insetRight: state.workInsets?.right || 0,
       insetBottom: state.workInsets?.bottom || 0,
@@ -13706,14 +13855,19 @@ function openSuborbPanelIndex(shell) {
 }
 
 /** The panel box at the first open sub-orb's disc home; every cascade step starts there. */
-function cascadeOriginBox(shell, size, vw, vh) {
+function cascadeOriginBox(shell, size, vw, vh, box = suborbPanelSize(vw, vh)) {
   const first = suborbCascadeOrigin(openSuborbShells(), shell);
   if (!first) return null;
   const homeX = Number(first.dataset.homeX);
   const homeY = Number(first.dataset.homeY);
   const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2;
   const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
-  return placeShell(cx, cy, PANEL_W, PANEL_H, vw, vh);
+  return placeShell(cx, cy, box.w, box.h, vw, vh);
+}
+
+/** R-PN-09: every sub-orb session panel uses the one saved size, else the design size. */
+function suborbPanelSize(vw, vh) {
+  return savedPanelSize(SUBORB_PANEL_KEY, vw, vh) || { w: PANEL_W, h: PANEL_H };
 }
 
 function openSuborbPanel(id) {
@@ -16146,6 +16300,13 @@ async function boot() {
       closeCron();
     });
   }
+  // Debug log only: a throw inside a frame callback is otherwise silent.
+  window.addEventListener("error", (event) => {
+    if (debugFile.enabled) debugLog("js-error", `${event.message || "error"} at ${event.lineno || 0}:${event.colno || 0}`);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    if (debugFile.enabled) debugLog("js-reject", String(event.reason?.message || event.reason || "rejected").slice(0, 200));
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopKanbanPoll();

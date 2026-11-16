@@ -46,6 +46,7 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
     "session_anchor": 0.0,
     "enabled": true
   }],
+  "suborb_pins": { "field": ["side-task"] },
   "interaction": {
     "modifier": "ctrl",
     "fade_enabled": true,
@@ -230,6 +231,29 @@ public static class ClickProbe {
     up.u.mi.dwFlags = MOUSEEVENTF_LEFTUP;
     SendInput(1, new[] { down }, Marshal.SizeOf(typeof(INPUT)));
     SendInput(1, new[] { up }, Marshal.SizeOf(typeof(INPUT)));
+  }
+  [DllImport("user32")] public static extern int GetSystemMetrics(int index);
+  public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+  public static void Down() {
+    var down = new INPUT { type = INPUT_MOUSE };
+    down.u.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    SendInput(1, new[] { down }, Marshal.SizeOf(typeof(INPUT)));
+  }
+  public static void Up() {
+    var up = new INPUT { type = INPUT_MOUSE };
+    up.u.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    SendInput(1, new[] { up }, Marshal.SizeOf(typeof(INPUT)));
+  }
+  // A real move to a screen pixel (absolute SendInput, no pointer ballistics),
+  // so a held button drags the way a hand does.
+  public static void MoveTo(int x, int y) {
+    int sw = Math.Max(2, GetSystemMetrics(0));
+    int sh = Math.Max(2, GetSystemMetrics(1));
+    var move = new INPUT { type = INPUT_MOUSE };
+    move.u.mi.dx = (int)Math.Round(x * 65535.0 / (sw - 1));
+    move.u.mi.dy = (int)Math.Round(y * 65535.0 / (sh - 1));
+    move.u.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+    SendInput(1, new[] { move }, Marshal.SizeOf(typeof(INPUT)));
   }
   public static void Ctrl(bool down) {
     var input = new INPUT { type = INPUT_KEYBOARD };
@@ -673,6 +697,12 @@ function Assert-Outside([string]$label, $rect) {
       if (Point-Inside $p $other) { $inside = $true; break }
     }
     if ($inside) { continue }
+    # A rect published after the first read (the header × zone lands a beat
+    # after the panel) is a real hit, not a click-through miss.
+    [ClickProbe]::SetCursorPos($p.x, $p.y) | Out-Null
+    Start-Sleep -Milliseconds 300
+    $late = @(Read-HitRects | Where-Object { Point-Inside $p $_ } | Select-Object -First 1)
+    if ($late) { continue }
     $checked++
     Assert-Through "$label-$($p.name)" $p.x $p.y
   }
@@ -787,6 +817,206 @@ function Assert-Orb([string]$label, $orbPoint) {
     return
   }
   Note-Ok $label ""
+}
+
+function Read-PanelResized([string]$bot) {
+  if (-not (Test-Path $log)) { return $null }
+  $hit = Select-String -Path $log -Pattern "panel-resized bot=$bot .*from=" | Select-Object -Last 1
+  if (-not $hit) { return $null }
+  $m = [regex]::Match($hit.Line, 'from=(?<fw>\d+)x(?<fh>\d+) to=(?<tw>\d+)x(?<th>\d+)')
+  if (-not $m.Success) { return $null }
+  # box= is the shell box the app laid out after the drag (a sub-orb panel
+  # re-cascades inside the work area, so its corner can move).
+  $b = [regex]::Match($hit.Line, 'box=(?<x>-?\d+),(?<y>-?\d+),(?<w>\d+)x(?<h>\d+)')
+  $laid = if ($b.Success) { @{ x = [int]$b.Groups['x'].Value; y = [int]$b.Groups['y'].Value; w = [int]$b.Groups['w'].Value; h = [int]$b.Groups['h'].Value } } else { $null }
+  return @{
+    fw = [int]$m.Groups['fw'].Value; fh = [int]$m.Groups['fh'].Value
+    tw = [int]$m.Groups['tw'].Value; th = [int]$m.Groups['th'].Value
+    box = $laid
+  }
+}
+
+function Read-SavedPanelSize([string]$bot) {
+  $path = Join-Path $configDir "config.json"
+  if (-not (Test-Path $path)) { return $null }
+  try { $cfg = Get-Content $path -Raw | ConvertFrom-Json } catch { return $null }
+  if (-not $cfg.panel_sizes) { return $null }
+  $size = $cfg.panel_sizes.$bot
+  if (-not $size) { return $null }
+  return @{ w = [int]$size.w; h = [int]$size.h }
+}
+
+function Grip-Point($handles) {
+  $cx = if ($handles.anchor -eq "end") { $handles.xy.x + $handles.xy.w - 2 } else { $handles.xy.x + 1 }
+  $cy = if ($handles.header -eq "bottom") { $handles.xy.y + $handles.xy.h - 2 } else { $handles.xy.y + 1 }
+  return @{ x = [int][Math]::Round($cx * $handles.dpr); y = [int][Math]::Round($cy * $handles.dpr) }
+}
+
+# R-PN-09 grow (Devon 2026-11-16 「到而家都未可以拉大個框」). A real press on
+# the free corner grip, 150px outward in 10px moves, then release. Before the
+# fix the overlay went click-through as soon as the cursor left the frozen
+# panel rect, so a grow stopped after a few px while a shrink worked. Checks:
+# the panel grew, the size reached config.json panel_sizes through
+# set_panel_size, the published rect grew, and a plain click in the strip the
+# grow added stays in the overlay. A double-click on the moved grip then puts
+# the design size back, so the checks after this one see the usual geometry.
+function Assert-GrowDrag([string]$label, [string]$bot = "field", [string]$key = "") {
+  if (-not $key) { $key = $bot }
+  $id = "panel:$bot"
+  $handles = $null
+  $deadline = (Get-Date).AddSeconds(8)
+  while ((Get-Date) -lt $deadline) {
+    $handles = Read-ResizeAt $id
+    if ($handles -and $handles.xy) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  if (-not ($handles -and $handles.xy)) {
+    Note-Fail $label "debug log has no resize-at id=$id with an xy grip"
+    return
+  }
+  $old = @(Read-HitRects | Where-Object { $_.id -eq $id } | Select-Object -First 1)
+  if (-not $old) {
+    Note-Fail $label "$id is not in the hit list before the drag"
+    return
+  }
+  $old = $old[0]
+  $sx = if ($handles.anchor -eq "end") { -1 } else { 1 }
+  $sy = if ($handles.header -eq "bottom") { -1 } else { 1 }
+  $grip = Grip-Point $handles
+  $step = [Math]::Max(1, [int][Math]::Round(10 * $handles.dpr))
+  $resizedBefore = Count-Log "panel-resized bot=$bot .*from="
+  $behindBefore = Click-Count
+  [ClickProbe]::Ctrl($false)
+  [ClickProbe]::SetCursorPos($grip.x, $grip.y) | Out-Null
+  Start-Sleep -Milliseconds 350
+  [ClickProbe]::MoveTo($grip.x, $grip.y)
+  Start-Sleep -Milliseconds 150
+  [ClickProbe]::Down()
+  try {
+    Start-Sleep -Milliseconds 120
+    for ($i = 1; $i -le 15; $i++) {
+      [ClickProbe]::MoveTo($grip.x + $sx * $step * $i, $grip.y + $sy * $step * $i)
+      Start-Sleep -Milliseconds 30
+    }
+    Start-Sleep -Milliseconds 200
+  } finally {
+    [ClickProbe]::Up()
+  }
+  Start-Sleep -Milliseconds 300
+  if ((Click-Count) -gt $behindBefore) {
+    Note-Fail $label "the press or release at the grip ($($grip.x),$($grip.y)) reached Behind"
+  }
+  if (-not (Wait-Count "panel-resized bot=$bot .*from=" $resizedBefore 4)) {
+    Note-Fail $label "no panel-resized line after a 150px drag from ($($grip.x),$($grip.y)) sx=$sx sy=$sy"
+    return
+  }
+  $size = Read-PanelResized $bot
+  if (-not $size) {
+    Note-Fail $label "unreadable panel-resized line"
+    return
+  }
+  $dw = $size.tw - $size.fw
+  $dh = $size.th - $size.fh
+  if ($dw -lt 100 -or $dh -lt 0) {
+    Note-Fail $label "panel went $($size.fw)x$($size.fh) -> $($size.tw)x$($size.th) (dw=$dw dh=$dh), expected at least +100 wide"
+  } else {
+    Note-Ok $label "$($size.fw)x$($size.fh) -> $($size.tw)x$($size.th)"
+  }
+  $saved = $null
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $deadline) {
+    $saved = Read-SavedPanelSize $key
+    if ($saved -and $saved.w -eq $size.tw -and $saved.h -eq $size.th) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  if (-not ($saved -and $saved.w -eq $size.tw -and $saved.h -eq $size.th)) {
+    $got = if ($saved) { "$($saved.w)x$($saved.h)" } else { "none" }
+    Note-Fail "$label-saved" "config.json panel_sizes.$key is $got, expected $($size.tw)x$($size.th)"
+  } else {
+    Note-Ok "$label-saved" "panel_sizes.$key $($saved.w)x$($saved.h)"
+  }
+  # The panel box before and after, from the grip and the logged sizes. The
+  # anchored sides stay put. An open plan can flip to the other side when the
+  # grown panel leaves no room for it, so the published union need not widen
+  # by the full drag; it must cover the whole grown panel box.
+  if ($sx -gt 0) { $pl = $handles.xy.x + $handles.xy.w - $size.fw; $nl = $pl } else { $pl = $handles.xy.x; $nl = $pl + $size.fw - $size.tw }
+  if ($sy -gt 0) { $pt = $handles.xy.y + $handles.xy.h - $size.fh; $nt = $pt } else { $pt = $handles.xy.y; $nt = $pt + $size.fh - $size.th }
+  $box = @{ x = $nl; y = $nt; w = $size.tw; h = $size.th }
+  if ($size.box -and $size.box.w -ge ($size.tw - 2) -and $size.box.h -ge ($size.th - 2)) {
+    $box = $size.box
+    $pl = if ($sx -gt 0) { $box.x } else { $box.x + $box.w - $size.fw }
+  }
+  $grown = $null
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $deadline) {
+    $grown = @(Read-HitRects | Where-Object {
+      $_.id -eq $id -and -not ($_.x -le 0 -and $_.y -le 0 -and $_.w -ge ($w - 2) -and $_.h -ge ($h - 2)) -and
+      $_.x -le ($box.x + 2) -and $_.y -le ($box.y + 2) -and
+      ($_.x + $_.w) -ge ($box.x + $box.w - 2) -and ($_.y + $_.h) -ge ($box.y + $box.h - 2)
+    } | Select-Object -First 1)
+    if ($grown) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  if (-not $grown) {
+    $now = @(Read-HitRects | Where-Object { $_.id -eq $id } | Select-Object -First 1)
+    $nowText = if ($now) { "$($now[0].x),$($now[0].y) $($now[0].w)x$($now[0].h)" } else { "missing" }
+    Note-Fail "$label-hit" "$id is $nowText, does not cover the grown panel $($box.x),$($box.y) $($box.w)x$($box.h) (was $($old.x),$($old.y) $($old.w)x$($old.h))"
+  } else {
+    $grown = $grown[0]
+    Note-Ok "$label-hit" "$id $($old.x),$($old.y) $($old.w)x$($old.h) -> $($grown.x),$($grown.y) $($grown.w)x$($grown.h) covers panel $($box.x),$($box.y) $($box.w)x$($box.h)"
+    $orbs = @(Read-HitRects | Where-Object { $_.id -like "bot:*" })
+    $half = [int][Math]::Floor(($size.tw - $size.fw) / 2)
+    $nx = if ($sx -gt 0) { [int]($pl + $size.fw + $half) } else { [int]($pl - $half) }
+    $probe = $null
+    foreach ($f in @(0.5, 0.35, 0.65, 0.8)) {
+      $cand = @{ x = [int][Math]::Round($nx * $handles.dpr); y = [int][Math]::Round(($box.y + $box.h * $f) * $handles.dpr) }
+      if ($cand.x -lt 2 -or $cand.y -lt 2 -or $cand.x -ge ($w - 2) -or $cand.y -ge ($h - 48)) { continue }
+      if (-not (Point-Inside $cand $grown)) { continue }
+      if (-not (Clear-OfOrbs $cand $orbs)) { continue }
+      $probe = $cand
+      break
+    }
+    if (-not $probe) {
+      Note-Fail "$label-new-area" "no point in the added strip clear of the orbs"
+    } else {
+      Assert-Captured "$label-new-area" $probe.x $probe.y
+    }
+  }
+  # Put the design size back: double-click the grip where the grow left it.
+  $moved = $null
+  $deadline = (Get-Date).AddSeconds(6)
+  while ((Get-Date) -lt $deadline) {
+    $moved = Read-ResizeAt $id
+    if ($moved -and $moved.xy -and ([Math]::Abs($moved.xy.x - $handles.xy.x) -ge 50)) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  if (-not ($moved -and $moved.xy -and ([Math]::Abs($moved.xy.x - $handles.xy.x) -ge 50))) {
+    Note-Fail "$label-reset" "resize-at for $id did not move with the grow"
+    return
+  }
+  $resetBefore = Count-Log "panel-resized bot=$bot hit=\S* reset=1"
+  $grip2 = Grip-Point $moved
+  [ClickProbe]::SetCursorPos($grip2.x, $grip2.y) | Out-Null
+  Start-Sleep -Milliseconds 350
+  [ClickProbe]::Click()
+  Start-Sleep -Milliseconds 60
+  [ClickProbe]::Click()
+  if (-not (Wait-Count "panel-resized bot=$bot hit=\S* reset=1" $resetBefore 4)) {
+    Note-Fail "$label-reset" "double-click at ($($grip2.x),$($grip2.y)) did not reset the size"
+    return
+  }
+  $deadline = (Get-Date).AddSeconds(5)
+  $left = $true
+  while ((Get-Date) -lt $deadline) {
+    if (-not (Read-SavedPanelSize $key)) { $left = $false; break }
+    Start-Sleep -Milliseconds 200
+  }
+  if ($left) {
+    Note-Fail "$label-reset" "config.json still has panel_sizes.$key after the reset"
+  } else {
+    Note-Ok "$label-reset" "($($grip2.x),$($grip2.y))"
+  }
+  Start-Sleep -Milliseconds 500
 }
 
 $overlay = $null
@@ -967,6 +1197,8 @@ try {
           Assert-Captured "resize-plain-click" $edgePoint.x $edgePoint.y
           Assert-ThroughHeld "resize-ctrl-through" $edgePoint.x $edgePoint.y
         }
+        # R-PN-09 grow with the plan open (the seam froze hits before the fix).
+        Assert-GrowDrag "grow-with-plan" "field"
       }
       # Kanban's orb sits under the field panel on a 1024px runner.
       # Ctrl+click must reach that orb (R-CT-02), not the window behind.
@@ -1028,6 +1260,8 @@ try {
         # The blank point is clear only while the plan is shut. 睇計劃
         # opens it to the left on this runner and covers (16,384) again.
         Assert-Empty "bot-panel-open"
+        # R-PN-09 grow with no plan open.
+        Assert-GrowDrag "grow-no-plan" "field"
         if (-not (Wait-Count "plan-chip-at bot=field " 0 8)) {
           Note-Fail "plan-reopen" "debug log has no plan-chip-at for field"
         } else {
@@ -1089,6 +1323,87 @@ try {
     Assert-Through "escape-former" $gx $gy
   }
   Assert-Empty "after-escape"
+  # R-PN-09 / R-SO-09 (Devon 2026-11-16 「你有確認子球框能拉嗎」): a sub-orb
+  # session panel grows too. config.json pins side-task (an old fake row,
+  # never the main session) as a sub-orb of field, so its disc is on the rail
+  # once the field panel is shut. Every sub-orb panel shares panel_sizes._suborb.
+  $subBot = "suborb:field:side-task"
+  $subOrb = $null
+  $deadline = (Get-Date).AddSeconds(20)
+  while ((Get-Date) -lt $deadline -and -not $subOrb) {
+    $subOrb = @(Read-HitRects | Where-Object { $_.id -eq "bot:$subBot" -and $_.w -gt 0 } | Select-Object -First 1)
+    if (-not $subOrb) { Start-Sleep -Milliseconds 200 }
+  }
+  if (-not $subOrb) {
+    $why = @(Select-String -Path $log -Pattern "suborb-(view|fan) |js-error|js-reject" | Select-Object -Last 8 | ForEach-Object { $_.Line -replace '^.*t=[0-9.]+ ', '' }) -join " | "
+    Note-Fail "suborb-visible" "bot:$subBot never reached the hit list; last views: $why"
+  } else {
+    $subOrb = $subOrb[0]
+    Note-Ok "suborb-visible" "$($subOrb.x),$($subOrb.y) $($subOrb.w)x$($subOrb.h)"
+    $subPoint = @{ x = [int]($subOrb.x + $subOrb.w / 2); y = [int]($subOrb.y + $subOrb.h / 2) }
+    $subPlanBefore = Count-Log "plan-close-at bot=$subBot "
+    $subRect = $null
+    for ($try = 0; $try -lt 3 -and -not $subRect; $try++) {
+      Assert-Orb "suborb-open" $subPoint
+      $subRect = Wait-PanelRect "panel:$subBot" 200 800
+      if ($subRect -and $subRect.h -lt 200) { $subRect = $null }
+    }
+    if (-not $subRect) {
+      Note-Fail "suborb-opened" "hit-rects never published panel:$subBot with height >= 200"
+    } else {
+      Note-Ok "suborb-opened" "$($subRect.x),$($subRect.y) $($subRect.w)x$($subRect.h)"
+      if (Wait-Count "plan-close-at bot=$subBot " $subPlanBefore 10) {
+        Note-Ok "suborb-plan-opened" ""
+        Assert-GrowDrag "grow-suborb-with-plan" $subBot "_suborb"
+        # The plan follows the re-cascaded box a beat after the reset (about
+        # 2s on the runner). Read its × once it sits inside the published hit.
+        $subCloser = $null
+        $prev = ""
+        $deadline = (Get-Date).AddSeconds(10)
+        while ((Get-Date) -lt $deadline) {
+          Start-Sleep -Milliseconds 700
+          $subCloser = Read-PlanClose $subBot
+          $subHit = @(Read-HitRects | Where-Object { $_.id -eq "panel:$subBot" } | Select-Object -First 1)
+          $now = if ($subCloser -and $subHit) { "$($subCloser.x),$($subCloser.y) $($subHit[0].x),$($subHit[0].y),$($subHit[0].w)x$($subHit[0].h)" } else { "" }
+          # Same × and same hit on two reads 0.7s apart, and the × inside it.
+          if ($now -and $now -eq $prev -and (Point-Inside $subCloser $subHit[0])) { break }
+          $prev = $now
+        }
+        $subDrops = Count-Log "plan-hit-drop bot=$subBot "
+        if ($subCloser) {
+          Assert-Captured "suborb-plan-close" $subCloser.x $subCloser.y
+          if (-not (Wait-Count "plan-hit-drop bot=$subBot " $subDrops 8)) {
+            Note-Fail "suborb-plan-closed" "x did not drop the sub-orb plan hit rect"
+          } else {
+            Note-Ok "suborb-plan-closed" "$($subCloser.x),$($subCloser.y)"
+          }
+        } else {
+          Note-Fail "suborb-plan-closed" "no plan-close-at point for $subBot"
+        }
+      } else {
+        Note-Ok "suborb-plan-opened" "no plan hosted on the sub-orb panel; plan case not run"
+      }
+      Assert-GrowDrag "grow-suborb-no-plan" $subBot "_suborb"
+      # Shut the sub-orb panel: plain click in it for focus, then Escape.
+      $subNow = @(Read-HitRects | Where-Object { $_.id -eq "panel:$subBot" } | Select-Object -First 1)
+      if ($subNow) {
+        $sfx = [int]($subNow[0].x + 48)
+        $sfy = [int]($subNow[0].y + [Math]::Min(240, [Math]::Max(24, $subNow[0].h - 80)))
+        [ClickProbe]::SetCursorPos($sfx, $sfy) | Out-Null
+        Start-Sleep -Milliseconds 200
+        [ClickProbe]::Click()
+        Start-Sleep -Milliseconds 300
+      }
+      [ClickProbe]::Tap(0x1B)
+      if (-not (Wait-IdGone "panel:$subBot" 6)) {
+        [ClickProbe]::Tap(0x1B)
+        if (-not (Wait-IdGone "panel:$subBot" 6)) {
+          Note-Fail "suborb-closed" "panel:$subBot stayed after Escape"
+        } else { Note-Ok "suborb-closed" "" }
+      } else { Note-Ok "suborb-closed" "" }
+      Start-Sleep -Milliseconds 600
+    }
+  }
   $remain = 32 - ((Get-Date) - $revealedAt).TotalSeconds
   if ($remain -gt 0) { Start-Sleep -Seconds $remain }
   Assert-Empty "reveal+32s"
