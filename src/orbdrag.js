@@ -311,7 +311,8 @@ function spotFree(point, covers, others, bounds, opts) {
   const box = haloBox(point, opts);
   const padded = { x: box.x - gap, y: box.y - gap, w: box.w + gap * 2, h: box.h + gap * 2 };
   if ((covers || []).some((cover) => validCover(cover) && intersects(padded, cover))) return false;
-  const radius = (opts.orb ?? ORB) / 2;
+  // `disc` is the drawn disc (a sub-orb is smaller); `orb` stays the cover size.
+  const radius = (opts.disc ?? opts.orb ?? ORB) / 2;
   return !(others || []).some((other) => {
     if (!other) return false;
     const otherR = Number.isFinite(other.r) ? other.r : radius;
@@ -326,9 +327,9 @@ function spotFree(point, covers, others, bounds, opts) {
  * sliding along a side past neighbouring orbs, then a ring search. null when
  * nothing fits (the caller keeps the old fade-to-0 as a last resort).
  */
-export function findDodgeSpot(home, { covers = [], others = [], screen = {}, orb = ORB, halo = ORB_HALO_PX, gap = ORB_DODGE_GAP_PX } = {}) {
+export function findDodgeSpot(home, { covers = [], others = [], screen = {}, orb = ORB, halo = ORB_HALO_PX, gap = ORB_DODGE_GAP_PX, disc = orb } = {}) {
   if (!home) return null;
-  const opts = { orb, halo, gap };
+  const opts = { orb, halo, gap, disc };
   const bounds = orbBounds({ ...screen, orb });
   const reach = orb / 2 + halo + gap + 1;
   const step = orb + ORB_DISC_GAP_PX + 2;
@@ -388,12 +389,21 @@ export function findDodgeSpot(home, { covers = [], others = [], screen = {}, orb
  * boxes. Uncovered orbs stay home. Covered orbs get a dodge spot that keeps
  * clear of every other orb's spot (earlier dodges included). A covered orb
  * that is already parked on a still-valid spot keeps it, so a panel that
- * grows by a pixel does not make the orbs hop. `null` spot = no room (fade).
+ * grows by a pixel does not make the orbs hop. `null` spot = no room (fade). *
+ * An item may carry `parent` (the profile id) and `follows: true` (a sub-orb
+ * that has never been dropped, so it rides the parent's fan). Such a follower
+ * never blocks its own parent: its home is worked out from wherever the
+ * parent sits, so counting it would push the parent off every spot it picks
+ * and the pair would hop forever (Devon 2026-11-16 「光球在跳」: 608,986 <->
+ * 608,928 every ~0.5 s). Dropped sub-orbs (`follows` false) still block.
  */
 function dodgeMeasure(item, opts) {
   const orb = Number(item?.orb) > 0 ? item.orb : (opts.orb ?? ORB);
   const halo = item && Object.prototype.hasOwnProperty.call(item, "halo") ? item.halo : (opts.halo ?? ORB_HALO_PX);
-  return { orb, halo, gap: opts.gap ?? ORB_DODGE_GAP_PX };
+  // R-OB-08: the cover check keeps the 44px disc + 34px halo for sub-orbs too
+  // (Devon 2026-11-13). `disc` is the drawn size, used only for disc-to-disc air.
+  const disc = Number(item?.disc) > 0 ? item.disc : orb;
+  return { orb, halo, gap: opts.gap ?? ORB_DODGE_GAP_PX, disc };
 }
 
 export function planOrbDodges(orbs, covers, screen = {}, opts = {}) {
@@ -406,21 +416,74 @@ export function planOrbDodges(orbs, covers, screen = {}, opts = {}) {
     if (pointCovered(item.home, covers, own)) covered.push(item);
     else {
       out.set(item.id, { spot: item.home, dodged: false });
-      taken.push({ x: item.home.x, y: item.home.y, r: own.orb / 2 });
+      taken.push({ x: item.home.x, y: item.home.y, r: own.disc / 2, owner: followerOwner(item) });
     }
   }
   for (const item of covered) {
     const own = dodgeMeasure(item, opts);
     const bounds = orbBounds({ ...screen, orb: own.orb });
-    const fresh = findDodgeSpot(item.home, { covers, others: taken, screen, ...own });
+    // A parent's own fan moves with it, so it is not an obstacle for that parent.
+    const others = taken.filter((other) => !(other.owner && other.owner === item.id));
+    const fresh = findDodgeSpot(item.home, { covers, others, screen, ...own });
     const parked = item.current
       && !(Math.abs(item.current.x - item.home.x) < 0.5 && Math.abs(item.current.y - item.home.y) < 0.5)
-      && spotFree(item.current, covers, taken, bounds, { orb: own.orb, halo: own.halo, gap: 0 });
+      && spotFree(item.current, covers, others, bounds, { orb: own.orb, halo: own.halo, gap: 0, disc: own.disc });
     const far = (p) => Math.hypot(p.x - item.home.x, p.y - item.home.y);
     // Hysteresis: a parked orb stays unless the new spot is clearly nearer home.
     const spot = parked && (!fresh || far(item.current) <= far(fresh) + ORB_DODGE_KEEP_PX) ? item.current : fresh;
     out.set(item.id, { spot, dodged: true });
-    if (spot) taken.push({ x: spot.x, y: spot.y, r: own.orb / 2 });
+    if (spot) taken.push({ x: spot.x, y: spot.y, r: own.disc / 2, owner: followerOwner(item) });
   }
   return out;
+}
+
+/** The parent a fan follower rides with, else null (a main orb or a dropped sub-orb). */
+function followerOwner(item) {
+  return item?.follows === true && typeof item.parent === "string" && item.parent ? item.parent : null;
+}
+
+/** A parked dodge that flips back to a spot it left this recently counts as a hop. */
+export const ORB_DODGE_SETTLE_MS = 2000;
+/** Hops to one spot inside ORB_DODGE_SETTLE_MS before the orb is held still. */
+export const ORB_DODGE_MAX_RETURNS = 2;
+
+function spotKey(point) {
+  return point ? `${Math.round(point.x)},${Math.round(point.y)}` : "home";
+}
+
+/** Rounded cover boxes: the dodge gate resets whenever a panel moves, opens or closes. */
+export function dodgeCoverKey(covers) {
+  return (covers || [])
+    .filter(validCover)
+    .map((c) => `${Math.round(c.x)},${Math.round(c.y)},${Math.round(c.w)},${Math.round(c.h)}`)
+    .sort()
+    .join("|");
+}
+
+/**
+ * R-OB-08 settle guard. Planning is meant to be stable on its own; this is the
+ * belt and braces. With the same covers, an orb that keeps going back to a
+ * spot it left inside ORB_DODGE_SETTLE_MS is held where it is after
+ * ORB_DODGE_MAX_RETURNS returns, until the covers change.
+ */
+export function createDodgeSettle({ windowMs = ORB_DODGE_SETTLE_MS, maxReturns = ORB_DODGE_MAX_RETURNS } = {}) {
+  const seen = new Map();
+  return {
+    allow(id, target, { now = Date.now(), coverKey = "" } = {}) {
+      let entry = seen.get(id);
+      if (!entry || entry.coverKey !== coverKey) {
+        entry = { coverKey, moves: [] };
+        seen.set(id, entry);
+      }
+      entry.moves = entry.moves.filter((move) => now - move.t <= windowMs);
+      const key = spotKey(target);
+      const returns = entry.moves.filter((move) => move.key === key).length;
+      if (returns >= maxReturns) return false;
+      entry.moves.push({ key, t: now });
+      return true;
+    },
+    forget(id) {
+      seen.delete(id);
+    },
+  };
 }

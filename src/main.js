@@ -208,6 +208,8 @@ import {
   orbDragAllowed,
   orbDraggable,
   planOrbDodges,
+  createDodgeSettle,
+  dodgeCoverKey,
   boxCentre,
   separateSuborbDrop,
   suborbRestCentre,
@@ -11371,6 +11373,8 @@ function restingMainOrb(shell) {
  * orbs. Once home is clear again the orb slides back. With no free spot the
  * old behaviour stays: the orb fades to 0 under the panel (R-OB-05).
  */
+const orbDodgeSettle = createDodgeSettle();
+
 function reconcileOrbDodges() {
   // A parent dodge glide is already moving. Re-planning here would cancel it.
   if (parentGlideHold > 0) return;
@@ -11390,13 +11394,27 @@ function reconcileOrbDodges() {
     shells.sort((a, b) => String(a.dataset.botId).localeCompare(String(b.dataset.botId)));
     const orbs = shells.map((shell) => {
       const sub = shell.dataset.kind === "suborb";
-      return {
-        id: shell.dataset.botId,
-        home: sub ? suborbHomeCentre(shell) : homeOrbPoint(shell.dataset.botId),
-        current: state.orbDodge[shell.dataset.botId] || null,
+      const id = shell.dataset.botId;
+      const item = {
+        id,
+        home: sub ? suborbHomeCentre(shell) : homeOrbPoint(id),
+        current: state.orbDodge[id] || null,
       };
+      if (sub) {
+        // Real disc size for disc-to-disc air. The cover check stays 44px + 34px halo.
+        item.disc = suborbSizePx(ORB);
+        // A never-dropped sub-orb rides its parent's fan: it must not block that parent.
+        const parent = parseSuborbId(id)?.profile;
+        if (parent) {
+          item.parent = parent;
+          item.follows = !suborbPlacedFree(id);
+        }
+      }
+      return item;
     }).filter((item) => item.home);
     const plan = planOrbDodges(orbs, covers, orbScreen());
+    const coverKey = dodgeCoverKey(covers);
+    const now = performance.now();
     let moved = 0;
     for (const shell of shells) {
       const id = shell.dataset.botId;
@@ -11405,6 +11423,11 @@ function reconcileOrbDodges() {
       const prev = state.orbDodge[id] || null;
       if (!target && !prev) continue;
       if (target && prev && Math.abs(target.x - prev.x) < 0.5 && Math.abs(target.y - prev.y) < 0.5) continue;
+      // Belt and braces: same covers, same spot again and again = a loop. Hold still.
+      if (!orbDodgeSettle.allow(id, target, { now, coverKey })) {
+        debugLog("orb-dodge-hold", `id=${id} to=${target ? `${target.x},${target.y}` : "home"}`);
+        continue;
+      }
       const from = orbCentre(shell);
       if (target) state.orbDodge[id] = { x: target.x, y: target.y };
       else delete state.orbDodge[id];
