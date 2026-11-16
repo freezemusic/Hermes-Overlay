@@ -13084,6 +13084,7 @@ function suborbFanHidden(shell) {
 
 function setFanState(shell, look) {
   if (shell.dataset.fan === look) return;
+  if (debugFile.enabled) debugLog("suborb-fan-state", `id=${shell.dataset.botId || ""} from=${shell.dataset.fan || "-"} to=${look} state=${shell.dataset.state || ""}`);
   shell.dataset.fan = look;
 }
 
@@ -13119,6 +13120,14 @@ function renderSuborbs() {
     const slots = anchor ? fan.slots : [];
     const parentOpen = parentPanelOpen(bot.id);
     const look = suborbFanState({ mode: fan?.mode, held, parentOpen });
+    if (debugFile.enabled) {
+      const fanLine = `bot=${bot.id} look=${look} mode=${fan?.mode || "-"} anchor=${anchor ? 1 : 0} parentOpen=${parentOpen ? 1 : 0} shown=${rows.length}`;
+      state.suborbFanLogged = state.suborbFanLogged || new Map();
+      if (state.suborbFanLogged.get(bot.id) !== fanLine) {
+        state.suborbFanLogged.set(bot.id, fanLine);
+        debugLog("suborb-fan", fanLine);
+      }
+    }
     state.suborbFanModes.set(bot.id, fan?.mode || "fan");
     const badge = fan?.badge;
     const homeOf = (slot) => (look === "collapsed" && badge ? badge : slot);

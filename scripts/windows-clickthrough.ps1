@@ -1320,7 +1320,7 @@ try {
     if (-not $subOrb) { Start-Sleep -Milliseconds 200 }
   }
   if (-not $subOrb) {
-    $why = @(Select-String -Path $log -Pattern "suborb-view profile=field " | Select-Object -Last 3 | ForEach-Object { $_.Line -replace '^.*suborb-view ', '' }) -join " | "
+    $why = @(Select-String -Path $log -Pattern "suborb-(view|fan|fan-state) " | Select-Object -Last 6 | ForEach-Object { $_.Line -replace '^.*t=[0-9.]+ ', '' }) -join " | "
     Note-Fail "suborb-visible" "bot:$subBot never reached the hit list; last views: $why"
   } else {
     $subOrb = $subOrb[0]
