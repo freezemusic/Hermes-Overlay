@@ -9,6 +9,7 @@ import {
   normalizePanelSizes,
   PANEL_MIN,
   panelResizeKind,
+  panelSizeKey,
   physicalPixelsOutside,
   RESIZE_CORNER_PX,
   RESIZE_EDGE_INSET_PX,
@@ -16,6 +17,7 @@ import {
   resizeHandleBoxes,
   resizedSize,
   settledDragRects,
+  SUBORB_PANEL_KEY,
   validPanelId,
 } from "./resize.js";
 const interactionRs = readFileSync(new URL("../src-tauri/src/interaction.rs", import.meta.url), "utf8");
@@ -330,4 +332,38 @@ test("R-PN-09 grow: the Windows CI drags a free corner 150px out, with a plan op
   assert.match(clickthrough, /Assert-GrowDrag "grow-no-plan"/);
   assert.match(clickthrough, /panel_sizes/);
   assert.match(clickthrough, /\[ClickProbe\]::MoveTo\(/);
+});
+
+test("R-PN-09 sub-orb session panels resize and share one valid panel_sizes key", () => {
+  assert.equal(panelResizeKind("suborb:field:side-task", "suborb"), "chat");
+  assert.equal(panelSizeKey("suborb:field:side-task", "suborb"), SUBORB_PANEL_KEY);
+  assert.equal(panelSizeKey("suborb:researcher:api_123", "suborb"), SUBORB_PANEL_KEY);
+  assert.ok(validPanelId(SUBORB_PANEL_KEY));
+  // The +N chip has no panel.
+  assert.equal(panelResizeKind("suborb-more:field", "suborb"), "");
+  assert.equal(panelSizeKey("suborb-more:field", "suborb"), "");
+  // Main panels keep their own key; the schedule column still does not resize.
+  assert.equal(panelSizeKey("field"), "field");
+  assert.equal(panelSizeKey("kanban"), "kanban");
+  assert.equal(panelSizeKey("cron"), "");
+  // The raw sub-orb id is not a panel id, so it can never reach set_panel_size.
+  assert.ok(!validPanelId("suborb:field:side-task"));
+  // Sub-orb placement reads the shared size for the cascade and the box.
+  const place = main.slice(main.indexOf("function placeSuborbShell"), main.indexOf("function wireSuborbPanel"));
+  assert.match(place, /ensureResizeHandles\(shell\)/);
+  assert.match(place, /const panelBox = suborbPanelSize\(vw, vh\)/);
+  assert.match(place, /placeShell\(cx, cy, panelBox\.w, panelBox\.h, vw, vh\)/);
+  assert.match(place, /panelW: panelBox\.w,\s*panelH: panelBox\.h,/);
+  assert.match(main, /function suborbPanelSize\(vw, vh\) \{\s*return savedPanelSize\(SUBORB_PANEL_KEY, vw, vh\)/);
+  const bind = main.slice(main.indexOf("function bindResizeHandle("), main.indexOf("function bindPanelDrag("));
+  assert.match(bind, /const id = panelSizeKey\(bot, shell\.dataset\.kind\)/);
+  assert.match(main, /function ensureResizeHandles\(shell\) \{[^}]*panelSizeKey\(/s);
+});
+
+test("R-PN-09 the Windows CI grows a pinned fake sub-orb panel too", () => {
+  assert.match(clickthrough, /"suborb_pins": \{ "field": \["side-task"\] \}/);
+  assert.match(clickthrough, /Assert-GrowDrag "grow-suborb-no-plan" \$subBot "_suborb"/);
+  assert.match(clickthrough, /Assert-GrowDrag "grow-suborb-with-plan" \$subBot "_suborb"/);
+  const dash = readFileSync(new URL("../scripts/ci-fake-dashboard.mjs", import.meta.url), "utf8");
+  assert.match(dash, /id: "side-task"/);
 });
