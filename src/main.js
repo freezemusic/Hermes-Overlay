@@ -11755,6 +11755,21 @@ function flushHits(tag = "flush") {
   }
   cancelAnimationFrame(hitFrame);
   publishHits(tag);
+  if (debugFile.enabled) logMovedPlans();
+}
+
+/** Debug log only: re-log plan-rect / plan-close-at when an open plan's box
+ *  moved (a re-cascaded sub-orb panel carries its plan). Once per change. */
+function logMovedPlans() {
+  document.querySelectorAll(".morph[data-plan-open='1']").forEach((shell) => {
+    const box = planNode(shell)?.getBoundingClientRect?.();
+    if (!box || box.width < 1 || box.height < 1) return;
+    const key = `${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`;
+    if (shell._planLoggedBox === key) return;
+    const first = !shell._planLoggedBox;
+    shell._planLoggedBox = key;
+    if (!first) logPlanHitBox(shell);
+  });
 }
 
 function modifierKeyName() {

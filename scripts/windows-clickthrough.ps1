@@ -1356,7 +1356,7 @@ try {
         Note-Ok "suborb-plan-opened" ""
         Assert-GrowDrag "grow-suborb-with-plan" $subBot "_suborb"
         # The plan follows the re-cascaded box; read its × after the reset.
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 1500
         $subCloser = Read-PlanClose $subBot
         $subDrops = Count-Log "plan-hit-drop bot=$subBot "
         if ($subCloser) {
