@@ -3949,6 +3949,14 @@ function ensureResizeHandles(shell) {
 }
 
 /** Box for a new size. The anchor (orb centre) keeps its screen point. */
+/** Debug log only: the shell box after a resize. A sub-orb panel re-cascades
+ *  inside the work area, so its corner can move; CI checks this box. */
+function resizedBoxTag(shell) {
+  if (!debugFile.enabled || !shell) return "";
+  const box = shell.getBoundingClientRect();
+  return ` box=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`;
+}
+
 function applyPanelResize(shell, size, anchorScreen, anchor, header) {
   if (shell.dataset.dragged === "1") {
     const ax = anchor === "end" ? size.w - ORB / 2 : ORB / 2;
@@ -3971,6 +3979,8 @@ function applyPanelResize(shell, size, anchorScreen, anchor, header) {
     ay: placed?.anchor?.y || Number(shell.dataset.ay) || ORB / 2,
   }), "panel");
   if (shell.dataset.planOpen === "1") hostOpenPlan(shell);
+  // The plan can move with the box: log its new rect and × point (debug only).
+  if (shell.dataset.planOpen === "1" && debugFile.enabled) requestAnimationFrame(() => logPlanHitBox(shell));
   scheduleHitSync();
 }
 
@@ -4079,7 +4089,7 @@ function bindResizeHandle(handle, shell) {
       shell.classList.remove("is-resizing");
       separateOpenShells([...document.querySelectorAll(".morph")]);
       settleDragHits(shell, "resize-end");
-      debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} from=${Math.round(start.w)}x${Math.round(start.h)} to=${last.w}x${last.h} key=${id}`);
+      debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} from=${Math.round(start.w)}x${Math.round(start.h)} to=${last.w}x${last.h} key=${id}${resizedBoxTag(shell)}`);
       logResizeHandles(shell);
       void persistPanelSize(id, last);
     };
@@ -4109,7 +4119,7 @@ function bindResizeHandle(handle, shell) {
     applyPanelResize(shell, boxSize(id), anchorScreen, anchor, header);
     separateOpenShells([...document.querySelectorAll(".morph")]);
     settleDragHits(shell, "resize-reset");
-    debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} reset=1 key=${id}`);
+    debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} reset=1 key=${id}${resizedBoxTag(shell)}`);
     logResizeHandles(shell);
     void persistPanelSize(id, null);
   });

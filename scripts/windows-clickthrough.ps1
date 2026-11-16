@@ -697,6 +697,12 @@ function Assert-Outside([string]$label, $rect) {
       if (Point-Inside $p $other) { $inside = $true; break }
     }
     if ($inside) { continue }
+    # A rect published after the first read (the header × zone lands a beat
+    # after the panel) is a real hit, not a click-through miss.
+    [ClickProbe]::SetCursorPos($p.x, $p.y) | Out-Null
+    Start-Sleep -Milliseconds 300
+    $late = @(Read-HitRects | Where-Object { Point-Inside $p $_ } | Select-Object -First 1)
+    if ($late) { continue }
     $checked++
     Assert-Through "$label-$($p.name)" $p.x $p.y
   }
@@ -819,9 +825,14 @@ function Read-PanelResized([string]$bot) {
   if (-not $hit) { return $null }
   $m = [regex]::Match($hit.Line, 'from=(?<fw>\d+)x(?<fh>\d+) to=(?<tw>\d+)x(?<th>\d+)')
   if (-not $m.Success) { return $null }
+  # box= is the shell box the app laid out after the drag (a sub-orb panel
+  # re-cascades inside the work area, so its corner can move).
+  $b = [regex]::Match($hit.Line, 'box=(?<x>-?\d+),(?<y>-?\d+),(?<w>\d+)x(?<h>\d+)')
+  $laid = if ($b.Success) { @{ x = [int]$b.Groups['x'].Value; y = [int]$b.Groups['y'].Value; w = [int]$b.Groups['w'].Value; h = [int]$b.Groups['h'].Value } } else { $null }
   return @{
     fw = [int]$m.Groups['fw'].Value; fh = [int]$m.Groups['fh'].Value
     tw = [int]$m.Groups['tw'].Value; th = [int]$m.Groups['th'].Value
+    box = $laid
   }
 }
 
@@ -931,11 +942,15 @@ function Assert-GrowDrag([string]$label, [string]$bot = "field", [string]$key = 
   if ($sx -gt 0) { $pl = $handles.xy.x + $handles.xy.w - $size.fw; $nl = $pl } else { $pl = $handles.xy.x; $nl = $pl + $size.fw - $size.tw }
   if ($sy -gt 0) { $pt = $handles.xy.y + $handles.xy.h - $size.fh; $nt = $pt } else { $pt = $handles.xy.y; $nt = $pt + $size.fh - $size.th }
   $box = @{ x = $nl; y = $nt; w = $size.tw; h = $size.th }
+  if ($size.box -and $size.box.w -ge ($size.tw - 2) -and $size.box.h -ge ($size.th - 2)) {
+    $box = $size.box
+    $pl = if ($sx -gt 0) { $box.x } else { $box.x + $box.w - $size.fw }
+  }
   $grown = $null
   $deadline = (Get-Date).AddSeconds(5)
   while ((Get-Date) -lt $deadline) {
     $grown = @(Read-HitRects | Where-Object {
-      $_.id -eq $id -and $_.w -lt ($w - 2) -and
+      $_.id -eq $id -and -not ($_.x -le 0 -and $_.y -le 0 -and $_.w -ge ($w - 2) -and $_.h -ge ($h - 2)) -and
       $_.x -le ($box.x + 2) -and $_.y -le ($box.y + 2) -and
       ($_.x + $_.w) -ge ($box.x + $box.w - 2) -and ($_.y + $_.h) -ge ($box.y + $box.h - 2)
     } | Select-Object -First 1)
@@ -1340,6 +1355,8 @@ try {
       if (Wait-Count "plan-close-at bot=$subBot " $subPlanBefore 10) {
         Note-Ok "suborb-plan-opened" ""
         Assert-GrowDrag "grow-suborb-with-plan" $subBot "_suborb"
+        # The plan follows the re-cascaded box; read its × after the reset.
+        Start-Sleep -Milliseconds 500
         $subCloser = Read-PlanClose $subBot
         $subDrops = Count-Log "plan-hit-drop bot=$subBot "
         if ($subCloser) {
