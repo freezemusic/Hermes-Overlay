@@ -367,3 +367,8 @@ test("R-PN-09 the Windows CI grows a pinned fake sub-orb panel too", () => {
   const dash = readFileSync(new URL("../scripts/ci-fake-dashboard.mjs", import.meta.url), "utf8");
   assert.match(dash, /id: "side-task"/);
 });
+
+test("R-PN-08 an instant (reduced-motion) collapse still commits the closed orb state", () => {
+  const instant = main.slice(main.indexOf("if (reducedMotion() || !(duration > 0)) {"), main.indexOf("if (armedDone) {"));
+  assert.match(instant, /if \(toState === "orb"\) commitClosedShell\(shell\);/);
+});

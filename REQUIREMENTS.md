@@ -180,7 +180,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-PN-07** 上緣同下緣面板同時開，可見外緣之間淨空 ≥12px（計埋角標同計劃視窗）。淨空要縮短面板先做到、又會跌穿高度下限時，改為重疊，唔可以再壓扁。
 - 來源：美術監督 PR3、PR3b；SPEC §2.7。驗收（盒）：1:1 截圖量。狀態：❓ / ❓。
 
-**R-PN-08** 冇閒置循環動畫；`prefers-reduced-motion` 只做淡入淡出。
+**R-PN-08** 冇閒置循環動畫；`prefers-reduced-motion` 只做淡入淡出。減少動畫（或者收合長度係 0）時面板即刻收返光球，但收起狀態一樣要寫：殼即刻變返 `data-state=orb`，子光球扇即刻由收埋返出嚟、返入命中區（2026-11-16 Windows CI：之前即時收合冇寫，殼一直係 panel，釘住嘅子光球關咗母面板之後永遠唔再出）。
 - 來源：DESIGN-SPEC §4–5；SPEC §2.10。驗收（盒）：全部收合閒置 10s，`document.getAnimations()` 入面 infinite 嘅數量 = 0，錄影 AE=0。狀態：❓ / ❓。
 
 ---

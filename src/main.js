@@ -1052,6 +1052,10 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       playContentIn(shell, 0);
       return moveOrbToHeader(shell, token).then(() => shell.dataset.morphToken === token);
     }
+    // No clip clock to finish: commit the closed state here, as the animated
+    // path does. Without it the shell kept state=panel after a reduced-motion
+    // close, so its sub-orb fan stayed tucked and off the hit list (R-SO-04).
+    if (toState === "orb") commitClosedShell(shell);
     return Promise.resolve(true);
   }
   if (armedDone) {
@@ -1200,6 +1204,7 @@ function playClip(shell, fromState, toState, duration, token, easing = EASE) {
       playContentIn(shell, 0);
       return moveOrbToHeader(shell, token).then(() => shell.dataset.morphToken === token);
     }
+    if (toState === "orb" && shell.dataset.morphToken === token) commitClosedShell(shell);
     return Promise.resolve(shell.dataset.morphToken === token);
   }
   // Hits were announced before this clip. A per-frame hit rAF would stop
@@ -13084,18 +13089,10 @@ function suborbFanHidden(shell) {
 
 function setFanState(shell, look) {
   if (shell.dataset.fan === look) return;
-  if (debugFile.enabled) debugLog("suborb-fan-state", `id=${shell.dataset.botId || ""} from=${shell.dataset.fan || "-"} to=${look} state=${shell.dataset.state || ""}`);
   shell.dataset.fan = look;
 }
 
 function renderSuborbs() {
-  if (debugFile.enabled) {
-    const entry = `views=${state.suborbViews ? [...state.suborbViews.keys()].join(",") : "none"} rail=${$("#bot-rail") ? 1 : 0} bots=${state.bots.map((bot) => bot.id).join(",")}`;
-    if (renderSuborbs.logged !== entry) {
-      renderSuborbs.logged = entry;
-      debugLog("suborb-render", entry);
-    }
-  }
   if (!state.suborbViews) return;
   const rail = $("#bot-rail");
   if (!rail) return;
@@ -13518,7 +13515,6 @@ function paintSuborbTabs(bot, view) {
 }
 
 function layoutSuborbOrbs() {
-  if (debugFile.enabled) debugLog("suborb-layout", `call=${callerTag("layoutSuborbOrbs")}`);
   renderSuborbs();
 }
 
