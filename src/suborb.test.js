@@ -350,7 +350,8 @@ test("a session the server still marks busy keeps spinning", () => {
 test("a queued user tail settles once the server is idle and no run is open", () => {
   assert.equal(tailSignals([{ role: "user", text: "steer this" }]).settled, false);
   assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: false, localBusy: true }), "idle");
-  assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: false, localBusy: false }), "spin");
+  // R-SO-05 (2026-11-16): no run id, no local busy → ask the server once, not spin forever.
+  assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: false, localBusy: false }), "check");
   assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: false, confirmedIdle: true }), "idle");
   assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: true, localBusy: false }), "recheck");
   assert.equal(suborbIdleDecision({ sessionBusy: false, hasRunId: true, localBusy: true }), "recheck");

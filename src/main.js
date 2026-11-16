@@ -26,6 +26,10 @@ import {
   reconcileSuborbs,
   releaseSuborbNodes,
   suborbIdleDecision,
+  suborbRunStampKey,
+  suborbSessionRun,
+  suborbStatusLabel,
+  SUBORB_RUN_RECHECK_MS,
   suborbLabel,
   suborbPublishesPanel,
   placeSuborbCascade,
@@ -5235,8 +5239,8 @@ function renderChat(id = state.activeId, options = {}) {
   const title = role(panel, "name");
   if (title && title.textContent !== bot.name) title.textContent = bot.name;
   const statusEl = role(panel, "status");
-  setStatusText(id, thread.status || bot.status || "閒置");
-  if (statusEl) statusEl.dataset.state = thread.statusState || "idle";
+  const shownState = setStatusText(id, thread.status || bot.status || "閒置", thread.statusState || "idle").state;
+  if (statusEl) statusEl.dataset.state = shownState;
   const nameInput = role(panel, "display-name");
   if (nameInput && nameInput.dataset.dirty !== "1" && document.activeElement !== nameInput) {
     nameInput.value = bot.name || "";
@@ -5507,9 +5511,27 @@ function wirePlanWindow(section, id) {
   });
 }
 
-function setStatusText(id, text) {
+/** R-SO-03/R-SO-05: a sub-orb panel label reads the same server run answer as its arc. */
+function shownStatus(id, text, statusState) {
+  const sub = parseSuborbId(id);
+  const serverLive = !!(sub && state.suborbModels?.get(sub.profile)?.serverLive?.[sub.sessionId]);
+  return suborbStatusLabel({ text, statusState, serverLive });
+}
+
+function setStatusText(id, text, statusState = threadFor(id).statusState) {
+  const shown = shownStatus(id, text, statusState);
   const node = role(panelFor(id), "status-text");
-  if (node) node.textContent = text;
+  if (node) node.textContent = shown.text;
+  return shown;
+}
+
+function paintSuborbStatus(id) {
+  const panel = panelFor(id);
+  if (!panel) return;
+  const thread = threadFor(id);
+  const shown = setStatusText(id, thread.status || "閒置", thread.statusState || "idle");
+  const statusEl = role(panel, "status");
+  if (statusEl) statusEl.dataset.state = shown.state;
 }
 
 function paintApprovalBubble(bubble, message, id) {
@@ -5944,9 +5966,9 @@ function setBotStatus(id, text, statusState) {
   if (isSuborbId(id)) paintSuborbDisc(id);
   const shell = shellFor(id);
   if (shell && (visualQuiet(shell) || presentationBusy())) {
-    setStatusText(id, text);
+    const shown = setStatusText(id, text, statusState || "idle");
     const statusEl = role(panelFor(id), "status");
-    if (statusEl) statusEl.dataset.state = statusState || "idle";
+    if (statusEl) statusEl.dataset.state = shown.state;
     shell.dataset.chatDirty = "1";
     if (presentationBusy()) armPresentationFlush();
     return;
@@ -6097,7 +6119,7 @@ function applyOpened(id, opened, { quiet = false } = {}) {
     thread.status = label;
     thread.statusState = tone;
     state.busy.delete(id);
-    setStatusText(id, label);
+    setStatusText(id, label, tone);
     shell.dataset.chatDirty = "1";
     shell.dataset.planDirty = "1";
     armPresentationFlush();
@@ -8287,6 +8309,12 @@ function handleHermes(payload) {
         : payload.outcome === "cancelled" ? "已停止" : "閒置",
       payload.outcome === "failed" ? "error" : "idle",
     );
+    // R-SO-05 (2026-11-16): the sub-orb's own turn ended. Record the session as
+    // server-idle now, so the next list (count grew, tail ends in a tool row)
+    // cannot re-arm the arc while the label says 閒置.
+    if (isSuborbId(id) && (payload.outcome === "completed" || payload.outcome === "failed") && !thread.queued) {
+      if (releaseIdleSuborb(id)) reevalSuborbs();
+    }
     return;
   }
   if (payload.type === "session.moved") {
@@ -12878,6 +12906,13 @@ function releaseIdleSuborb(id) {
   model.settled[sub.sessionId] = true;
   model.serverIdle = model.serverIdle || {};
   model.serverIdle[sub.sessionId] = true;
+  model.idleAt = model.idleAt || {};
+  model.idleStamp = model.idleStamp || {};
+  model.serverLive = model.serverLive || {};
+  model.idleAt[sub.sessionId] = Date.now();
+  delete model.idleStamp[sub.sessionId];
+  delete model.serverLive[sub.sessionId];
+  paintSuborbStatus(id);
   if (!thread) return true;
   thread.runId = "";
   thread.queuedRunId = "";
@@ -12889,6 +12924,62 @@ function releaseIdleSuborb(id) {
 }
 
 const suborbIdleChecks = new Map();
+const suborbSessionChecks = new Map();
+
+/**
+ * R-SO-05 (2026-11-16): a sub-orb that still waits for a reply but has no run
+ * id and no local busy asks the server once per list stamp whether the session
+ * has a live run (`check_session_run`, Hermes `session.active_list`). "none"
+ * releases the arc; "live" keeps it and the panel label says busy. A failed
+ * check keeps the arc and retries after SUBORB_RUN_RECHECK_MS.
+ */
+function scheduleSuborbSessionCheck(profile, sessionId, stamp) {
+  if (state.mode !== "hermes" || !inTauri()) return;
+  // One check per list stamp; the same stamp waits SUBORB_RUN_RECHECK_MS.
+  const tag = `${profile}:${sessionId}:${stamp}`;
+  const now = Date.now();
+  if ((suborbSessionChecks.get(tag) || 0) > now) return;
+  for (const [key, until] of suborbSessionChecks) if (until <= now) suborbSessionChecks.delete(key);
+  suborbSessionChecks.set(tag, now + SUBORB_RUN_RECHECK_MS);
+  void checkSuborbSessionRun(profile, sessionId, stamp);
+}
+
+async function checkSuborbSessionRun(profile, sessionId, stamp) {
+  let result = "";
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const run = await invoke("check_session_run", { profile, sessionId });
+    result = run?.live ? "live" : "none";
+  } catch {
+    result = "";
+  }
+  const model = suborbModel(profile);
+  model.runChecked = model.runChecked || {};
+  model.serverLive = model.serverLive || {};
+  if (debugFile.enabled) debugLog("suborb-run-check", `profile=${profile} session=${sessionId} result=${result || "error"}`);
+  if (!result) {
+    armSuborbRunRecheck();
+    return;
+  }
+  model.runChecked[sessionId] = { key: stamp, result, at: Date.now() };
+  const panelId = suborbPanelId(profile, sessionId);
+  if (result === "live") {
+    model.serverLive[sessionId] = true;
+    armSuborbRunRecheck();
+  } else {
+    delete model.serverLive[sessionId];
+  }
+  paintSuborbStatus(panelId);
+  reevalSuborbs();
+}
+
+function armSuborbRunRecheck() {
+  if (armSuborbRunRecheck.timer) return;
+  armSuborbRunRecheck.timer = window.setTimeout(() => {
+    armSuborbRunRecheck.timer = 0;
+    reevalSuborbs();
+  }, SUBORB_RUN_RECHECK_MS + 50);
+}
 
 function scheduleSuborbIdleCheck(id) {
   const now = Date.now();
@@ -12943,15 +13034,22 @@ function noteSuborbList(profile, sessions, mainId = "", goneIds = []) {
     const locallyBusy = !!model.localBusy[row.id] || state.busy.has(panelId) || thread?.statusState === "busy";
     const waitingReply = model.settled[row.id] === false;
     const confirmedIdle = !!thread?.messages?.some((message) => historyNoticeTimedOut(message));
-    if (!locallyBusy && !waitingReply && !confirmedIdle) continue;
+    const serverLive = !!model.serverLive?.[row.id];
+    if (!locallyBusy && !waitingReply && !confirmedIdle && !serverLive) continue;
+    const stamp = suborbRunStampKey(row);
     const decision = suborbIdleDecision({
       sessionBusy: false,
       localBusy: locallyBusy,
       hasRunId: !!thread?.runId,
       confirmedIdle,
+      sessionRun: suborbSessionRun(model.runChecked?.[row.id], stamp, Date.now()),
     });
     if (decision === "recheck") {
       scheduleSuborbIdleCheck(panelId);
+      continue;
+    }
+    if (decision === "check") {
+      scheduleSuborbSessionCheck(profile, row.id, stamp);
       continue;
     }
     if (decision !== "idle") continue;

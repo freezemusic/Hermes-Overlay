@@ -37,6 +37,7 @@
     "allow-create-task-session",
     "allow-open-suborb",
     "allow-peek-session-tail",
+    "allow-check-session-run",
     "allow-send-suborb",
     "allow-stop-suborb",
     "allow-set-suborb-pin",

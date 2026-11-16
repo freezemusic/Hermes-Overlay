@@ -91,6 +91,7 @@ export const EN = Object.freeze({
   "閒置": "Idle",
   "思考中…": "Thinking…",
   "思考中": "Thinking",
+  "行緊…": "Running…",
   "等緊批准": "Waiting for approval",
   "等你答": "Waiting for your answer",
   "排隊中": "Queued",

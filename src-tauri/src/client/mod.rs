@@ -129,6 +129,17 @@ fn live_row_for<'a>(rows: &'a [Value], stored: &str) -> Option<&'a Value> {
     fallback
 }
 
+/// The live `(sid, status)` for a stored session in `session.active_list` rows.
+fn live_run_in(rows: &[Value], stored: &str) -> Option<(String, String)> {
+    let row = live_row_for(rows, stored)?;
+    let live = json_text(row.get("id"));
+    let status = json_text(row.get("status"));
+    if live.is_empty() || !turn::session_run_is_live(&status) {
+        return None;
+    }
+    Some((live, status))
+}
+
 impl HermesClient {
     pub fn new(http: Client, load: SecretLoad, store: SecretStore) -> Arc<Self> {
         Arc::new_cyclic(|weak: &Weak<HermesClient>| {
@@ -807,27 +818,26 @@ impl HermesClient {
     /// `session.active_list` does not create a session. `session.resume` would.
     /// Returns `(run_id, status)`. Both empty when nothing is live.
     pub async fn bind_live_run(&self, profile: &str, stored: &str) -> (String, String) {
+        match self.live_session_run(profile, stored).await {
+            Ok(Some((live, status))) => (self.ensure_open_run(profile, &live), status),
+            _ => (String::new(), String::new()),
+        }
+    }
+
+    /// `(live sid, status)` when `session.active_list` has a live turn for this
+    /// stored session; `None` when it has none. An RPC failure is an error, so a
+    /// caller can keep its busy state instead of reading "none" (R-SO-05).
+    /// Read-only: no run is minted and nothing is resumed.
+    pub async fn live_session_run(&self, profile: &str, stored: &str) -> Result<Option<(String, String)>, HermesError> {
         let stored = stored.trim();
         if stored.is_empty() {
-            return (String::new(), String::new());
+            return Ok(None);
         }
-        let listed = match self.call(rpc::SESSION_ACTIVE_LIST, json!({"profile": profile})).await {
-            Ok(value) => value,
-            Err(_) => return (String::new(), String::new()),
+        let listed = self.call(rpc::SESSION_ACTIVE_LIST, json!({"profile": profile})).await?;
+        let Some(rows) = listed.get("sessions").and_then(Value::as_array) else {
+            return Err(HermesError::Protocol("session.active_list 冇 sessions".into()));
         };
-        let Some(row) = listed
-            .get("sessions")
-            .and_then(Value::as_array)
-            .and_then(|rows| live_row_for(rows, stored))
-        else {
-            return (String::new(), String::new());
-        };
-        let live = json_text(row.get("id"));
-        let status = json_text(row.get("status"));
-        if live.is_empty() || !turn::session_run_is_live(&status) {
-            return (String::new(), String::new());
-        }
-        (self.ensure_open_run(profile, &live), status)
+        Ok(live_run_in(rows, stored))
     }
 
     /// Reuse the unfinished run for this live sid, or mint `run_ws_<sid>_0`.
@@ -1017,6 +1027,19 @@ pub fn parse_slash_items(value: &Value) -> Vec<OverlayCommand> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_live_session_run_needs_a_live_status_for_that_stored_id() {
+        let rows = vec![
+            json!({"id": "sid-a", "session_key": "stored-a", "status": "working"}),
+            json!({"id": "sid-b", "session_key": "stored-b", "status": "idle"}),
+        ];
+        assert_eq!(live_run_in(&rows, "stored-a"), Some(("sid-a".into(), "working".into())));
+        // idle is not a run (R-SO-05): the sub-orb arc must stop.
+        assert_eq!(live_run_in(&rows, "stored-b"), None);
+        assert_eq!(live_run_in(&rows, "stored-c"), None);
+        assert_eq!(live_run_in(&[], "stored-a"), None);
+    }
 
     fn sample_session(id: &str, archived: bool) -> SessionSummary {
         SessionSummary {

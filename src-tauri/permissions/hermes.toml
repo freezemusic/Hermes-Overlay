@@ -119,6 +119,11 @@ description = "Read the tail of a session whose list stamp changed."
 commands.allow = ["peek_session_tail"]
 
 [[permission]]
+identifier = "allow-check-session-run"
+description = "Ask whether a sub-orb session has a live run (session.active_list, read-only)."
+commands.allow = ["check_session_run"]
+
+[[permission]]
 identifier = "allow-send-suborb"
 description = "Send a turn on a sub-orb session."
 commands.allow = ["send_suborb"]
