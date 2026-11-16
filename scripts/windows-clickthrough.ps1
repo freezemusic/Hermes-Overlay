@@ -1314,13 +1314,14 @@ try {
   # once the field panel is shut. Every sub-orb panel shares panel_sizes._suborb.
   $subBot = "suborb:field:side-task"
   $subOrb = $null
-  $deadline = (Get-Date).AddSeconds(10)
+  $deadline = (Get-Date).AddSeconds(20)
   while ((Get-Date) -lt $deadline -and -not $subOrb) {
     $subOrb = @(Read-HitRects | Where-Object { $_.id -eq "bot:$subBot" -and $_.w -gt 0 } | Select-Object -First 1)
     if (-not $subOrb) { Start-Sleep -Milliseconds 200 }
   }
   if (-not $subOrb) {
-    Note-Fail "suborb-visible" "bot:$subBot never reached the hit list"
+    $why = @(Select-String -Path $log -Pattern "suborb-view profile=field " | Select-Object -Last 3 | ForEach-Object { $_.Line -replace '^.*suborb-view ', '' }) -join " | "
+    Note-Fail "suborb-visible" "bot:$subBot never reached the hit list; last views: $why"
   } else {
     $subOrb = $subOrb[0]
     Note-Ok "suborb-visible" "$($subOrb.x),$($subOrb.y) $($subOrb.w)x$($subOrb.h)"

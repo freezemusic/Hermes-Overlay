@@ -12631,6 +12631,18 @@ function suborbOpenSessionIds(profile) {
   return ids;
 }
 
+/** Debug-only: why a sub-orb is or is not on the rail. Ids only, once per change. */
+function logSuborbView(profile, view, listed, mainId) {
+  if (!debugFile.enabled) return;
+  const shown = (view?.shown || []).map((row) => row.id).join(",");
+  const pins = pinsFor(profile).join(",");
+  const line = `profile=${profile} shown=${shown || "-"} pins=${pins || "-"} main=${mainId || "-"} listed=${(listed || []).length} parentOpen=${parentPanelOpen(profile) ? 1 : 0}`;
+  state.suborbViewLogged = state.suborbViewLogged || new Map();
+  if (state.suborbViewLogged.get(profile) === line) return;
+  state.suborbViewLogged.set(profile, line);
+  debugLog("suborb-view", line);
+}
+
 function sessionsForSuborbs(profile, listed) {
   const extra = state.suborbExtra.get(profile) || [];
   const seen = new Set((listed || []).map((row) => row.id));
@@ -12910,6 +12922,7 @@ function noteSuborbList(profile, sessions, mainId = "", goneIds = []) {
   state.suborbModels.set(profile, view.model);
   state.suborbViews = state.suborbViews || new Map();
   state.suborbViews.set(profile, view);
+  logSuborbView(profile, view, listed, mainId || threadFor(profile).sessionId || "");
   for (const row of view.peek) {
     void peekSuborbTail(profile, row);
   }
