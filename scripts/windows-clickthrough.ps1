@@ -1303,6 +1303,7 @@ try {
     Assert-Captured "composer-click" $cx $cy
     Start-Sleep -Milliseconds 300
     $fitBefore = Count-Log "composer-fit id=field "
+    $twoBefore = Count-Log "composer-fit id=field h=\d+ lines=2 "
     [ClickProbe]::Tap(0x41)
     Start-Sleep -Milliseconds 120
     [ClickProbe]::Key(0x10, $true)
@@ -1310,7 +1311,7 @@ try {
     [ClickProbe]::Key(0x10, $false)
     Start-Sleep -Milliseconds 120
     [ClickProbe]::Tap(0x42)
-    if (-not (Wait-Count "composer-fit id=field h=\d+ lines=2 " $fitBefore 5)) {
+    if (-not (Wait-Count "composer-fit id=field h=\d+ lines=2 " $twoBefore 5)) {
       Note-Fail "composer-newline" "Shift+Enter did not grow the composer to two lines (click $cx,$cy)"
     } else {
       Start-Sleep -Milliseconds 800
