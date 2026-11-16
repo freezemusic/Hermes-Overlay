@@ -1355,8 +1355,17 @@ try {
       if (Wait-Count "plan-close-at bot=$subBot " $subPlanBefore 10) {
         Note-Ok "suborb-plan-opened" ""
         Assert-GrowDrag "grow-suborb-with-plan" $subBot "_suborb"
-        # The plan follows the re-cascaded box; read its × after the reset.
-        Start-Sleep -Milliseconds 1500
+        # The plan follows the re-cascaded box a beat after the reset (about
+        # 2s on the runner). Read its × once it sits inside the published hit.
+        $subCloser = $null
+        $deadline = (Get-Date).AddSeconds(8)
+        while ((Get-Date) -lt $deadline) {
+          $subCloser = Read-PlanClose $subBot
+          $subHit = @(Read-HitRects | Where-Object { $_.id -eq "panel:$subBot" } | Select-Object -First 1)
+          if ($subCloser -and $subHit -and (Point-Inside $subCloser $subHit[0])) { break }
+          Start-Sleep -Milliseconds 250
+        }
+        Start-Sleep -Milliseconds 300
         $subCloser = Read-PlanClose $subBot
         $subDrops = Count-Log "plan-hit-drop bot=$subBot "
         if ($subCloser) {
