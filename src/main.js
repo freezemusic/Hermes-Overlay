@@ -9924,7 +9924,8 @@ function setupComposer() {
       debugLog("composer-own", `key=${event.key} busy=1 settling=1`);
       return;
     }
-    if (action === "send" && composerField?.dataset.role === "input" && event.target !== composerField && !slashPopupOpen()) {
+    // A focused card box (clarify 其他) owns its own Enter; never send the composer from it.
+    if (action === "send" && !foreignFieldFocus() && composerField?.dataset.role === "input" && event.target !== composerField && !slashPopupOpen()) {
       event.preventDefault();
       const id = composerField.closest(".morph")?.dataset.botId
         || composerField.closest(".bot-panel")?.dataset.botId

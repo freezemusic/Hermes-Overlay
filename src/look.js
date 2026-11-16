@@ -228,6 +228,7 @@ export const EN = Object.freeze({
   "要你答": "Needs your answer",
   "推薦": "Recommended",
   "送出": "Send",
+  "Ctrl+Enter 送出": "Ctrl+Enter to send",
   "其他（自己打）": "Other (type your own)",
   "呢條問題已經過時": "This question has expired",
   "時間到，個 bot 會自己繼續": "Time's up; the bot will carry on by itself",

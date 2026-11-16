@@ -11,9 +11,11 @@ import {
   CLARIFY_TIMEOUT_S,
   CLARIFY_WAIT_LABEL,
   CLARIFY_OTHER,
+  CLARIFY_SEND_KEY,
   clarifyAnswerValue,
   clarifyBudget,
   clarifyCardFromControl,
+  clarifyEnterSends,
   clarifyFailure,
   clarifyKept,
   clarifyPost,
@@ -28,7 +30,7 @@ import {
   CLARIFY_NOT_DELIVERED,
 } from "./clarify.js";
 
-const { document } = new JSDOM("<!doctype html><body></body>").window;
+const { document, Event: DomEvent, KeyboardEvent: DomKey } = new JSDOM("<!doctype html><body></body>").window;
 
 test("a single choice posts the choice text and labels the first one 推薦", () => {
   let posted = "";
@@ -368,4 +370,104 @@ test("main.js keeps batch clarify siblings and routes composer text to the open 
   assert.match(send, /answerClarify\(id, pendingClarify/);
   const mergeSrc = readFileSync(new URL("./clarify.js", import.meta.url), "utf8");
   assert.doesNotMatch(mergeSrc, /seenPending/);
+});
+
+function enterCard(choices, extra = {}) {
+  const message = { question: "q", choices, status: "pending", draft: "", selected: [], timeoutS: 0, ...extra };
+  const posted = [];
+  const card = renderClarifyCard(document, message, {
+    onAnswer(answer) { posted.push(answer); },
+    onDraft(value) { message.draft = value; },
+  });
+  document.body.replaceChildren(card);
+  const field = card.querySelector("textarea");
+  const type = (text) => {
+    field.value = text;
+    field.dispatchEvent(new DomEvent("input", { bubbles: true }));
+  };
+  const key = (init) => {
+    const event = new DomKey("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init });
+    field.dispatchEvent(event);
+    return event;
+  };
+  return { message, posted, field, type, key };
+}
+
+test("R-AP-06: Ctrl+Enter in the free-text box sends; plain Enter is a new line", () => {
+  const { posted, type, key } = enterCard([]);
+  type("自己打");
+  assert.equal(key({}).defaultPrevented, false);
+  assert.deepEqual(posted, []);
+  const event = key({ ctrlKey: true });
+  assert.deepEqual(posted, ["自己打"]);
+  assert.equal(event.defaultPrevented, true);
+});
+
+test("R-AP-06: Ctrl+Enter in 其他（自己打） sends the typed text, not a choice", () => {
+  const { posted, type, key } = enterCard(["甲", "乙"]);
+  type("  丙  ");
+  key({});
+  assert.deepEqual(posted, []);
+  key({ ctrlKey: true });
+  assert.deepEqual(posted, ["丙"]);
+});
+
+test("R-AP-06: Enter, Shift/Alt+Enter and IME Enter keep typing; Ctrl or Cmd+Enter sends", () => {
+  for (const choices of [[], ["甲"]]) {
+    const { posted, type, key } = enterCard(choices);
+    type("答");
+    assert.equal(key({}).defaultPrevented, false);
+    assert.equal(key({ shiftKey: true }).defaultPrevented, false);
+    assert.equal(key({ ctrlKey: true, shiftKey: true }).defaultPrevented, false);
+    assert.equal(key({ ctrlKey: true, altKey: true }).defaultPrevented, false);
+    assert.equal(key({ ctrlKey: true, isComposing: true }).defaultPrevented, false);
+    assert.equal(key({ ctrlKey: true, keyCode: 229 }).defaultPrevented, false);
+    assert.deepEqual(posted, []);
+    key({ ctrlKey: true });
+    assert.deepEqual(posted, ["答"]);
+    const second = enterCard(choices);
+    second.type("答");
+    second.key({ metaKey: true });
+    assert.deepEqual(second.posted, ["答"]);
+  }
+});
+
+test("R-AP-06: Ctrl+Enter on an empty box, a repeat, or a sending card posts nothing", () => {
+  const empty = enterCard(["甲"]);
+  empty.type("   ");
+  assert.equal(empty.key({ ctrlKey: true }).defaultPrevented, true);
+  assert.deepEqual(empty.posted, []);
+  const held = enterCard([]);
+  held.type("答");
+  held.key({ ctrlKey: true, repeat: true });
+  assert.deepEqual(held.posted, []);
+  const sending = enterCard([], { status: "sending", draft: "答" });
+  sending.key({ ctrlKey: true });
+  assert.deepEqual(sending.posted, []);
+});
+
+test("R-AP-06: the text-box 送出 shows the Ctrl+Enter hint", () => {
+  for (const choices of [[], ["甲"]]) {
+    const { field } = enterCard(choices);
+    const send = field.parentElement.querySelector(choices.length ? ".clarify-other-send" : ".clarify-primary");
+    assert.equal(send.title, CLARIFY_SEND_KEY);
+    assert.equal(send.getAttribute("aria-keyshortcuts"), "Control+Enter Meta+Enter");
+  }
+});
+
+test("clarifyEnterSends only accepts Ctrl/Cmd+Enter outside IME", () => {
+  assert.equal(clarifyEnterSends({ key: "Enter" }), false);
+  assert.equal(clarifyEnterSends({ key: "Enter", ctrlKey: true }), true);
+  assert.equal(clarifyEnterSends({ key: "Enter", metaKey: true }), true);
+  assert.equal(clarifyEnterSends({ key: "Enter", ctrlKey: true, shiftKey: true }), false);
+  assert.equal(clarifyEnterSends({ key: "Enter", ctrlKey: true, altKey: true }), false);
+  assert.equal(clarifyEnterSends({ key: "Enter", ctrlKey: true, isComposing: true }), false);
+  assert.equal(clarifyEnterSends({ key: "Enter", ctrlKey: true, keyCode: 229 }), false);
+  assert.equal(clarifyEnterSends({ key: "a", ctrlKey: true }), false);
+  assert.equal(clarifyEnterSends(null), false);
+});
+
+test("R-AP-06: the window Enter fallback leaves a focused card text box alone", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  assert.match(main, /action === "send" && !foreignFieldFocus\(\) && composerField\?\.dataset\.role === "input"/);
 });

@@ -6,6 +6,7 @@ export const CLARIFY_HEADING = "要你答";
 export const CLARIFY_RECOMMENDED = "推薦";
 export const CLARIFY_SKIP = "跳過";
 export const CLARIFY_SEND = "送出";
+export const CLARIFY_SEND_KEY = "Ctrl+Enter 送出";
 export const CLARIFY_OTHER = "其他（自己打）";
 export const CLARIFY_STALE = "呢條問題已經過時";
 export const CLARIFY_TIMEOUT = "時間到，個 bot 會自己繼續";
@@ -100,6 +101,30 @@ function choiceLabel(choice, index) {
   return choice === CLARIFY_RECOMMENDED ? CLARIFY_RECOMMENDED : `${CLARIFY_RECOMMENDED} ${choice}`;
 }
 
+/**
+ * Ctrl/Cmd+Enter in a card's own text box sends that box's answer; plain Enter
+ * is a new line. Same as Hermes Desktop `clarify/submit-shortcut.ts`
+ * (Devon 2026-11-16). Shift/Alt and an IME composition Enter never send.
+ */
+export function clarifyEnterSends(event) {
+  if (!event || event.key !== "Enter") return false;
+  if (event.isComposing || event.keyCode === 229) return false;
+  if (event.shiftKey || event.altKey) return false;
+  return !!(event.ctrlKey || event.metaKey);
+}
+
+function sendOnEnter(field, button) {
+  button.title = CLARIFY_SEND_KEY;
+  button.setAttribute("aria-keyshortcuts", "Control+Enter Meta+Enter");
+  field.addEventListener("keydown", (event) => {
+    if (!clarifyEnterSends(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat || button.disabled) return;
+    button.click();
+  });
+}
+
 export function renderClarifyCard(doc, message, handlers) {
   const onAnswer = handlers?.onAnswer || (() => {});
   const onDraft = handlers?.onDraft || (() => {});
@@ -130,7 +155,10 @@ export function renderClarifyCard(doc, message, handlers) {
     field.className = "clarify-text";
     field.value = message?.draft || "";
     field.disabled = message.status !== "pending";
-    field.addEventListener("input", () => onDraft(field.value));
+    field.addEventListener("input", () => {
+      onDraft(field.value);
+      send.disabled = message.status !== "pending" || !String(field.value || "").trim();
+    });
     actions.appendChild(field);
     const send = doc.createElement("button");
     send.type = "button";
@@ -144,6 +172,7 @@ export function renderClarifyCard(doc, message, handlers) {
       onAnswer(clarifyAnswerValue({ choices, text: message.draft }));
     });
     actions.appendChild(send);
+    sendOnEnter(field, send);
   } else if (open && message?.multiSelect) {
     const selected = Array.isArray(message.selected) ? message.selected : [];
     choices.forEach((choice, index) => {
@@ -221,6 +250,7 @@ export function renderClarifyCard(doc, message, handlers) {
       onAnswer(String(message.draft || "").trim());
     });
     actions.appendChild(sendOther);
+    sendOnEnter(field, sendOther);
   }
   if (open) {
     const skip = doc.createElement("button");
