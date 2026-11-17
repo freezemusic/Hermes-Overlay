@@ -1956,6 +1956,93 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   box-shadow: 0 0 0 1px #0000f2;
 }
 
+/* R-AT-01 attachments: ＋ menu, chips row above the composer, drop highlight. */
+.attach-btn {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--bot-20);
+  background: #fff;
+  color: #14142b;
+  font: 500 16px/1 var(--font-label);
+  cursor: pointer;
+}
+.attach-btn:hover, .attach-btn[aria-expanded="true"] { background: var(--bot-10); border-color: #0000f2; }
+.attach-btn:disabled { opacity: 0.45; cursor: default; }
+.attach-menu {
+  position: absolute;
+  z-index: 6;
+  left: 0;
+  bottom: calc(100% + 6px);
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: #f8f8fc;
+  border: 1px solid rgb(var(--bot-rgb, 0 0 242) / .2);
+  border-radius: 2px;
+  box-shadow: 0 4px 12px rgb(20 20 43 / .12);
+}
+.attach-menu[hidden] { display: none; }
+.attach-menu-item {
+  height: 26px;
+  padding: 0 8px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  color: #14142b;
+  font: 400 13px/18px "Noto Sans HK", sans-serif;
+  cursor: pointer;
+}
+.attach-menu-item:hover, .attach-menu-item:focus-visible, .attach-menu-item:focus { background: var(--bot-10); outline: none; }
+.attach-chips {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 64px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.attach-chips[hidden] { display: none; }
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 2px 0 4px;
+  background: #fff;
+  border: 1px solid var(--bot-20);
+  border-radius: 2px;
+  color: #14142b;
+  font: 400 12px/18px "Noto Sans HK", sans-serif;
+}
+.attach-chip[data-state="uploading"] { opacity: 0.7; }
+.attach-chip[data-state="error"] { border-color: #c4001a; background: #fff0f2; color: #8a0013; }
+.attach-chip-thumb { width: 18px; height: 18px; object-fit: cover; border-radius: 2px; flex: none; }
+.attach-chip-icon { flex: none; font-size: 11px; color: #3a3a68; }
+.attach-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
+.attach-chip-remove {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  color: inherit;
+  font: 500 14px/1 var(--font-label);
+  cursor: pointer;
+}
+.attach-chip-remove:hover { background: var(--bot-10); }
+.attach-chip-remove:disabled { opacity: 0.4; cursor: default; }
+.composer.is-drop-target { outline: 2px dashed #0000f2; outline-offset: 2px; }
+html[data-text-size] .attach-chip, html[data-text-size] .attach-menu-item { font-size: calc(12px * var(--text-scale, 1)); }
+
 .composer.is-compose-mode textarea,
 .composer.is-compose-mode textarea:focus {
   border-color: #0000f2;

@@ -1326,6 +1326,52 @@ try {
     foreach ($n in 1..3) { [ClickProbe]::Tap(0x08); Start-Sleep -Milliseconds 60 }
     Start-Sleep -Milliseconds 300
   }
+  # R-AT-01 (Devon 2026-11-17 10:18 London 「跟 Desktop 做，＋掣、拖放、貼圖」):
+  # the ＋ left of the composer is clickable (not click-through), opens the
+  # attach menu (attach-menu-open), the open menu lies inside a published hit
+  # rect (attach:field, or panel:field while the plan seam defers flushes),
+  # and Esc closes the menu first (attach-menu-close) while the panel stays.
+  # No file dialog is opened on the runner.
+  $attachLine = Select-String -Path $log -Pattern "attach-at id=panel:field " -ErrorAction SilentlyContinue | Select-Object -Last 1
+  if (-not $attachLine -or $attachLine.Line -notmatch "dpr=([0-9.]+) at=(-?\d+),(-?\d+),(\d+)x(\d+)") {
+    Note-Fail "attach-plus" "no attach-at line for panel:field"
+  } else {
+    $adpr = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
+    $ax = [int][Math]::Round(([int]$Matches[2] + [int]$Matches[4] / 2) * $adpr)
+    $ay = [int][Math]::Round(([int]$Matches[3] + [int]$Matches[5] / 2) * $adpr)
+    $openBefore = Count-Log "attach-menu-open id=field"
+    $closeBefore = Count-Log "attach-menu-close id=field"
+    Assert-Captured "attach-plus" $ax $ay
+    if (-not (Wait-Count "attach-menu-open id=field" $openBefore 5)) {
+      Note-Fail "attach-menu" "clicking the ＋ at ($ax,$ay) did not open the attach menu"
+    } else {
+      Start-Sleep -Milliseconds 400
+      $openLine = Select-String -Path $log -Pattern "attach-menu-open id=field " | Select-Object -Last 1
+      if (-not $openLine -or $openLine.Line -notmatch "at=(-?\d+),(-?\d+),(\d+)x(\d+)") {
+        Note-Fail "attach-menu" "attach-menu-open has no box"
+      } else {
+        $mx = [int]$Matches[1]; $my = [int]$Matches[2]; $mw = [int]$Matches[3]; $mh = [int]$Matches[4]
+        $menuHit = @(Read-HitRects | Where-Object {
+          ($_.id -eq "attach:field" -or $_.id -eq "panel:field") -and
+          $_.x -le ($mx + 1) -and $_.y -le ($my + 1) -and ($_.x + $_.w) -ge ($mx + $mw - 1) -and ($_.y + $_.h) -ge ($my + $mh - 1)
+        })
+        if ($menuHit.Count -lt 1) {
+          Note-Fail "attach-menu" "open attach menu ($mx,$my ${mw}x$mh) is outside every published hit rect"
+        } else {
+          Note-Ok "attach-menu" "menu $mx,$my ${mw}x$mh inside $($menuHit[0].id)"
+        }
+      }
+      [ClickProbe]::Tap(0x1B)
+      if (-not (Wait-Count "attach-menu-close id=field" $closeBefore 5)) {
+        Note-Fail "attach-menu-esc" "Esc did not close the attach menu"
+      } else {
+        Start-Sleep -Milliseconds 400
+        $still = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" })
+        if ($still.Count -lt 1) { Note-Fail "attach-menu-esc" "Esc closed the panel instead of only the menu" }
+        else { Note-Ok "attach-menu-esc" "menu closed, panel kept" }
+      }
+    }
+  }
   $focus = @(Read-HitRects | Where-Object { $_.id -eq "panel:field" -or $_.id -eq "settings" } | Select-Object -First 1)
   if ($focus) {
     # 120px under a top field panel is the session <select>. pointerdown opens

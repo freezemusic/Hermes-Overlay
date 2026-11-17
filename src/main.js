@@ -5,6 +5,7 @@
  */
 
 import { wheelScrollsChat } from "./wheel.js";
+import { attachPayload, attachRefusal, attachSendBlock, base64FromDataUrl, buildContextText, chipText, clipboardImageFiles, dragHasFiles, droppedFiles, makeAttachment, pastedImageName } from "./attach.js";
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
 import { logQuietRefreshFailure, openHistory, schedulePlanFileCatchUp } from "./history-open.js";
 import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, plansIn, rememberPlan } from "./plan.js";
@@ -4028,6 +4029,7 @@ function logResizeHandles(shell) {
   // reads this line with the plan open, so only a collapse skips it.
   if (shell.classList.contains("is-collapsing")) return;
   logComposerAt(shell);
+  logAttachAt(shell);
   const parts = [];
   for (const handle of shell.querySelectorAll(":scope > .panel-resize")) {
     const box = handle.getBoundingClientRect();
@@ -4053,6 +4055,18 @@ function logComposerAt(shell) {
   if (shell._composerLogged === line) return;
   shell._composerLogged = line;
   debugLog("composer-at", line);
+}
+
+/** R-AT-01 debug line for the Windows CI ＋ check: where the ＋ is, in CSS px. No content. */
+function logAttachAt(shell) {
+  const button = shell.querySelector?.(".bot-panel [data-role='attach']");
+  if (!button) return;
+  const box = button.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return;
+  const line = `id=${shell.dataset.hitId || ""} dpr=${window.devicePixelRatio || 1} at=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`;
+  if (shell._attachLogged === line) return;
+  shell._attachLogged = line;
+  debugLog("attach-at", line);
 }
 
 function bindResizeHandle(handle, shell) {
@@ -6968,6 +6982,7 @@ function wireBotPanel(panel, id) {
     state.activeId = id;
     cycleComposeMode(id);
   });
+  installAttachments(panel, id);
   role(panel, "continue")?.addEventListener("click", () => continueApiSession(id));
   role(panel, "switch")?.addEventListener("click", () => switchClosedSession(id));
   role(panel, "stop")?.addEventListener("click", () => stopActive(id));
@@ -8569,14 +8584,19 @@ function demoReply(shown) {
   return `（示範回覆）收到：「${shown.text}」。示範模式冇連 Hermes。`;
 }
 
-async function sendActive(id = state.activeId) {
+async function sendActive(id = state.activeId, preset = null) {
   if (isSuborbId(id)) {
-    await sendSuborb(id);
+    await sendSuborb(id, preset);
+    return;
+  }
+  // R-AT-02: chips upload first, then come back here with the context text.
+  if (!preset && attachmentsOf(id).length) {
+    await sendWithAttachments(id);
     return;
   }
   const panel = panelFor(id);
   const input = role(panel, "input");
-  const typed = input?.value.trim() || "";
+  const typed = preset ? String(preset.text || "").trim() : input?.value.trim() || "";
   if (!typed || !id) return;
   const thread = threadFor(id);
   const text = composeModeWire(typed, composeModeOf(id));
@@ -8650,7 +8670,7 @@ async function sendActive(id = state.activeId) {
     input.placeholder = "輸入訊息給呢個 Bot…";
     state.slashArgsHint = "";
     syncSlashGhost();
-    await sendWhileBusy(id, text);
+    await sendWhileBusy(id, text, { queueOnly: !!preset?.queueOnly });
     return;
   }
   closeSlash();
@@ -9605,7 +9625,7 @@ async function sendSideQuestion(id, text) {
   }
 }
 
-async function sendWhileBusy(id, text) {
+async function sendWhileBusy(id, text, { queueOnly = false } = {}) {
   const thread = threadFor(id);
   const shown = composeUserMessage(text);
   thread.queuedTurnTail = { userText: shown.text || text, sentAt: Date.now() };
@@ -9627,7 +9647,8 @@ async function sendWhileBusy(id, text) {
   }
   holdOutgoing(id, shown.text || text);
   let joined = false;
-  if (thread.runId) {
+  // Staged attachments wait for their own turn: never steer them into this one.
+  if (thread.runId && !queueOnly) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       joined = (await invoke("steer_run", { profile: id, runId: thread.runId, text })) === "joined";
@@ -9957,6 +9978,8 @@ function foreignFieldFocus() {
   const active = document.activeElement;
   if (!active) return false;
   if (active.tagName === "SELECT") return true;
+  // R-AT-01: Enter / Space on the ＋, its menu or a chip's × press that control, never send.
+  if (active.dataset?.role === "attach" || active.closest?.(".attach-menu, .attach-chips")) return true;
   if (!isTextField(active)) return false;
   return active.dataset?.role !== "input";
 }
@@ -10022,6 +10045,372 @@ function installComposerFit(field) {
       if (field.dataset.fitWidth !== String(field.clientWidth)) fitComposer(field);
     }).observe(field);
   }
+}
+
+// ---- chat attachments (R-AT-01 … R-AT-04, SPEC §14.10) -------------------
+
+const composerAttachments = new Map();
+let attachSeq = 0;
+let attachDropGuard = false;
+
+function attachmentsOf(id) {
+  return composerAttachments.get(id) || [];
+}
+
+function setAttachments(id, list) {
+  // Chips are copied on every state change; a preview URL lives while any copy keeps it.
+  const kept = new Set(list.map((att) => att.preview).filter(Boolean));
+  for (const att of attachmentsOf(id)) {
+    if (att.preview && !kept.has(att.preview)) URL.revokeObjectURL?.(att.preview);
+  }
+  if (list.length) composerAttachments.set(id, list);
+  else composerAttachments.delete(id);
+  paintAttachChips(id);
+}
+
+function paintAttachChips(id, panel = panelFor(id)) {
+  const box = role(panel, "attach-chips");
+  if (!box) return;
+  const list = attachmentsOf(id);
+  box.replaceChildren();
+  for (const att of list) {
+    const chip = document.createElement("span");
+    chip.className = "attach-chip";
+    chip.setAttribute("role", "listitem");
+    chip.dataset.kind = att.kind;
+    chip.dataset.state = att.state;
+    chip.dataset.attachId = att.id;
+    if (att.kind === "image" && att.file && typeof URL.createObjectURL === "function") {
+      if (!att.preview) att.preview = URL.createObjectURL(att.file);
+      const img = document.createElement("img");
+      img.className = "attach-chip-thumb";
+      img.alt = "";
+      img.src = att.preview;
+      chip.append(img);
+    } else {
+      const icon = document.createElement("span");
+      icon.className = "attach-chip-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = att.kind === "image" ? "圖" : "檔";
+      chip.append(icon);
+    }
+    const label = document.createElement("span");
+    label.className = "attach-chip-label";
+    label.textContent = chipText(att);
+    label.title = chipText(att);
+    chip.append(label);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "attach-chip-remove";
+    remove.setAttribute("aria-label", `拎走 ${att.name}`);
+    remove.title = "拎走";
+    remove.textContent = "×";
+    remove.disabled = att.state === "uploading";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setAttachments(id, attachmentsOf(id).filter((item) => item.id !== att.id));
+      debugLog("attach-remove", `id=${id} left=${attachmentsOf(id).length}`);
+      role(panelFor(id), "input")?.focus({ preventScroll: true });
+    });
+    chip.append(remove);
+    box.append(chip);
+  }
+  box.hidden = list.length === 0;
+  scheduleHitSync("attach-chips");
+}
+
+function addAttachmentFiles(id, files, { pasted = false } = {}) {
+  const incoming = Array.from(files || []).filter(Boolean);
+  if (!id || !incoming.length) return;
+  const list = [...attachmentsOf(id)];
+  for (const file of incoming) {
+    const name = pasted || !file.name ? pastedImageName(file.type) : file.name;
+    const refusal = attachRefusal(file, list.filter((item) => !item.refused));
+    const att = makeAttachment(file, ++attachSeq, name);
+    if (refusal) {
+      att.state = "error";
+      att.error = refusal;
+      att.refused = true;
+    }
+    list.push(att);
+  }
+  setAttachments(id, list);
+  debugLog("attach-add", `id=${id} n=${incoming.length} total=${list.length} pasted=${pasted ? 1 : 0}`);
+}
+
+function readAttachmentBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("read failed"));
+    reader.onload = () => resolve(base64FromDataUrl(reader.result));
+    reader.readAsDataURL(file);
+  });
+}
+
+function attachMenuOpen(panel) {
+  const menu = role(panel, "attach-menu");
+  return !!menu && !menu.hidden;
+}
+
+function closeAttachMenu(panel, { focus = false } = {}) {
+  const menu = role(panel, "attach-menu");
+  const button = role(panel, "attach");
+  const wasOpen = !!menu && !menu.hidden;
+  if (menu) menu.hidden = true;
+  button?.setAttribute("aria-expanded", "false");
+  if (focus) button?.focus({ preventScroll: true });
+  if (wasOpen) debugLog("attach-menu-close", `id=${panel?.dataset.botId || ""}`);
+  scheduleHitSync("attach-menu");
+}
+
+function openAttachMenu(panel) {
+  const menu = role(panel, "attach-menu");
+  const button = role(panel, "attach");
+  if (!menu) return;
+  menu.hidden = false;
+  button?.setAttribute("aria-expanded", "true");
+  menu.querySelector(".attach-menu-item")?.focus({ preventScroll: true });
+  const box = menu.getBoundingClientRect();
+  debugLog("attach-menu-open", `id=${panel?.dataset.botId || ""} dpr=${window.devicePixelRatio || 1} at=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`);
+  scheduleHitSync("attach-menu");
+}
+
+async function pasteClipboardImage(id) {
+  try {
+    if (!navigator.clipboard?.read) throw new Error("no clipboard.read");
+    const items = await navigator.clipboard.read();
+    const files = [];
+    for (const item of items) {
+      const type = (item.types || []).find((kind) => String(kind).startsWith("image/"));
+      if (!type) continue;
+      const blob = await item.getType(type);
+      files.push(new File([blob], pastedImageName(type), { type }));
+    }
+    if (!files.length) {
+      showActionError("剪貼簿入面冇圖片");
+      return;
+    }
+    addAttachmentFiles(id, files, { pasted: true });
+  } catch (err) {
+    debugLog("attach-paste-failed", String(err?.message || err));
+    showActionError("讀唔到剪貼簿；請撳輸入框再按 Ctrl+V 貼圖");
+  }
+}
+
+/** Keep an OS file dropped outside a composer from navigating the webview. */
+/** Esc closes an open ＋ menu before it closes the panel. */
+function closeOpenAttachMenu() {
+  for (const menu of document.querySelectorAll(".attach-menu:not([hidden])")) {
+    const panel = menu.closest(".bot-panel");
+    if (panel) {
+      closeAttachMenu(panel, { focus: menu.contains(document.activeElement) });
+      return true;
+    }
+  }
+  return false;
+}
+
+function installAttachDropGuard() {
+  if (attachDropGuard) return;
+  attachDropGuard = true;
+  const guard = (event) => {
+    if (dragHasFiles(event.dataTransfer)) event.preventDefault();
+  };
+  window.addEventListener("dragover", guard);
+  window.addEventListener("drop", guard);
+}
+
+function installAttachments(panel, id) {
+  if (!panel || panel.dataset.attachWired === "1") return;
+  panel.dataset.attachWired = "1";
+  installAttachDropGuard();
+  const button = role(panel, "attach");
+  const menu = role(panel, "attach-menu");
+  const pickFiles = role(panel, "attach-files");
+  const pickImages = role(panel, "attach-images");
+  const input = role(panel, "input");
+  const composer = input?.closest(".composer") || panel.querySelector(".composer");
+  if (menu) menu.dataset.hitId = `attach:${id}`;
+  button?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    state.activeId = id;
+    if (attachMenuOpen(panel)) closeAttachMenu(panel);
+    else openAttachMenu(panel);
+  });
+  menu?.addEventListener("click", (event) => {
+    const item = event.target.closest?.("[data-attach]");
+    if (!item) return;
+    event.stopPropagation();
+    closeAttachMenu(panel);
+    const what = item.dataset.attach;
+    debugLog("attach-menu", `id=${id} pick=${what}`);
+    if (what === "files") pickFiles?.click();
+    else if (what === "images") pickImages?.click();
+    else if (what === "paste") void pasteClipboardImage(id);
+  });
+  menu?.addEventListener("keydown", (event) => {
+    const items = [...menu.querySelectorAll(".attach-menu-item")];
+    const at = items.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAttachMenu(panel, { focus: true });
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      items[(at + step + items.length) % items.length]?.focus({ preventScroll: true });
+    }
+  });
+  menu?.addEventListener("focusout", (event) => {
+    const next = event.relatedTarget;
+    if (next && (menu.contains(next) || next === button)) return;
+    closeAttachMenu(panel);
+  });
+  for (const picker of [pickFiles, pickImages]) {
+    picker?.addEventListener("change", () => {
+      addAttachmentFiles(id, picker.files);
+      picker.value = "";
+      input?.focus({ preventScroll: true });
+    });
+  }
+  input?.addEventListener("paste", (event) => {
+    const images = clipboardImageFiles(event.clipboardData);
+    if (!images.length) return;
+    addAttachmentFiles(id, images, { pasted: true });
+    const text = event.clipboardData?.getData?.("text") || "";
+    if (!text.trim()) event.preventDefault();
+  });
+  if (composer) {
+    const leave = () => composer.classList.remove("is-drop-target");
+    composer.addEventListener("dragenter", (event) => {
+      if (!dragHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      composer.classList.add("is-drop-target");
+    });
+    composer.addEventListener("dragover", (event) => {
+      if (!dragHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      composer.classList.add("is-drop-target");
+    });
+    composer.addEventListener("dragleave", (event) => {
+      if (event.relatedTarget && composer.contains(event.relatedTarget)) return;
+      leave();
+    });
+    composer.addEventListener("drop", (event) => {
+      if (!dragHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      leave();
+      state.activeId = id;
+      addAttachmentFiles(id, droppedFiles(event.dataTransfer));
+      input?.focus({ preventScroll: true });
+    });
+  }
+  paintAttachChips(id, panel);
+}
+
+function setAttachUploading(id, on) {
+  const panel = panelFor(id);
+  const input = role(panel, "input");
+  if (input) input.readOnly = on;
+  const send = role(panel, "send");
+  if (send) send.disabled = on;
+  const button = role(panel, "attach");
+  if (button) button.disabled = on;
+  panel?.querySelector(".composer")?.classList.toggle("is-uploading", on);
+}
+
+/**
+ * Send with attachments (R-AT-02): upload first, then the normal send path
+ * with Desktop's context text. Any failure keeps the typed text and every
+ * chip; the refused one turns into an error chip with the server's reason.
+ */
+async function sendWithAttachments(id) {
+  const panel = panelFor(id);
+  const input = role(panel, "input");
+  const typed = input?.value.trim() || "";
+  const list = attachmentsOf(id);
+  const suborb = isSuborbId(id);
+  const sub = suborb ? parseSuborbId(id) : null;
+  if (!id || !list.length || (suborb && !sub)) return;
+  if (list.some((att) => att.state === "uploading")) return;
+  if (list.some((att) => att.refused)) {
+    showActionError("有附件用唔到（太大、空檔案或者太多），請撳 × 拎走先");
+    return;
+  }
+  const mode = composeModeOf(id);
+  const wire = composeModeWire(typed || "x", mode);
+  const clarify = clarifyComposerRoute(runMessages(id)).action === "answer";
+  const block = attachSendBlock(typed, { clarify, side: /^\/btw\b/i.test(wire) });
+  if (block) {
+    showActionError(block);
+    return;
+  }
+  if (!suborb) {
+    const thread = threadFor(id);
+    if (sessionSendClosed(currentSessionRow(thread), thread.sessions)) {
+      showClosedWarning(id);
+      return;
+    }
+    if (thread.sessionReadOnly) {
+      showActionError(thread.sessionReadOnlyReason || SESSION_READ_ONLY_REASON);
+      return;
+    }
+  }
+  state.activeId = id;
+  const marked = list.map((att) => ({ ...att, state: "uploading", error: "" }));
+  setAttachments(id, marked);
+  setAttachUploading(id, true);
+  debugLog("attach-upload", `id=${id} n=${marked.length} images=${marked.filter((att) => att.kind === "image").length}`);
+  let results = null;
+  const failAll = (message) => {
+    setAttachments(id, marked.map((att) => ({ ...att, state: "ready" })));
+    showActionError(message);
+  };
+  try {
+    if (state.mode !== "hermes" || !inTauri()) {
+      results = marked.map((att) => ({ kind: att.kind, name: att.name, ref_text: att.kind === "file" ? `@file:${att.name}` : "" }));
+    } else {
+      let files;
+      try {
+        files = await Promise.all(marked.map(async (att) => attachPayload(att, await readAttachmentBase64(att.file))));
+      } catch (err) {
+        failAll(`讀唔到附件：${String(err?.message || err)}`);
+        return;
+      }
+      const { invoke } = await import("@tauri-apps/api/core");
+      let reply;
+      try {
+        reply = await invoke("chat_attach", { profile: sub ? sub.profile : id, sessionId: sub ? sub.sessionId : null, files });
+      } catch (err) {
+        failAll(`附件上載唔到：${String(err)}`);
+        return;
+      }
+      if (!reply?.ok) {
+        const message = String(reply?.message || "附件上載唔到");
+        const index = Number.isInteger(reply?.index) ? reply.index : -1;
+        if (index >= 0 && marked[index]) {
+          setAttachments(id, marked.map((att, i) => (i === index ? { ...att, state: "error", error: message } : { ...att, state: "ready" })));
+          showActionError(`「${marked[index].name}」上載唔到：${message}`);
+        } else {
+          failAll(message);
+        }
+        debugLog("attach-refused", `id=${id} index=${index}`);
+        return;
+      }
+      results = Array.isArray(reply.items) ? reply.items : [];
+    }
+  } finally {
+    setAttachUploading(id, false);
+  }
+  const body = buildContextText(results, typed);
+  setAttachments(id, []);
+  debugLog("attach-staged", `id=${id} files=${results.filter((item) => item.kind === "file").length} images=${results.filter((item) => item.kind === "image").length}`);
+  // The staged files ride the normal send. Images are queued on the live
+  // session, so a busy send queues (never steers into the running turn).
+  if (suborb) await sendSuborb(id, { text: body, queueOnly: true });
+  else await sendActive(id, { text: body, queueOnly: true });
 }
 
 function setupComposer() {
@@ -10144,6 +10533,11 @@ function setupComposer() {
       return;
     }
     if (closeOpenSessionMenu()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (closeOpenAttachMenu()) {
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -10691,6 +11085,8 @@ function collectHits() {
     if (shell.dataset.state === "panel" && !shell.classList.contains("is-collapsing") && !(shell.dataset.kind === "suborb" && !shell.classList.contains("open") && shell.dataset.opening !== "panel")) {
       const slash = role(shell, "slash");
       if (slash?.dataset.hitId) push(slash.dataset.hitId, slash, level + 20);
+      const attachMenu = role(shell, "attach-menu");
+      if (attachMenu?.dataset.hitId && !attachMenu.hidden) push(attachMenu.dataset.hitId, attachMenu, level + 20);
       pushCloseHit(rects, shell, level);
       const docked = dockedPanelOrb(shell, level);
       if (docked && !rects.some((item) => item.id === docked.id)) rects.push(docked);
@@ -14023,6 +14419,7 @@ function wireSuborbPanel(panel, id) {
     }
   });
   installComposerFit(input);
+  installAttachments(panel, id);
   installNewSessionButton(panel, id);
   // The panel is not registered yet, so paint the pin on this panel directly (it was blank).
   paintSuborbPin(id, panel);
@@ -14176,10 +14573,14 @@ async function loadSuborb(id) {
   }
 }
 
-async function sendSuborb(id) {
+async function sendSuborb(id, preset = null) {
+  if (!preset && attachmentsOf(id).length) {
+    await sendWithAttachments(id);
+    return;
+  }
   const panel = panelFor(id);
   const input = role(panel, "input");
-  const typed = input?.value.trim() || "";
+  const typed = preset ? String(preset.text || "").trim() : input?.value.trim() || "";
   const sub = parseSuborbId(id);
   if (!typed || !sub) return;
   const thread = threadFor(id);
@@ -14216,20 +14617,23 @@ async function sendSuborb(id) {
   const busy = state.busy.has(id);
   if (busy && !composeSkipsBusyQueue(text)) {
     appendMessage(id, composeUserMessage(text));
-    await sendSuborbBusy(id, sub, thread, text);
+    await sendSuborbBusy(id, sub, thread, text, !!preset?.queueOnly);
     return;
   }
   appendMessage(id, composeUserMessage(text));
   await postSuborb(id, sub, text, { side: busy && composeSkipsBusyQueue(text) });
 }
 
-async function sendSuborbBusy(id, sub, thread, text) {
+async function sendSuborbBusy(id, sub, thread, text, queueOnly = false) {
   let joined = false;
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    joined = (await invoke("steer_run", { profile: sub.profile, runId: thread.runId, text })) === "joined";
-  } catch {
-    joined = false;
+  // Staged attachments wait for their own turn: never steer them into this one.
+  if (!queueOnly) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      joined = (await invoke("steer_run", { profile: sub.profile, runId: thread.runId, text })) === "joined";
+    } catch {
+      joined = false;
+    }
   }
   if (joined) {
     // Match Hermes Desktop: user bubble only — no joined-turn commentary label.

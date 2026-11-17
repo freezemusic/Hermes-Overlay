@@ -124,6 +124,11 @@ description = "Ask whether a sub-orb session has a live run (session.active_list
 commands.allow = ["check_session_run"]
 
 [[permission]]
+identifier = "allow-chat-attach"
+description = "Stage chat attachments (image.attach_bytes / file.attach) on the chat a send goes to."
+commands.allow = ["chat_attach"]
+
+[[permission]]
 identifier = "allow-send-suborb"
 description = "Send a turn on a sub-orb session."
 commands.allow = ["send_suborb"]

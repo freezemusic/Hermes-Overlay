@@ -2106,6 +2106,65 @@ async fn note_landed_session(
     }
 }
 
+/// Stage chat attachments before a send (R-AT-02). `session_id` is the
+/// sub-orb's stored chat; empty means the main orb, resolved exactly like
+/// `send_chat` (explicit pin, else Bot Chat, else the first Bot Chat).
+/// Returns `{ok, items}` or `{ok: false, index, message}`; never the bytes.
+#[tauri::command]
+async fn chat_attach(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    session_id: Option<String>,
+    files: Vec<client::attach::AttachIn>,
+) -> Result<serde_json::Value, String> {
+    if let Err(message) = client::attach::check_batch(&files) {
+        return Ok(serde_json::json!({"ok": false, "index": null, "message": message}));
+    }
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let bot = bot_or_err(&cfg, &profile)?.clone();
+    let chat = chat_client(&state, &cfg);
+    let root = bot.profile.clone();
+    let stored = match session_id.map(|id| id.trim().to_string()).filter(|id| !id.is_empty()) {
+        Some(id) => id,
+        None => {
+            let session_cache = Arc::clone(&state.sessions);
+            let config_write = Arc::clone(&state.config_write);
+            let pin = load_pin(&app, &state, &profile);
+            let sessions = chat.list_sessions_for_bot_chat(&root).await.map_err(|err| explain(&err))?;
+            let target = match hermes::send_session_target(&sessions, &pin.id, pin.explicit, pin.anchor) {
+                Ok(target) => target,
+                Err(_) if !sessions.iter().any(|row| row.title == config::BOT_CHAT_TITLE && !row.archived) => {
+                    let pick = chat.ensure_bot_chat(&root).await.map_err(|err| explain(&err))?;
+                    hermes::SendTarget { id: pick.id, rewrite: true, explicit: false, anchor: 0.0 }
+                }
+                Err(err) => return Err(err),
+            };
+            if target.rewrite {
+                persist_pin(
+                    &app,
+                    &session_cache,
+                    &config_write,
+                    &profile,
+                    SessionPin { id: target.id.clone(), explicit: target.explicit, anchor: target.anchor },
+                );
+            }
+            if sessions
+                .iter()
+                .any(|session| session.id == target.id && hermes::session_send_closed(session, &sessions))
+            {
+                return Err(hermes::CLOSED_SESSION_LINE.into());
+            }
+            target.id
+        }
+    };
+    match chat.attach_files(&root, &stored, &files).await {
+        Ok(items) => Ok(serde_json::json!({"ok": true, "session_id": stored, "items": items})),
+        Err(failure) => Ok(serde_json::json!({"ok": false, "index": failure.index, "message": failure.message})),
+    }
+}
+
 #[tauri::command]
 async fn send_chat(
     app: AppHandle,
@@ -4427,6 +4486,7 @@ pub fn run() {
             open_bot,
             select_session,
             send_chat,
+            chat_attach,
             respond_approval,
             respond_clarify,
             load_run_controls,
