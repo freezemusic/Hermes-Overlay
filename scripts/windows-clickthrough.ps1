@@ -1025,6 +1025,213 @@ function Assert-GrowDrag([string]$label, [string]$bot = "field", [string]$key = 
   Start-Sleep -Milliseconds 500
 }
 
+# R-PL-09 (Devon 2026-11-17 17:03 London 「加拉闊邊，一齊做」). The plan
+# logs its width handle (plan-resize-at, CSS px, debug log only): the outer
+# 10px strip, away from the seam. side= is which side of the panel the plan
+# sits on, room= the space left on that side.
+function Read-PlanResizeAt([string]$bot) {
+  if (-not (Test-Path $log)) { return $null }
+  $hit = Select-String -Path $log -Pattern "plan-resize-at bot=$bot " | Select-Object -Last 1
+  if (-not $hit) { return $null }
+  $m = [regex]::Match($hit.Line, 'dpr=(?<dpr>[0-9.]+) side=(?<side>left|right) w=(?<pw>\d+) room=(?<room>\d+) at=(?<x>-?\d+),(?<y>-?\d+),(?<w>\d+)x(?<h>\d+)')
+  if (-not $m.Success) { return $null }
+  return @{
+    dpr = [double]::Parse($m.Groups['dpr'].Value, [System.Globalization.CultureInfo]::InvariantCulture)
+    side = $m.Groups['side'].Value
+    pw = [int]$m.Groups['pw'].Value
+    room = [int]$m.Groups['room'].Value
+    x = [int]$m.Groups['x'].Value
+    y = [int]$m.Groups['y'].Value
+    w = [int]$m.Groups['w'].Value
+    h = [int]$m.Groups['h'].Value
+  }
+}
+
+function Read-PlanResized([string]$bot) {
+  if (-not (Test-Path $log)) { return $null }
+  $hit = Select-String -Path $log -Pattern "plan-resized bot=$bot .*from=" | Select-Object -Last 1
+  if (-not $hit) { return $null }
+  $m = [regex]::Match($hit.Line, 'from=(?<f>\d+) to=(?<t>\d+)')
+  if (-not $m.Success) { return $null }
+  return @{ from = [int]$m.Groups['f'].Value; to = [int]$m.Groups['t'].Value }
+}
+
+# One real press on the plan's width handle, $dx CSS px along x in 10 moves.
+function Drag-PlanEdge($at, [int]$dx) {
+  $px = [int][Math]::Round(($at.x + $at.w / 2) * $at.dpr)
+  $py = [int][Math]::Round(($at.y + [Math]::Min(160, [Math]::Floor($at.h / 2))) * $at.dpr)
+  $step = $dx * $at.dpr / 10.0
+  [ClickProbe]::Ctrl($false)
+  [ClickProbe]::SetCursorPos($px, $py) | Out-Null
+  Start-Sleep -Milliseconds 350
+  [ClickProbe]::MoveTo($px, $py)
+  Start-Sleep -Milliseconds 150
+  [ClickProbe]::Down()
+  try {
+    Start-Sleep -Milliseconds 120
+    for ($i = 1; $i -le 10; $i++) {
+      [ClickProbe]::MoveTo([int][Math]::Round($px + $step * $i), $py)
+      Start-Sleep -Milliseconds 30
+    }
+    Start-Sleep -Milliseconds 200
+  } finally {
+    [ClickProbe]::Up()
+  }
+  Start-Sleep -Milliseconds 300
+  return @{ x = $px; y = $py }
+}
+
+# Shrink the open plan 120px first so the grow has room on any runner, then
+# widen it 100px outward. Checks: no press reached Behind, the width grew, it
+# reached config.json panel_sizes._plan through set_panel_size, the published
+# panel rect still covers the wider plan, and a plain click in the strip the
+# grow added stays in the overlay. A double-click on the handle then puts the
+# design width back (panel_sizes._plan removed) for the checks after this one.
+function Assert-PlanWidthDrag([string]$label, [string]$bot = "field") {
+  $at = $null
+  $deadline = (Get-Date).AddSeconds(8)
+  while ((Get-Date) -lt $deadline -and -not $at) {
+    $at = Read-PlanResizeAt $bot
+    if (-not $at) { Start-Sleep -Milliseconds 200 }
+  }
+  if (-not $at) {
+    Note-Fail $label "debug log has no plan-resize-at for $bot"
+    return
+  }
+  Note-Ok "$label-handle" "side=$($at.side) w=$($at.pw) room=$($at.room) at=$($at.x),$($at.y),$($at.w)x$($at.h)"
+  $out = if ($at.side -eq "left") { -1 } else { 1 }
+  $behindBefore = Click-Count
+  $shrinkBefore = Count-Log "plan-resized bot=$bot .*from="
+  Drag-PlanEdge $at (-120 * $out) | Out-Null
+  if (-not (Wait-Count "plan-resized bot=$bot .*from=" $shrinkBefore 4)) {
+    Note-Fail $label "no plan-resized line after a 120px inward drag"
+    return
+  }
+  $shrunk = Read-PlanResized $bot
+  $at2 = $null
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $deadline) {
+    $at2 = Read-PlanResizeAt $bot
+    if ($at2 -and $shrunk -and $at2.pw -eq $shrunk.to) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  if (-not ($at2 -and $shrunk -and $at2.pw -eq $shrunk.to)) {
+    Note-Fail $label "plan-resize-at did not follow the shrink (to=$($shrunk.to))"
+    return
+  }
+  $growBefore = Count-Log "plan-resized bot=$bot .*from="
+  Drag-PlanEdge $at2 (100 * $out) | Out-Null
+  if ((Click-Count) -gt $behindBefore) {
+    Note-Fail $label "a press or release on the plan handle reached Behind"
+  }
+  if (-not (Wait-Count "plan-resized bot=$bot .*from=" $growBefore 4)) {
+    Note-Fail $label "no plan-resized line after a 100px outward drag"
+    return
+  }
+  $size = Read-PlanResized $bot
+  $dw = $size.to - $size.from
+  if ($dw -lt 60) {
+    Note-Fail $label "plan went $($size.from) -> $($size.to) (dw=$dw), expected at least +60"
+    return
+  }
+  Note-Ok $label "$($shrunk.from) -> $($shrunk.to) -> $($size.to)"
+  $saved = $null
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $deadline) {
+    $saved = Read-SavedPanelSize "_plan"
+    if ($saved -and $saved.w -eq $size.to) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  if (-not ($saved -and $saved.w -eq $size.to)) {
+    $got = if ($saved) { "$($saved.w)" } else { "none" }
+    Note-Fail "$label-saved" "config.json panel_sizes._plan.w is $got, expected $($size.to)"
+  } else {
+    Note-Ok "$label-saved" "panel_sizes._plan w=$($saved.w)"
+  }
+  $plan = $null
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $deadline) {
+    $plan = Read-PlanRect $bot
+    if ($plan -and [Math]::Abs($plan.w - $size.to) -le 3) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  if (-not ($plan -and [Math]::Abs($plan.w - $size.to) -le 3)) {
+    Note-Fail "$label-hit" "plan-rect never showed the wider plan ($($size.to))"
+    return
+  }
+  $covered = $null
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $deadline) {
+    $covered = @(Read-HitRects | Where-Object {
+      $_.id -eq "panel:$bot" -and -not ($_.x -le 0 -and $_.y -le 0 -and $_.w -ge ($w - 2) -and $_.h -ge ($h - 2)) -and
+      $_.x -le ($plan.x + 2) -and ($_.x + $_.w) -ge ($plan.x + $plan.w - 2) -and
+      $_.y -le ($plan.y + 2) -and ($_.y + $_.h) -ge ($plan.y + $plan.h - 2)
+    } | Select-Object -First 1)
+    if ($covered) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  if (-not $covered) {
+    $now = @(Read-HitRects | Where-Object { $_.id -eq "panel:$bot" } | Select-Object -First 1)
+    $nowText = if ($now) { "$($now[0].x),$($now[0].y) $($now[0].w)x$($now[0].h)" } else { "missing" }
+    Note-Fail "$label-hit" "panel:$bot is $nowText, does not cover the wider plan $($plan.x),$($plan.y) $($plan.w)x$($plan.h)"
+  } else {
+    $covered = $covered[0]
+    Note-Ok "$label-hit" "panel:$bot $($covered.x),$($covered.y) $($covered.w)x$($covered.h) covers plan $($plan.x),$($plan.y) $($plan.w)x$($plan.h)"
+    # A point in the strip the grow added, clear of the handle and the orbs.
+    $orbs = @(Read-HitRects | Where-Object { $_.id -like "bot:*" })
+    $nx = if ($out -gt 0) { $plan.x + $plan.w - 40 } else { $plan.x + 40 }
+    $probe = $null
+    foreach ($f in @(0.5, 0.35, 0.65, 0.8)) {
+      $cand = @{ x = [int][Math]::Round($nx * $at.dpr); y = [int][Math]::Round(($plan.y + $plan.h * $f) * $at.dpr) }
+      if ($cand.x -lt 2 -or $cand.y -lt 2 -or $cand.x -ge ($w - 2) -or $cand.y -ge ($h - 48)) { continue }
+      if (-not (Clear-OfOrbs $cand $orbs)) { continue }
+      $probe = $cand
+      break
+    }
+    if (-not $probe) {
+      Note-Ok "$label-new-area" "no point in the added strip clear of the orbs; skipped"
+    } else {
+      Assert-Captured "$label-new-area" $probe.x $probe.y
+    }
+  }
+  # Put the design width back: double-click the handle where the grow left it.
+  $at3 = $null
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $deadline) {
+    $at3 = Read-PlanResizeAt $bot
+    if ($at3 -and $at3.pw -eq $size.to) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  if (-not $at3) {
+    Note-Fail "$label-reset" "no plan-resize-at after the grow"
+    return
+  }
+  $rx = [int][Math]::Round(($at3.x + $at3.w / 2) * $at3.dpr)
+  $ry = [int][Math]::Round(($at3.y + [Math]::Min(160, [Math]::Floor($at3.h / 2))) * $at3.dpr)
+  $resetBefore = Count-Log "plan-resized bot=$bot .*reset=1"
+  [ClickProbe]::SetCursorPos($rx, $ry) | Out-Null
+  Start-Sleep -Milliseconds 350
+  [ClickProbe]::Click()
+  Start-Sleep -Milliseconds 60
+  [ClickProbe]::Click()
+  if (-not (Wait-Count "plan-resized bot=$bot .*reset=1" $resetBefore 4)) {
+    Note-Fail "$label-reset" "double-click at ($rx,$ry) did not reset the plan width"
+    return
+  }
+  $deadline = (Get-Date).AddSeconds(5)
+  $left = $true
+  while ((Get-Date) -lt $deadline) {
+    if (-not (Read-SavedPanelSize "_plan")) { $left = $false; break }
+    Start-Sleep -Milliseconds 200
+  }
+  if ($left) {
+    Note-Fail "$label-reset" "config.json still has panel_sizes._plan after the reset"
+  } else {
+    Note-Ok "$label-reset" "($rx,$ry)"
+  }
+  Start-Sleep -Milliseconds 500
+}
+
 $overlay = $null
 try {
   $env:HERMES_OVERLAY_DEBUG_LOG = $log
@@ -1111,9 +1318,27 @@ try {
     Note-Ok "bot-opened" "$($fieldRect.x),$($fieldRect.y) $($fieldRect.w)x$($fieldRect.h)"
     Assert-Outside "bot-edge" $fieldRect
   }
+  # R-PL-01 (Devon 2026-11-17 17:03 London 「照建議修」): a plan already in
+  # history never opens by itself, not on a panel open nor a restart. The
+  # fake history is a /plan turn with a same-turn write_file, so the reply
+  # carries 睇計劃; that click is the only way to open it.
+  if (-not (Wait-Count "plan-chip-at bot=field " 0 12)) {
+    Note-Fail "plan-chip" "debug log has no plan-chip-at for field (write_file plan not captured?)"
+  } else {
+    Start-Sleep -Seconds 2
+    if ((Count-Log "plan-close-at bot=field ") -gt 0) {
+      Note-Fail "plan-not-auto" "the history plan opened by itself"
+    } else {
+      Note-Ok "plan-not-auto" "history plan stayed shut"
+    }
+    $chip0 = Read-PlanChip "field"
+    if ($chip0) { Assert-Captured "plan-chip-open" $chip0.x $chip0.y }
+  }
   if (-not (Wait-Count "plan-close-at bot=field " 0 12)) {
     Note-Fail "plan-opened" "debug log has no plan-close-at for field"
   } else {
+    # The 280ms grow (R-PL-04) and the hit host settle before the samples.
+    Start-Sleep -Milliseconds 800
     $plan = Read-PlanRect "field"
     $closer = Read-PlanClose "field"
     if (-not $plan -or -not $closer) {
@@ -1159,6 +1384,10 @@ try {
       if ($inPanel -and (Clear-OfOrbs $inPanel $orbs)) {
         Assert-Captured "plain-click-panel-with-plan" $inPanel.x $inPanel.y
       }
+      # R-PL-09: widen the plan from its outer edge; the height stays glued.
+      Assert-PlanWidthDrag "plan-width" "field"
+      $plan = Read-PlanRect "field"
+      $closer = Read-PlanClose "field"
       # R-PN-09: the free edge and corner of the open field panel show the
       # Windows sizing cursor, a plain click there stays in the overlay, and
       # with Ctrl held the same point passes through (R-CT-05).
@@ -1441,7 +1670,22 @@ try {
       Note-Fail "suborb-opened" "hit-rects never published panel:$subBot with height >= 200"
     } else {
       Note-Ok "suborb-opened" "$($subRect.x),$($subRect.y) $($subRect.w)x$($subRect.h)"
-      if (Wait-Count "plan-close-at bot=$subBot " $subPlanBefore 10) {
+      # R-PL-01: the sub-orb's history plan stays shut too; 睇計劃 opens it.
+      $subChipOpened = $false
+      if (Wait-Count "plan-chip-at bot=$subBot " 0 10) {
+        Start-Sleep -Seconds 1
+        if ((Count-Log "plan-close-at bot=$subBot ") -gt $subPlanBefore) {
+          Note-Fail "suborb-plan-not-auto" "the sub-orb history plan opened by itself"
+        } else {
+          Note-Ok "suborb-plan-not-auto" ""
+        }
+        $subChip = Read-PlanChip $subBot
+        if ($subChip) {
+          Assert-Captured "suborb-plan-chip-open" $subChip.x $subChip.y
+          $subChipOpened = $true
+        }
+      }
+      if ($subChipOpened -and (Wait-Count "plan-close-at bot=$subBot " $subPlanBefore 10)) {
         Note-Ok "suborb-plan-opened" ""
         Assert-GrowDrag "grow-suborb-with-plan" $subBot "_suborb"
         # The plan follows the re-cascaded box a beat after the reset (about

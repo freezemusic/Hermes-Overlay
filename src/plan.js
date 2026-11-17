@@ -2,18 +2,11 @@
 
 /** Both separators. A missing slash before `.hermes` (`Workbench.hermes\plans\`) still matches. */
 const PLAN_PATH = /\.hermes[\\/]plans[\\/]([^\s)]+?)\.md/;
+/** Only used by the sub-orb tail badge (tailSignals), never to open a plan. */
 const PLAN_MIN_CHARS = 200;
-
-/** Shown when a path mention opens the panel but the write_file body is not in history. */
-export const PLAN_FILE_MISSING_NOTE = "計劃檔內容唔在對話紀錄裡面。";
 
 export function isHermesPlanPath(path) {
   return PLAN_PATH.test(String(path || ""));
-}
-
-function inChatPlanBody(text) {
-  const body = String(text || "");
-  return !!(unwrapPlan(body) || hasHeading(body) || /\*\*Goal:\*\*/i.test(body) || /implementation plan/i.test(body));
 }
 
 function planRecordFromFile(content, path) {
@@ -67,6 +60,7 @@ export function unwrapPlan(text) {
   return "";
 }
 
+/** Text shape check for the sub-orb tail badge only. It never opens the plan window (R-PL-01). */
 export function looksLikePlan(text) {
   const body = String(text || "").trim();
   if (!body) return false;
@@ -81,16 +75,85 @@ export function planSource(text) {
 }
 
 /**
- * A new plan key always becomes the open plan, even when an older plan is showing.
+ * Plan view state for the session on screen (R-PL-01, SPEC §6.7). The main bot
+ * thread switches sessions, so seen keys, dismiss and focus live per session id.
+ * A sub-orb thread only ever holds one session, so it gets one entry.
+ * A fresh thread with no session id yet hands its entry to the first real id.
+ */
+export function planView(thread) {
+  if (!thread) return null;
+  if (!(thread.planViews instanceof Map)) thread.planViews = new Map();
+  const key = String(thread.sessionId || "");
+  let view = thread.planViews.get(key);
+  if (!view && key && thread.planViews.has("")) {
+    view = thread.planViews.get("");
+    thread.planViews.delete("");
+    thread.planViews.set(key, view);
+  }
+  if (!view) {
+    view = { based: false, seen: new Set(), focus: "", dismissed: "" };
+    thread.planViews.set(key, view);
+  }
+  return view;
+}
+
+/** Read-only peek: no entry is created. */
+function peekPlanView(thread) {
+  if (!thread || !(thread.planViews instanceof Map)) return null;
+  return thread.planViews.get(String(thread.sessionId || "")) || null;
+}
+
+/**
+ * Note the plans on screen. The first loaded paint of a session only records
+ * what is already there: history, a reopened panel, a session switch and a
+ * restart never auto-open an older plan. After that, only a new same-turn
+ * write_file plan in the latest turn becomes the open plan.
  * Returns whether the focus changed.
  */
-export function noteNewestPlan(thread, plans) {
-  const newest = plans?.length ? plans[plans.length - 1] : null;
-  if (!thread || !newest || thread.seenPlanKey === newest.key) return false;
-  thread.seenPlanKey = newest.key;
-  thread.planDismissed = "";
-  thread.planFocus = newest.key;
-  return true;
+export function notePlans(thread, messages = thread?.messages) {
+  if (!thread) return false;
+  const view = planView(thread);
+  const plans = plansIn(messages || []);
+  if (!view.based) {
+    if (!thread.loaded) return false;
+    view.based = true;
+    for (const item of plans) view.seen.add(item.key);
+    return false;
+  }
+  const fresh = latestTurnPlan(messages || []);
+  let changed = false;
+  for (const item of plans) {
+    if (view.seen.has(item.key)) continue;
+    view.seen.add(item.key);
+    if (fresh && item.key === fresh.key) {
+      view.focus = item.key;
+      view.dismissed = "";
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Back-compat name used by older callers. */
+export function noteNewestPlan(thread) {
+  return notePlans(thread);
+}
+
+/** 「睇計劃」: open this plan for the session on screen. */
+export function focusPlan(thread, key) {
+  const view = planView(thread);
+  if (!view) return;
+  view.focus = String(key || "");
+  view.dismissed = "";
+  if (view.focus) view.seen.add(view.focus);
+}
+
+/** ×: close the open plan for this session only. */
+export function dismissPlan(thread) {
+  const view = planView(thread);
+  if (!view) return;
+  view.dismissed = view.focus || "closed";
+  view.focus = "";
 }
 
 export function planTitle(markdown) {
@@ -295,30 +358,21 @@ export function planTextHash(text) {
   return (hash >>> 0).toString(16);
 }
 
-function planRecord(text) {
-  return {
-    title: planTitle(text),
-    markdown: text,
-    key: `${planTitle(text)}\n${text.length}\n${text.slice(0, 80)}\n${planTextHash(text)}`,
-  };
-}
-
 /**
- * Every finished bot plan in order. A preceding user `/plan` counts when the
- * reply is long enough to be the plan body. Live bubbles are skipped.
+ * Every finished bot plan in order. Only a same-turn write_file to
+ * `.hermes/plans/*.md` with content counts (R-PL-01). Chat text never makes a plan:
+ * headings, **Goal:**, a plan path, a fence or a `/plan` reply alone do not.
+ * Live bubbles are skipped.
  */
 export function plansIn(messages) {
   const list = messages || [];
   const found = [];
-  const used = new Set();
-
   let turnBots = [];
   let turnFile = null;
   const flushTurn = () => {
     if (turnFile && turnBots.length) {
       const index = turnBots[turnBots.length - 1];
       found.push({ ...planRecordFromFile(turnFile.content, turnFile.path), index, fromFile: true });
-      used.add(index);
     }
     turnBots = [];
     turnFile = null;
@@ -336,27 +390,21 @@ export function plansIn(messages) {
     if (file) turnFile = file;
   }
   flushTurn();
-
-  for (let index = 0; index < list.length; index += 1) {
-    if (used.has(index)) continue;
-    const message = list[index];
-    if (!message || message.role !== "bot" || message.live) continue;
-    const text = String(message.text || "").trim();
-    if (!text) continue;
-    const previous = [...list.slice(0, index)].reverse().find((item) => item && item.role === "user");
-    const fromCommand = previous?.command === "plan" && text.length >= 40;
-    if (!looksLikePlan(text) && !fromCommand) continue;
-    const markdown = looksLikePlan(text) ? planSource(text) : text;
-    const record = planRecord(markdown);
-    // A summary that only mentions the plan path, with no write_file body,
-    // still opens; say the file is not in history. A pasted in-chat plan keeps its body.
-    if (PLAN_PATH.test(text) && !inChatPlanBody(text)) {
-      record.markdown = `${PLAN_FILE_MISSING_NOTE}\n\n${record.markdown}`;
-    }
-    found.push({ ...record, index });
-  }
-  found.sort((left, right) => left.index - right.index);
   return found;
+}
+
+/** The file plan of the latest turn, or null. */
+export function latestTurnPlan(messages) {
+  const list = messages || [];
+  let start = 0;
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (list[index] && list[index].role === "user") {
+      start = index;
+      break;
+    }
+  }
+  const found = plansIn(list).filter((item) => item.index >= start);
+  return found.length ? found[found.length - 1] : null;
 }
 
 /** Messages from the latest user turn through the end. No user row means the whole list. */
@@ -395,30 +443,43 @@ export function latestPlan(messages) {
   return found.length ? found[found.length - 1] : null;
 }
 
-/** Keep the newest plan for this bot so the next open can paint it before the fetch. */
-export function rememberPlan(thread, messages) {
-  const newest = latestPlan(messages);
-  if (!thread || !newest) return null;
+/**
+ * Keep the open plan for this session so the next open can paint it before the
+ * fetch. Tagged with the session id: another session never shows it.
+ */
+export function rememberPlan(thread) {
+  if (!thread) return null;
+  const view = peekPlanView(thread);
+  const plans = plansIn(thread.messages || []);
+  const focus = view?.focus ? plans.find((item) => item.key === view.focus) : null;
+  if (!focus || view.dismissed === focus.key) {
+    if (thread.loaded) thread.planCache = null;
+    return thread.planCache || null;
+  }
   thread.planCache = {
-    key: newest.key,
-    title: newest.title,
-    markdown: newest.markdown,
+    key: focus.key,
+    title: focus.title,
+    markdown: focus.markdown,
+    sessionId: String(thread.sessionId || ""),
   };
   return thread.planCache;
 }
 
 /**
- * Plan to show for this open. A loaded session with no plan stays closed.
- * Before that load, the cached plan is the one that can grow with the clip.
+ * Plan to show for this open: the session's focused plan, unless dismissed.
+ * Nothing opens by itself; notePlans or 「睇計劃」 sets the focus.
+ * Before the session loads, only that same session's cached open plan can grow with the clip.
  */
 export function planForPanel(thread) {
   if (!thread) return null;
+  const view = peekPlanView(thread);
+  if (!view || !view.focus || view.dismissed === view.focus) return null;
   const plans = plansIn(thread.messages || []);
-  const newest = plans.at(-1) || null;
-  const focus = plans.find((item) => item.key === thread.planFocus) || newest;
-  if (focus) return thread.planDismissed === focus.key ? null : focus;
+  const focus = plans.find((item) => item.key === view.focus);
+  if (focus) return focus;
   if (thread.loaded) return null;
   const cached = thread.planCache;
-  if (!cached || thread.planDismissed === cached.key) return null;
+  if (!cached || cached.key !== view.focus) return null;
+  if (String(cached.sessionId || "") !== String(thread.sessionId || "")) return null;
   return cached;
 }

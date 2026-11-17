@@ -4022,6 +4022,37 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_width_drag_latches_on_the_docked_plan_and_keeps_the_window() {
+        // R-PL-09 (Devon 2026-11-17): panel:field is the panel plus its docked
+        // plan (420 + 420). The width handle is the plan's outer 10px. A press
+        // there latches like the panel grip, so widening the plan past the
+        // frozen union keeps the window until release.
+        let cfg = InteractionConfig::default();
+        let rects = vec![HitRect {
+            id: "panel:field".into(),
+            x: 100.0,
+            y: 40.0,
+            w: 840.0,
+            h: 560.0,
+            z: 1,
+            round: false,
+        }];
+        let handle = Some((935.0, 300.0));
+        let frames = interaction_frame(false, &[], handle, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(cursor_on_captured_panel(handle, &frames, &rects, 1024.0, 768.0));
+        let latched = panel_press_latch(false, true, false, true);
+        assert!(latched);
+        let out = Some((1010.0, 300.0));
+        let frames = interaction_frame(false, &[], out, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(windows_cursor_ignored(out, &frames, &rects, 1024.0, 768.0, true));
+        let still = panel_press_latch(true, true, latched, false);
+        assert!(!(windows_cursor_ignored(out, &frames, &rects, 1024.0, 768.0, true) && !still));
+        // Ctrl held over the plan handle: no capture, no latch (R-CT-05).
+        let held = interaction_frame(true, &[], handle, &rects, HIT_MARGIN_PX, &cfg);
+        assert!(!cursor_on_captured_panel(handle, &held, &rects, 1024.0, 768.0));
+    }
+
+    #[test]
     fn a_grow_drag_that_leaves_the_frozen_panel_rect_keeps_the_window() {
         // R-PN-09: the frozen rect is the old 420x560 box. The cursor is 150px
         // past its free corner with the button still down. Without the latch

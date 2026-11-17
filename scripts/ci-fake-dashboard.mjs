@@ -20,15 +20,25 @@ const port = Number(process.argv[2] || 9119);
 const logFile = process.argv[3] || "hermes-fake-dashboard.log";
 const log = (line) => appendFileSync(logFile, `${line}\n`);
 
-// Same transcript the 8642 fake served: a /plan turn whose reply is a plan,
-// so the field panel hosts the plan window (plan-close-at / plan-chip-at).
+// A /plan turn whose reply wrote the plan file with write_file in the same
+// turn (R-PL-01, 2026-11-17: only a same-turn write_file to .hermes/plans/*.md
+// is a plan; chat text never is). History plans do not open by themselves, so
+// the harness opens it from 「睇計劃」 (plan-chip-at), then checks plan-close-at.
+const PLAN_FILE =
+  "# Ship Implementation Plan\n\n**Goal:** keep click-through honest.\n\n- leave the plan rect\n- reopen from the chip";
 const PLAN_MESSAGES = [
   { id: 1, role: "user", content: "/plan ship", timestamp: 1 },
   {
     id: 2,
     role: "assistant",
-    content:
-      "# Ship Implementation Plan\n\n**Goal:** keep click-through honest.\n\n- leave the plan rect\n- reopen from the chip\n\nFile: `.hermes/plans/ship.md`",
+    content: "Plan written.\n\nFile: `.hermes/plans/ship.md`",
+    tool_calls: [
+      {
+        id: "call_plan_ship",
+        type: "function",
+        function: { name: "write_file", arguments: JSON.stringify({ path: ".hermes/plans/ship.md", content: PLAN_FILE }) },
+      },
+    ],
     timestamp: 2,
   },
 ];
