@@ -9544,10 +9544,7 @@ async function saveSettings(event) {
     $("#settings-status").textContent = "已儲存。";
     $("#dashboard-token").value = "";
     if (settings.mode === "mock") useMock(DEMO_BANNER, "", "demo");
-    else {
-      await connectHermes(settings);
-      void restoreOpenPanels(settings.open_panels);
-    }
+    else await connectHermes(settings);
     reconcileKeyPrompt(settings.bots || []);
     closeSettings();
   } catch (err) {
@@ -17307,7 +17304,10 @@ async function boot() {
     applyInteraction(settings.interaction);
     applySavedLook(settings);
     if (settings.mode === "mock") useMock(DEMO_BANNER, "", "demo");
-    else await connectHermes(settings);
+    else {
+      await connectHermes(settings);
+      void restoreOpenPanels(settings.open_panels);
+    }
     if (shouldAutoOpenSettings(settings)) {
       if (settings.mode !== "mock") setBanner(SETUP_BANNER, "info", "", "settings");
       openSettings();

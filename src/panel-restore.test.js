@@ -100,3 +100,10 @@ test("restore reopens through the ordinary open paths and never through a pin or
   assert.doesNotMatch(restore, /set_suborb_pin|select_session|openPlanWindow|focusPlan/);
   assert.match(restore, /state\.openPanelsReady = true/);
 });
+
+test("startup (boot) runs the restore once; a settings save does not", () => {
+  const boot = main.slice(main.indexOf("async function boot() {"));
+  assert.match(boot, /await connectHermes\(settings\);\s*void restoreOpenPanels\(settings\.open_panels\);/);
+  assert.equal(main.split("void restoreOpenPanels(").length - 1, 1);
+});
+
