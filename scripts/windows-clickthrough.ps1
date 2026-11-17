@@ -1328,9 +1328,10 @@ try {
   }
   # R-AT-01 (Devon 2026-11-17 10:18 London 「跟 Desktop 做，＋掣、拖放、貼圖」):
   # the ＋ left of the composer is clickable (not click-through), opens the
-  # attach menu (attach-menu-open), the open menu is on the hit list
-  # (attach:field), and Esc closes the menu first (attach-menu-close) while
-  # the panel stays. No file dialog is opened on the runner.
+  # attach menu (attach-menu-open), the open menu lies inside a published hit
+  # rect (attach:field, or panel:field while the plan seam defers flushes),
+  # and Esc closes the menu first (attach-menu-close) while the panel stays.
+  # No file dialog is opened on the runner.
   $attachLine = Select-String -Path $log -Pattern "attach-at id=panel:field " -ErrorAction SilentlyContinue | Select-Object -Last 1
   if (-not $attachLine -or $attachLine.Line -notmatch "dpr=([0-9.]+) at=(-?\d+),(-?\d+),(\d+)x(\d+)") {
     Note-Fail "attach-plus" "no attach-at line for panel:field"
@@ -1345,11 +1346,20 @@ try {
       Note-Fail "attach-menu" "clicking the ＋ at ($ax,$ay) did not open the attach menu"
     } else {
       Start-Sleep -Milliseconds 400
-      $menuHit = @(Read-HitRects | Where-Object { $_.id -eq "attach:field" })
-      if ($menuHit.Count -lt 1) {
-        Note-Fail "attach-menu" "open attach menu is not on the hit list"
+      $openLine = Select-String -Path $log -Pattern "attach-menu-open id=field " | Select-Object -Last 1
+      if (-not $openLine -or $openLine.Line -notmatch "at=(-?\d+),(-?\d+),(\d+)x(\d+)") {
+        Note-Fail "attach-menu" "attach-menu-open has no box"
       } else {
-        Note-Ok "attach-menu" "hit $($menuHit[0].x),$($menuHit[0].y) $($menuHit[0].w)x$($menuHit[0].h)"
+        $mx = [int]$Matches[1]; $my = [int]$Matches[2]; $mw = [int]$Matches[3]; $mh = [int]$Matches[4]
+        $menuHit = @(Read-HitRects | Where-Object {
+          ($_.id -eq "attach:field" -or $_.id -eq "panel:field") -and
+          $_.x -le ($mx + 1) -and $_.y -le ($my + 1) -and ($_.x + $_.w) -ge ($mx + $mw - 1) -and ($_.y + $_.h) -ge ($my + $mh - 1)
+        })
+        if ($menuHit.Count -lt 1) {
+          Note-Fail "attach-menu" "open attach menu ($mx,$my ${mw}x$mh) is outside every published hit rect"
+        } else {
+          Note-Ok "attach-menu" "menu $mx,$my ${mw}x$mh inside $($menuHit[0].id)"
+        }
       }
       [ClickProbe]::Tap(0x1B)
       if (-not (Wait-Count "attach-menu-close id=field" $closeBefore 5)) {

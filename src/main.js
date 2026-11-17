@@ -10170,7 +10170,8 @@ function openAttachMenu(panel) {
   menu.hidden = false;
   button?.setAttribute("aria-expanded", "true");
   menu.querySelector(".attach-menu-item")?.focus({ preventScroll: true });
-  debugLog("attach-menu-open", `id=${panel?.dataset.botId || ""}`);
+  const box = menu.getBoundingClientRect();
+  debugLog("attach-menu-open", `id=${panel?.dataset.botId || ""} dpr=${window.devicePixelRatio || 1} at=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`);
   scheduleHitSync("attach-menu");
 }
 

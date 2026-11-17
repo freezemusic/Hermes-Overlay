@@ -196,6 +196,7 @@ test("R-AT-01 Windows CI: ＋ is clickable, opens the menu on the hit list, Esc 
   assert.match(main, /debugLog\("attach-menu-open"/);
   assert.match(main, /if \(wasOpen\) debugLog\("attach-menu-close"/);
   assert.match(probe, /Assert-Captured "attach-plus" \$ax \$ay/);
-  assert.match(probe, /\$_\.id -eq "attach:field"/);
+  assert.match(probe, /\$_\.id -eq "attach:field" -or \$_\.id -eq "panel:field"/);
+  assert.match(main, /debugLog\("attach-menu-open", `id=\$\{panel\?\.dataset\.botId \|\| ""\} dpr=/);
   assert.match(probe, /Note-Ok "attach-menu-esc" "menu closed, panel kept"/);
 });
