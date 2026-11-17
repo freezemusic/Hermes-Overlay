@@ -2007,6 +2007,7 @@ textarea::placeholder { color: var(--text-muted); font-weight: 400; }
   bottom: calc(100% + 6px);
   max-height: 240px;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 6px;
   border: var(--hair);
   border-radius: var(--r-sm);
@@ -4002,6 +4003,7 @@ html[data-pass="1"] .plan-hit-host * {
   z-index: 5;
   max-height: 240px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   padding: 4px;

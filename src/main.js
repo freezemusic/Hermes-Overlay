@@ -4,6 +4,7 @@
  * Logins stay in the Rust process. Demo mode is the `--demo` launch flag only.
  */
 
+import { wheelScrollsChat } from "./wheel.js";
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
 import { logQuietRefreshFailure, openHistory, schedulePlanFileCatchUp } from "./history-open.js";
 import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, plansIn, rememberPlan } from "./plan.js";
@@ -6928,7 +6929,7 @@ function wireBotPanel(panel, id) {
     const sheet = role(panel, "view-bot");
     if (sheet && !sheet.hidden) return;
     const chat = role(panel, "chat");
-    if (!chat || event.target.closest?.(".chat-messages, .plan-preview, textarea, select")) return;
+    if (!chat || !wheelScrollsChat(event.target)) return;
     armUserScroll(chat);
     if (event.deltaY < 0) chat.dataset.scrollUp = "1";
     assignChatScroll(chat, chat.scrollTop + event.deltaY);

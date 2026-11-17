@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- 喺主面板 session 清單或者斜線選單上面捲滾輪，對話會一齊被捲：面板嘅滾輪轉送例外名單仲係舊版 `select`，冇自訂清單（`.session-menu`）同斜線選單（`.slash-popup`）。而家兩張清單只捲自己，唔會捲對話；判斷抽咗做 `wheelScrollsChat`（`src/wheel.js`），兩張清單加 `overscroll-behavior: contain`（R-SO-10）。
 - 訊息輸入框唔可以輸入下一行：輸入框係單行 `input`，Shift+Enter 都會送出。而家 Bot 面板同子光球面板嘅輸入框跟 Hermes Desktop：Enter 送出，Shift+Enter 換行，輸入法選字嗰下唔送，框跟內容長高到 150px 再捲（R-CT-08）。
 - 子光球自己嗰輪完咗、狀態寫「閒置」，但尾頁最後係工具列、清單唔忙、冇 run id 時，運行弧唔再永遠轉：每個清單 stamp 問一次伺服器（`check_session_run`／`session.active_list`，只讀），冇活躍 run 就停弧；仲有就繼續轉，面板狀態字改「行緊…」，弧同狀態字一致。自己嗰輪完結即刻記已閒置。REST `is_active` 唔當 busy。黃點同釘住重開規則不變（R-SO-03、R-SO-05）。
 - 面板蓋住主光球原位時，主光球同自己個扇嘅子光球唔會再喺兩個位之間不停跳（約每 0.5 秒一次）：未拖過、跟扇嘅子光球唔再當主光球嘅障礙，光碟間距用子光球實際大小；同一組面板之下閃開一兩輪就停，再加 2 秒三次返同一位就停嘅保險（R-OB-08）。
