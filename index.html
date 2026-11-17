@@ -71,6 +71,15 @@
             <button type="button" class="continue-btn" data-role="continue" hidden>喺 API 對話繼續</button>
             <button type="button" class="continue-btn" data-role="switch" hidden>轉去 Bot Chat</button>
             <div class="slash-popup" data-role="slash" hidden role="listbox" aria-label="斜線指令"></div>
+            <div class="attach-chips" data-role="attach-chips" hidden role="list" aria-label="附件"></div>
+            <div class="attach-menu" data-role="attach-menu" hidden role="menu" aria-label="附加">
+              <button type="button" role="menuitem" class="attach-menu-item" data-attach="files">檔案…</button>
+              <button type="button" role="menuitem" class="attach-menu-item" data-attach="images">圖片…</button>
+              <button type="button" role="menuitem" class="attach-menu-item" data-attach="paste">貼上圖片</button>
+            </div>
+            <input type="file" data-role="attach-files" multiple hidden tabindex="-1" aria-hidden="true">
+            <input type="file" data-role="attach-images" multiple accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" hidden tabindex="-1" aria-hidden="true">
+            <button type="button" class="attach-btn" data-role="attach" aria-haspopup="menu" aria-expanded="false" aria-label="附加檔案或圖片" title="附加檔案或圖片（每個最多 10 MB）">＋</button>
             <button type="button" class="compose-mode-chip" data-role="compose-mode" aria-pressed="false" aria-label="撰寫模式">一般</button>
             <textarea data-role="input" rows="1" placeholder="輸入訊息給呢個 Bot…" autocomplete="off" spellcheck="false"></textarea>
             <span class="slash-ghost" data-role="ghost" hidden></span>

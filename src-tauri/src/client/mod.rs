@@ -10,6 +10,7 @@
 //! - **Paths:** [`endpoints`]. **Socket and backoff:** [`ws`]. **Event mapping:** [`turn`].
 //! - The old gateway API is not used for chat. See REQUIREMENTS R-CL-01.
 
+pub mod attach;
 pub mod endpoints;
 pub mod kanban;
 pub mod turn;
@@ -32,6 +33,8 @@ use turn::{Step, TurnMapper};
 use ws::{WsEvent, WsHub};
 
 const RPC_WAIT: Duration = Duration::from_secs(30);
+/// One attachment upload (up to 10 MB of base64 over the shared socket).
+const ATTACH_WAIT: Duration = Duration::from_secs(120);
 const REST_WAIT: Duration = Duration::from_secs(20);
 /// REST `GET /api/sessions` caps `limit` at 100 on 0.22.5.
 const LIST_LIMIT: &str = "100";
@@ -499,6 +502,56 @@ impl HermesClient {
         }
         self.remember_live(profile, stored, &live);
         Ok(live)
+    }
+
+    /// Stage chat attachments on stored chat `stored` before the send (R-AT-02).
+    /// Images: `image.attach_bytes`; other files: `file.attach` with a data URL.
+    /// One failure unstages the images already queued (`image.detach`) and
+    /// returns the server's reason, so the page keeps every chip and the text.
+    pub async fn attach_files(
+        &self,
+        profile: &str,
+        stored: &str,
+        items: &[attach::AttachIn],
+    ) -> Result<Vec<attach::AttachOut>, attach::AttachFailure> {
+        attach::check_batch(items).map_err(|message| attach::AttachFailure { index: None, message })?;
+        let live = self
+            .attach(profile, stored)
+            .await
+            .map_err(|err| attach::AttachFailure { index: None, message: crate::hermes::explain(&err) })?;
+        let mut done: Vec<attach::AttachOut> = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            let (method, params) = attach::attach_call(&live, item);
+            let reply = self.ws.call(method, params, ATTACH_WAIT).await;
+            let outcome = match reply {
+                Ok(value) => attach::attach_result(item, &value),
+                Err(HermesError::Http { status, body }) => Err(if body.trim().is_empty() {
+                    format!("伺服器拒絕（{status}）")
+                } else {
+                    format!("伺服器拒絕（{status}）：{body}")
+                }),
+                Err(err) => Err(crate::hermes::explain(&err)),
+            };
+            match outcome {
+                Ok(out) => {
+                    ws::debug(format!("hc-attach ok kind={} bytes={}", out.kind, attach::decoded_len(&item.data)));
+                    done.push(out);
+                }
+                Err(reason) => {
+                    ws::debug(format!("hc-attach failed kind={} reason={reason}", item.kind));
+                    self.detach_images(&live, &done).await;
+                    return Err(attach::AttachFailure { index: Some(index), message: reason });
+                }
+            }
+        }
+        Ok(done)
+    }
+
+    /// Best effort: take staged images back off live session `live`.
+    async fn detach_images(&self, live: &str, staged: &[attach::AttachOut]) {
+        for out in staged.iter().filter(|out| out.kind == "image" && !out.path.is_empty()) {
+            let _ = self.call(attach::IMAGE_DETACH, json!({"session_id": live, "path": out.path})).await;
+        }
     }
 
     /// Keep `stored` attached so other devices' turns stream in (R-CL-03).

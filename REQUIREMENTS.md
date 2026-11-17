@@ -535,6 +535,28 @@ config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細�
 
 ---
 
+## 9a. 附件（R-AT）
+
+**R-AT-01** Bot 面板同子光球面板嘅輸入框（共用 `bot-panel-template`）可以加附件，跟 Hermes Desktop composer 三個入口：(1) 輸入框左邊「＋」掣，彈出選單「檔案…」「圖片…」「貼上圖片」；(2) 由檔案總管拖檔案落輸入列；(3) 喺輸入框撳 Ctrl+V 貼剪貼簿入面嘅圖。揀檔用 webview 入面隱藏嘅 `<input type="file">`，唔加 Tauri plugin。每個附件喺輸入框上面出一粒 chip（圖片有縮圖），有「×」拎走。Desktop 嘅「資料夾」「URL」同 snippets 唔做。選單開住時喺命中區入面（唔穿透）；Esc 先收選單、唔收面板；焦點喺「＋」、選單或者「×」時 Enter／Space 撳嗰粒掣，唔會送出訊息（R-CT-08 照舊：Enter 送、Shift+Enter 換行、輸入法唔送）。
+- 來源：Devon（2026-11-17 10:18 London）：「上載檔案：跟 Desktop 做，＋掣、拖放、貼圖」。Desktop 證據（NousResearch/hermes-agent `bf0203a`）：`apps/desktop/src/app/chat/composer/context-menu.tsx:48-89`（＋選單：Files／Folder／Images／Paste image／URL）、`hooks/use-composer-drop.ts`（OS 拖放）、`index.tsx:563-600` `handlePaste`（貼圖）。
+- 驗收（Windows）：兩種面板都試：＋→檔案揀一個 PDF、＋→圖片揀兩張 PNG、拖一個 txt 落輸入列、截圖後 Ctrl+V；四樣都出 chip，「×」拎走得。撳選單外面或者 Esc 收選單，面板仲喺度。單元：`attach.test.js`「R-AT-01 …」。
+- 狀態：❓ / ✅(單元)。
+
+**R-AT-02** 送出時先上載，再送訊息，經 overlay 已經連住嘅 `/api/ws`（伺服器喺遠端，筆電路徑佢睇唔到，所以一定送 bytes；唔用 gateway 嘅 `clipboard.paste`）。圖片：`image.attach_bytes {session_id, content_base64, filename}`，伺服器排喺嗰個 live session，下一個 `prompt.submit` 一齊帶去；其他檔案：`file.attach {session_id, name, data_url}`，伺服器回 `ref_text`（`@file:…`）。訊息文字跟 Desktop `buildContextText`：所有 `ref_text` 一行一個，空一行，再接你打嘅字；淨係圖片冇字就送 Desktop 嘅 `What do you see in this image?`。撰寫模式照舊包（Plan → `/plan …`）。主光球用 `send_chat` 一樣嘅對話（explicit → Bot Chat → 冇就開第一條 Bot Chat）；子光球用佢自己條 session。有附件而 bot 忙緊時一定排隊（`queued`），唔 steer 入行緊嗰輪。斜線指令、旁問模式、要你答嘅卡開住時唔送附件，出句話你知點做，字同附件留低。
+- 來源：同上。Desktop：`use-prompt-actions/index.ts:113-230` `uploadComposerAttachment`、`submit.ts:288-301` `buildContextText`；伺服器（0.22.5 源碼）：`tui_gateway/methods_prompt.py` `image.attach_bytes`、`file.attach`、`image.detach`，`prompt_turn.py` 由 `attached_images` 攞圖。
+- 驗收（Windows，真伺服器）：送一個 PDF 加一句字，伺服器嗰輪見到 `@file:` ref 同檔案；送一張圖冇字，bot 答圖入面有咩。Debug log：`attach-upload`、`attach-staged`、`hc-attach ok`。單元：`attach.test.js`、`client/attach.rs`。
+- 狀態：❓ / ✅(單元)。真伺服器未驗。
+
+**R-AT-03** 上限：每個附件最多 10 MB，每次最多 10 個；空檔案唔收。（10 MB 嘅 base64 約 13.4 MB，細過舊版 dashboard 16 MiB 嘅 WebSocket frame；伺服器自己圖片上限 25 MB。）超咗即刻出紅色 chip 寫原因，要撳「×」拎走先送得。Rust `chat_attach` 喺上載之前再檢查一次。
+- 驗收：11 個檔、一個 11 MB 檔、一個 0 byte 檔都出紅 chip，送唔到；10 MB 剛好送得。單元：`attach.test.js`「R-AT-03 …」、`client/attach.rs` `r_at_03_…`。
+- 狀態：❓ / ✅(單元)。
+
+**R-AT-04** 唔可以甩嘢：上載中輸入框變唯讀、傳送同「＋」停用、chip 寫「上載中…」；讀檔失敗、連線斷、伺服器拒絕（例如 4016 唔支援嘅圖片格式、4018 太大），你打嘅字同所有 chip 都留低，被拒嗰粒變紅 chip 寫伺服器原因，再撳送出會重新上載。中途失敗會用 `image.detach` 拎返已排好嘅圖，唔會下一輪多咗圖。上載成功之後先清 chip 同輸入框；之後送訊息失敗就跟現有「未送出」流程（訊息連 `@file:` ref 留喺氣泡）。拖檔案落面板以外嘅地方唔會令 webview 打開嗰個檔（`dragDropEnabled: false`，加全域 `dragover`／`drop` 攔截）。
+- 驗收：斷網送一個附件，字同 chip 都仲喺度；伺服器拒絕某個附件（例如唔支援嘅圖片副檔名，4016）時嗰粒出紅 chip 寫原因。單元：`attach.test.js`「R-AT-04 …」。
+- 狀態：❓ / ✅(單元)。
+
+---
+
 ## 10. 視覺同對比（R-VS）
 
 **R-VS-01** bot 色只可以用喺光球核心、光暈、頭像圈同 2px 色條。文字、user 氣泡邊、實色掣用 `#0000f2` 或 `#14142b`；淺色 bot 色底上面嘅字用 `#14142b`。所有文字對底對比 ≥4.5:1。光球 glyph 用 bot 色（唔受對比規則限制）。

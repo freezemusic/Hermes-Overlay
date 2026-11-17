@@ -27,6 +27,7 @@
     "allow-open-bot",
     "allow-select-session",
     "allow-send-chat",
+    "allow-chat-attach",
     "allow-respond-approval",
     "allow-respond-clarify",
     "allow-load-run-controls",

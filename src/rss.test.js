@@ -58,7 +58,8 @@ test("R-SS main.js wiring: picker, closed checks, Bot Chat refusal, whole reply"
   assert.doesNotMatch(main, /sessionReadOnly\(picked\?\.source\)/);
   assert.match(main, /readOnlyLocked\(state\.deniedSessions, id, sessionId, sessionReadOnlyIn\(picked, thread\.sessions\)\)/);
   assert.doesNotMatch(main, /sessionEnded\(/);
-  assert.equal((main.match(/sessionSendClosed\(/g) || []).length, 4);
+  // 5th: sendWithAttachments checks before uploading (R-AT-02).
+  assert.equal((main.match(/sessionSendClosed\(/g) || []).length, 5);
   const refused = main.slice(main.indexOf("function botChatRefusal"), main.indexOf("function noteReadOnly"));
   assert.match(refused, /BOT_CHAT_UNBOUND_LINE/);
   assert.match(refused, /markUnsentDraft/);
