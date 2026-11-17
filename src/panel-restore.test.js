@@ -107,3 +107,13 @@ test("startup (boot) runs the restore once; a settings save does not", () => {
   assert.equal(main.split("void restoreOpenPanels(").length - 1, 1);
 });
 
+test("a listed sub-orb waits for its rail slot before it opens, then opens anyway after the place wait", () => {
+  const entry = { id: "suborb:field:side-task" };
+  assert.equal(restoreStep(entry, ctx({ placed: () => false })), "wait");
+  assert.equal(restoreStep(entry, ctx({ placed: () => false, placeTimedOut: true })), "open");
+  assert.equal(restoreStep(entry, ctx({ placed: () => true })), "open");
+  const restore = main.slice(main.indexOf("// R-PN-10: chat panels that were open"), main.indexOf("// R-PN-10 end"));
+  assert.match(restore, /dataset\.homeX/);
+  assert.match(restore, /RESTORE_SETTLE_MS/);
+});
+

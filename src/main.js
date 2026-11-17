@@ -17111,8 +17111,22 @@ async function saveOpenPanels() {
   }
 }
 
-function restoreCtx(timedOut) {
+function restoreCtx(timedOut, placeTimedOut = timedOut) {
   return {
+    // A sub-orb disc sits in its on-screen rail slot (not the collapsed
+    // badge, which the fan uses while the parent shell rehearses its plan),
+    // and no shell is mid-rehearsal or mid-morph. The panel cascades from
+    // that slot, exactly as after a click.
+    placed: (id) => {
+      const shell = shellFor(id);
+      const x = Number(shell?.dataset.homeX);
+      const y = Number(shell?.dataset.homeY);
+      return !!shell?.isConnected
+        && Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0
+        && shell.dataset.fan !== "collapsed"
+        && !document.querySelector('.morph[data-rehearsal="1"], .morph.is-morphing');
+    },
+    placeTimedOut,
     botIds: new Set((state.bots || []).map((bot) => bot.id)),
     loaded: (id) => !!state.threads.get(id)?.loaded,
     listReady: (profile) => !!state.threads.get(profile)?.listReady,
@@ -17139,6 +17153,8 @@ async function probeRestoredSuborb(profile, sessionId) {
 }
 
 const RESTORE_WAIT_MS = 20000;
+const RESTORE_SETTLE_MS = 1200;
+const RESTORE_PLACE_MS = 6000;
 
 /**
  * Reopens the panels saved in open_panels, oldest first, through the
@@ -17155,11 +17171,17 @@ async function restoreOpenPanels(raw) {
   const skipped = [];
   try {
     if (state.mode !== "hermes" || !inTauri() || !saved.length) return;
+    // Let the first layout (orbs, fans, dodge) settle, as before a click.
+    await new Promise((resolve) => window.setTimeout(resolve, RESTORE_SETTLE_MS));
     for (const entry of saved) {
       let step = "wait";
+      const entryStart = Date.now();
       while (step === "wait") {
         if (state.mode !== "hermes") return;
-        step = restoreStep(entry, restoreCtx(Date.now() - started > RESTORE_WAIT_MS));
+        step = restoreStep(entry, restoreCtx(
+          Date.now() - started > RESTORE_WAIT_MS,
+          Date.now() - entryStart > RESTORE_PLACE_MS,
+        ));
         if (step === "wait") await new Promise((resolve) => window.setTimeout(resolve, 150));
       }
       const sub = parseSuborbId(entry.id);

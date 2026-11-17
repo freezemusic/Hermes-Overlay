@@ -59,14 +59,21 @@ export function openPanelsKey(list) {
  *  - "probe": a sub-orb session outside the list; ask the server if it still exists.
  * `ctx`: botIds, loaded(profile) (main history loaded), listReady(profile),
  * shownSession(profile) (the session the main panel resolved to),
- * hasSession(profile, id), timedOut.
+ * hasSession(profile, id), placed(id) (a sub-orb disc has its rail slot),
+ * timedOut, placeTimedOut.
  */
 export function restoreStep(entry, ctx) {
   const bots = botSet(ctx?.botIds);
   const sub = parseSuborbId(entry?.id);
   if (sub) {
     if (!bots.has(sub.profile)) return "skip:bot-gone";
-    if (ctx.hasSession?.(sub.profile, sub.sessionId)) return "open";
+    if (ctx.hasSession?.(sub.profile, sub.sessionId)) {
+      // Its disc must be laid out on the rail first: the panel cascades from
+      // that spot. Opened before the fan has a slot it lands at 0,0 over the
+      // orbs and the free space (Windows CI restore-empty, 2026-11-17).
+      if (ctx.placed && !ctx.placed(entry.id) && !ctx.placeTimedOut) return "wait";
+      return "open";
+    }
     if (!ctx.listReady?.(sub.profile)) return ctx.timedOut ? "probe" : "wait";
     return "probe";
   }
