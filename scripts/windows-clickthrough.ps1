@@ -1056,6 +1056,22 @@ function Read-PlanResized([string]$bot) {
   return @{ from = [int]$m.Groups['f'].Value; to = [int]$m.Groups['t'].Value }
 }
 
+# A hosted plan clamped against the screen edge slides back beside its
+# panel a frame after a release; the app logs the handle again then. Take the
+# handle only once it shows width $pw on two reads 0.5s apart.
+function Wait-PlanHandle([string]$bot, [int]$pw, [int]$seconds = 6) {
+  $prev = ""
+  $deadline = (Get-Date).AddSeconds($seconds)
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 500
+    $at = Read-PlanResizeAt $bot
+    $now = if ($at -and $at.pw -eq $pw) { "$($at.x),$($at.y),$($at.w)x$($at.h)" } else { "" }
+    if ($now -and $now -eq $prev) { return $at }
+    $prev = $now
+  }
+  return $null
+}
+
 # One real press on the plan's width handle, $dx CSS px along x in 10 moves.
 function Drag-PlanEdge($at, [int]$dx) {
   $px = [int][Math]::Round(($at.x + $at.w / 2) * $at.dpr)
@@ -1108,14 +1124,8 @@ function Assert-PlanWidthDrag([string]$label, [string]$bot = "field") {
     return
   }
   $shrunk = Read-PlanResized $bot
-  $at2 = $null
-  $deadline = (Get-Date).AddSeconds(5)
-  while ((Get-Date) -lt $deadline) {
-    $at2 = Read-PlanResizeAt $bot
-    if ($at2 -and $shrunk -and $at2.pw -eq $shrunk.to) { break }
-    Start-Sleep -Milliseconds 200
-  }
-  if (-not ($at2 -and $shrunk -and $at2.pw -eq $shrunk.to)) {
+  $at2 = Wait-PlanHandle $bot $(if ($shrunk) { $shrunk.to } else { -1 })
+  if (-not ($at2 -and $shrunk)) {
     Note-Fail $label "plan-resize-at did not follow the shrink (to=$($shrunk.to))"
     return
   }
@@ -1195,13 +1205,7 @@ function Assert-PlanWidthDrag([string]$label, [string]$bot = "field") {
     }
   }
   # Put the design width back: double-click the handle where the grow left it.
-  $at3 = $null
-  $deadline = (Get-Date).AddSeconds(5)
-  while ((Get-Date) -lt $deadline) {
-    $at3 = Read-PlanResizeAt $bot
-    if ($at3 -and $at3.pw -eq $size.to) { break }
-    Start-Sleep -Milliseconds 200
-  }
+  $at3 = Wait-PlanHandle $bot $size.to
   if (-not $at3) {
     Note-Fail "$label-reset" "no plan-resize-at after the grow"
     return

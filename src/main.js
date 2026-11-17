@@ -5623,6 +5623,13 @@ function spreadPlanWidth(except) {
   });
 }
 
+/** Debug log only: the plan box and handle once the host has settled. */
+function relogPlanHitBox(shell) {
+  if (!debugFile.enabled) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => logPlanHitBox(shell)));
+  window.setTimeout(() => logPlanHitBox(shell), 400);
+}
+
 /** R-PL-09 debug line for the Windows CI plan-width check: CSS px, ids only. */
 function logPlanResizeAt(shell) {
   if (!debugFile.enabled || !shell) return;
@@ -5688,6 +5695,9 @@ function bindPlanResize(section, id) {
       settleDragHits(shell, "plan-resize-end");
       debugLog("plan-resized", `bot=${id} hit=${shell.dataset.hitId || ""} side=${side} from=${start} to=${last} room=${room}`);
       logPlanHitBox(shell);
+      // A hosted plan that sat clamped against the screen edge slides back
+      // beside its panel a frame later. Log where the handle ends up.
+      relogPlanHitBox(shell);
       spreadPlanWidth(shell);
       void persistPanelSize(PLAN_PANEL_KEY, { w: last, h: last });
     };
@@ -5714,6 +5724,7 @@ function bindPlanResize(section, id) {
     settleDragHits(shell, "plan-resize-reset");
     debugLog("plan-resized", `bot=${id} hit=${shell.dataset.hitId || ""} side=${side} reset=1 to=${width}`);
     logPlanHitBox(shell);
+    relogPlanHitBox(shell);
     spreadPlanWidth(shell);
     void persistPanelSize(PLAN_PANEL_KEY, null);
   });
@@ -11649,7 +11660,8 @@ function logPlanHitBox(shell) {
   debugLog(
     "plan-close-at",
     `bot=${shell.dataset.botId || ""} x=${Math.round(x)} y=${Math.round(y)}`,
-  );  logPlanResizeAt(shell);
+  );
+  logPlanResizeAt(shell);
 }
 
 /** Replace this panel's published rect with the shell box. The plan is
