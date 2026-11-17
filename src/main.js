@@ -4153,6 +4153,8 @@ function bindResizeHandle(handle, shell) {
       settleDragHits(shell, "resize-end");
       debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} from=${Math.round(start.w)}x${Math.round(start.h)} to=${last.w}x${last.h} key=${id}${resizedBoxTag(shell)}`);
       logResizeHandles(shell);
+      // The plan follows the laid-out box; log where it lands (debug only).
+      if (shell.dataset.planOpen === "1") relogPlanHitBox(shell);
       void persistPanelSize(id, last);
     };
     handle.addEventListener("pointermove", move);
@@ -4183,6 +4185,7 @@ function bindResizeHandle(handle, shell) {
     settleDragHits(shell, "resize-reset");
     debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} reset=1 key=${id}${resizedBoxTag(shell)}`);
     logResizeHandles(shell);
+    if (shell.dataset.planOpen === "1") relogPlanHitBox(shell);
     void persistPanelSize(id, null);
   });
 }
@@ -5632,7 +5635,7 @@ function spreadPlanWidth(except) {
 function relogPlanHitBox(shell) {
   if (!debugFile.enabled) return;
   requestAnimationFrame(() => requestAnimationFrame(() => logPlanHitBox(shell)));
-  window.setTimeout(() => logPlanHitBox(shell), 400);
+  for (const ms of [400, 1500, 3000]) window.setTimeout(() => logPlanHitBox(shell), ms);
 }
 
 /** R-PL-09 debug line for the Windows CI plan-width check: CSS px, ids only. */
