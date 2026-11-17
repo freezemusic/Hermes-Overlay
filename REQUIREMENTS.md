@@ -183,6 +183,11 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-PN-08** 冇閒置循環動畫；`prefers-reduced-motion` 只做淡入淡出。減少動畫（或者收合長度係 0）時面板即刻收返光球，但收起狀態一樣要寫：殼即刻變返 `data-state=orb`，子光球扇即刻由收埋返出嚟、返入命中區（2026-11-16 Windows CI：之前即時收合冇寫，殼一直係 panel，釘住嘅子光球關咗母面板之後永遠唔再出）。
 - 來源：DESIGN-SPEC §4–5；SPEC §2.10。驗收（盒）：全部收合閒置 10s，`document.getAnimations()` 入面 infinite 嘅數量 = 0，錄影 AE=0。狀態：❓ / ❓。
 
+
+**R-PN-10** 重啟後自動重開（Devon 2026-11-17 17:24 London：「重啟後自動重開」）。overlay 關咗（結束、重啟、更新或者當機）之前開住嘅對話面板，下次開返 app 會自己重開：主光球 bot 面板同子光球 session 面板都計，開嘅次序照舊（最後開嗰個喺最前）。主面板開返當時睇緊嗰個 session：你揀過嘅 session 經 config.json 本身嘅 session 記錄（`session_id`／`session_explicit`）返嚟，冇揀過就係 Bot Chat；子光球面板 id 本身已經寫明 session。大小同位置用返已經記住嘅 `panel_sizes`／`orb_positions`（R-PN-09、R-OB-08）。開住嘅清單由 app 自己經 `set_open_panels` 寫入 config.json `open_panels`（`[{"id","session","explicit"}]`，次序由舊到新，最多 24 個），只改呢個鍵：唔改釘選（`suborb_pins`）、唔改 bot 嘅 session 記錄；冇面板開住就冇呢個鍵（舊檔逐個位元組不變）；「儲存」設定保留佢。看板、排程、設定唔係對話面板，唔記。重開時：bot 已經唔喺名單（刪咗或者隱藏咗）就跳過；你揀過嘅 session 已經冇咗（開返變咗 Bot Chat）就跳過嗰個面板；子光球 session 唔喺清單就問伺服器一次（`fetch_pinned_session`，唯讀），冇咗或者已封存就跳過；等清單最多 20 秒。重開行返普通打開路（同撳光球一樣），所以穿透、命中框、光球避開（R-OB-08）照舊；一個一個開，中間隔一下；開之前等啟動排版定咗（約 1.2 秒），子光球要等佢粒碟喺軌道上有位（唔係收埋嘅 +N 徽章、冇殼喺預演或者變形中，最多等 6 秒），因為面板由嗰個位瀑布排出嚟（2026-11-17 CI：太早開會開喺 0,0，蓋住光球同空白位）。計劃視窗唔會因為重開而彈出：重開載入嘅歷史只當已睇（R-PL-01），之前開住嘅計劃都唔自己再開，要撳「睇計劃」。重開跑完之前唔寫 `open_panels`，所以啟動途中唔會將清單清空。debug log：`panel-restore saved= open= skip=<id>:<原因>`、`open-panels-saved ids=`。
+- 來源：Devon 2026-11-17；SPEC §2.6、§2.11。
+- 驗收（Windows CI）：開住假 bot `field` 面板同假子光球 `suborb:field:side-task` 面板，`open_panels` 有齊兩個；強制結束 overlay 再開，兩個面板自己返嚟（命中框有 `panel:field` 同 `panel:suborb:field:side-task`），計劃視窗冇自己開，空白位仍然穿透。驗收（筆電）：真 Hermes 揀咗舊 session 嘅面板重啟後係同一個 session；刪咗嗰個 session 再重啟，面板唔開。
+- 狀態：❓ / ❓。
 ---
 
 ## 3. 計劃視窗（R-PL）

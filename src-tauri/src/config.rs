@@ -192,6 +192,17 @@ pub struct AppConfig {
         deserialize_with = "lenient_suborb_created"
     )]
     pub suborb_created: BTreeMap<String, Vec<CreatedSuborb>>,
+    /// R-PN-10. Chat panels open when the overlay last wrote this list (main
+    /// bots and sub-orbs, oldest first), reopened after a restart. Omitted
+    /// while empty so a config that never had an open panel stays
+    /// byte-identical. Written only by `store_open_panels`; pins are never
+    /// touched there. Junk entries are dropped on read.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_open_panels"
+    )]
+    pub open_panels: Vec<OpenPanel>,
     /// R-LK-01 text size: "xs" (R-LK-04), "s", "l" or "xl". Empty is the standard size and is
     /// omitted, so an untouched config.json stays byte-identical.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -207,6 +218,21 @@ pub struct PanelSize {
     pub w: u32,
     pub h: u32,
 }
+
+/// R-PN-10. One chat panel that was open: a profile or `suborb:<profile>:<session>`.
+/// `session` is the session the main panel showed; `explicit` is true when the
+/// user had picked it (so a restart reopens that session, not Bot Chat).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenPanel {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub session: String,
+    #[serde(default, skip_serializing_if = "skip_false")]
+    pub explicit: bool,
+}
+
+/// Most open panels kept. Later entries past this are dropped.
+pub const OPEN_PANELS_CAP: usize = 24;
 
 /// R-OB-08. One dragged orb centre in CSS px.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -245,6 +271,15 @@ where
     let raw = serde_json::Value::deserialize(deserializer)?;
     let wrapped = serde_json::json!({ "orb_positions": raw });
     Ok(read_orb_positions(&wrapped))
+}
+
+fn lenient_open_panels<'de, D>(deserializer: D) -> Result<Vec<OpenPanel>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    let wrapped = serde_json::json!({ "open_panels": raw });
+    Ok(read_open_panels(&wrapped))
 }
 
 /// Largest stored side. The front end clamps to the monitor work area.
@@ -397,6 +432,7 @@ impl Default for AppConfig {
             orb_positions: BTreeMap::new(),
             suborb_modes: BTreeMap::new(),
             suborb_created: BTreeMap::new(),
+            open_panels: Vec::new(),
             text_size: String::new(),
             ui_language: String::new(),
         }
@@ -1284,6 +1320,101 @@ fn read_orb_positions(value: &serde_json::Value) -> BTreeMap<String, OrbPosition
 /// None (dropped back home). Splices only `orb_positions`; every other key
 /// stays put. An empty map removes the key so the file goes back to
 /// byte-identical. Coordinates are clamped to 0..=ORB_MAX_COORD.
+fn valid_open_session(session: &str) -> bool {
+    session.len() <= 200 && !session.contains(':') && !session.chars().any(char::is_control)
+}
+
+/// R-PN-10. Valid, de-duplicated entries in order, capped at OPEN_PANELS_CAP.
+/// A sub-orb entry carries no session of its own (the id has it).
+pub fn clean_open_panels(panels: &[OpenPanel]) -> Vec<OpenPanel> {
+    let mut out: Vec<OpenPanel> = Vec::new();
+    for panel in panels {
+        let id = panel.id.trim();
+        let suborb = id.starts_with("suborb:");
+        let ok = if suborb {
+            valid_orb_id(id)
+        } else {
+            valid_panel_id(id) && validate_profile(id).is_ok()
+        };
+        if !ok || out.iter().any(|seen| seen.id == id) {
+            continue;
+        }
+        let session = if suborb { "" } else { panel.session.trim() };
+        if !valid_open_session(session) {
+            continue;
+        }
+        out.push(OpenPanel {
+            id: id.to_string(),
+            session: session.to_string(),
+            explicit: panel.explicit && !session.is_empty(),
+        });
+        if out.len() >= OPEN_PANELS_CAP {
+            break;
+        }
+    }
+    out
+}
+
+fn read_open_panels(value: &serde_json::Value) -> Vec<OpenPanel> {
+    let Some(items) = value.get("open_panels").and_then(|item| item.as_array()) else {
+        return Vec::new();
+    };
+    let parsed: Vec<OpenPanel> = items
+        .iter()
+        .filter_map(|item| serde_json::from_value::<OpenPanel>(item.clone()).ok())
+        .collect();
+    clean_open_panels(&parsed)
+}
+
+/// R-PN-10. Replaces `open_panels` with `panels` (cleaned). Splices only that
+/// key; every other key, `suborb_pins` and the bots' session pins included,
+/// stays put. An empty list removes the key so the file goes back to
+/// byte-identical. Returns whether the file changed.
+pub fn store_open_panels(path: &Path, panels: &[OpenPanel]) -> Result<bool, String> {
+    let next = clean_open_panels(panels);
+    if !path.exists() {
+        if next.is_empty() {
+            return Ok(false);
+        }
+        let mut cfg = AppConfig::default();
+        cfg.open_panels = next;
+        save(path, &cfg)?;
+        return Ok(true);
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("讀唔到設定：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+    if !value.is_object() {
+        return Err("設定檔格式唔啱".to_string());
+    }
+    let field = top_level_field(&text, "open_panels");
+    if read_open_panels(&value) == next && (field.is_some() || next.is_empty()) {
+        return Ok(false);
+    }
+    let patched = if next.is_empty() {
+        match field {
+            Some(span) => remove_top_level_field(&text, &span),
+            None => text.clone(),
+        }
+    } else {
+        let body = serde_json::to_string(&next).map_err(|e| format!("設定檔格式唔啱：{e}"))?;
+        if let Some(span) = field {
+            let mut out = String::with_capacity(text.len() + body.len());
+            out.push_str(&text[..span.value_start]);
+            out.push_str(&body);
+            out.push_str(&text[span.value_end..]);
+            out
+        } else {
+            insert_top_level_field(&text, "open_panels", &body)?
+        }
+    };
+    if patched == text {
+        return Ok(false);
+    }
+    write_config_text(path, &patched)?;
+    Ok(true)
+}
+
 pub fn store_orb_position(path: &Path, id: &str, point: Option<OrbPosition>) -> Result<bool, String> {
     let id = id.trim();
     if !valid_orb_id(id) {
@@ -3522,6 +3653,56 @@ other:
         assert!(store_panel_size(&path, SUBORB_PANEL_KEY, None).unwrap());
         assert_eq!(fs::read_to_string(&path).unwrap(), old);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_panels_splice_only_their_key_keep_pins_and_clear_back_to_byte_identical() {
+        let dir = migration_dir("open-panels");
+        let path = dir.join("config.json");
+        let old = "{\n  \"version\": 1,\n  \"dashboard_base_url\": \"http://127.0.0.1:9119\",\n  \"bots\": [{\"profile\":\"mt-orch\",\"display_name\":\"MT\",\"session_id\":\"20261110_221455_d3abe7\",\"session_explicit\":true,\"session_anchor\":5.0}],\n  \"suborb_pins\": {\"mt-orch\":[\"api_1794591121_502fdcfc\"]}\n}";
+        fs::write(&path, old).unwrap();
+        let plain = load(&path).unwrap();
+        assert!(plain.open_panels.is_empty());
+        save(&path, &plain).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("open_panels"));
+        fs::write(&path, old).unwrap();
+        let list = vec![
+            OpenPanel { id: "mt-orch".into(), session: "20261110_221455_d3abe7".into(), explicit: true },
+            OpenPanel { id: "suborb:mt-orch:api_1794591121_502fdcfc".into(), session: "ignored".into(), explicit: true },
+            OpenPanel { id: "mt-orch".into(), session: "dup".into(), explicit: false },
+            OpenPanel { id: "../x".into(), session: String::new(), explicit: false },
+            OpenPanel { id: "writer".into(), session: String::new(), explicit: true },
+        ];
+        assert!(store_open_panels(&path, &list).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        // Pins and the bot's session pin are byte-for-byte where they were.
+        assert!(text.contains("\"suborb_pins\": {\"mt-orch\":[\"api_1794591121_502fdcfc\"]}"));
+        assert!(text.contains("\"session_id\":\"20261110_221455_d3abe7\",\"session_explicit\":true,\"session_anchor\":5.0"));
+        let back = load(&path).unwrap();
+        assert_eq!(
+            back.open_panels,
+            vec![
+                OpenPanel { id: "mt-orch".into(), session: "20261110_221455_d3abe7".into(), explicit: true },
+                OpenPanel { id: "suborb:mt-orch:api_1794591121_502fdcfc".into(), session: String::new(), explicit: false },
+                OpenPanel { id: "writer".into(), session: String::new(), explicit: false },
+            ]
+        );
+        assert_eq!(back.suborb_pins, plain.suborb_pins);
+        // The same list again is not a write; a full save keeps it.
+        assert!(!store_open_panels(&path, &back.open_panels).unwrap());
+        save(&path, &back).unwrap();
+        assert_eq!(load(&path).unwrap().open_panels, back.open_panels);
+        fs::write(&path, old).unwrap();
+        assert!(store_open_panels(&path, &list).unwrap());
+        // An empty list removes the key and the file is byte-identical again.
+        assert!(store_open_panels(&path, &[]).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        assert!(!store_open_panels(&path, &[]).unwrap());
+        // Junk on disk is dropped on read, never fatal.
+        fs::write(&path, "{\"version\":1,\"open_panels\":[1,{\"id\":\"a:b\"},{\"id\":\"ok\"}]}").unwrap();
+        assert_eq!(load(&path).unwrap().open_panels, vec![OpenPanel { id: "ok".into(), session: String::new(), explicit: false }]);
+        fs::write(&path, "{\"version\":1,\"open_panels\":\"bad\"}").unwrap();
+        assert!(load(&path).unwrap().open_panels.is_empty());
     }
 
     #[test]
