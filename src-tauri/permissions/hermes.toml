@@ -24,6 +24,11 @@ description = "Persist one panel's dragged size (R-PN-09)."
 commands.allow = ["set_panel_size"]
 
 [[permission]]
+identifier = "allow-set-open-panels"
+description = "Persist which chat panels are open, to reopen them after a restart (R-PN-10)."
+commands.allow = ["set_open_panels"]
+
+[[permission]]
 identifier = "allow-set-orb-position"
 description = "Persist one orb's dragged spot (R-OB-08)."
 commands.allow = ["set_orb_position"]
