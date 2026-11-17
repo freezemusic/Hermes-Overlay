@@ -1236,6 +1236,108 @@ function Assert-PlanWidthDrag([string]$label, [string]$bot = "field") {
   Start-Sleep -Milliseconds 500
 }
 
+# R-PN-10 (Devon 2026-11-17 17:24 London 「重啟後自動重開」): open the
+# sub-orb and the field panels, wait for config.json open_panels to list both,
+# kill the overlay and start it again. Both panels must come back by
+# themselves, the plan window must stay shut, and empty space must still
+# pass through.
+function Read-OpenPanels {
+  $path = Join-Path $configDir "config.json"
+  if (-not (Test-Path $path)) { return @() }
+  try { $cfg = Get-Content $path -Raw | ConvertFrom-Json } catch { return @() }
+  if (-not $cfg.open_panels) { return @() }
+  return @($cfg.open_panels | ForEach-Object { [string]$_.id })
+}
+
+function Assert-RestartRestore {
+  $subBot = "suborb:field:side-task"
+  $want = @()
+  $subOrb = $null
+  $deadline = (Get-Date).AddSeconds(15)
+  while ((Get-Date) -lt $deadline -and -not $subOrb) {
+    $subOrb = @(Read-HitRects | Where-Object { $_.id -eq "bot:$subBot" -and $_.w -gt 0 } | Select-Object -First 1)
+    if (-not $subOrb) { Start-Sleep -Milliseconds 200 }
+  }
+  if ($subOrb) {
+    $subPoint = @{ x = [int]($subOrb[0].x + $subOrb[0].w / 2); y = [int]($subOrb[0].y + $subOrb[0].h / 2) }
+    $subRect = $null
+    for ($try = 0; $try -lt 3 -and -not $subRect; $try++) {
+      Assert-Orb "restore-suborb-open" $subPoint
+      $subRect = Wait-PanelRect "panel:$subBot" 200 900
+      if ($subRect -and $subRect.h -lt 200) { $subRect = $null }
+    }
+    if ($subRect) { $want += "panel:$subBot" } else { Note-Fail "restore-suborb-open" "panel:$subBot never opened" }
+  } else {
+    Note-Fail "restore-suborb-open" "bot:$subBot not on the rail"
+  }
+  $fieldOrb = @(Read-HitRects | Where-Object { $_.id -eq "bot:field" -and $_.w -gt 0 } | Select-Object -First 1)
+  $subNow = @(Read-HitRects | Where-Object { $_.id -eq "panel:$subBot" } | Select-Object -First 1)
+  if ($fieldOrb) {
+    $fp = @{ x = [int]($fieldOrb[0].x + $fieldOrb[0].w / 2); y = [int]($fieldOrb[0].y + $fieldOrb[0].h / 2) }
+    if ($subNow -and (Point-Inside $fp $subNow[0])) {
+      Note-Ok "restore-field-open" "field orb under the sub-orb panel; sub-orb only"
+    } else {
+      Assert-Orb "restore-field-open" $fp
+      $fr = Wait-PanelRect "panel:field" 200 900
+      if ($fr -and $fr.h -ge 200) { $want += "panel:field" } else { Note-Fail "restore-field-open" "panel:field never opened" }
+    }
+  } else {
+    Note-Fail "restore-field-open" "bot:field missing from hit-rects"
+  }
+  if ($want.Count -eq 0) { return }
+  $ids = @($want | ForEach-Object { $_ -replace '^panel:', '' })
+  $saved = @()
+  $deadline = (Get-Date).AddSeconds(8)
+  while ((Get-Date) -lt $deadline) {
+    $saved = @(Read-OpenPanels)
+    if (@($ids | Where-Object { $saved -notcontains $_ }).Count -eq 0) { break }
+    Start-Sleep -Milliseconds 250
+  }
+  if (@($ids | Where-Object { $saved -notcontains $_ }).Count -gt 0) {
+    Note-Fail "restore-saved" "config.json open_panels is [$($saved -join ',')], expected $($ids -join ',')"
+    return
+  }
+  Note-Ok "restore-saved" "open_panels=$($saved -join ',')"
+  $revealsBefore = Count-Log "after-reveal"
+  $restoresBefore = Count-Log "panel-restore saved="
+  Stop-Process -Id $script:overlay.Id -Force -ErrorAction SilentlyContinue
+  try { $script:overlay.WaitForExit(10000) | Out-Null } catch {}
+  Start-Sleep -Milliseconds 800
+  # A forced stop is the hard case: nothing ran on the way out.
+  $after = @(Read-OpenPanels)
+  if (@($ids | Where-Object { $after -notcontains $_ }).Count -gt 0) {
+    Note-Fail "restore-kept" "open_panels lost entries on the stop: [$($after -join ',')]"
+  }
+  $script:overlay = Start-Process -FilePath $exe.FullName -WorkingDirectory $root -PassThru
+  if (-not (Wait-Count "after-reveal" $revealsBefore 90)) {
+    Note-Fail "restore-restart" "overlay did not reveal again within 90s"
+    return
+  }
+  Note-Ok "restore-restart" ""
+  $planBefore = Count-Log "plan-close-at bot="
+  $missing = @($want)
+  $deadline = (Get-Date).AddSeconds(40)
+  while ((Get-Date) -lt $deadline -and $missing.Count -gt 0) {
+    $rects = @(Read-HitRects)
+    $missing = @($want | Where-Object { $id = $_; -not ($rects | Where-Object { $_.id -eq $id -and $_.h -ge 200 }) })
+    if ($missing.Count -gt 0) { Start-Sleep -Milliseconds 300 }
+  }
+  $line = Select-String -Path $log -Pattern "panel-restore saved=" | Select-Object -Last 1
+  $restoreText = if ($line -and (Count-Log "panel-restore saved=") -gt $restoresBefore) { $line.Line -replace '^.*panel-restore ', '' } else { "no panel-restore line" }
+  if ($missing.Count -gt 0) {
+    Note-Fail "restore-reopened" "missing $($missing -join ',') after restart; $restoreText"
+    return
+  }
+  Note-Ok "restore-reopened" "$($want -join ',') ($restoreText)"
+  Start-Sleep -Seconds 2
+  if ((Count-Log "plan-close-at bot=") -gt $planBefore) {
+    Note-Fail "restore-plan-not-auto" "a plan window opened by itself after the restart"
+  } else {
+    Note-Ok "restore-plan-not-auto" ""
+  }
+  Assert-Empty "restore-empty"
+}
+
 $overlay = $null
 try {
   $env:HERMES_OVERLAY_DEBUG_LOG = $log
@@ -1765,6 +1867,10 @@ try {
     if (-not ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern $want -Quiet))) {
       Note-Fail "dashboard" "fake dashboard log has no $want"
     }
+  }
+  Assert-RestartRestore
+  if ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern "^(POST /api/sessions|RPC session\.create)" -Quiet)) {
+    Note-Fail "restore-dashboard" "the restart restore created a session"
   }
   Write-Host "---- click-through samples ----"
   foreach ($line in $script:sampleNotes) { Write-Host $line }

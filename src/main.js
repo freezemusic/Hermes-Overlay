@@ -47,6 +47,7 @@ import {
   suborbSizePx,
   tailSignals,
 } from "./suborb.js";
+import { normalizeOpenPanels, openPanelsKey, openPanelsSnapshot, restoreStep } from "./panel-restore.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
   CONTENT_IN_MS,
@@ -4293,6 +4294,9 @@ const state = {
   pointerHitId: "",
   /** R-PN-09 live panel sizes (id -> {w,h}, or null for a pending reset). */
   panelSizes: {},
+  /** R-PN-10: open-panel saves start only after the restart restore ran. */
+  openPanelsReady: false,
+  openPanelsSavedKey: "",
   /** R-OB-08 live dragged orb spots (id -> {x,y}, or null for a pending reset). */
   orbPositions: {},
   /** R-OB-08 dodge spots while an open panel covers an orb's home (id -> {x,y}). */
@@ -4744,6 +4748,7 @@ function botPaintSig() {
 }
 
 function renderBots(tag = "renderBots") {
+  scheduleOpenPanelsSave();
   let wait = rehearsalWaitReason();
   if (tag === "pointer-release" && wait !== "plan-open" && wait !== "morph") wait = "";
   if (wait) {
@@ -6206,6 +6211,7 @@ function cancelReconnect() {
 }
 
 function applyOpened(id, opened, { quiet = false } = {}) {
+  scheduleOpenPanelsSave();
   const thread = threadFor(id);
   const messages = presentTranscript(opened.messages);
   const nextId = opened.session_id || "";
@@ -9535,7 +9541,10 @@ async function saveSettings(event) {
     $("#settings-status").textContent = "已儲存。";
     $("#dashboard-token").value = "";
     if (settings.mode === "mock") useMock(DEMO_BANNER, "", "demo");
-    else await connectHermes(settings);
+    else {
+      await connectHermes(settings);
+      void restoreOpenPanels(settings.open_panels);
+    }
     reconcileKeyPrompt(settings.bots || []);
     closeSettings();
   } catch (err) {
@@ -17070,6 +17079,110 @@ async function revealWhenCovered() {
   primePlanCompositor();
   schedulePlanRehearsal();
 }
+
+// R-PN-10: chat panels that were open reopen after an overlay restart.
+function scheduleOpenPanelsSave() {
+  if (!state.openPanelsReady) return;
+  window.clearTimeout(scheduleOpenPanelsSave.timer);
+  scheduleOpenPanelsSave.timer = window.setTimeout(() => { void saveOpenPanels(); }, 400);
+}
+
+function currentOpenPanels() {
+  return openPanelsSnapshot(state.openIds, {
+    botIds: new Set((state.bots || []).map((bot) => bot.id)),
+    threadOf: (id) => state.threads.get(id) || null,
+  });
+}
+
+/** Writes config.json open_panels (only that key) when the open list changed. */
+async function saveOpenPanels() {
+  if (!state.openPanelsReady || state.mode !== "hermes" || !inTauri()) return;
+  const panels = currentOpenPanels();
+  const key = openPanelsKey(panels);
+  if (key === state.openPanelsSavedKey) return;
+  state.openPanelsSavedKey = key;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("set_open_panels", { panels });
+    debugLog("open-panels-saved", `ids=${panels.map((row) => row.id).join(",") || "-"}`);
+  } catch (err) {
+    state.openPanelsSavedKey = "";
+    debugLog("open-panels-save-error", String(err?.message || err).slice(0, 200));
+  }
+}
+
+function restoreCtx(timedOut) {
+  return {
+    botIds: new Set((state.bots || []).map((bot) => bot.id)),
+    loaded: (id) => !!state.threads.get(id)?.loaded,
+    listReady: (profile) => !!state.threads.get(profile)?.listReady,
+    shownSession: (id) => String(state.threads.get(id)?.sessionId || ""),
+    hasSession: (profile, sessionId) => !!suborbSessionRow(profile, sessionId),
+    timedOut,
+  };
+}
+
+/** Is a sub-orb session outside the list still on the server (read only). */
+async function probeRestoredSuborb(profile, sessionId) {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke("fetch_pinned_session", { profile, sessionId });
+    if (String(result?.status || "") !== "found" || !result?.session?.id) return false;
+    const row = { ...result.session, archived: false };
+    const extra = (state.suborbExtra.get(profile) || []).filter((item) => item?.id !== row.id);
+    extra.push(row);
+    state.suborbExtra.set(profile, extra);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const RESTORE_WAIT_MS = 20000;
+
+/**
+ * Reopens the panels saved in open_panels, oldest first, through the
+ * ordinary open paths (selectBot / openSuborbPanel), so click-through, the
+ * orb dodge and the hit rects follow as for a click. A main panel's picked
+ * session comes back through its saved pin (open_bot); nothing here writes a
+ * pin or a session. Plans keep the R-PL-01 rule: a reopened history baselines
+ * and opens no plan window. Saving resumes once this has run.
+ */
+async function restoreOpenPanels(raw) {
+  const saved = normalizeOpenPanels(raw);
+  const started = Date.now();
+  const opened = [];
+  const skipped = [];
+  try {
+    if (state.mode !== "hermes" || !inTauri() || !saved.length) return;
+    for (const entry of saved) {
+      let step = "wait";
+      while (step === "wait") {
+        if (state.mode !== "hermes") return;
+        step = restoreStep(entry, restoreCtx(Date.now() - started > RESTORE_WAIT_MS));
+        if (step === "wait") await new Promise((resolve) => window.setTimeout(resolve, 150));
+      }
+      const sub = parseSuborbId(entry.id);
+      if (step === "probe") step = sub && await probeRestoredSuborb(sub.profile, sub.sessionId) ? "open" : "skip:session-gone";
+      if (step !== "open") {
+        skipped.push(`${entry.id}:${step.slice(5)}`);
+        continue;
+      }
+      if (state.openIds.includes(entry.id)) continue;
+      if (sub) openSuborbPanel(entry.id);
+      else await selectBot(entry.id);
+      opened.push(entry.id);
+      // One morph at a time, as consecutive clicks would be.
+      await new Promise((resolve) => window.setTimeout(resolve, 320));
+    }
+  } finally {
+    debugLog("panel-restore", `saved=${saved.length} open=${opened.join(",") || "-"} skip=${skipped.join(",") || "-"}`);
+    state.openPanelsReady = true;
+    state.openPanelsSavedKey = openPanelsKey(saved);
+    scheduleOpenPanelsSave();
+  }
+}
+// R-PN-10 end
 
 async function boot() {
   await armDebugLog();

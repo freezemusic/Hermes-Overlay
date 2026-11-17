@@ -5441,6 +5441,7 @@ mod tests {
             orb_positions: std::collections::BTreeMap::new(),
             suborb_modes: std::collections::BTreeMap::new(),
             suborb_created: std::collections::BTreeMap::new(),
+            open_panels: Vec::new(),
             text_size: String::new(),
             ui_language: String::new(),
             bots: vec![

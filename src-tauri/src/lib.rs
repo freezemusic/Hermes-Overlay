@@ -267,6 +267,8 @@ struct PublicSettings {
     suborb_modes: std::collections::BTreeMap<String, Vec<(String, String)>>,
     /// R-SO-11 overlay-created session rows. Empty when none.
     suborb_created: std::collections::BTreeMap<String, Vec<config::CreatedSuborb>>,
+    /// R-PN-10 chat panels to reopen after a restart. Empty when none.
+    open_panels: Vec<config::OpenPanel>,
     /// R-LK-01 / R-LK-02. "" is the standard size / zh-HK.
     text_size: String,
     ui_language: String,
@@ -1147,6 +1149,7 @@ fn load_public_settings(app: AppHandle) -> Result<PublicSettings, String> {
         orb_positions: cfg.orb_positions.clone(),
         suborb_modes: cfg.suborb_modes.clone(),
         suborb_created: cfg.suborb_created.clone(),
+        open_panels: cfg.open_panels.clone(),
         text_size: config::normalize_text_size(&cfg.text_size),
         ui_language: config::normalize_ui_language(&cfg.ui_language),
         listed_profiles: None,
@@ -1227,6 +1230,24 @@ fn set_panel_size_sync(
     drop(_guard);
     drop(state);
     load_public_settings(app)
+}
+
+/// R-PN-10. Replaces the saved open-panel list. Touches only `open_panels`.
+#[tauri::command]
+async fn set_open_panels(app: AppHandle, panels: Vec<config::OpenPanel>) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.try_state::<AppState>();
+        let _guard = state.as_ref().map(|state| {
+            state
+                .config_write
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+        });
+        let path = config_path(&app)?;
+        config::store_open_panels(&path, &panels)
+    })
+    .await
+    .map_err(|err| format!("讀唔到設定：{err}"))?
 }
 
 /// R-OB-08. `x`/`y` None removes the orb's saved spot (dropped back home).
@@ -1495,6 +1516,7 @@ fn save_settings_sync(app: AppHandle, input: SaveSettings) -> Result<PublicSetti
         orb_positions: previous.orb_positions.clone(),
         suborb_modes: previous.suborb_modes.clone(),
         suborb_created: previous.suborb_created.clone(),
+        open_panels: previous.open_panels.clone(),
         text_size: config::normalize_text_size(
             input.text_size.as_deref().unwrap_or(&previous.text_size),
         ),
@@ -4475,6 +4497,7 @@ pub fn run() {
             set_show_bot_names,
             set_show_tool_detail,
             set_panel_size,
+            set_open_panels,
             set_orb_position,
             reset_orb_positions,
             set_compose_mode,
