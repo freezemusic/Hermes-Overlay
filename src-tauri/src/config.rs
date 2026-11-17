@@ -252,8 +252,17 @@ pub const PANEL_MAX_SIDE: u32 = 10_000;
 /// Smallest stored side. The front end has larger per-kind minimums.
 pub const PANEL_MIN_SIDE: u32 = 120;
 
+/// The shared sub-orb panel size (`SUBORB_PANEL_KEY` in src/resize.js).
+#[allow(dead_code)]
+pub const SUBORB_PANEL_KEY: &str = "_suborb";
+/// R-PL-09 (Devon 2026-11-17): the plan window width, shared by the main and
+/// every sub-orb plan (`PLAN_PANEL_KEY` in src/resize.js). Only `w` means
+/// anything: the plan's height follows its chat panel (R-PL-08), so `h` is
+/// stored as `w` and never read.
+pub const PLAN_PANEL_KEY: &str = "_plan";
+
 /// Same charset as a profile, plus nothing else: ids are a profile,
-/// "kanban" or "settings". Matches `validPanelId` in src/resize.js.
+/// "kanban", "settings", `_suborb` or `_plan`. Matches `validPanelId` in src/resize.js.
 pub fn valid_panel_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -1193,9 +1202,11 @@ pub fn store_panel_size(path: &Path, id: &str, size: Option<PanelSize>) -> Resul
     if !valid_panel_id(id) {
         return Err("面板 id 唔合法".into());
     }
-    let size = size.map(|s| PanelSize {
-        w: s.w.clamp(PANEL_MIN_SIDE, PANEL_MAX_SIDE),
-        h: s.h.clamp(PANEL_MIN_SIDE, PANEL_MAX_SIDE),
+    let size = size.map(|s| {
+        let w = s.w.clamp(PANEL_MIN_SIDE, PANEL_MAX_SIDE);
+        // The plan stores a width only; its height is the chat panel's.
+        let h = if id == PLAN_PANEL_KEY { w } else { s.h.clamp(PANEL_MIN_SIDE, PANEL_MAX_SIDE) };
+        PanelSize { w, h }
     });
     if !path.exists() {
         let Some(size) = size else { return Ok(false) };
@@ -3482,6 +3493,34 @@ other:
         assert!(cfg.suborb_modes.contains_key("planner"));
         assert_eq!(normalize_suborb_mode(" plan "), Some("plan".into()));
         assert_eq!(normalize_suborb_mode("Plan"), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_width_is_stored_as_panel_sizes_plan_with_h_mirroring_w() {
+        // R-PL-09: one `_plan` width for every plan panel, next to `_suborb`.
+        let dir = migration_dir("panel-sizes-plan");
+        let path = dir.join("config.json");
+        let old = "{\n  \"version\": 1,\n  \"bots\": []\n}";
+        fs::write(&path, old).unwrap();
+        assert!(valid_panel_id(PLAN_PANEL_KEY) && valid_panel_id(SUBORB_PANEL_KEY));
+        assert!(store_panel_size(&path, PLAN_PANEL_KEY, Some(PanelSize { w: 560, h: 1 })).unwrap());
+        assert!(store_panel_size(&path, SUBORB_PANEL_KEY, Some(PanelSize { w: 400, h: 500 })).unwrap());
+        let back = load(&path).unwrap();
+        assert_eq!(back.panel_sizes.get(PLAN_PANEL_KEY), Some(&PanelSize { w: 560, h: 560 }));
+        assert_eq!(back.panel_sizes.get(SUBORB_PANEL_KEY), Some(&PanelSize { w: 400, h: 500 }));
+        // Same width again (any h) is not a write.
+        assert!(!store_panel_size(&path, PLAN_PANEL_KEY, Some(PanelSize { w: 560, h: 9 })).unwrap());
+        // Too narrow is clamped like any side.
+        assert!(store_panel_size(&path, PLAN_PANEL_KEY, Some(PanelSize { w: 10, h: 10 })).unwrap());
+        assert_eq!(load(&path).unwrap().panel_sizes.get(PLAN_PANEL_KEY), Some(&PanelSize { w: PANEL_MIN_SIDE, h: PANEL_MIN_SIDE }));
+        // Reset removes only `_plan`.
+        assert!(store_panel_size(&path, PLAN_PANEL_KEY, None).unwrap());
+        let left = load(&path).unwrap();
+        assert!(left.panel_sizes.get(PLAN_PANEL_KEY).is_none());
+        assert_eq!(left.panel_sizes.len(), 1);
+        assert!(store_panel_size(&path, SUBORB_PANEL_KEY, None).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
         let _ = fs::remove_dir_all(&dir);
     }
 

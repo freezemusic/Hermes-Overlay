@@ -207,3 +207,58 @@ export function settledDragRects({ previous = [], ids = [], rect, vw, vh }) {
   if (rect && rect.w >= 1 && rect.h >= 1) out.push({ ...rect });
   return out;
 }
+
+/*
+ * R-PL-09 (Devon 2026-11-17 17:03 London 「加拉闊邊，一齊做」): the plan
+ * window gets a width handle on its outer edge, the edge away from the seam.
+ * Its height stays locked to the chat or sub-orb panel it is glued to
+ * (R-PL-08). One width is shared by the main and every sub-orb plan and is
+ * saved as `panel_sizes._plan` through the same `set_panel_size` command.
+ */
+export const PLAN_PANEL_KEY = "_plan";
+/** Narrowest plan a drag may leave. The work area wins when it is smaller. */
+export const PLAN_MIN_W = 240;
+/** The design width: min(420px, 42vw). */
+export function defaultPlanWidth(vw = 1280) {
+  return Math.min(420, (Number(vw) || 1280) * 0.42);
+}
+
+/** Room left for the plan on its side of the panel, inside the work area. */
+export function planRoom({ side = "right", shellLeft = 0, shellW = 0, vw = 1280, insets = null } = {}) {
+  const pad = insets || {};
+  const room = side === "left"
+    ? shellLeft - (pad.left || 0)
+    : (vw - (pad.right || 0)) - (shellLeft + shellW);
+  return Math.max(1, Math.floor(room));
+}
+
+/** Whole px between PLAN_MIN_W and `room` (room wins when it is smaller). */
+export function clampPlanWidth(width, { room = Number.POSITIVE_INFINITY } = {}) {
+  const max = Math.max(1, Math.floor(Number(room) > 0 ? Number(room) : Number.POSITIVE_INFINITY));
+  const n = Number(width);
+  const v = Number.isFinite(n) ? Math.round(n) : PLAN_MIN_W;
+  return Math.min(max, Math.max(Math.min(PLAN_MIN_W, max), v));
+}
+
+/** New plan width from a pointer delta on the outer edge. */
+export function planResizedWidth({ side = "right", dx = 0, start = 0 } = {}) {
+  return side === "left" ? start - dx : start + dx;
+}
+
+/**
+ * Width to open a plan at: the saved `_plan` width (clamped to PLAN_MIN_W and
+ * the work area less the smallest chat panel) or the design width.
+ */
+export function savedPlanWidth(saved, { vw = 1280, insets = null } = {}) {
+  const w = Math.round(Number(saved?.w));
+  if (!(w > 0)) return defaultPlanWidth(vw);
+  const pad = insets || {};
+  const room = Math.floor(vw - (pad.left || 0) - (pad.right || 0) - PANEL_MIN.chat.w);
+  return clampPlanWidth(w, { room: Math.max(PLAN_MIN_W, room) });
+}
+
+/** The handle box in plan coordinates (debug log and tests). */
+export function planHandleBox({ side = "right", w = 0, h = 0 } = {}) {
+  const e = RESIZE_EDGE_PX;
+  return { x: side === "left" ? 0 : Math.max(0, w - e), y: 0, w: e, h };
+}

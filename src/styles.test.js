@@ -179,7 +179,7 @@ test("hud glass stays readable and follows the v20 rulings", () => {
   assert.match(mainSrc, /scaleOrb\(shell, token, fromScale, 1, duration, easing, true\)/);
   assert.match(mainSrc, /function beginBotHistory/);
   assert.match(mainSrc, /prefetchBotChats\(\)/);
-  assert.match(mainSrc, /rememberPlan\(thread, thread\.messages\)/);
+  assert.match(mainSrc, /rememberPlan\(thread\)/);
   assert.doesNotMatch(mainSrc, /orbMove/);
   assert.match(mainSrc, /shellAnim\.startTime = now/);
   assert.match(css, /\.morph \.morph-orb \{[^}]*transform-origin:\s*center center/s);
@@ -1014,7 +1014,7 @@ test("orbs, bubbles, toasts, and kanban keep the mapped class names", () => {
   assert.match(main, /list_cron_jobs/);
   assert.match(main, /__applyKanbanBoard/);
   assert.match(main, /睇計劃/);
-  assert.match(main, /noteNewestPlan/);
+  assert.match(main, /notePlans\(thread\)/);
   assert.match(main, /dropParkedAnchor/);
   assert.match(main, /includePlan/);
   assert.match(main, /composerKeyAction/);

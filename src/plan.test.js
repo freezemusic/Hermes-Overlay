@@ -2,152 +2,200 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { logQuietRefreshFailure, openHistory, schedulePlanFileCatchUp } from "./history-open.js";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, latestPlan, looksLikePlan, nextComposeMode, noteNewestPlan, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, PLAN_FILE_MISSING_NOTE, planNeedsFileCatchUp, planSource, plansIn, planTask, planTextHash, planTitle, rememberPlan, unwrapPlan } from "./plan.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, dismissPlan, focusPlan, latestPlan, latestTurnPlan, looksLikePlan, nextComposeMode, notePlans, offeredComposeModes, planBodyLead, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, planNeedsFileCatchUp, plansIn, planTask, planTextHash, planTitle, planView, rememberPlan } from "./plan.js";
 import { gatewayDown } from "./reconnect.js";
 import { continueLiveTurn, finishLiveBubble } from "./sessions.js";
 
-test("plan markdown is recognized and a short ack is not", () => {
+const PLAN_PATH_WIN = String.raw`C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-11_013841-runtime-gate-status.md`;
+
+/** A bot row that carries a same-turn write_file plan (hermes.rs attach_plan). */
+function filed(text, content, path = ".hermes/plans/2026-11-17_170300-ship.md") {
+  return { role: "bot", text, plan: { path, content } };
+}
+
+/** A loaded thread that has already painted once (history recorded). */
+function loadedThread(messages, sessionId = "s1") {
+  const thread = { messages, loaded: true, sessionId };
+  notePlans(thread);
+  return thread;
+}
+
+test("plan titles and the /plan task still parse", () => {
   const body = planDemoMarkdown("整理設定");
-  assert.equal(looksLikePlan(body), true);
   assert.equal(planTitle(body), "整理設定 Implementation Plan");
   assert.equal(planBodyLead(body, "計劃"), body);
   assert.equal(planBodyLead(body, planTitle(body)), body);
   assert.equal(planBodyLead("正文", "v25 replace test"), "# v25 replace test\n\n正文");
-  assert.equal(looksLikePlan("收到，我再諗。"), false);
-  assert.equal(looksLikePlan("# 筆記\n\n**Goal:** 對齊面板"), true);
-  assert.equal(looksLikePlan("# 已寫\n\n`.hermes/plans/2026-10-15_120000-setup.md`"), true);
+  assert.equal(planTitle("收到，我再諗。"), "計劃");
   assert.equal(planTask("/plan 整理設定"), "整理設定");
   assert.equal(planTask("/planet"), null);
   assert.equal(planTask("hello"), null);
 });
 
-test("latest plan is the newest bot reply, including a /plan turn", () => {
-  const older = planDemoMarkdown("舊");
-  const newer = "呢份計劃會先改設定畫面，再核對每個 profile 嘅圓球顏色、光暈同預覽面板。";
-  const found = latestPlan([
-    { role: "user", text: "/plan 舊", command: "plan" },
-    { role: "bot", text: older },
-    { role: "user", text: "/plan 新", command: "plan" },
-    { role: "bot", text: newer },
-    { role: "bot", text: "# 未完成", live: true },
-  ]);
-  assert.equal(found.markdown, newer);
-  assert.equal(found.title, "計劃");
-  assert.equal(latestPlan([{ role: "user", text: "hi" }, { role: "bot", text: "ok" }]), null);
-  const listed = plansIn([
-    { role: "user", text: "/plan 舊", command: "plan" },
-    { role: "bot", text: older },
-    { role: "bot", text: "# 未完成", live: true },
-    { role: "user", text: "/plan 新", command: "plan" },
-    { role: "bot", text: newer },
-  ]);
-  assert.equal(listed.length, 2);
-  assert.equal(listed[0].markdown, older);
-  assert.equal(listed[1].markdown, newer);
-  assert.equal(plansIn([{ role: "bot", text: "# 未完成", live: true }]).length, 0);
-});
-
-test("a fenced markdown or plan block is the plan, and a new plan replaces the open one", () => {
+test("R-PL-01 (Devon 2026-11-17): chat text alone is never a plan", () => {
+  const goal = "# 筆記\n\n**Goal:** 對齊面板\n\n- 第一步\n- 第二步";
+  const implementation = "# Ship Implementation Plan\n\n- a\n- b";
   const fenced = ["```markdown", "# 整理設定 Implementation Plan", "", "**Goal:** 對齊面板", "```"].join("\n");
-  assert.equal(looksLikePlan(fenced), true);
-  assert.match(unwrapPlan(fenced), /^# 整理設定/);
-  assert.equal(planTitle(planSource(fenced)), "整理設定 Implementation Plan");
-  assert.doesNotMatch(planSource(fenced), /```/);
   const planFence = ["```plan", "# 只得標題", "", "下一步", "```"].join("\n");
-  assert.equal(looksLikePlan(planFence), true);
-  assert.equal(planTitle(planSource(planFence)), "只得標題");
-  assert.equal(looksLikePlan("```js\n# 唔算\n```"), false);
-  const found = plansIn([{ role: "bot", text: fenced }]);
-  assert.equal(found.length, 1);
-  assert.equal(found[0].title, "整理設定 Implementation Plan");
-  assert.doesNotMatch(found[0].markdown, /```/);
-  const thread = { seenPlanKey: "old", planFocus: "old", planDismissed: "old" };
-  assert.equal(noteNewestPlan(thread, [{ key: "old" }, { key: "new" }]), true);
-  assert.equal(thread.planFocus, "new");
-  assert.equal(thread.planDismissed, "");
-  assert.equal(thread.seenPlanKey, "new");
-  assert.equal(noteNewestPlan(thread, [{ key: "old" }, { key: "new" }]), false);
-  thread.planFocus = "old";
-  assert.equal(noteNewestPlan(thread, [{ key: "old" }, { key: "new" }]), false);
-  assert.equal(thread.planFocus, "old");
+  const pathHeading = "# 已寫\n\n`.hermes/plans/2026-10-15_120000-setup.md`";
+  const pathLong = `${"先在原路徑重建 worktree，分支用現有的 hermes/mt5-ea-wrappers。".repeat(5)}\n${PLAN_PATH_WIN}`;
+  assert.ok(pathLong.length >= 200);
+  const slashReply = "呢份計劃會先改設定畫面，再核對每個 profile 嘅圓球顏色、光暈同預覽面板。";
+  for (const text of [goal, implementation, fenced, planFence, pathHeading, pathLong, planDemoMarkdown("舊")]) {
+    assert.deepEqual(plansIn([{ role: "user", text: "幫手睇睇" }, { role: "bot", text }]), [], text.slice(0, 30));
+  }
+  // A /plan turn followed by a long reply is not a plan without the file either.
+  assert.deepEqual(plansIn([{ role: "user", text: "/plan 新", command: "plan" }, { role: "bot", text: slashReply }]), []);
+  assert.equal(latestPlan([{ role: "user", text: "hi" }, { role: "bot", text: goal }]), null);
+  // No 「計劃檔內容唔在對話紀錄裡面。」 summary any more: a path-only summary opens nothing.
+  const found = plansIn([{ role: "user", text: "寫計劃", command: "plan" }, { role: "bot", text: `詳細計劃已寫好。\n\n${PLAN_PATH_WIN}` }]);
+  assert.deepEqual(found, []);
 });
 
-test("the last plan is cached per bot and used only before the session loads", () => {
-  const markdown = planDemoMarkdown("快取");
-  const thread = { messages: [{ role: "bot", text: markdown }], planDismissed: "" };
-  const cached = rememberPlan(thread, thread.messages);
-  assert.equal(cached.markdown, markdown);
-  assert.equal(planForPanel(thread).key, cached.key);
-  thread.messages = [];
-  thread.loaded = false;
-  assert.equal(planForPanel(thread).markdown, markdown);
-  thread.planDismissed = cached.key;
+test("only a same-turn write_file plan with content is a plan", () => {
+  const file = "# Runtime Gate Status\n\n**Goal:** 補回缺失的 health 檔。\n";
+  const messages = [
+    { role: "user", text: "寫計劃", command: "plan" },
+    { role: "tool-run", text: "用咗 1 個工具 · write_file" },
+    filed("詳細計劃已寫好。", file, PLAN_PATH_WIN),
+  ];
+  const found = plansIn(messages);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].fromFile, true);
+  assert.equal(found[0].markdown, file);
+  assert.equal(found[0].title, "Runtime Gate Status");
+  assert.equal(found[0].index, 2);
+  // Empty content, a non-plan path, or a live bubble do not count.
+  assert.deepEqual(plansIn([filed("x", "")]), []);
+  assert.deepEqual(plansIn([filed("x", "# A", "notes/a.md")]), []);
+  assert.deepEqual(plansIn([{ ...filed("x", "# A"), live: true }]), []);
+  assert.equal(latestTurnPlan(messages).key, found[0].key);
+  assert.equal(latestTurnPlan([...messages, { role: "user", text: "多謝" }, { role: "bot", text: "# 唔係計劃\n\n**Goal:** x" }]), null);
+});
+
+test("an ordinary structured reply in a loaded session does not open the plan window", () => {
+  const thread = loadedThread([{ role: "user", text: "hi" }, { role: "bot", text: "ok" }]);
+  thread.messages.push({ role: "user", text: "整理吓" });
+  thread.messages.push({ role: "bot", text: "# 筆記\n\n**Goal:** 對齊面板\n\n```markdown\n# 內文\n```\n\n.hermes/plans/x.md" });
+  assert.equal(notePlans(thread), false);
   assert.equal(planForPanel(thread), null);
-  thread.planDismissed = "";
+});
+
+test("a new same-turn write_file plan in the latest turn opens; history does not", () => {
+  const old = filed("舊計劃已寫好。", "# 舊計劃\n\n- a");
+  const thread = loadedThread([{ role: "user", text: "/plan 舊", command: "plan" }, old]);
+  // History (first load, restart, reopen) records the plan but leaves it shut.
+  assert.equal(planForPanel(thread), null);
+  thread.messages.push({ role: "user", text: "/plan 新", command: "plan" });
+  thread.messages.push(filed("新計劃已寫好。", "# 新計劃\n\n- b", ".hermes/plans/new.md"));
+  assert.equal(notePlans(thread), true);
+  assert.equal(planForPanel(thread).title, "新計劃");
+  assert.equal(notePlans(thread), false);
+});
+
+test("an older plan never reopens on a later ordinary turn", () => {
+  const thread = loadedThread([{ role: "user", text: "hi" }]);
+  thread.messages.push({ role: "user", text: "/plan 舊", command: "plan" });
+  thread.messages.push(filed("寫好。", "# 舊計劃"));
+  notePlans(thread);
+  assert.equal(planForPanel(thread).title, "舊計劃");
+  dismissPlan(thread);
+  assert.equal(planForPanel(thread), null);
+  thread.messages.push({ role: "user", text: "多謝" });
+  thread.messages.push({ role: "bot", text: "# 好\n\n**Goal:** 收工" });
+  assert.equal(notePlans(thread), false);
+  assert.equal(planForPanel(thread), null);
+  // A history reread with the same rows changes nothing either.
+  thread.messages = thread.messages.map((row) => ({ ...row }));
+  assert.equal(notePlans(thread), false);
+  assert.equal(planForPanel(thread), null);
+  // 睇計劃 is the only way back.
+  const [plan] = plansIn(thread.messages);
+  focusPlan(thread, plan.key);
+  assert.equal(planForPanel(thread).key, plan.key);
+});
+
+test("an older plan does not open on a session switch, and dismiss is per session", () => {
+  const thread = loadedThread([{ role: "user", text: "hi" }], "a");
+  thread.messages.push({ role: "user", text: "/plan A", command: "plan" });
+  thread.messages.push(filed("寫好。", "# 計劃 A"));
+  notePlans(thread);
+  assert.equal(planForPanel(thread).title, "計劃 A");
+  dismissPlan(thread);
+  assert.equal(planView(thread).dismissed, planView(thread).seen.values().next().value);
+  // Switch to session b, whose history already has a plan in its latest turn.
+  thread.sessionId = "b";
+  thread.messages = [{ role: "user", text: "/plan B", command: "plan" }, filed("寫好。", "# 計劃 B", ".hermes/plans/b.md")];
+  assert.equal(notePlans(thread), false);
+  assert.equal(planForPanel(thread), null);
+  const [planB] = plansIn(thread.messages);
+  focusPlan(thread, planB.key);
+  assert.equal(planForPanel(thread).title, "計劃 B");
+  // Back to a: still dismissed there, and b's open plan did not leak.
+  thread.sessionId = "a";
+  thread.messages = [{ role: "user", text: "/plan A", command: "plan" }, filed("寫好。", "# 計劃 A")];
+  notePlans(thread);
+  assert.equal(planForPanel(thread), null);
+  thread.sessionId = "b";
+  thread.messages = [{ role: "user", text: "/plan B", command: "plan" }, filed("寫好。", "# 計劃 B", ".hermes/plans/b.md")];
+  assert.equal(planForPanel(thread).title, "計劃 B");
+});
+
+test("a fresh thread hands its plan state to its first session id", () => {
+  const thread = loadedThread([], "");
+  thread.messages.push({ role: "user", text: "/plan 新", command: "plan" });
+  thread.sessionId = "created";
+  thread.messages.push(filed("寫好。", "# 新"));
+  assert.equal(notePlans(thread), true);
+  assert.equal(planForPanel(thread).title, "新");
+  assert.equal(thread.planViews.has(""), false);
+});
+
+test("nothing opens before the session loads, and the cache never shows another session's plan", () => {
+  const thread = { messages: [{ role: "user", text: "/plan", command: "plan" }, filed("寫好。", "# 計劃")], loaded: false, sessionId: "s1" };
+  assert.equal(notePlans(thread), false);
+  assert.equal(planForPanel(thread), null);
   thread.loaded = true;
-  assert.equal(planForPanel(thread), null);
+  notePlans(thread);
+  const [plan] = plansIn(thread.messages);
+  focusPlan(thread, plan.key);
+  const cached = rememberPlan(thread);
+  assert.equal(cached.key, plan.key);
+  assert.equal(cached.sessionId, "s1");
+  // Before a reload the cache can paint for the same session only.
   thread.loaded = false;
-  thread.messages = [{ role: "bot", text: planDemoMarkdown("新") }];
-  noteNewestPlan(thread, plansIn(thread.messages));
-  assert.equal(planForPanel(thread).markdown, thread.messages[0].text);
-});
-
-test("a long Windows plan path opens without a heading, and a one-line mention does not", () => {
-  const win = "C:\\Users\\freez\\Desktop\\MetaTrader Workbench\\.hermes\\plans\\2026-10-26_210008-mt5-wrapper-next.md";
-  const eaten = "C:\\Users\\freez\\Desktop\\MetaTrader Workbench.hermes\\plans\\2026-10-26_210008-mt5-wrapper-next.md";
-  const prose = [
-    "先在原路徑重建 worktree，分支用現有的 hermes/mt5-ea-wrappers。",
-    "然後才開 coder 卡，只改 SMA_Core.mqh 上述兩處。",
-    "編譯只含這 7 支，以及其他一支的 MT4 檔。118 還在就還原，不提交。",
-    "不要跑 130 支。不要碰 NT_01。不要把 compat 符號寫進 Note。",
-  ].join("\n");
-  const withSlash = `${prose}\n${win}`;
-  const withEaten = `${prose}\n${eaten}`;
-  assert.ok(withSlash.length >= 200);
-  assert.equal(withSlash.includes("#"), false);
-  assert.equal(looksLikePlan(withSlash), true);
-  assert.equal(looksLikePlan(withEaten), true);
-  assert.equal(planTitle(withSlash), "mt5-wrapper-next");
-  assert.equal(planTitle(withEaten), "mt5-wrapper-next");
-  assert.equal(planTitle(`${prose}\n.hermes/plans/2026-10-26_210008-mt5-wrapper-next.md`), "mt5-wrapper-next");
-  const found = plansIn([{ role: "bot", text: withSlash }]);
-  assert.equal(found.length, 1);
-  assert.equal(found[0].title, "mt5-wrapper-next");
-  assert.equal(found[0].fromFile, undefined);
-  assert.ok(found[0].markdown.startsWith(PLAN_FILE_MISSING_NOTE));
-  assert.ok(found[0].markdown.includes(withSlash));
-  const eatenFound = plansIn([{ role: "bot", text: withEaten }]);
-  assert.equal(eatenFound.length, 1);
-  assert.ok(eatenFound[0].markdown.startsWith(PLAN_FILE_MISSING_NOTE));
-  const mention = `檔案：${win}`;
-  assert.ok(mention.length < 200);
-  assert.equal(mention.includes("\n"), false);
-  assert.equal(looksLikePlan(mention), false);
-  assert.equal(plansIn([{ role: "bot", text: mention }]).length, 0);
-  assert.equal(plansIn([{ role: "bot", text: withSlash, live: true }]).length, 0);
-  assert.equal(planTitle("收到，我再諗。"), "計劃");
+  thread.messages = [];
+  assert.equal(planForPanel(thread).key, plan.key);
+  thread.sessionId = "s2";
+  assert.equal(planForPanel(thread), null);
+  thread.sessionId = "s1";
+  dismissPlan(thread);
+  assert.equal(planForPanel(thread), null);
+  // A loaded session with no open plan clears the cache.
+  thread.loaded = true;
+  assert.equal(rememberPlan(thread), null);
+  assert.equal(thread.planCache, null);
 });
 
 test("睇計劃 clears a dismiss so the same plan shows again", () => {
-  const markdown = planDemoMarkdown("再開");
-  const thread = {
-    messages: [{ role: "bot", text: markdown }],
-    loaded: true,
-    planDismissed: "",
-    planFocus: "",
-  };
-  const plan = planForPanel(thread);
-  assert.ok(plan);
-  thread.planFocus = plan.key;
-  thread.planDismissed = plan.key;
-  thread.seenPlanKey = plan.key;
+  const thread = loadedThread([{ role: "user", text: "/plan", command: "plan" }, filed("寫好。", planDemoMarkdown("再開"))]);
+  const [plan] = plansIn(thread.messages);
   assert.equal(planForPanel(thread), null);
-  assert.equal(noteNewestPlan(thread, plansIn(thread.messages)), false);
-  assert.equal(thread.planDismissed, plan.key);
-  assert.equal(planForPanel(thread), null);
-  thread.planDismissed = "";
-  thread.planFocus = plan.key;
+  focusPlan(thread, plan.key);
   assert.equal(planForPanel(thread).key, plan.key);
+  dismissPlan(thread);
+  assert.equal(planForPanel(thread), null);
+  assert.equal(notePlans(thread), false);
+  assert.equal(planForPanel(thread), null);
+  focusPlan(thread, plan.key);
+  assert.equal(planForPanel(thread).key, plan.key);
+});
+
+test("the sub-orb tail badge still uses the text check, which never opens a plan", () => {
+  assert.equal(looksLikePlan(planDemoMarkdown("x")), true);
+  assert.equal(looksLikePlan("收到，我再諗。"), false);
+  const plan = plansIn([{ role: "bot", text: planDemoMarkdown("x") }]);
+  assert.deepEqual(plan, []);
 });
 
 test("compose modes prefix plan and btw, and leave slash commands alone", () => {
@@ -208,7 +256,7 @@ test("a streamed plan followed by clarify is a plan before the run ends", () => 
     "",
     "x".repeat(220),
   ].join("\n");
-  const messages = [{ role: "user", text: "寫計劃", command: "plan" }, { role: "bot", text: plan, live: true }];
+  const messages = [{ role: "user", text: "寫計劃", command: "plan" }, { role: "bot", text: plan, live: true, plan: { path: ".hermes/plans/2026-10-27_125416-wrapper.md", content: plan } }];
   assert.equal(plansIn(messages).length, 0);
   const finished = finishLiveBubble(messages);
   assert.equal(finished.live, false);
@@ -221,6 +269,7 @@ test("a streamed plan followed by clarify is a plan before the run ends", () => 
   assert.ok(messages.findIndex((message) => message.role === "clarify") < messages.findIndex((message) => message.text === "澄清之後先至講"));
   assert.equal(plansIn(messages).length, 1);
   assert.equal(plansIn(messages)[0].markdown.includes("澄清之後"), false);
+  assert.equal(plansIn(messages)[0].fromFile, true);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   const clarify = main.slice(main.indexOf('payload.type === "clarify.request"'), main.indexOf('payload.type === "clarify.settled"'));
   const approval = main.slice(main.indexOf('payload.type === "approval.request"'), main.indexOf('payload.type === "approval.responded"'));
@@ -283,67 +332,34 @@ test("the composer mode chip cycles, and a side question skips the busy queue", 
 
 
 test("write_file plan content is preferred over a chat summary that mentions the path", () => {
-  const path = String.raw`C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-11_013841-runtime-gate-status.md`;
   const file = "# Runtime Gate Status\n\n**Goal:** 補回缺失的 health 檔，再跑 live 閘。\n";
-  const summary = [
-    "詳細計劃已寫好，呢輪沒有再跑回測。",
-    "",
-    "live 探針 t_028f1e5d 完成咗，但進程退出碼係 1，冇出 JSON。",
-    "原因係 worktree 少咗 health_default.health.json，所以 live 閘未通過。",
-    "你一取消「先停」，我就會照計劃補返嗰個檔再跑。",
-    "",
-    path,
-  ].join("\n");
+  const summary = ["詳細計劃已寫好，呢輪沒有再跑回測。", "", PLAN_PATH_WIN].join("\n");
   const messages = [
     { role: "user", text: "寫計劃", command: "plan" },
     { role: "tool-run", text: "用咗 1 個工具 · write_file" },
-    { role: "bot", text: summary, plan: { path, content: file } },
+    { role: "bot", text: summary, plan: { path: PLAN_PATH_WIN, content: file } },
   ];
   const found = plansIn(messages);
   assert.equal(found.length, 1);
-  assert.equal(found[0].fromFile, true);
   assert.equal(found[0].markdown, file);
-  assert.equal(found[0].title, "Runtime Gate Status");
-  assert.equal(found[0].index, 2);
   assert.equal(planNeedsFileCatchUp(messages), false);
-  const thread = { messages, loaded: true, planDismissed: "", planFocus: "" };
-  assert.equal(planForPanel(thread).markdown, file);
 });
 
-test("a path summary without write_file still opens, with a missing-file note", () => {
-  const path = String.raw`C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-11_013841-runtime-gate-status.md`;
-  const summary = [
-    "詳細計劃已寫好，呢輪沒有再跑回測。",
-    "",
-    "live 探針 t_028f1e5d 完成咗，但進程退出碼係 1，冇出 JSON。",
-    "原因係 worktree 少咗 health_default.health.json。",
-    path,
-  ].join("\n");
-  const found = plansIn([
-    { role: "user", text: "寫計劃", command: "plan" },
-    { role: "bot", text: summary },
-  ]);
-  assert.equal(found.length, 1);
-  assert.notEqual(found[0].fromFile, true);
-  assert.equal(found[0].title, "runtime-gate-status");
-  assert.ok(found[0].markdown.startsWith(PLAN_FILE_MISSING_NOTE));
-  assert.ok(found[0].markdown.includes("詳細計劃已寫好"));
-  assert.equal(planNeedsFileCatchUp([
-    { role: "user", text: "寫計劃", command: "plan" },
-    { role: "bot", text: summary },
-  ]), true);
-});
-
-test("a headed or fenced in-chat plan without write_file stays the body", () => {
-  const fenced = ["```markdown", "# 整理設定 Implementation Plan", "", "**Goal:** 對齊面板", "```"].join("\n");
-  const found = plansIn([{ role: "bot", text: fenced }]);
-  assert.equal(found.length, 1);
-  assert.equal(found[0].title, "整理設定 Implementation Plan");
-  assert.equal(found[0].markdown.includes(PLAN_FILE_MISSING_NOTE), false);
-  const headed = planDemoMarkdown("整理設定");
-  const demo = plansIn([{ role: "bot", text: headed }])[0];
-  assert.equal(demo.markdown, headed);
-  assert.equal(planNeedsFileCatchUp([{ role: "user", text: "整理", command: "plan" }, { role: "bot", text: headed }]), true);
+test("a /plan turn without the file body asks for a catch-up and opens only once it lands", () => {
+  const summary = ["詳細計劃已寫好。", "", PLAN_PATH_WIN].join("\n");
+  const local = [{ role: "user", text: "寫計劃", command: "plan" }, { role: "bot", text: summary }];
+  assert.deepEqual(plansIn(local), []);
+  assert.equal(planNeedsFileCatchUp(local), true);
+  assert.equal(planNeedsFileCatchUp([{ role: "user", text: "整理", command: "plan" }, { role: "bot", text: planDemoMarkdown("x") }]), true);
+  const thread = loadedThread([{ role: "user", text: "hi" }]);
+  thread.messages.push(...local);
+  assert.equal(notePlans(thread), false);
+  assert.equal(planForPanel(thread), null);
+  const landed = [thread.messages[0], local[0], { ...local[1], plan: { path: PLAN_PATH_WIN, content: "# Runtime Gate Status" } }];
+  assert.equal(planFileCaughtUp(thread.messages, landed), true);
+  thread.messages = landed;
+  assert.equal(notePlans(thread), true);
+  assert.equal(planForPanel(thread).title, "Runtime Gate Status");
 });
 
 test("an older file plan does not skip catch-up for a later summary-only turn", () => {
@@ -359,8 +375,8 @@ test("an older file plan does not skip catch-up for a later summary-only turn", 
     { role: "user", text: "再寫", command: "plan" },
     { role: "bot", text: newerSummary },
   ];
-  assert.equal(plansIn(messages).some((item) => item.fromFile), true);
-  assert.notEqual(plansIn(messages).at(-1).fromFile, true);
+  assert.equal(plansIn(messages).length, 1);
+  assert.equal(plansIn(messages)[0].index, 1);
   assert.equal(planNeedsFileCatchUp(messages), true);
   const landed = [
     messages[0],
@@ -478,8 +494,8 @@ test("a later edit with the same opening changes the plan key", () => {
   const second = `${prefix}BRAVO-TAIL`;
   assert.equal(first.length, second.length);
   assert.equal(first.slice(0, 80), second.slice(0, 80));
-  const left = plansIn([{ role: "bot", text: first }])[0];
-  const right = plansIn([{ role: "bot", text: second }])[0];
+  const left = plansIn([filed("寫好。", first)])[0];
+  const right = plansIn([filed("寫好。", second)])[0];
   assert.notEqual(left.key, right.key);
   assert.equal(left.key.endsWith(planTextHash(first)), true);
   assert.equal(right.key.endsWith(planTextHash(second)), true);

@@ -8,6 +8,7 @@
 
 ### Added
 
+- 計劃視窗可以拉闊：外緣（離接縫嗰邊）有拉闊把手，高度照跟對話面板；闊度記入 config.json `panel_sizes._plan`，主光球同子光球共用，雙擊還原（R-PL-09、R-PN-09）。
 - 對話可以加附件，跟 Hermes Desktop：輸入框左邊「＋」（檔案…／圖片…／貼上圖片）、由檔案總管拖檔案落輸入列、Ctrl+V 貼截圖；每個附件一粒 chip 可以拎走。送出時經 `/api/ws` 上載：圖片 `image.attach_bytes`，其他檔案 `file.attach`（`@file:` ref 放喺訊息前面）。每個最多 10 MB、每次 10 個；上載失敗字同附件都留低，被拒嗰粒變紅寫原因。主光球同子光球面板都有（R-AT-01～04）。
 - 文字大小加「特細」（0.8×），而家五級；文字大小改為縮放成個面板內容（掣、留白、圖示、工具列、輸入列），唔再只係字（R-LK-04）。
 - 對話、看板、設定面板可以拖離光球嗰兩條邊同角嚟拉大／拉細，大小逐個面板記入 config.json `panel_sizes`，雙擊把手還原（R-PN-09）。
@@ -17,6 +18,7 @@
 
 ### Fixed
 
+- 普通對話唔再彈計劃視窗：只有新到、同一輪 `write_file` 寫入 `.hermes/plans/*.md` 嘅計劃檔先自動打開；標題加 Goal、路徑、代碼塊、`/plan` 長回覆等對話文字唔再當計劃，「計劃檔內容唔在對話紀錄裡面。」拎走。舊計劃喺之後對話、重開面板、轉 session、重啟都唔會再彈，只可以撳「睇計劃」；✕ 同睇過邊份逐個 session 記（R-PL-01）。
 - 喺主面板 session 清單或者斜線選單上面捲滾輪，對話會一齊被捲：面板嘅滾輪轉送例外名單仲係舊版 `select`，冇自訂清單（`.session-menu`）同斜線選單（`.slash-popup`）。而家兩張清單只捲自己，唔會捲對話；判斷抽咗做 `wheelScrollsChat`（`src/wheel.js`），兩張清單加 `overscroll-behavior: contain`（R-SO-10）。
 - 訊息輸入框唔可以輸入下一行：輸入框係單行 `input`，Shift+Enter 都會送出。而家 Bot 面板同子光球面板嘅輸入框跟 Hermes Desktop：Enter 送出，Shift+Enter 換行，輸入法選字嗰下唔送，框跟內容長高到 150px 再捲（R-CT-08）。
 - 子光球自己嗰輪完咗、狀態寫「閒置」，但尾頁最後係工具列、清單唔忙、冇 run id 時，運行弧唔再永遠轉：每個清單 stamp 問一次伺服器（`check_session_run`／`session.active_list`，只讀），冇活躍 run 就停弧；仲有就繼續轉，面板狀態字改「行緊…」，弧同狀態字一致。自己嗰輪完結即刻記已閒置。REST `is_active` 唔當 busy。黃點同釘住重開規則不變（R-SO-03、R-SO-05）。

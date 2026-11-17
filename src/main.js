@@ -8,7 +8,7 @@ import { wheelScrollsChat } from "./wheel.js";
 import { attachPayload, attachRefusal, attachSendBlock, base64FromDataUrl, buildContextText, chipText, clipboardImageFiles, dragHasFiles, droppedFiles, makeAttachment, pastedImageName } from "./attach.js";
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
 import { logQuietRefreshFailure, openHistory, schedulePlanFileCatchUp } from "./history-open.js";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, latestPlan, nextComposeMode, normalizeComposeMode, noteNewestPlan, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, plansIn, rememberPlan } from "./plan.js";
+import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, dismissPlan, focusPlan, nextComposeMode, normalizeComposeMode, notePlans, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, plansIn, rememberPlan } from "./plan.js";
 import {
   SUBORB_FADE_MS,
   emptySuborbModel,
@@ -204,6 +204,13 @@ import {
   resizedSize,
   settledDragRects,
   SUBORB_PANEL_KEY,
+  PLAN_PANEL_KEY,
+  clampPlanWidth,
+  defaultPlanWidth,
+  planHandleBox,
+  planResizedWidth,
+  planRoom,
+  savedPlanWidth,
 } from "./resize.js";
 import {
   ORB_DODGE_EASE,
@@ -1395,8 +1402,24 @@ function panelRestOpacity() {
   return restOpacity(state.interaction?.panelRestTransparency);
 }
 
+/** R-PL-09: the saved `panel_sizes._plan` width (live drag first), else min(420px, 42vw). */
+function savedPlanSize() {
+  const live = state.panelSizes || {};
+  if (Object.prototype.hasOwnProperty.call(live, PLAN_PANEL_KEY)) return live[PLAN_PANEL_KEY];
+  return normalizePanelSizes(state.settings?.panel_sizes)[PLAN_PANEL_KEY] || null;
+}
+
 function planWidthPx() {
-  return Math.min(420, (window.innerWidth || 1280) * 0.42);
+  return savedPlanWidth(savedPlanSize(), { vw: window.innerWidth || 1280, insets: state.workInsets });
+}
+
+/** First layout before commitPlanWidth reads the same width as the inline style. */
+function syncPlanWidthVar() {
+  const root = document.documentElement;
+  if (!root?.style) return;
+  const saved = savedPlanSize();
+  if (saved) root.style.setProperty("--plan-w", `${Math.round(planWidthPx())}px`);
+  else root.style.removeProperty("--plan-w");
 }
 
 /** Final plan border box, including the close control and the 1px border.
@@ -4129,6 +4152,8 @@ function bindResizeHandle(handle, shell) {
       settleDragHits(shell, "resize-end");
       debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} from=${Math.round(start.w)}x${Math.round(start.h)} to=${last.w}x${last.h} key=${id}${resizedBoxTag(shell)}`);
       logResizeHandles(shell);
+      // The plan follows the laid-out box; log where it lands (debug only).
+      if (shell.dataset.planOpen === "1") relogPlanHitBox(shell);
       void persistPanelSize(id, last);
     };
     handle.addEventListener("pointermove", move);
@@ -4159,6 +4184,7 @@ function bindResizeHandle(handle, shell) {
     settleDragHits(shell, "resize-reset");
     debugLog("panel-resized", `bot=${bot} hit=${shell.dataset.hitId || ""} reset=1 key=${id}${resizedBoxTag(shell)}`);
     logResizeHandles(shell);
+    if (shell.dataset.planOpen === "1") relogPlanHitBox(shell);
     void persistPanelSize(id, null);
   });
 }
@@ -5376,8 +5402,7 @@ function syncPlanSide(shell) {
 
 function openPlanWindow(id, key) {
   const thread = threadFor(id);
-  thread.planFocus = key || "";
-  thread.planDismissed = "";
+  focusPlan(thread, key);
   const shell = shellFor(id);
   if (shell) shell.dataset.planRepublish = "1";
   // Quiet and the frozen hit list used to swallow this until relaunch.
@@ -5409,9 +5434,10 @@ function paintPlan(id, options = {}) {
   }
   if (debugFile.enabled) debugLog("render-plan", `id=${id} call=${callerTag("paintPlan")}`);
   const thread = threadFor(id);
-  const plans = plansIn(thread.messages);
-  noteNewestPlan(thread, plans);
-  rememberPlan(thread, thread.messages);
+  // R-PL-01 / SPEC §6.7: only a new same-turn write_file plan in the latest
+  // turn opens by itself. Older plans open from 「睇計劃」 only.
+  notePlans(thread);
+  rememberPlan(thread);
   const focus = planForPanel(thread);
   const open = !!focus;
   const wasOpen = shell.dataset.planOpen === "1";
@@ -5528,11 +5554,11 @@ function wirePlanWindow(section, id) {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    const thread = threadFor(id);
-    const focus = plansIn(thread.messages).find((item) => item.key === thread.planFocus) || latestPlan(thread.messages);
-    thread.planDismissed = focus?.key || "closed";
+    // Per session (R-PL-01): another session's plan state is untouched.
+    dismissPlan(threadFor(id));
     paintPlan(id, { force: true });
   });
+  bindPlanResize(section, id);
   role(section, "plan-preview-mode")?.addEventListener("click", () => {
     section.dataset.mode = "preview";
     paintPlan(id);
@@ -5540,6 +5566,170 @@ function wirePlanWindow(section, id) {
   role(section, "plan-source-mode")?.addEventListener("click", () => {
     section.dataset.mode = "source";
     paintPlan(id);
+  });
+}
+
+/** Which side of its panel the plan sits on (the seam is the other edge). */
+function planSideOf(shell) {
+  const host = shell?._planHost;
+  const side = (shell?.dataset?.planHost === "1" && host?.dataset?.planSide) || shell?.dataset?.planSide || "right";
+  return side === "left" ? "left" : "right";
+}
+
+/** A settled open plan only: never during the R-PL-04 280ms grow or a collapse. */
+function planResizable(shell, section) {
+  if (!shell || !section || section.hidden) return false;
+  if (shell.dataset.state !== "panel" || shell.dataset.planOpen !== "1") return false;
+  if (shell.classList.contains("is-collapsing") || shell.classList.contains("is-plan-arming")) return false;
+  if (seamPhase(section) === "growing") return false;
+  return true;
+}
+
+/**
+ * R-PL-09: put `width` on an open plan. Height is not touched: it stays the
+ * chat / sub-orb panel's height (R-PL-08). A hosted plan moves its hit host;
+ * a docked one widens the shell clip that reveals it.
+ */
+function applyPlanWidth(shell, width) {
+  const plan = planNode(shell);
+  if (!shell || !plan) return;
+  const px = `${Math.round(width)}px`;
+  shell.dataset.planWidth = String(Math.round(width));
+  plan.style.width = px;
+  plan.style.minWidth = px;
+  plan.style.maxWidth = px;
+  if (shell.dataset.planHost === "1") placePlanHost(shell);
+  else if (shell.dataset.planOpen === "1") holdPlanClip(shell, 1);
+}
+
+/** Room for the plan on its side, from the shell box (work area insets apply). */
+function planRoomFor(shell, side) {
+  const box = shell.getBoundingClientRect();
+  return planRoom({
+    side,
+    shellLeft: box.x,
+    shellW: box.width,
+    vw: window.innerWidth || 1280,
+    insets: state.workInsets,
+  });
+}
+
+/** After a drag or reset, every other open plan takes the shared width too. */
+function spreadPlanWidth(except) {
+  document.querySelectorAll(".morph[data-plan-open='1']").forEach((other) => {
+    if (other === except) return;
+    const plan = planNode(other);
+    if (!planResizable(other, plan)) return;
+    const width = clampPlanWidth(planWidthPx(), { room: planRoomFor(other, planSideOf(other)) });
+    applyPlanWidth(other, width);
+    if (debugFile.enabled) requestAnimationFrame(() => logPlanHitBox(other));
+  });
+}
+
+/** Debug log only: the plan box and handle once the host has settled. */
+function relogPlanHitBox(shell) {
+  if (!debugFile.enabled) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => logPlanHitBox(shell)));
+  for (const ms of [400, 1500, 3000]) window.setTimeout(() => logPlanHitBox(shell), ms);
+}
+
+/** R-PL-09 debug line for the Windows CI plan-width check: CSS px, ids only. */
+function logPlanResizeAt(shell) {
+  if (!debugFile.enabled || !shell) return;
+  const plan = planNode(shell);
+  const handle = plan && role(plan, "plan-resize");
+  const box = handle?.getBoundingClientRect?.();
+  if (!box || box.width < 1 || box.height < 1) return;
+  const side = planSideOf(shell);
+  const line = `bot=${shell.dataset.botId || ""} dpr=${window.devicePixelRatio || 1} side=${side} w=${Math.round(Number(shell.dataset.planWidth) || 0)} room=${planRoomFor(shell, side)} at=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)}x${Math.round(box.height)}`;
+  if (shell._planResizeLogged === line) return;
+  shell._planResizeLogged = line;
+  debugLog("plan-resize-at", line);
+}
+
+/**
+ * R-PL-09 (Devon 2026-11-17 17:03 London 「加拉闊邊，一齊做」): drag the
+ * plan's outer edge to change its width. Same capture as the panel grow fix
+ * (R-PN-09, 2026-11-16): the first move publishes a full-view rect over a
+ * frozen hit list, the release settles the shell box plus the wider plan.
+ * The width is saved as panel_sizes._plan, shared by every plan panel.
+ */
+function bindPlanResize(section, id) {
+  const handle = role(section, "plan-resize");
+  if (!handle || handle.dataset.bound === "1") return;
+  handle.dataset.bound = "1";
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const shell = shellFor(id);
+    if (!planResizable(shell, section)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const side = planSideOf(shell);
+    const start = Math.round(Number(shell.dataset.planWidth) || section.getBoundingClientRect().width || planWidthPx());
+    const room = planRoomFor(shell, side);
+    const startX = event.clientX;
+    let moved = false;
+    let last = start;
+    const move = (ev) => {
+      if (ev.pointerId !== event.pointerId) return;
+      const dx = ev.clientX - startX;
+      if (!moved) {
+        if (Math.abs(dx) < 1) return;
+        moved = true;
+        state.dragHitId = shell.dataset.hitId || "";
+        shell.classList.add("is-plan-resizing");
+        raisePanel(shell);
+        captureDragHits(shell, "plan-resize-start");
+      }
+      last = clampPlanWidth(planResizedWidth({ side, dx, start }), { room });
+      state.panelSizes[PLAN_PANEL_KEY] = { w: last, h: last };
+      applyPlanWidth(shell, last);
+    };
+    const up = (ev) => {
+      if (ev.pointerId !== event.pointerId) return;
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      if (!moved) return;
+      state.dragHitId = "";
+      shell.classList.remove("is-plan-resizing");
+      syncPlanWidthVar();
+      separateOpenShells([...document.querySelectorAll(".morph")]);
+      settleDragHits(shell, "plan-resize-end");
+      debugLog("plan-resized", `bot=${id} hit=${shell.dataset.hitId || ""} side=${side} from=${start} to=${last} room=${room}`);
+      logPlanHitBox(shell);
+      // A hosted plan that sat clamped against the screen edge slides back
+      // beside its panel a frame later. Log where the handle ends up.
+      relogPlanHitBox(shell);
+      spreadPlanWidth(shell);
+      void persistPanelSize(PLAN_PANEL_KEY, { w: last, h: last });
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      /* Synthetic pointer ids keep the listeners on the handle. */
+    }
+  });
+  handle.addEventListener("dblclick", (event) => {
+    const shell = shellFor(id);
+    if (!planResizable(shell, section)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    state.panelSizes[PLAN_PANEL_KEY] = null;
+    const side = planSideOf(shell);
+    const width = clampPlanWidth(defaultPlanWidth(window.innerWidth || 1280), { room: planRoomFor(shell, side) });
+    applyPlanWidth(shell, width);
+    syncPlanWidthVar();
+    separateOpenShells([...document.querySelectorAll(".morph")]);
+    settleDragHits(shell, "plan-resize-reset");
+    debugLog("plan-resized", `bot=${id} hit=${shell.dataset.hitId || ""} side=${side} reset=1 to=${width}`);
+    logPlanHitBox(shell);
+    relogPlanHitBox(shell);
+    spreadPlanWidth(shell);
+    void persistPanelSize(PLAN_PANEL_KEY, null);
   });
 }
 
@@ -6101,7 +6291,10 @@ function applyOpened(id, opened, { quiet = false } = {}) {
   thread.listReady = true;
   if (!isSuborbId(id)) noteSuborbList(id, thread.sessions, thread.sessionId || "");
   thread.loading = false;
-  rememberPlan(thread, thread.messages);
+  // A first load only records the plans already in history (R-PL-01).
+  // A catch-up reread that brings this turn's write_file body opens it.
+  notePlans(thread);
+  rememberPlan(thread);
   armNoticeClock();
   const keptError = sendErrorDraft(state.sendErrors, id, thread.sessionId);
   const closedError = sendErrorKind(state.sendErrors, id, thread.sessionId) === "closed";
@@ -8577,6 +8770,12 @@ function composeUserMessage(wire) {
     : { role: "user", text: shown.text };
 }
 
+/** Demo bot row. A demo /plan carries a plan file like a real write_file turn (R-PL-01). */
+function demoBotRow(shown, reply) {
+  if (shown?.command !== "plan") return { role: "bot", text: reply };
+  return { role: "bot", text: reply, plan: { path: ".hermes/plans/demo-plan.md", content: reply } };
+}
+
 function demoReply(shown) {
   if (look.lang === "en") return shown.command === "plan" ? demoPlanEn(shown.text) : demoReplyEn(shown);
   if (shown.command === "plan") return planDemoMarkdown(shown.text);
@@ -8687,7 +8886,7 @@ async function sendActive(id = state.activeId, preset = null) {
   if (state.mode !== "hermes" || !inTauri()) {
     setTimeout(() => {
       const reply = demoReply(shown);
-      appendMessage(sentId, { role: "bot", text: reply });
+      appendMessage(sentId, demoBotRow(shown, reply));
       noteActivity(sentId, { type: "completed", text: reply });
     }, 350);
     return;
@@ -9639,7 +9838,7 @@ async function sendWhileBusy(id, text, { queueOnly = false } = {}) {
     appendMessage(id, { role: "commentary", text: "排隊中，等佢講完就會行" });
     window.setTimeout(() => {
       const reply = demoReply(shown);
-      appendMessage(id, { role: "bot", text: reply });
+      appendMessage(id, demoBotRow(shown, reply));
       noteActivity(id, { type: "completed", text: reply });
       setBotStatus(id, "閒置", "idle");
     }, 350);
@@ -11465,6 +11664,7 @@ function logPlanHitBox(shell) {
     "plan-close-at",
     `bot=${shell.dataset.botId || ""} x=${Math.round(x)} y=${Math.round(y)}`,
   );
+  logPlanResizeAt(shell);
 }
 
 /** Replace this panel's published rect with the shell box. The plan is
@@ -14558,7 +14758,8 @@ async function loadSuborb(id) {
     thread.loaded = true;
     thread.loading = false;
     noteOpenedRun(id, opened);
-    rememberPlan(thread, thread.messages);
+    notePlans(thread);
+    rememberPlan(thread);
     noteSuborbList(sub.profile, thread.sessions, threadFor(sub.profile).sessionId || "");
     armNoticeClock();
     const model = suborbModel(sub.profile);
