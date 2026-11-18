@@ -4515,6 +4515,7 @@ pub fn run() {
                 // 無邊框透明視窗喺未顯示時會跳過 SW_MAXIMIZE，再加 center 就停喺 1280×800。
                 interaction::place_overlay(&window);
                 disable_browser_accelerators(&window);
+                interaction::install_tool_window(&window);
                 interaction::install_option_menu_hook(&window);
                 let placed = window.clone();
                 // 置頂之後約 1 秒先拒絕 CloseRequested。過咗就俾 Alt+F4 / wmctrl -c 結束。
@@ -4817,18 +4818,14 @@ mod tests {
     }
 
     #[test]
-    fn overlay_is_hidden_from_the_taskbar_and_tray_can_restore_it() {
-        for conf in [
-            include_str!("../tauri.conf.json"),
-            include_str!("../tauri.windows.conf.json"),
-        ] {
-            let v: serde_json::Value = serde_json::from_str(conf).expect("conf");
-            assert_eq!(v["app"]["windows"][0]["skipTaskbar"], true);
-        }
-        assert_eq!(super::SHOW_ORBS_TRAY_LABEL, "顯示光球");
+    fn overlay_is_a_tool_window_and_tray_can_restore_it() {
         let src = include_str!("lib.rs");
-        let menu = src.find("Menu::with_items(app, &[&show, &settings, &quit])");
-        assert!(menu.is_some(), "顯示光球 must come before 設定 and 結束");
+        assert!(src.contains("interaction::install_tool_window(&window)"));
+        assert_eq!(super::SHOW_ORBS_TRAY_LABEL, "顯示光球");
+        assert!(
+            src.contains("Menu::with_items(app, &[&show, &settings, &quit])"),
+            "顯示光球 must come before 設定 and 結束"
+        );
         let restore = &src[src.find("fn show_overlay_from_tray").unwrap()..];
         let restore = &restore[..restore.find("fn install_escape_hatches").unwrap()];
         assert!(restore.contains("unminimize"));

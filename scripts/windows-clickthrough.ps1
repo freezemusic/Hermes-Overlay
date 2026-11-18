@@ -1872,6 +1872,18 @@ try {
   if ((Test-Path $dashLog) -and (Select-String -Path $dashLog -Pattern "^(POST /api/sessions|RPC session\.create)" -Quiet)) {
     Note-Fail "restore-dashboard" "the restart restore created a session"
   }
+  # R-SY-11: the overlay stays a tool window across every click-through toggle.
+  $ex = @(Select-String -Path $log -Pattern "exstyle tool=" | ForEach-Object { $_.Line })
+  $exOn = @($ex | Where-Object { $_ -match "ignore=1" })
+  $exOff = @($ex | Where-Object { $_ -match "ignore=0" })
+  $exBad = @($ex | Where-Object { $_ -notmatch "tool=1 app=0" })
+  if ($exBad.Count -gt 0) {
+    Note-Fail "tool-window" ("exstyle lost WS_EX_TOOLWINDOW: " + ($exBad | Select-Object -First 3) -join "; ")
+  } elseif ($exOn.Count -eq 0 -or $exOff.Count -eq 0) {
+    Note-Fail "tool-window" ("no exstyle sample in both click-through states (on=" + $exOn.Count + " off=" + $exOff.Count + ")")
+  } else {
+    Note-Ok "tool-window" ("tool=1 app=0 in " + $ex.Count + " toggles (through=" + $exOn.Count + " solid=" + $exOff.Count + ")")
+  }
   Write-Host "---- click-through samples ----"
   foreach ($line in $script:sampleNotes) { Write-Host $line }
   [Console]::Out.Flush()

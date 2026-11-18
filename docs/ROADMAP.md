@@ -148,7 +148,7 @@
 | 45 | 半透明、滑鼠穿透 HUD | `app/hud/click-through.ts` | — | Overlay 原生功能 | B | — | ✅ |
 | 46 | 快速輸入視窗 | `electron/quick-entry.ts`（275 行） | — | 已經在用 `global-shortcut` | B | S–M | ❌ |
 | 47 | 命令面板 | `app/command-palette` | — | 純前端 | B | M | ❌ |
-| 48 | 系統匣、開機啟動 | `electron/tray-host.ts:13` | — | 系統匣已有（`lib.rs` `install_escape_hatches`：「顯示光球」「設定」「結束」）；工作列已隱藏（R-SY-11，`skipTaskbar: true`）；開機啟動未做 | B | S | 系統匣 ✅，開機啟動 ❌ |
+| 48 | 系統匣、開機啟動 | `electron/tray-host.ts:13` | — | 系統匣已有（`lib.rs` `install_escape_hatches`：「顯示光球」「設定」「結束」）；工作列已隱藏、改做工具視窗（R-SY-11；Alt+Tab 唔列）；開機啟動未做 | B | S | 系統匣 ✅，開機啟動 ❌ |
 | 49 | `hermes://` 深層連結 | `electron/deep-link-protocol.ts:10` | — | `tauri-plugin-deep-link` | B | S | ❌（優先度低） |
 | 50 | 截圖快捷鍵 | `desktopCapturer`（`electron/command-screenshot.ts:4`）；Desktop README 標示 macOS | — | Windows 要的話是 B，可以接 #9 | B | M | ❌（可不做） |
 | 51 | 寵物、喚醒詞 | `store/wake-word.ts:165`、`app/pet-overlay`（1.5k 行） | ✅（測）`pet.info`、`pet.gallery`、`wake.status` OK | 喚醒詞代表麥克風一直開著 | B（**需決定**） | M–L | ❌ |

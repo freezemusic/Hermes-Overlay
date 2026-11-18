@@ -645,9 +645,9 @@ config.json 只有名單真係多咗 profile，或者空白詳情抄到 descript
 - 驗收：`src/keyguard.test.js`（掣表、Ctrl+V 唔受影響、capture 先於頁面 handler、main.js 有裝、Rust 有呼叫）；Windows 手提真機：開面板同打字，撳 F5、Ctrl+R、Ctrl+Shift+R、Ctrl+F5 面板唔閂、字仲喺度；Ctrl+F／Ctrl+P 冇彈出；Ctrl+C／V／Z／A 照用。debug log 見 `accelerator-keys off`。
 - 狀態：✅（單元）／❓（Windows 真機）。
 
-**R-SY-11** 唔喺工作列出現，收埋喺系統匣（hidden icons）就夠（Devon 2026-11-18：「可以不要在工作列顯示 Overlay 嗎？收起在 hidden icon 就夠」→「收埋工作列，系統匣加『顯示光球』」）。所有 tauri 設定 `skipTaskbar: true`，Windows 工作列冇 overlay 按鈕；系統匣圖示照舊，右鍵／左鍵選單次序係「顯示光球」「設定 (Ctrl+Shift+Alt+H)」「結束」。「顯示光球」喺 overlay 被最小化（例如 Win+D）或者隱藏之後將佢帶返：先 `unminimize`／`show`，再行現有安全路徑 `reposition_if_offscreen` 同 `place_overlay`；視窗仍然係最小化嗰陣絕不改框架（R-CT-01 嘅 -32000 最小化哨兵規則不變）。取代 R-CT-10 同 SPEC §1.12「`skipTaskbar` 維持 false」嗰句。全局快捷鍵 Ctrl+Shift+Alt+H、輸入法、焦點行為唔變。
-- 來源：Devon。
-- 驗收：`lib.rs` 單元測試（兩份 conf `skipTaskbar` 係 true、選單次序同標籤、restore 函數用 unminimize＋守衛路徑、冇直接寫位置／樣式）；Windows 手提真機：工作列冇按鈕、系統匣有圖示；Win+D 後撳「顯示光球」光球返嚟並鋪滿螢幕、點擊穿透正常；Ctrl+Shift+Alt+H 照開設定；中文輸入法照用。
+**R-SY-11** Overlay 係永久工具視窗：唔喺工作列出現（hidden icons／系統匣就夠），Alt+Tab 都唔會列出（Devon 2026-11-18：「可以不要在工作列顯示 Overlay 嗎？收起在 hidden icon 就夠」→「收埋工作列，系統匣加『顯示光球』」→ 19:49「改做工具視窗（頂替收埋工作列）」；已知取捨：Alt+Tab 睇唔到，要靠系統匣）。Windows 主視窗 `WS_EX_TOOLWINDOW` 常開、`WS_EX_APPWINDOW` 常閂，包括每一次穿透開關之後：tao 每次切換都會成個 exstyle 重寫（tao 0.37.2 `window_state.rs`），所以裝一個視窗 subclass（`SetWindowSubclass`），喺 `WM_STYLECHANGING`（`GWL_EXSTYLE`）改 `styleNew`，只加／減呢兩個位，LAYERED、TRANSPARENT、TOPMOST 照 tao 要求。啟動時（唔係最小化）hide→改→`SWP_FRAMECHANGED`→`SW_SHOWNA` 一次，令已顯示嘅視窗收返工作列按鈕。`skipTaskbar` 維持 false（唔用）。系統匣圖示照舊，選單次序係「顯示光球」「設定 (Ctrl+Shift+Alt+H)」「結束」。「顯示光球」喺 overlay 被最小化（例如 Win+D）或者隱藏之後帶返：先 `unminimize`／`show`，再行現有安全路徑 `reposition_if_offscreen` 同 `place_overlay`；視窗仍然係最小化嗰陣絕不改框架（R-CT-01 嘅 -32000 最小化哨兵規則不變）。取代 R-CT-10 同 SPEC §1.12「工作列都仲喺」嗰句。全局快捷鍵 Ctrl+Shift+Alt+H、輸入法、焦點行為唔變。
+- 來源：Devon；對 Chrome YouTube 短暫睇唔到嘅調查（穿透關咗嗰陣 tao 重寫 exstyle，掉咗 `WS_EX_TRANSPARENT`／`LAYERED`，視窗似「全螢幕不透明置頂」）。呢個視窗樣式本身係咪解到 YouTube 問題**未喺真機驗證**。
+- 驗收：單元（`exstyle_is_tool_window`／`overlay_exstyle` 喺 tao 重寫過嘅 style 上保留；選單次序；restore 函數用 unminimize＋守衛路徑）；CI `windows-clickthrough.ps1`：debug log 每次穿透開／關嘅 `exstyle tool=1 app=0` 兩個狀態都有；Windows 手提真機：工作列冇按鈕、系統匣有圖示；Win+D 後撳「顯示光球」光球返嚟並鋪滿螢幕；Ctrl+Shift+Alt+H 照開設定；打字、中文輸入法、焦點照常。
 - 狀態：✅（單元）／❓（Windows 真機）。
 
 ---
