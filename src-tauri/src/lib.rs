@@ -18,6 +18,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const SETTINGS_SHORTCUT: &str = "Ctrl+Shift+Alt+H";
+/// R-SY-11: tray item that brings the overlay back (minimized by Win+D, or hidden).
+const SHOW_ORBS_TRAY_LABEL: &str = "顯示光球";
 const SETTINGS_TRAY_LABEL: &str = "設定 (Ctrl+Shift+Alt+H)";
 
 #[cfg(unix)]
@@ -99,14 +101,35 @@ fn tray_icon(app: &AppHandle) -> Result<tauri::image::Image<'static>, String> {
     }
 }
 
+/// R-SY-11: bring the overlay back from the tray. Restore first (`unminimize`
+/// is SW_RESTORE, the only call allowed on an iconic window), then re-cover the
+/// monitor through the usual guarded path: `place_overlay` and
+/// `reposition_if_offscreen` both refuse to touch the frame while iconic, so the
+/// minimize sentinel (-32000,-32000) is never written to.
+fn show_overlay_from_tray(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_minimized().unwrap_or(false) {
+        let _ = window.unminimize();
+    }
+    let _ = window.show();
+    if !window.is_minimized().unwrap_or(false) {
+        interaction::reposition_if_offscreen(&window);
+        interaction::place_overlay(&window);
+    }
+    trace_debug("tray", "show-orbs");
+}
+
 fn install_escape_hatches(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::TrayIconBuilder;
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+    let show = MenuItem::with_id(app, "show-orbs", SHOW_ORBS_TRAY_LABEL, true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", SETTINGS_TRAY_LABEL, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "結束", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&settings, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &settings, &quit])?;
     let icon = tray_icon(app)?;
     TrayIconBuilder::new()
         .icon(icon)
@@ -115,6 +138,7 @@ fn install_escape_hatches(app: &AppHandle) -> Result<(), Box<dyn std::error::Err
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
+            "show-orbs" => show_overlay_from_tray(app),
             "settings" => {
                 let _ = app.emit("overlay-ui", serde_json::json!({ "type": "open-settings" }));
             }
@@ -4489,6 +4513,8 @@ pub fn run() {
             let hub = Arc::clone(&app.state::<AppState>().interaction);
             if let Some(window) = app.get_webview_window("main") {
                 // 無邊框透明視窗喺未顯示時會跳過 SW_MAXIMIZE，再加 center 就停喺 1280×800。
+                // Subclass first, so even the first click-through write keeps the tool-window bit.
+                interaction::install_tool_window(&window);
                 interaction::place_overlay(&window);
                 disable_browser_accelerators(&window);
                 interaction::install_option_menu_hook(&window);
@@ -4790,6 +4816,23 @@ mod tests {
             interaction.contains("IsIconic"),
             "cover_windows_monitor must refuse SetWindowLongW while iconic"
         );
+    }
+
+    #[test]
+    fn overlay_is_a_tool_window_and_tray_can_restore_it() {
+        let src = include_str!("lib.rs");
+        assert!(src.contains("interaction::install_tool_window(&window)"));
+        assert_eq!(super::SHOW_ORBS_TRAY_LABEL, "顯示光球");
+        assert!(
+            src.contains("Menu::with_items(app, &[&show, &settings, &quit])"),
+            "顯示光球 must come before 設定 and 結束"
+        );
+        let restore = &src[src.find("fn show_overlay_from_tray").unwrap()..];
+        let restore = &restore[..restore.find("fn install_escape_hatches").unwrap()];
+        assert!(restore.contains("unminimize"));
+        assert!(restore.contains("reposition_if_offscreen"));
+        assert!(restore.contains("place_overlay"));
+        assert!(!restore.contains("set_position") && !restore.contains("SetWindowLong"));
     }
 
     #[test]

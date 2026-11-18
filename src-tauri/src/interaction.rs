@@ -2057,6 +2057,7 @@ fn apply_ignore_cursor(window: &tauri::WebviewWindow, ignore: bool, shape_n: usi
     #[cfg(windows)]
     {
         commit_exstyle_frame(window);
+        log_tool_window_state(window, ignore);
         crate::trace_debug(
             "hit-ipc",
             &format!("cmd=input-shape n={} platform=windows", shape_n),
@@ -3792,6 +3793,168 @@ mod macos_focus {
     }
 }
 
+// ---- R-SY-11: permanent tool window (no taskbar button, no Alt+Tab entry) ----
+
+pub const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+pub const WS_EX_APPWINDOW: u32 = 0x0004_0000;
+
+/// The extended style the overlay must always carry. tao rewrites the whole
+/// exstyle at every click-through toggle (tao 0.37.2 `window_state.rs`), which
+/// would drop the tool-window bit; the subclass below runs this on every write.
+pub fn overlay_exstyle(style: u32) -> u32 {
+    (style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW
+}
+
+/// True when the exstyle is already a tool window without APPWINDOW.
+pub fn exstyle_is_tool_window(style: u32) -> bool {
+    style & WS_EX_TOOLWINDOW != 0 && style & WS_EX_APPWINDOW == 0
+}
+
+#[cfg(windows)]
+mod toolwindow {
+    use super::{exstyle_is_tool_window, overlay_exstyle};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::ffi::c_void;
+
+    const GWL_EXSTYLE: i32 = -20;
+    const WM_STYLECHANGING: u32 = 0x007C;
+    const SUBCLASS_ID: usize = 0x5359_3131; // "SY11"
+
+    #[repr(C)]
+    struct StyleStruct {
+        style_old: u32,
+        style_new: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowLongW(hwnd: *mut c_void, index: i32) -> i32;
+        fn SetWindowLongW(hwnd: *mut c_void, index: i32, value: i32) -> i32;
+        fn IsIconic(hwnd: *mut c_void) -> i32;
+        fn ShowWindow(hwnd: *mut c_void, cmd: i32) -> i32;
+        fn SetWindowPos(
+            hwnd: *mut c_void,
+            insert_after: *mut c_void,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    #[link(name = "comctl32")]
+    extern "system" {
+        fn SetWindowSubclass(
+            hwnd: *mut c_void,
+            proc_: unsafe extern "system" fn(*mut c_void, u32, usize, isize, usize, usize) -> isize,
+            id: usize,
+            data: usize,
+        ) -> i32;
+        fn DefSubclassProc(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> isize;
+    }
+
+    /// Runs before tao's own window procedure. Any write to GWL_EXSTYLE keeps
+    /// WS_EX_TOOLWINDOW on and WS_EX_APPWINDOW off; other bits (LAYERED,
+    /// TRANSPARENT, TOPMOST) are left exactly as tao asked.
+    unsafe extern "system" fn proc_(
+        hwnd: *mut c_void,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+        _id: usize,
+        _data: usize,
+    ) -> isize {
+        if msg == WM_STYLECHANGING && wparam as i32 == GWL_EXSTYLE && lparam != 0 {
+            let change = &mut *(lparam as *mut StyleStruct);
+            change.style_new = overlay_exstyle(change.style_new);
+        }
+        DefSubclassProc(hwnd, msg, wparam, lparam)
+    }
+
+    fn hwnd_of(window: &tauri::WebviewWindow) -> Option<*mut c_void> {
+        let handle = window.window_handle().ok()?;
+        let RawWindowHandle::Win32(win) = handle.as_raw() else {
+            return None;
+        };
+        let hwnd = win.hwnd.get() as *mut c_void;
+        (!hwnd.is_null()).then_some(hwnd)
+    }
+
+    /// Current exstyle, for the debug log and the CI harness.
+    pub fn exstyle(window: &tauri::WebviewWindow) -> Option<u32> {
+        let hwnd = hwnd_of(window)?;
+        Some(unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32)
+    }
+
+    /// Install the subclass, then fix the live style once. A visible window
+    /// only drops its taskbar button after a hide/show, so do that once at
+    /// startup. Never touched while iconic (unrestorable -32000 path).
+    pub fn install(window: &tauri::WebviewWindow) {
+        let Some(hwnd) = hwnd_of(window) else {
+            return;
+        };
+        unsafe {
+            if SetWindowSubclass(hwnd, proc_, SUBCLASS_ID, 0) == 0 {
+                crate::trace_debug("toolwindow", "subclass failed");
+                return;
+            }
+            if IsIconic(hwnd) != 0 {
+                return;
+            }
+            let now = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            if !exstyle_is_tool_window(now) {
+                const SW_HIDE: i32 = 0;
+                const SW_SHOWNA: i32 = 8;
+                const SWP_NOSIZE: u32 = 0x0001;
+                const SWP_NOMOVE: u32 = 0x0002;
+                const SWP_NOZORDER: u32 = 0x0004;
+                const SWP_NOACTIVATE: u32 = 0x0010;
+                const SWP_FRAMECHANGED: u32 = 0x0020;
+                ShowWindow(hwnd, SW_HIDE);
+                SetWindowLongW(hwnd, GWL_EXSTYLE, overlay_exstyle(now) as i32);
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+                ShowWindow(hwnd, SW_SHOWNA);
+            }
+        }
+        crate::trace_debug("toolwindow", &format!("installed exstyle={:#x}", exstyle(window).unwrap_or(0)));
+    }
+}
+
+/// Make the overlay a permanent tool window (Windows only).
+pub fn install_tool_window(window: &tauri::WebviewWindow) {
+    #[cfg(windows)]
+    toolwindow::install(window);
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+    }
+}
+
+/// Debug-log the exstyle after a click-through toggle (CI asserts tool=1).
+#[cfg(windows)]
+fn log_tool_window_state(window: &tauri::WebviewWindow, ignore: bool) {
+    if let Some(style) = toolwindow::exstyle(window) {
+        crate::trace_debug(
+            "exstyle",
+            &format!(
+                "tool={} app={} ignore={}",
+                (style & WS_EX_TOOLWINDOW != 0) as u8,
+                (style & WS_EX_APPWINDOW != 0) as u8,
+                ignore as u8
+            ),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3814,6 +3977,23 @@ mod tests {
         assert_eq!(opacity_shape_gate(10, true, 50), OpacityShapeGate::Defer);
         assert_eq!(opacity_shape_gate(50, true, 50), OpacityShapeGate::Fallback);
         assert_eq!(opacity_shape_gate(80, true, 0), OpacityShapeGate::Defer);
+    }
+
+    #[test]
+    fn tool_window_exstyle_survives_a_tao_rewrite() {
+        // tao drops everything it does not know about at each click-through toggle.
+        let layered_transparent_topmost = 0x0008_0000u32 | 0x0000_0020 | 0x0000_0008;
+        for tao_style in [layered_transparent_topmost, 0x0000_0008, 0] {
+            let fixed = overlay_exstyle(tao_style);
+            assert!(exstyle_is_tool_window(fixed));
+            // Every bit tao asked for is kept.
+            assert_eq!(fixed & tao_style, tao_style & !WS_EX_APPWINDOW);
+        }
+        assert!(!exstyle_is_tool_window(WS_EX_TOOLWINDOW | WS_EX_APPWINDOW));
+        assert!(exstyle_is_tool_window(overlay_exstyle(WS_EX_APPWINDOW)));
+        let src = include_str!("interaction.rs");
+        assert!(src.contains("WM_STYLECHANGING"));
+        assert!(src.contains("log_tool_window_state(window, ignore)"));
     }
 
     #[test]
