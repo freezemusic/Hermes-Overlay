@@ -640,6 +640,11 @@ config.json 只有名單真係多咗 profile，或者空白詳情抄到 descript
 - 驗收（單元）：遠端名單連續兩次冇咗先收起，讀唔到或者全部唔見唔收，返嚟即刻出，收起唔寫檔；冇變動嘅一輪 config 位元組一樣；新 profile 出現而且出金鑰提示，包括 `recoverGateway`；`GET /api/profiles` 帶 `Authorization: Bearer`，401 只 `POST /auth/native/refresh` 一次然後再 GET 一次，`/api/profiles` 冇 POST，已有列嘅 `enabled` 保持原值，空白詳情抄 `description`，已有詳情保持原值；提示係 sticky `keys`，`clearConnectionBanner` 保留，`clearGatewayWait` 會再顯示並 `scheduleHitSync`；平常點擊打開設定，Ctrl+click 穿透；打開設定收起橫額但留低 `keyPromptBots`，儲存之後只留未有金鑰嘅 profile；金鑰橫額預設 top 96px，打開面板就放喺外緣外面至少 12px（優先畫面中心嗰側），光暈擋住就換邊，放唔落先用 header 行，唔好壓住計劃步驟、Bot Chat 下拉、看板底邊或者光球光暈；舊 Bot 嘅 sessionId、enabled、顏色、次序保留；同其他探測唔重疊；gateway 落咗唔寫檔；`distributeEdges(4)` 係 `distributeEdges(5)` 同 `distributeEdges(6)` 嘅前綴而且等於經典四邊位；第 5 粒起中心距大於 188 而且唔落入看板面板；點開頭目錄唔出現。
 - 狀態：❓ / ❓。
 
+**R-SY-10** 瀏覽器快捷鍵唔准郁到 overlay（Devon 2026-11-18：「為什麼按 F5 會洗了整個 Overlay」→「照建議修」）。F5、Ctrl+F5、Ctrl+R、Ctrl+Shift+R（Mac 嘅 Cmd+R）唔准重新載入頁面（否則所有面板閂晒、未送出嘅字同附件冇咗）；Ctrl+F／F3／Ctrl+G（搜尋）、Ctrl+P（列印）、Ctrl+S、Ctrl+O、Ctrl+U、F7、Alt+←／→、瀏覽器上一頁／下一頁鍵都唔准開瀏覽器介面。打字用嘅掣照舊：Ctrl+C／V／X／Z／Y／A、方向鍵、Home／End、Ctrl+Backspace、Enter／Shift+Enter 全部要正常（R-CT-08 Ctrl+Enter 唔送出亦唔變）。做法兩層：Windows 喺 Rust 啟動時對主視窗 WebView2 做 `ICoreWebView2Settings3::SetAreBrowserAcceleratorKeysEnabled(false)`（Microsoft 文件：呢個設定唔影響編輯快捷鍵）；前端 `src/keyguard.js` 喺 window capture 階段攔同一批掣，作其他平台同後備。
+- 來源：Devon；wry 0.57.1 `lib.rs` 註解「This is WebView2's default behavior」同 `webview2/mod.rs` 只喺 `browser_accelerator_keys == false` 先關；Tauri 2.12.5 冇設。SPEC §11.4。
+- 驗收：`src/keyguard.test.js`（掣表、Ctrl+V 唔受影響、capture 先於頁面 handler、main.js 有裝、Rust 有呼叫）；Windows 手提真機：開面板同打字，撳 F5、Ctrl+R、Ctrl+Shift+R、Ctrl+F5 面板唔閂、字仲喺度；Ctrl+F／Ctrl+P 冇彈出；Ctrl+C／V／Z／A 照用。debug log 見 `accelerator-keys off`。
+- 狀態：✅（單元）／❓（Windows 真機）。
+
 ---
 
 ## 12. 子光球（R-SO）
