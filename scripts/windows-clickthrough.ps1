@@ -1298,6 +1298,12 @@ function Assert-RestartRestore {
     return
   }
   Note-Ok "restore-saved" "open_panels=$($saved -join ',')"
+  # R-PN-10: remember where each panel sat, to compare after the restart.
+  $beforeRects = @{}
+  foreach ($w in $want) {
+    $r = @(Read-HitRects | Where-Object { $_.id -eq $w -and $_.h -ge 200 } | Select-Object -First 1)
+    if ($r) { $beforeRects[$w] = $r[0] }
+  }
   $revealsBefore = Count-Log "after-reveal"
   $restoresBefore = Count-Log "panel-restore saved="
   Stop-Process -Id $script:overlay.Id -Force -ErrorAction SilentlyContinue
@@ -1329,6 +1335,38 @@ function Assert-RestartRestore {
     return
   }
   Note-Ok "restore-reopened" "$($want -join ',') ($restoreText)"
+  # R-PN-10: each panel is back where it was (not on the default cascade spot),
+  # the saved position went through the restore path, and no two overlap.
+  Start-Sleep -Seconds 1
+  $afterRects = @{}
+  foreach ($w in $want) {
+    $r = @(Read-HitRects | Where-Object { $_.id -eq $w -and $_.h -ge 200 } | Select-Object -First 1)
+    if ($r) { $afterRects[$w] = $r[0] }
+  }
+  foreach ($w in $want) {
+    $b = $beforeRects[$w]; $a = $afterRects[$w]
+    if (-not $b -or -not $a) { Note-Fail "restore-position" "$w has no rect before or after"; continue }
+    $dx = [math]::Abs($a.x - $b.x); $dy = [math]::Abs($a.y - $b.y)
+    if ($dx -le 6 -and $dy -le 6) {
+      Note-Ok "restore-position" "$w $($b.x),$($b.y) -> $($a.x),$($a.y)"
+    } else {
+      Note-Fail "restore-position" "$w was $($b.x),$($b.y) now $($a.x),$($a.y)"
+    }
+    $id = $w -replace '^panel:', ''
+    if (-not (Select-String -Path $log -Pattern "panel-restore-pos id=$([regex]::Escape($id)) " -Quiet)) {
+      Note-Fail "restore-position-path" "no panel-restore-pos log for $id (saved position unused)"
+    }
+  }
+  if ($want.Count -ge 2 -and $afterRects.Count -ge 2) {
+    $pair = @($want | ForEach-Object { $afterRects[$_] })
+    $p = $pair[0]; $q = $pair[1]
+    $overlap = ($p.x -lt $q.x + $q.w) -and ($q.x -lt $p.x + $p.w) -and ($p.y -lt $q.y + $q.h) -and ($q.y -lt $p.y + $p.h)
+    $wasOverlap = $false
+    $bp = $beforeRects[$want[0]]; $bq = $beforeRects[$want[1]]
+    if ($bp -and $bq) { $wasOverlap = ($bp.x -lt $bq.x + $bq.w) -and ($bq.x -lt $bp.x + $bp.w) -and ($bp.y -lt $bq.y + $bq.h) -and ($bq.y -lt $bp.y + $bp.h) }
+    if ($overlap -and -not $wasOverlap) { Note-Fail "restore-no-overlap" "panels overlap after restart but did not before" }
+    else { Note-Ok "restore-no-overlap" "" }
+  }
   Start-Sleep -Seconds 2
   if ((Count-Log "plan-close-at bot=") -gt $planBefore) {
     Note-Fail "restore-plan-not-auto" "a plan window opened by itself after the restart"

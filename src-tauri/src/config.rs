@@ -229,7 +229,17 @@ pub struct OpenPanel {
     pub session: String,
     #[serde(default, skip_serializing_if = "skip_false")]
     pub explicit: bool,
+    /// Where the panel box sat (CSS px, left/top of the box) when it was saved,
+    /// so a restart opens it there instead of at the default cascade spot.
+    /// Both or neither (R-PN-10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<i32>,
 }
+
+/// Panel boxes are kept only within this many px of the screen origin.
+pub const OPEN_PANEL_COORD_LIMIT: i32 = 20_000;
 
 /// Most open panels kept. Later entries past this are dropped.
 pub const OPEN_PANELS_CAP: usize = 24;
@@ -1343,10 +1353,20 @@ pub fn clean_open_panels(panels: &[OpenPanel]) -> Vec<OpenPanel> {
         if !valid_open_session(session) {
             continue;
         }
+        let (x, y) = match (panel.x, panel.y) {
+            (Some(x), Some(y))
+                if x.abs() <= OPEN_PANEL_COORD_LIMIT && y.abs() <= OPEN_PANEL_COORD_LIMIT =>
+            {
+                (Some(x), Some(y))
+            }
+            _ => (None, None),
+        };
         out.push(OpenPanel {
             id: id.to_string(),
             session: session.to_string(),
             explicit: panel.explicit && !session.is_empty(),
+            x,
+            y,
         });
         if out.len() >= OPEN_PANELS_CAP {
             break;
@@ -3667,11 +3687,11 @@ other:
         assert!(!fs::read_to_string(&path).unwrap().contains("open_panels"));
         fs::write(&path, old).unwrap();
         let list = vec![
-            OpenPanel { id: "mt-orch".into(), session: "20261110_221455_d3abe7".into(), explicit: true },
-            OpenPanel { id: "suborb:mt-orch:api_1794591121_502fdcfc".into(), session: "ignored".into(), explicit: true },
-            OpenPanel { id: "mt-orch".into(), session: "dup".into(), explicit: false },
-            OpenPanel { id: "../x".into(), session: String::new(), explicit: false },
-            OpenPanel { id: "writer".into(), session: String::new(), explicit: true },
+            OpenPanel { id: "mt-orch".into(), session: "20261110_221455_d3abe7".into(), explicit: true, x: None, y: None },
+            OpenPanel { id: "suborb:mt-orch:api_1794591121_502fdcfc".into(), session: "ignored".into(), explicit: true, x: None, y: None },
+            OpenPanel { id: "mt-orch".into(), session: "dup".into(), explicit: false, x: None, y: None },
+            OpenPanel { id: "../x".into(), session: String::new(), explicit: false, x: None, y: None },
+            OpenPanel { id: "writer".into(), session: String::new(), explicit: true, x: None, y: None },
         ];
         assert!(store_open_panels(&path, &list).unwrap());
         let text = fs::read_to_string(&path).unwrap();
@@ -3682,9 +3702,9 @@ other:
         assert_eq!(
             back.open_panels,
             vec![
-                OpenPanel { id: "mt-orch".into(), session: "20261110_221455_d3abe7".into(), explicit: true },
-                OpenPanel { id: "suborb:mt-orch:api_1794591121_502fdcfc".into(), session: String::new(), explicit: false },
-                OpenPanel { id: "writer".into(), session: String::new(), explicit: false },
+                OpenPanel { id: "mt-orch".into(), session: "20261110_221455_d3abe7".into(), explicit: true, x: None, y: None },
+                OpenPanel { id: "suborb:mt-orch:api_1794591121_502fdcfc".into(), session: String::new(), explicit: false, x: None, y: None },
+                OpenPanel { id: "writer".into(), session: String::new(), explicit: false, x: None, y: None },
             ]
         );
         assert_eq!(back.suborb_pins, plain.suborb_pins);
@@ -3700,9 +3720,36 @@ other:
         assert!(!store_open_panels(&path, &[]).unwrap());
         // Junk on disk is dropped on read, never fatal.
         fs::write(&path, "{\"version\":1,\"open_panels\":[1,{\"id\":\"a:b\"},{\"id\":\"ok\"}]}").unwrap();
-        assert_eq!(load(&path).unwrap().open_panels, vec![OpenPanel { id: "ok".into(), session: String::new(), explicit: false }]);
+        assert_eq!(load(&path).unwrap().open_panels, vec![OpenPanel { id: "ok".into(), session: String::new(), explicit: false, x: None, y: None }]);
         fs::write(&path, "{\"version\":1,\"open_panels\":\"bad\"}").unwrap();
         assert!(load(&path).unwrap().open_panels.is_empty());
+    }
+
+    #[test]
+    fn open_panels_keep_their_box_position_and_drop_half_or_wild_ones() {
+        let dir = migration_dir("open-panel-pos");
+        let path = dir.join("config.json");
+        fs::write(&path, "{\"version\":1}").unwrap();
+        let sub = |n: &str, x, y| OpenPanel { id: format!("suborb:mt-orch:{n}"), session: String::new(), explicit: false, x, y };
+        let list = vec![
+            sub("left", Some(0), Some(31)),
+            sub("right", Some(1425), Some(-12)),
+            sub("half", Some(5), None),
+            sub("wild", Some(999_999), Some(0)),
+        ];
+        assert!(store_open_panels(&path, &list).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"x\":1425") && text.contains("\"y\":-12"));
+        let back = load(&path).unwrap().open_panels;
+        assert_eq!(back[0], sub("left", Some(0), Some(31)));
+        assert_eq!(back[1], sub("right", Some(1425), Some(-12)));
+        assert_eq!(back[2], sub("half", None, None));
+        assert_eq!(back[3], sub("wild", None, None));
+        // Same list again is not a write.
+        assert!(!store_open_panels(&path, &back).unwrap());
+        // An entry without a position serialises exactly as before (no x/y keys).
+        assert!(store_open_panels(&path, &[sub("plain", None, None)]).unwrap());
+        assert!(!fs::read_to_string(&path).unwrap().contains("\"x\""));
     }
 
     #[test]
