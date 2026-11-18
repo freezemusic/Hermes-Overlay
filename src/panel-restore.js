@@ -11,6 +11,18 @@ function botSet(botIds) {
   return botIds instanceof Set ? botIds : new Set(Array.isArray(botIds) ? botIds : []);
 }
 
+const COORD_LIMIT = 20000;
+
+/** A saved box position: both coordinates finite and sane, else none. */
+function boxPoint(item) {
+  const x = Number(item?.x);
+  const y = Number(item?.y);
+  if (item?.x == null || item?.y == null) return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (Math.abs(x) > COORD_LIMIT || Math.abs(y) > COORD_LIMIT) return null;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
 /** Clean a saved or live list: known shape, no duplicates, capped. */
 export function normalizeOpenPanels(raw) {
   const out = [];
@@ -22,7 +34,10 @@ export function normalizeOpenPanels(raw) {
     if (!sub && id.includes(":")) continue;
     const session = sub ? "" : String((typeof item === "object" && item?.session) || "").trim();
     seen.add(id);
-    out.push({ id, session, explicit: !sub && !!session && !!item?.explicit });
+    const row = { id, session, explicit: !sub && !!session && !!item?.explicit };
+    const at = typeof item === "object" ? boxPoint(item) : null;
+    if (at) Object.assign(row, at);
+    out.push(row);
     if (out.length >= OPEN_PANELS_CAP) break;
   }
   return out;
@@ -30,25 +45,25 @@ export function normalizeOpenPanels(raw) {
 
 /** The open chat panels to save: roster bots and their sub-orbs, in open order.
  *  Kanban, cron and settings are not chat panels and are not saved. */
-export function openPanelsSnapshot(openIds, { botIds, threadOf = () => null } = {}) {
+export function openPanelsSnapshot(openIds, { botIds, threadOf = () => null, boxOf = () => null } = {}) {
   const bots = botSet(botIds);
   const rows = [];
   for (const id of Array.isArray(openIds) ? openIds : []) {
     const sub = parseSuborbId(id);
     if (sub) {
-      if (bots.has(sub.profile)) rows.push({ id });
+      if (bots.has(sub.profile)) rows.push({ id, ...(boxOf(id) || {}) });
       continue;
     }
     if (!bots.has(id)) continue;
     const thread = threadOf(id);
     const session = String(thread?.sessionId || "");
-    rows.push({ id, session, explicit: !!(thread?.sessionExplicit && session) });
+    rows.push({ id, session, explicit: !!(thread?.sessionExplicit && session), ...(boxOf(id) || {}) });
   }
   return normalizeOpenPanels(rows);
 }
 
 export function openPanelsKey(list) {
-  return JSON.stringify(normalizeOpenPanels(list).map((row) => [row.id, row.session, row.explicit ? 1 : 0]));
+  return JSON.stringify(normalizeOpenPanels(list).map((row) => [row.id, row.session, row.explicit ? 1 : 0, row.x ?? null, row.y ?? null]));
 }
 
 /**
@@ -84,4 +99,13 @@ export function restoreStep(entry, ctx) {
   // check that it did. A gone session falls back to Bot Chat: skip the panel.
   if (!ctx.loaded?.(id)) return ctx.timedOut ? "skip:not-loaded" : "wait";
   return ctx.shownSession?.(id) === entry.session ? "open" : "skip:session-gone";
+}
+
+/** Where a saved panel box goes on this screen: the saved left/top, kept
+ *  inside the viewport. null when the entry has no saved position. */
+export function restoredBoxPoint(entry, width, height, screenW, screenH) {
+  const at = boxPoint(entry);
+  if (!at) return null;
+  const clamp = (value, size, screen) => (screen > 0 && size < screen ? Math.min(Math.max(0, value), screen - size) : 0);
+  return { x: clamp(at.x, width, screenW), y: clamp(at.y, height, screenH) };
 }

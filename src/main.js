@@ -48,7 +48,7 @@ import {
   suborbSizePx,
   tailSignals,
 } from "./suborb.js";
-import { normalizeOpenPanels, openPanelsKey, openPanelsSnapshot, restoreStep } from "./panel-restore.js";
+import { normalizeOpenPanels, openPanelsKey, openPanelsSnapshot, restoredBoxPoint, restoreStep } from "./panel-restore.js";
 import { closePanel, openPanel } from "./panels.js";
 import {
   CONTENT_IN_MS,
@@ -686,7 +686,13 @@ function placeShellElement(shell) {
   const point = anchorPoint(id);
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
-  const placed = placeShell(point.x, point.y, size.w, size.h, vw, vh);
+  let placed = placeShell(point.x, point.y, size.w, size.h, vw, vh);
+  // R-PN-10: a restored panel goes back to its saved box, then behaves as dragged.
+  const restoredAt = takeRestoredBox(shell, placed.width, placed.height);
+  if (restoredAt) {
+    placed = { ...placed, left: restoredAt.x, top: restoredAt.y };
+    shell.dataset.dragged = "1";
+  }
   const ax = String(placed.anchor.x);
   const ay = String(placed.anchor.y);
   if (shell.style.width === `${placed.width}px`
@@ -850,6 +856,7 @@ function layoutShells() {
   seatKanbanClose();
   paintOrbNames();
   scheduleHitSync();
+  scheduleOpenPanelsSave();
 }
 
 function readInsets(shell) {
@@ -4251,6 +4258,7 @@ function bindPanelDrag(panel) {
       layoutShell(shell);
       separateOpenShells([...document.querySelectorAll(".morph")]);
       settleDragHits(shell, "header-drag-end");
+      scheduleOpenPanelsSave();
     };
     header.addEventListener("pointermove", move);
     header.addEventListener("pointerup", up);
@@ -4303,6 +4311,7 @@ const state = {
   panelSizes: {},
   /** R-PN-10: open-panel saves start only after the restart restore ran. */
   openPanelsReady: false,
+  restoreBoxes: {},
   openPanelsSavedKey: "",
   /** R-OB-08 live dragged orb spots (id -> {x,y}, or null for a pending reset). */
   orbPositions: {},
@@ -14537,7 +14546,7 @@ function placeSuborbShell(shell) {
   shell.style.setProperty("--suborb-size", `${size}px`);
   const placed = placeShell(cx, cy, panelBox.w, panelBox.h, vw, vh);
   const origin = openPanel ? cascadeOriginBox(shell, size, vw, vh) || placed : placed;
-  const box = openPanel
+  const cascade = openPanel
     ? placeSuborbCascade({
       left: origin.left,
       top: origin.top,
@@ -14554,6 +14563,9 @@ function placeSuborbShell(shell) {
       insetLeft: state.workInsets?.left || 0,
     })
     : null;
+  // R-PN-10: after a restart the panel goes back where it was, not to the cascade spot.
+  const restoredAt = cascade ? takeRestoredBox(shell, cascade.width, cascade.height) : null;
+  const box = restoredAt ? { ...cascade, left: restoredAt.x, top: restoredAt.y } : cascade;
   shell.style.width = `${box ? box.width : placed.width}px`;
   shell.style.height = `${box ? box.height : placed.height}px`;
   shell.style.left = `${box ? box.left : placed.left}px`;
@@ -14580,6 +14592,7 @@ function placeSuborbShell(shell) {
     anchor: { x: placed.anchor.x, y: ay, header },
   } : placed;
   if (!box) releaseSuborbGlow(shell);
+  if (restoredAt) shell.dataset.dragged = "1";
   if (box) {
     const z = Number(shell.style.zIndex);
     if (!Number.isFinite(z) || z < 6) shell.style.zIndex = "6";
@@ -17095,7 +17108,33 @@ function currentOpenPanels() {
   return openPanelsSnapshot(state.openIds, {
     botIds: new Set((state.bots || []).map((bot) => bot.id)),
     threadOf: (id) => state.threads.get(id) || null,
+    boxOf: openPanelBoxOf,
   });
+}
+
+/** R-PN-10: the left/top of an open panel box, so a restart can put it back. */
+function openPanelBoxOf(id) {
+  const shell = shellFor(id);
+  if (!shell || shell.classList.contains("is-collapsing") || shell.dataset.intent === "close") return null;
+  if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel") return null;
+  const x = Number.parseFloat(shell.style.left);
+  const y = Number.parseFloat(shell.style.top);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+/** Hand the pending restored position to the shell that is opening (once). */
+function takeRestoredBox(shell, width, height) {
+  const id = shell?.dataset?.botId;
+  const pending = id ? state.restoreBoxes[id] : null;
+  if (!pending) return null;
+  if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel") return null;
+  delete state.restoreBoxes[id];
+  const vw = window.innerWidth || 1280;
+  const vh = window.innerHeight || 800;
+  const at = restoredBoxPoint(pending, width, height, vw, vh);
+  if (at) debugLog("panel-restore-pos", `id=${id} saved=${pending.x},${pending.y} at=${at.x},${at.y}`);
+  return at;
 }
 
 /** Writes config.json open_panels (only that key) when the open list changed. */
@@ -17195,6 +17234,7 @@ async function restoreOpenPanels(raw) {
         continue;
       }
       if (state.openIds.includes(entry.id)) continue;
+      if (Number.isFinite(entry.x) && Number.isFinite(entry.y)) state.restoreBoxes[entry.id] = { x: entry.x, y: entry.y };
       if (sub) openSuborbPanel(entry.id);
       else await selectBot(entry.id);
       opened.push(entry.id);
@@ -17202,6 +17242,7 @@ async function restoreOpenPanels(raw) {
       await new Promise((resolve) => window.setTimeout(resolve, 320));
     }
   } finally {
+    state.restoreBoxes = {};
     debugLog("panel-restore", `saved=${saved.length} open=${opened.join(",") || "-"} skip=${skipped.join(",") || "-"}`);
     state.openPanelsReady = true;
     state.openPanelsSavedKey = openPanelsKey(saved);

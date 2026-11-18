@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { normalizeOpenPanels, openPanelsKey, openPanelsSnapshot, OPEN_PANELS_CAP, restoreStep } from "./panel-restore.js";
+import { normalizeOpenPanels, openPanelsKey, openPanelsSnapshot, OPEN_PANELS_CAP, restoredBoxPoint, restoreStep } from "./panel-restore.js";
 
 const threads = {
   field: { sessionId: "saved-field", sessionExplicit: true },
@@ -117,3 +117,58 @@ test("a listed sub-orb waits for its rail slot before it opens, then opens anywa
   assert.match(restore, /RESTORE_SETTLE_MS/);
 });
 
+
+// R-PN-10 position: a restart puts each panel back where its box was.
+test("a saved panel box position survives normalising; half or wild ones are dropped", () => {
+  const list = normalizeOpenPanels([
+    { id: "suborb:field:left", x: 0, y: 31 },
+    { id: "suborb:field:right", x: 1425.4, y: -12 },
+    { id: "suborb:field:half", x: 5 },
+    { id: "suborb:field:wild", x: 1e9, y: 0 },
+    { id: "suborb:field:text", x: "a", y: 1 },
+  ]);
+  assert.deepEqual(list[0], { id: "suborb:field:left", session: "", explicit: false, x: 0, y: 31 });
+  assert.deepEqual(list[1], { id: "suborb:field:right", session: "", explicit: false, x: 1425, y: -12 });
+  for (const row of list.slice(2)) assert.equal("x" in row || "y" in row, false, row.id);
+});
+
+test("the snapshot carries each open panel's own box, and moving a panel changes the save key", () => {
+  const boxes = { "suborb:field:a": { x: 0, y: 40 }, "suborb:field:b": { x: 1425, y: 20 } };
+  const ids = ["suborb:field:a", "suborb:field:b"];
+  const list = openPanelsSnapshot(ids, { botIds: ["field"], boxOf: (id) => boxes[id] });
+  assert.deepEqual(list.map((row) => [row.id, row.x, row.y]), [["suborb:field:a", 0, 40], ["suborb:field:b", 1425, 20]]);
+  boxes["suborb:field:b"] = { x: 1400, y: 20 };
+  const moved = openPanelsSnapshot(ids, { botIds: ["field"], boxOf: (id) => boxes[id] });
+  assert.notEqual(openPanelsKey(list), openPanelsKey(moved));
+  // Old call sites without boxOf behave as before.
+  assert.deepEqual(openPanelsSnapshot(ids, { botIds: ["field"] }).map((row) => "x" in row), [false, false]);
+});
+
+test("two restored panels keep their left and right places and do not overlap", () => {
+  const w = 474, h = 560, sw = 1920, sh = 1080;
+  const left = restoredBoxPoint({ x: 0, y: 330 }, w, h, sw, sh);
+  const right = restoredBoxPoint({ x: 1425, y: 215 }, w, h, sw, sh);
+  assert.deepEqual(left, { x: 0, y: 330 });
+  assert.deepEqual(right, { x: 1425, y: 215 });
+  assert.ok(left.x + w <= right.x, "no overlap");
+  // A smaller screen than before keeps the box inside the screen.
+  assert.deepEqual(restoredBoxPoint({ x: 1425, y: 900 }, w, h, 1280, 800), { x: 806, y: 240 });
+  assert.equal(restoredBoxPoint({ id: "x" }, w, h, sw, sh), null);
+});
+
+test("main.js applies a restored box once, before the cascade, for sub-orb and bot panels", () => {
+  const sub = body("placeSuborbShell");
+  assert.match(sub, /takeRestoredBox\(shell, cascade\.width, cascade\.height\)/);
+  assert.match(sub, /restoredAt \? \{ \.\.\.cascade, left: restoredAt\.x, top: restoredAt\.y \}/);
+  assert.match(sub, /if \(restoredAt\) shell\.dataset\.dragged = "1"/);
+  const bot = body("placeShellElement");
+  assert.match(bot, /takeRestoredBox\(shell, placed\.width, placed\.height\)/);
+  const take = body("takeRestoredBox");
+  assert.match(take, /delete state\.restoreBoxes\[id\]/);
+  assert.match(take, /dataset\.opening !== "panel"/);
+  const restore = main.slice(main.indexOf("async function restoreOpenPanels"), main.indexOf("// R-PN-10 end"));
+  assert.match(restore, /state\.restoreBoxes\[entry\.id\] = /);
+  assert.ok(restore.indexOf("state.restoreBoxes[entry.id]") < restore.indexOf("openSuborbPanel(entry.id)"));
+  assert.match(body("layoutShells"), /scheduleOpenPanelsSave\(\)/);
+  assert.match(body("openPanelBoxOf"), /style\.left/);
+});
