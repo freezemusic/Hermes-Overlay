@@ -133,7 +133,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 **R-CT-09** 讀唔到全域游標／修飾鍵（純 Wayland）時，overlay 保持可撳，唔入穿透。
 - 來源：SPEC §1.11。驗收（盒，Wayland session）：光球同面板直接撳得。狀態：❓ / ❓。
 
-**R-CT-10** 冷啟動視窗鋪滿所在螢幕；第一眼光球已經喺最終位置；啟動只出光球，唔自動開面板；工作列同系統匣仲喺度。
+**R-CT-10** 冷啟動視窗鋪滿所在螢幕；第一眼光球已經喺最終位置；啟動只出光球，唔自動開面板；工作列同系統匣仲喺度。**（工作列部分已被 R-SY-11 取代，Devon 2026-11-18；系統匣照舊。）**
 - 來源：SPEC §1.12、§2.6。
 - 驗收（兩邊）：啟動錄影第一個可見幀光球已經喺最終位置；冇 1280×800 置中窗；R-CT-01 喺啟動後 0.5s 已經過。
 - 狀態：❓ / ⚠️（盒過；Windows 穿透唔過，懷疑同隱藏啟動有關，見 C-08）。
@@ -643,6 +643,11 @@ config.json 只有名單真係多咗 profile，或者空白詳情抄到 descript
 **R-SY-10** 瀏覽器快捷鍵唔准郁到 overlay（Devon 2026-11-18：「為什麼按 F5 會洗了整個 Overlay」→「照建議修」）。F5、Ctrl+F5、Ctrl+R、Ctrl+Shift+R（Mac 嘅 Cmd+R）唔准重新載入頁面（否則所有面板閂晒、未送出嘅字同附件冇咗）；Ctrl+F／F3／Ctrl+G（搜尋）、Ctrl+P（列印）、Ctrl+S、Ctrl+O、Ctrl+U、F7、Alt+←／→、瀏覽器上一頁／下一頁鍵都唔准開瀏覽器介面。打字用嘅掣照舊：Ctrl+C／V／X／Z／Y／A、方向鍵、Home／End、Ctrl+Backspace、Enter／Shift+Enter 全部要正常（R-CT-08 Ctrl+Enter 唔送出亦唔變）。做法兩層：Windows 喺 Rust 啟動時對主視窗 WebView2 做 `ICoreWebView2Settings3::SetAreBrowserAcceleratorKeysEnabled(false)`（Microsoft 文件：呢個設定唔影響編輯快捷鍵）；前端 `src/keyguard.js` 喺 window capture 階段攔同一批掣，作其他平台同後備。
 - 來源：Devon；wry 0.57.1 `lib.rs` 註解「This is WebView2's default behavior」同 `webview2/mod.rs` 只喺 `browser_accelerator_keys == false` 先關；Tauri 2.12.5 冇設。SPEC §11.4。
 - 驗收：`src/keyguard.test.js`（掣表、Ctrl+V 唔受影響、capture 先於頁面 handler、main.js 有裝、Rust 有呼叫）；Windows 手提真機：開面板同打字，撳 F5、Ctrl+R、Ctrl+Shift+R、Ctrl+F5 面板唔閂、字仲喺度；Ctrl+F／Ctrl+P 冇彈出；Ctrl+C／V／Z／A 照用。debug log 見 `accelerator-keys off`。
+- 狀態：✅（單元）／❓（Windows 真機）。
+
+**R-SY-11** 唔喺工作列出現，收埋喺系統匣（hidden icons）就夠（Devon 2026-11-18：「可以不要在工作列顯示 Overlay 嗎？收起在 hidden icon 就夠」→「收埋工作列，系統匣加『顯示光球』」）。所有 tauri 設定 `skipTaskbar: true`，Windows 工作列冇 overlay 按鈕；系統匣圖示照舊，右鍵／左鍵選單次序係「顯示光球」「設定 (Ctrl+Shift+Alt+H)」「結束」。「顯示光球」喺 overlay 被最小化（例如 Win+D）或者隱藏之後將佢帶返：先 `unminimize`／`show`，再行現有安全路徑 `reposition_if_offscreen` 同 `place_overlay`；視窗仍然係最小化嗰陣絕不改框架（R-CT-01 嘅 -32000 最小化哨兵規則不變）。取代 R-CT-10 同 SPEC §1.12「`skipTaskbar` 維持 false」嗰句。全局快捷鍵 Ctrl+Shift+Alt+H、輸入法、焦點行為唔變。
+- 來源：Devon。
+- 驗收：`lib.rs` 單元測試（兩份 conf `skipTaskbar` 係 true、選單次序同標籤、restore 函數用 unminimize＋守衛路徑、冇直接寫位置／樣式）；Windows 手提真機：工作列冇按鈕、系統匣有圖示；Win+D 後撳「顯示光球」光球返嚟並鋪滿螢幕、點擊穿透正常；Ctrl+Shift+Alt+H 照開設定；中文輸入法照用。
 - 狀態：✅（單元）／❓（Windows 真機）。
 
 ---

@@ -21,7 +21,7 @@
 9. 在其他程式或本程式輸入框按 Ctrl+C 或 Ctrl+V 時，光球與面板的透明度與穿透不得改變，也不得閃一下。這包括 C／V 先放開、Ctrl 仍按住的整段尾巴。單獨按住 Ctrl 必須在 100ms 內進入第 2 與第 7 條的互動狀態。修飾鍵若改成 Shift 或 Alt，Ctrl+C／Ctrl+V 不適用這條約束。
 10. 面板必須能在視窗內拖移：拖標題列改變該面板的 `left`／`top`。不得改成拖動整個作業系統視窗。拖移中途游標離開原矩形，拖移仍須完成。拖移只移動打開中的面板。收回成光球時必須丟掉這次面板拖移。光球留喺 R-OB-08 記住嘅位置（未拖過就係設計位置），只會因為打開嘅面板蓋住而閃開，不得因為收埋面板就飛返邊緣錨點。
 11. 讀不到全域游標或修飾鍵時（純 Wayland），光球與面板保持可點，不得進入穿透。
-12. 冷啟動的視窗必須鋪滿所在螢幕。不得停在置中的 1280×800。光球第一眼就要喺最終位置。`skipTaskbar` 維持 false，系統匣同工作列都仲喺。Linux：視窗建立時隱藏、無裝飾、透明（`tauri.conf.json` 的 `visible: false`、`maximized: false`）。tao 會喺 `set_decorated` 之前就 map，所以第一下 `show` 只可以發生喺透明畫面畫好之後。隱藏時寫好滿螢幕位置同尺寸，頁面等到 viewport 係嗰個尺寸、光球排好、再透明畫一幀，先至 `show`。`show` 之後再公佈一次命中區，已經有嘅命中區不得清成 n=0。唔好靠 `maximized` 等第一次 configure 先放大。Windows 不得用隱藏啟動（R-CT-01 優先）：`tauri.windows.conf.json` 的 `visible: true`、`maximized: true`，鋪滿帶 `SWP_SHOWWINDOW`。穿透用 tao 的 `set_ignore_cursor_events`，唔好手寫 exstyle，亦唔好裝 `WM_NCHITTEST`。
+12. 冷啟動的視窗必須鋪滿所在螢幕。不得停在置中的 1280×800。光球第一眼就要喺最終位置。~~`skipTaskbar` 維持 false，系統匣同工作列都仲喺~~（工作列部分已被 §11.5／R-SY-11 取代；系統匣照喺）。Linux：視窗建立時隱藏、無裝飾、透明（`tauri.conf.json` 的 `visible: false`、`maximized: false`）。tao 會喺 `set_decorated` 之前就 map，所以第一下 `show` 只可以發生喺透明畫面畫好之後。隱藏時寫好滿螢幕位置同尺寸，頁面等到 viewport 係嗰個尺寸、光球排好、再透明畫一幀，先至 `show`。`show` 之後再公佈一次命中區，已經有嘅命中區不得清成 n=0。唔好靠 `maximized` 等第一次 configure 先放大。Windows 不得用隱藏啟動（R-CT-01 優先）：`tauri.windows.conf.json` 的 `visible: true`、`maximized: true`，鋪滿帶 `SWP_SHOWWINDOW`。穿透用 tao 的 `set_ignore_cursor_events`，唔好手寫 exstyle，亦唔好裝 `WM_NCHITTEST`。
 13. 啟動狀態列（例如「已連接設定…」）不得蓋住上緣光球。成功與資訊約 4 秒後必須消失。錯誤，以及可以點擊的提示，可以留下。
 
 ## 2. 面板開關
@@ -138,6 +138,7 @@
 2. 安裝檔維持未簽名。Windows 測試用 CI artifact `windows-x64-nsis`，不靠發佈 release。
 3. 未獲明確要求，不得建立 git tag，也不得建立 GitHub Release。Release workflow 的 tag 與 draft 行為不得為了測試安裝檔而改掉。
 4. 瀏覽器快捷鍵（R-SY-10）。WebView2 預設開啟 browser accelerator keys，F5／Ctrl+R 會重新載入整頁、Ctrl+F／Ctrl+P 會開搜尋同列印。Windows 啟動時 `disable_browser_accelerators` 經 `with_webview` 取 `ICoreWebView2Controller` → `CoreWebView2().Settings()` → `ICoreWebView2Settings3::SetAreBrowserAcceleratorKeysEnabled(false)`（依賴 `webview2-com 0.39`、`windows 0.62`，同 tauri-runtime-wry 同版本）；失敗只寫 debug log `accelerator-keys failed`，唔影響啟動。前端 `src/keyguard.js` 於 `window` capture 階段對 F5、F3、F7、Ctrl／Cmd＋R／F／G／P／S／O／U、Alt＋←／→、Browser* 鍵做 `preventDefault` 同 `stopImmediatePropagation`；有 Alt 嘅 Ctrl 組合（AltGr）唔攔。編輯掣唔喺表內。
+5. 工作列（R-SY-11）。`tauri.conf.json` 同 `tauri.windows.conf.json` 嘅 `skipTaskbar` 都係 true，overlay 只喺系統匣出現。系統匣選單次序：「顯示光球」（id `show-orbs`）、「設定 (Ctrl+Shift+Alt+H)」、「結束」。`show-orbs` → `show_overlay_from_tray`：最小化就 `unminimize`，`show`，然後（唔係最小化）`reposition_if_offscreen` ＋ `place_overlay`，兩者本身都喺最小化時唔郁框架。Debug log `tray show-orbs`。
 
 ## 12. 排程工作
 
