@@ -6,6 +6,7 @@
 
 import { wheelScrollsChat } from "./wheel.js";
 import { installKeyGuard } from "./keyguard.js";
+import { installLinkGuard } from "./linkguard.js";
 import { attachPayload, attachRefusal, attachSendBlock, base64FromDataUrl, buildContextText, chipText, clipboardImageFiles, dragHasFiles, droppedFiles, makeAttachment, pastedImageName } from "./attach.js";
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
 import { logQuietRefreshFailure, openHistory, schedulePlanFileCatchUp } from "./history-open.js";
@@ -306,6 +307,8 @@ import { applyOrbName, layoutOrbNames, orbHitRect } from "./names.js";
 
 // R-SY-10: F5 / Ctrl+R and other browser accelerators must not reload or open browser UI.
 installKeyGuard(window);
+// R-SY-12: a link never navigates the overlay itself; it opens in the system browser.
+installLinkGuard(document, (url) => { void openExternal(url); });
 
 const NEW_SESSION_LABEL = "開新 session";
 const MOCK_BOTS = [
