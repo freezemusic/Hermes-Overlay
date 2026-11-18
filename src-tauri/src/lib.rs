@@ -4513,9 +4513,10 @@ pub fn run() {
             let hub = Arc::clone(&app.state::<AppState>().interaction);
             if let Some(window) = app.get_webview_window("main") {
                 // 無邊框透明視窗喺未顯示時會跳過 SW_MAXIMIZE，再加 center 就停喺 1280×800。
+                // Subclass first, so even the first click-through write keeps the tool-window bit.
+                interaction::install_tool_window(&window);
                 interaction::place_overlay(&window);
                 disable_browser_accelerators(&window);
-                interaction::install_tool_window(&window);
                 interaction::install_option_menu_hook(&window);
                 let placed = window.clone();
                 // 置頂之後約 1 秒先拒絕 CloseRequested。過咗就俾 Alt+F4 / wmctrl -c 結束。
