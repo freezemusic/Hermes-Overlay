@@ -55,6 +55,37 @@ fn install_unix_signal_exit(app: AppHandle) {
         .ok();
 }
 
+/// R-SY-10: WebView2 turns browser accelerator keys on by default (wry 0.57.1
+/// `lib.rs` "This is WebView2's default behavior"), so F5 / Ctrl+R reload the page
+/// and Ctrl+F / Ctrl+P open browser UI. Tauri 2.12.5 never sets
+/// `with_browser_accelerator_keys`, so switch them off on the live controller
+/// (`ICoreWebView2Settings3::SetAreBrowserAcceleratorKeysEnabled(false)`).
+/// Microsoft: the setting does not affect editing keys (Ctrl+C/V/X/Z/Y/A).
+/// Other platforms rely on the frontend key guard (`src/keyguard.js`).
+#[cfg(target_os = "windows")]
+fn disable_browser_accelerators(window: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows::core::Interface;
+
+    let result = window.with_webview(|webview| unsafe {
+        let outcome: windows::core::Result<()> = (|| {
+            let core = webview.controller().CoreWebView2()?;
+            let settings = core.Settings()?.cast::<ICoreWebView2Settings3>()?;
+            settings.SetAreBrowserAcceleratorKeysEnabled(false)
+        })();
+        match outcome {
+            Ok(()) => trace_debug("accelerator-keys", "off"),
+            Err(err) => trace_debug("accelerator-keys", &format!("failed {err}")),
+        }
+    });
+    if let Err(err) = result {
+        trace_debug("accelerator-keys", &format!("failed {err}"));
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn disable_browser_accelerators(_window: &tauri::WebviewWindow) {}
+
 fn tray_icon(app: &AppHandle) -> Result<tauri::image::Image<'static>, String> {
     match tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png")) {
         Ok(icon) => Ok(icon),
@@ -4459,6 +4490,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 // 無邊框透明視窗喺未顯示時會跳過 SW_MAXIMIZE，再加 center 就停喺 1280×800。
                 interaction::place_overlay(&window);
+                disable_browser_accelerators(&window);
                 interaction::install_option_menu_hook(&window);
                 let placed = window.clone();
                 // 置頂之後約 1 秒先拒絕 CloseRequested。過咗就俾 Alt+F4 / wmctrl -c 結束。

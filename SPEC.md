@@ -137,6 +137,7 @@
 1. Overlay 跑在 `LAPTOP-DEVON`，連線對象是遠端 Hermes API，不是假設 gateway 一定在這台電腦的 `127.0.0.1`。設定仍允許填那台機器 reach 得到的 gateway 位址。
 2. 安裝檔維持未簽名。Windows 測試用 CI artifact `windows-x64-nsis`，不靠發佈 release。
 3. 未獲明確要求，不得建立 git tag，也不得建立 GitHub Release。Release workflow 的 tag 與 draft 行為不得為了測試安裝檔而改掉。
+4. 瀏覽器快捷鍵（R-SY-10）。WebView2 預設開啟 browser accelerator keys，F5／Ctrl+R 會重新載入整頁、Ctrl+F／Ctrl+P 會開搜尋同列印。Windows 啟動時 `disable_browser_accelerators` 經 `with_webview` 取 `ICoreWebView2Controller` → `CoreWebView2().Settings()` → `ICoreWebView2Settings3::SetAreBrowserAcceleratorKeysEnabled(false)`（依賴 `webview2-com 0.39`、`windows 0.62`，同 tauri-runtime-wry 同版本）；失敗只寫 debug log `accelerator-keys failed`，唔影響啟動。前端 `src/keyguard.js` 於 `window` capture 階段對 F5、F3、F7、Ctrl／Cmd＋R／F／G／P／S／O／U、Alt＋←／→、Browser* 鍵做 `preventDefault` 同 `stopImmediatePropagation`；有 Alt 嘅 Ctrl 組合（AltGr）唔攔。編輯掣唔喺表內。
 
 ## 12. 排程工作
 

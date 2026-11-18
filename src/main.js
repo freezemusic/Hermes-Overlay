@@ -5,6 +5,7 @@
  */
 
 import { wheelScrollsChat } from "./wheel.js";
+import { installKeyGuard } from "./keyguard.js";
 import { attachPayload, attachRefusal, attachSendBlock, base64FromDataUrl, buildContextText, chipText, clipboardImageFiles, dragHasFiles, droppedFiles, makeAttachment, pastedImageName } from "./attach.js";
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
 import { logQuietRefreshFailure, openHistory, schedulePlanFileCatchUp } from "./history-open.js";
@@ -302,6 +303,9 @@ import {
   ORB_FADE_MS,
 } from "./proximity.js";
 import { applyOrbName, layoutOrbNames, orbHitRect } from "./names.js";
+
+// R-SY-10: F5 / Ctrl+R and other browser accelerators must not reload or open browser UI.
+installKeyGuard(window);
 
 const NEW_SESSION_LABEL = "開新 session";
 const MOCK_BOTS = [
