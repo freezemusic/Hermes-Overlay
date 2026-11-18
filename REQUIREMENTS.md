@@ -650,6 +650,11 @@ config.json 只有名單真係多咗 profile，或者空白詳情抄到 descript
 - 驗收：單元（`exstyle_is_tool_window`／`overlay_exstyle` 喺 tao 重寫過嘅 style 上保留；選單次序；restore 函數用 unminimize＋守衛路徑）；CI `windows-clickthrough.ps1`：debug log 每次穿透開／關嘅 `exstyle tool=1 app=0` 兩個狀態都有；Windows 手提真機：工作列冇按鈕、系統匣有圖示；Win+D 後撳「顯示光球」光球返嚟並鋪滿螢幕；Ctrl+Shift+Alt+H 照開設定；打字、中文輸入法、焦點照常。
 - 狀態：✅（單元）／❓（Windows 真機）。
 
+**R-SY-12** 任何連結都唔准令 overlay 自己個網頁跳去第頁（Devon 2026-11-18 23:07：「我唔理，聽朝我要見到正常返」。23:03 喺子光球面板撳咗 Bitbucket 連結，成個 overlay 變咗 Bitbucket 全螢幕、光球冇晒，要重啟）。兩層：(1) 前端 `src/linkguard.js` 喺 `document` capture 階段攔所有 `a[href]`／`area[href]` 嘅 click 同中鍵 auxclick（主 bot 對話、子光球對話、計劃內文、工具詳情、卡片、看板、設定一視同仁）：一律 `preventDefault`＋`stopPropagation`，http／https／mailto 經 `openExternal`（系統瀏覽器）開，`#`、相對路徑、`javascript:` 等唔開；其他面板自己嘅 click handler 唔會再開多一次。(2) Rust `navigation_guard`（`on_navigation`）：只准 overlay 自己嘅來源（`tauri://localhost`、`http(s)://tauri.localhost`、dev `localhost:1420`、`ipc.localhost`、`asset.localhost`、`about:blank`、`data:`、`blob:`）；其他 http／https／mailto 連結交系統瀏覽器（`open_system_browser`）並拒絕呢次導航，其餘（`file:`、`javascript:` 等）直接拒絕。Kanban PKCE 登入照舊經 `open_system_browser` 開系統瀏覽器，唔受影響。已知限制：`window.open`／`target=_blank` 要靠第 (1) 層攔；config 建立嘅視窗冇 new-window handler 可掛（要改成程式建視窗先得，風險大）。
+- 來源：Devon；EBWebView History 有該 Bitbucket URL；`wireBotPanel` 先有 anchor handler，`wireSuborbPanel` 同計劃內文冇。
+- 驗收：`linkguard.test.js`（子光球連結、內文粗體、計劃連結、`target=_blank`、中鍵、右鍵、unsafe／相對／`#`、冇重覆開）；`lib.rs` `navigation_allow_list_*`；真機：喺子光球面板撳連結，Edge 開、overlay 不變。
+- 狀態：✅（單元）／❓（Windows 真機）。
+
 ---
 
 ## 12. 子光球（R-SO）

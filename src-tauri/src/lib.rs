@@ -4456,10 +4456,53 @@ async fn stop_chat(
     request_stop(&app, &state, &profile, run_id).await
 }
 
+/// R-SY-12: what the overlay's own webview may navigate to. Everything else
+/// that is a web link goes to the system browser (`open_system_browser`) and
+/// the in-place navigation is refused, so no link can ever replace the overlay.
+/// Own origins: `tauri://localhost`, `http(s)://tauri.localhost` (Windows),
+/// the dev server on `localhost:1420`, plus `ipc.localhost`, `asset.localhost`,
+/// `about:blank`, `data:` and `blob:` that the app itself uses.
+pub fn navigation_allowed(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" => url.host_str() == Some("localhost"),
+        "about" => url.as_str() == "about:blank",
+        "data" | "blob" | "asset" | "ipc" => true,
+        "http" | "https" => match url.host_str() {
+            Some("tauri.localhost") | Some("ipc.localhost") | Some("asset.localhost") => true,
+            Some("localhost") => url.port() == Some(1420),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// True for a link that should be handed to the system browser.
+pub fn navigation_opens_externally(url: &tauri::Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "mailto") && !navigation_allowed(url)
+}
+
+fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::<R>::new("navigation-guard")
+        .on_navigation(|_webview, url| {
+            if navigation_allowed(url) {
+                return true;
+            }
+            if navigation_opens_externally(url) {
+                trace_debug("navigation", "external");
+                let _ = open_system_browser(url.as_str());
+            } else {
+                trace_debug("navigation", "blocked");
+            }
+            false
+        })
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(navigation_guard())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage({
             let http = http_client();
@@ -4833,6 +4876,44 @@ mod tests {
         assert!(restore.contains("reposition_if_offscreen"));
         assert!(restore.contains("place_overlay"));
         assert!(!restore.contains("set_position") && !restore.contains("SetWindowLong"));
+    }
+
+    #[test]
+    fn navigation_allow_list_keeps_the_overlay_on_its_own_origin() {
+        let u = |s: &str| tauri::Url::parse(s).unwrap();
+        for own in [
+            "tauri://localhost/",
+            "tauri://localhost/index.html",
+            "http://tauri.localhost/",
+            "https://tauri.localhost/index.html",
+            "http://localhost:1420/",
+            "http://ipc.localhost/cmd",
+            "http://asset.localhost/x.png",
+            "about:blank",
+            "blob:http://tauri.localhost/abc",
+        ] {
+            assert!(super::navigation_allowed(&u(own)), "{own}");
+        }
+        for other in [
+            "https://bitbucket.org/freezemusic/forex-forest-code-base/pull-requests/3404",
+            "http://localhost:8080/",
+            "http://tauri.localhost.evil.example/",
+            "https://example.com/tauri.localhost",
+            "tauri://evil/",
+            "file:///C:/Windows/win.ini",
+            "javascript:alert(1)",
+            "mailto:a@b.c",
+        ] {
+            assert!(!super::navigation_allowed(&u(other)), "{other}");
+        }
+        assert!(super::navigation_opens_externally(&u("https://bitbucket.org/x")));
+        assert!(super::navigation_opens_externally(&u("mailto:a@b.c")));
+        assert!(!super::navigation_opens_externally(&u("file:///C:/x")));
+        assert!(!super::navigation_opens_externally(&u("javascript:alert(1)")));
+        assert!(!super::navigation_opens_externally(&u("http://tauri.localhost/")));
+        let src = include_str!("lib.rs");
+        assert!(src.contains(".plugin(navigation_guard())"));
+        assert!(src.contains("open_system_browser(url.as_str())"));
     }
 
     #[test]
