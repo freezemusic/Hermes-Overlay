@@ -673,6 +673,7 @@ test("R-PL-10 the live read is one GET of /api/fs/read-text and nothing is writt
   const fn = client.slice(client.indexOf("pub async fn read_plan_text"), client.indexOf("pub async fn ensure_bot_chat"));
   assert.match(fn, /Method::GET, &url_path/);
   assert.match(fn, /is_readable_plan_path\(path\)/);
+  assert.match(fn, /rest::FS_READ_TEXT/);
   assert.doesNotMatch(fn, /POST|PUT|DELETE|write-text/);
   const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   assert.match(lib, /async fn read_plan_file/);

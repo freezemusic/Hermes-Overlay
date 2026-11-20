@@ -370,7 +370,7 @@ impl HermesClient {
         if !hermes::is_readable_plan_path(path) {
             return Err(HermesError::Protocol("唔係計劃檔路徑".into()));
         }
-        let url_path = format!("/api/fs/read-text{}", query("", &[("path", path.trim())]));
+        let url_path = format!("{}{}", rest::FS_READ_TEXT, query("", &[("path", path.trim())]));
         let value = self.rest(Method::GET, &url_path, None, REST_WAIT).await?;
         plan_text_from_value(&value)
     }
@@ -1218,7 +1218,7 @@ mod plan_read_tests {
     #[test]
     fn read_text_path_is_urlencoded_and_has_no_profile() {
         let path = r"C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-20_202713-compile-spec-reconcile.md";
-        let q = format!("/api/fs/read-text{}", query("", &[("path", path)]));
+        let q = format!("{}{}", rest::FS_READ_TEXT, query("", &[("path", path)]));
         assert!(q.starts_with("/api/fs/read-text?path=C%3A%5CUsers%5Cfreez%5CDesktop%5CMetaTrader%20Workbench%5C.hermes"));
         assert!(!q.contains("profile="));
     }
