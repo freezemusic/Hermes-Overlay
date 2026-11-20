@@ -224,6 +224,11 @@ description = "Quit the overlay from the Settings 結束 button."
 commands.allow = ["quit_app"]
 
 [[permission]]
+identifier = "allow-restart-app"
+description = "Restart the overlay process from the tray 重啟 item (R-SY-13)."
+commands.allow = ["restart_app"]
+
+[[permission]]
 identifier = "allow-read-soul"
 description = "Read one bot profile SOUL.md."
 commands.allow = ["read_soul"]

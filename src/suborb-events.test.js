@@ -97,7 +97,7 @@ test("startup seed shows a pin immediately and the next outside session is a sub
     now: 1000,
   });
   assert.deepEqual(created.shown.map((item) => item.id), ["pinned-task", "fresh"]);
-  const hermes = main.slice(main.indexOf("function useHermes"), main.indexOf("function useHermes") + 1800);
+  const hermes = main.slice(main.indexOf("function useHermes"), main.indexOf("function useHermes") + 4200);
   const reset = hermes.indexOf("state.suborbModels = new Map");
   const seed = hermes.indexOf("seedSessionLists");
   assert.ok(reset >= 0 && seed > reset);

@@ -128,8 +128,9 @@ fn install_escape_hatches(app: &AppHandle) -> Result<(), Box<dyn std::error::Err
 
     let show = MenuItem::with_id(app, "show-orbs", SHOW_ORBS_TRAY_LABEL, true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", SETTINGS_TRAY_LABEL, true, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "restart", RESTART_TRAY_LABEL, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "結束", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &settings, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &settings, &restart, &quit])?;
     let icon = tray_icon(app)?;
     TrayIconBuilder::new()
         .icon(icon)
@@ -141,6 +142,10 @@ fn install_escape_hatches(app: &AppHandle) -> Result<(), Box<dyn std::error::Err
             "show-orbs" => show_overlay_from_tray(app),
             "settings" => {
                 let _ = app.emit("overlay-ui", serde_json::json!({ "type": "open-settings" }));
+            }
+            // R-SY-13: the page flushes open_panels, asks about unsent text, then calls restart_app.
+            "restart" => {
+                let _ = app.emit("overlay-ui", serde_json::json!({ "type": "restart" }));
             }
             "quit" => app.exit(0),
             _ => {}
@@ -2952,6 +2957,80 @@ fn arm_pin_close_guard() {
     interaction::arm_pin_close_guard();
 }
 
+/// R-SY-13: tray menu label that restarts the overlay process.
+const RESTART_TRAY_LABEL: &str = "重啟";
+/// Set for the child of a restart so it waits for the old process to be gone.
+const RESTART_ENV: &str = "HERMES_OVERLAY_RESTART";
+static RESTARTING: AtomicBool = AtomicBool::new(false);
+static INSTANCE_LOCK: OnceLock<std::fs::File> = OnceLock::new();
+
+/// One lock file per installed exe. The running overlay holds it for its whole life.
+fn instance_lock_path() -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let exe = std::env::current_exe().unwrap_or_default();
+    let digest = Sha256::digest(exe.to_string_lossy().as_bytes());
+    let tag: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    std::env::temp_dir().join(format!("hermes-overlay-{tag}.lock"))
+}
+
+/// Take the instance lock. A normal start only tries once (never blocks, never refuses
+/// to start, so existing behaviour is unchanged). The child of a restart waits up to
+/// `wait` for the old process to exit and returns false if it never does, so a restart
+/// can never leave two overlays running.
+fn acquire_instance_lock(wait: std::time::Duration) -> bool {
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(instance_lock_path())
+    else {
+        return true;
+    };
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => {
+                let _ = INSTANCE_LOCK.set(file);
+                return true;
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(_) => return true,
+        }
+    }
+}
+
+/// Start the next overlay process (same exe and arguments) and report whether it started.
+fn spawn_restart_child() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env(RESTART_ENV, "1")
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
+/// R-SY-13: restart the overlay process (not a webview reload; F5 stays blocked, R-SY-10).
+/// The page has already flushed open_panels. Only one restart can run at a time.
+#[tauri::command]
+fn restart_app(app: AppHandle) -> Result<(), String> {
+    if RESTARTING.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    if let Err(err) = spawn_restart_child() {
+        RESTARTING.store(false, Ordering::SeqCst);
+        return Err(format!("重啟失敗：{err}"));
+    }
+    trace_debug("tray", "restart");
+    app.exit(0);
+    Ok(())
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(interaction::APP_EXIT_CODE);
@@ -4500,6 +4579,13 @@ fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let restarted = std::env::var_os(RESTART_ENV).is_some();
+    std::env::remove_var(RESTART_ENV);
+    let lock_wait = if restarted { std::time::Duration::from_secs(10) } else { std::time::Duration::ZERO };
+    if !acquire_instance_lock(lock_wait) && restarted {
+        // The old overlay is still alive: do not start a second one.
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(navigation_guard())
@@ -4651,6 +4737,7 @@ pub fn run() {
             focus_owner,
             arm_pin_close_guard,
             quit_app,
+            restart_app,
             read_soul,
             write_soul,
             save_bot_meta
@@ -4867,8 +4954,8 @@ mod tests {
         assert!(src.contains("interaction::install_tool_window(&window)"));
         assert_eq!(super::SHOW_ORBS_TRAY_LABEL, "顯示光球");
         assert!(
-            src.contains("Menu::with_items(app, &[&show, &settings, &quit])"),
-            "顯示光球 must come before 設定 and 結束"
+            src.contains("Menu::with_items(app, &[&show, &settings, &restart, &quit])"),
+            "顯示光球 must come before 設定, 重啟 and 結束"
         );
         let restore = &src[src.find("fn show_overlay_from_tray").unwrap()..];
         let restore = &restore[..restore.find("fn install_escape_hatches").unwrap()];
@@ -4914,6 +5001,37 @@ mod tests {
         let src = include_str!("lib.rs");
         assert!(src.contains(".plugin(navigation_guard())"));
         assert!(src.contains("open_system_browser(url.as_str())"));
+    }
+
+    #[test]
+    fn tray_has_a_restart_item_between_settings_and_quit() {
+        let src = include_str!("lib.rs");
+        assert_eq!(super::RESTART_TRAY_LABEL, "重啟");
+        assert!(src.contains("Menu::with_items(app, &[&show, &settings, &restart, &quit])"));
+        assert!(src.contains("\"restart\" => {"));
+        let body = &src[src.find("fn restart_app").unwrap()..];
+        let body = &body[..body.find("#[tauri::command]").unwrap_or(body.len())];
+        assert!(body.contains("RESTARTING.swap"), "double click must not start two");
+        assert!(body.contains("spawn_restart_child"));
+        assert!(!body.contains("eval(") && !body.contains("reload"), "a process restart, not a reload");
+        assert!(src.contains("restart_app,"));
+        // the child waits for the old process, and gives up instead of running twice
+        let run = &src[src.find("pub fn run()").unwrap()..];
+        assert!(run.contains("acquire_instance_lock(lock_wait)"));
+        assert!(run.contains("return;"));
+    }
+
+    #[test]
+    fn instance_lock_is_exclusive_until_released() {
+        let path = std::env::temp_dir().join(format!("hermes-overlay-test-{}.lock", std::process::id()));
+        let open = || std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).unwrap();
+        let first = open();
+        first.try_lock().unwrap();
+        let second = open();
+        assert!(matches!(second.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        drop(first);
+        assert!(second.try_lock().is_ok());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
