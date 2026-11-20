@@ -1086,6 +1086,7 @@ html, body {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overflow-wrap: anywhere;
   color: #14142b;
   font: 400 13px/1.55 var(--font-body);
 }
@@ -1123,20 +1124,24 @@ html, body {
   margin: 6px 0;
   padding: 28px 10px 10px;
   overflow-x: auto;
+  overflow-wrap: anywhere;
   background: #000;
   color: #fff;
   border: 1px solid var(--bot-20);
   border-radius: 2px;
   font: 400 11px/1.45 var(--font-mono);
-  white-space: pre;
+  white-space: pre-wrap;
 }
 
 .plan-body pre code {
+  display: inline;
   background: none;
   border: 0;
   color: inherit;
   padding: 0;
   font: inherit;
+  white-space: inherit;
+  overflow-wrap: inherit;
 }
 
 .plan-body .code-copy {
@@ -1471,15 +1476,19 @@ html, body {
   position: relative;
   padding: 28px 10px 10px;
   overflow-x: auto;
+  overflow-wrap: anywhere;
   background: #000;
   color: #fff;
   border: 1px solid var(--bot-20);
   border-radius: 2px;
   font: 400 11px/1.45 var(--font-mono);
-  white-space: pre;
+  white-space: pre-wrap;
 }
 
 .bubble.bot pre code {
+  display: inline;
+  white-space: inherit;
+  overflow-wrap: inherit;
   background: none;
   border: 0;
   color: inherit;
@@ -1500,6 +1509,7 @@ html, body {
 }
 
 .bubble.bot blockquote {
+  overflow-wrap: anywhere;
   padding-left: 10px;
   border-left: 2px solid var(--bot);
   color: var(--text-muted);
@@ -4631,8 +4641,32 @@ html.overlay-passthrough:not([data-pass="1"]) .morph[data-state="panel"]:not(.is
   left: 0;
 }
 
-.plan-window.is-seam-grow > .plan-resize,
+/* R-PL-09: only the grow animation (not a settled plan) disables the handle.
+   `is-seam-grow` stays on a settled plan, so it is `data-resize-ready` (set when
+   the seam phase becomes "grown") that re-enables it (Devon 2026-11-20). */
+.plan-window.is-seam-grow:not([data-resize-ready="1"]) > .plan-resize,
 .morph.is-collapsing .plan-window > .plan-resize,
 html[data-pass="1"] .plan-window > .plan-resize {
   pointer-events: none !important;
+}
+
+/* R-MD-12 (Devon 2026-11-20 「被 quote/code 的內容可以 word wrap 嗎」): long inline
+   code, code blocks and quotes wrap instead of running off the panel. Inline code
+   was inline-flex, which cannot break; it is a plain inline box here. Tables keep
+   their own horizontal scroll. */
+.bubble.bot :not(pre) > code,
+.plan-body :not(pre) > code {
+  display: inline;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.plan-body blockquote {
+  margin: 6px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--bot);
+  overflow-wrap: anywhere;
 }

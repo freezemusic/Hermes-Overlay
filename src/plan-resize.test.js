@@ -126,3 +126,21 @@ test("R-PL-09 / R-PL-01 the Windows CI opens the history plan from 睇計劃 and
   assert.match(clickthrough, /does not cover the wider plan/);
   assert.match(main, /debugLog\("plan-resize-at", line\)/);
 });
+
+test("R-PL-09 a settled plan keeps its resize handle live (is-seam-grow stays on it)", () => {
+  assert.match(css, /\.plan-window\.is-seam-grow:not\(\[data-resize-ready="1"\]\) > \.plan-resize/);
+  assert.doesNotMatch(css, /(^|\n)\.plan-window\.is-seam-grow > \.plan-resize/);
+  assert.match(main, /phase === "grown"\) plan\.dataset\.resizeReady = "1"/);
+});
+
+test("R-MD-12 code, inline code and quotes wrap in chat and plan", () => {
+  for (const sel of [".bubble.bot pre", ".plan-body pre"]) {
+    const m = css.match(new RegExp("\\n" + sel.replace(/\./g, "\\.") + " \\{[^}]*\\}"));
+    assert.ok(m, sel);
+    assert.match(m[0], /white-space: pre-wrap/);
+    assert.match(m[0], /overflow-wrap: anywhere/);
+  }
+  assert.match(css, /\.bubble\.bot :not\(pre\) > code,\n\.plan-body :not\(pre\) > code \{\n  display: inline;/);
+  assert.match(css, /\.bubble\.bot blockquote \{\n  overflow-wrap: anywhere/);
+  assert.match(css, /\.plan-body blockquote \{[^}]*overflow-wrap: anywhere/);
+});
