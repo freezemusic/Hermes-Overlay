@@ -576,7 +576,7 @@ test("R-SO-09 Rust: set_suborb_mode is registered, allowed, and save_settings ke
   assert.match(caps, /"allow-set-suborb-mode"/);
 });
 
-import { planRefFor, planRefBase, resolvePlanRef } from "./plan.js";
+import { applyPlanPatch, historyPlanRecord, isReadablePlanPath, latestPlanPath, livePlanRecord, planRefFor, planRefBase, reconstructPlan } from "./plan.js";
 
 const WIN_PLAN = String.raw`C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-20_282713-compile-spec-reconcile.md`;
 
@@ -590,42 +590,93 @@ test("R-PL-10 any bot message that names a plan .md gets a chip target (text, pa
   assert.equal(planRefFor({ role: "user", text: WIN_PLAN }), null);
 });
 
-test("R-PL-10 the chip opens the newest write_file content of that path, else a notice", () => {
-  const msgs = [
-    { role: "user", text: "/plan" },
-    { role: "bot", text: "寫好", plan: { path: WIN_PLAN, content: "# 舊\n\nold body" } },
-    { role: "user", text: "改" },
-    { role: "bot", text: "再寫", plan: { path: WIN_PLAN.replace(/\\/g, "/"), content: "# 新\n\nnew body" } },
-    { role: "user", text: "patch it" },
-    { role: "bot", text: `已改 ${WIN_PLAN}`, plan_refs: [".hermes/plans/2026-11-20_282713-compile-spec-reconcile.md"] },
-  ];
-  const found = resolvePlanRef(msgs, planRefFor(msgs[5]));
-  assert.equal(found.missing, null);
-  assert.equal(found.plan.markdown, "# 新\n\nnew body");
-  const none = resolvePlanRef([{ role: "bot", text: `看 ${WIN_PLAN}` }], planRefFor({ role: "bot", text: `看 ${WIN_PLAN}` }));
-  assert.equal(none.plan, null);
-  assert.match(none.missing.markdown, /計劃檔內容唔在對話紀錄裡面。/);
-  assert.match(none.missing.markdown, /\.hermes\/plans\/2026-11-20_282713-compile-spec-reconcile\.md/);
+test("R-PL-10 only an absolute .hermes/plans/<file>.md may be read from the server", () => {
+  assert.equal(isReadablePlanPath(WIN_PLAN), true);
+  assert.equal(isReadablePlanPath("C:\\Users\\freez\\Desktop\\MetaTrader Workbench\\.hermes\\plans\\2026-11-20_202713-compile-spec-reconcile.md"), true);
+  assert.equal(isReadablePlanPath("/home/w/.hermes/plans/demo.md"), true);
+  for (const bad of [
+    "C:\\Users\\freez\\.hermes\\plans\\..\\config.yaml",
+    "C:\\Users\\freez\\.hermes\\plans\\x.txt",
+    "C:\\Users\\freez\\notes\\x.md",
+    "C:\\Users\\freez\\.hermes\\plans\\sub\\x.md",
+    "\\\\server\\share\\.hermes\\plans\\x.md",
+    "file:///C:/a/.hermes/plans/x.md",
+    ".hermes/plans/x.md",
+    "",
+    "/a/.hermes/plans/.md",
+  ]) assert.equal(isReadablePlanPath(bad), false, bad);
 });
 
-test("R-PL-10 a notice plan can be focused and shown; patch/text refs never auto-open a plan", () => {
-  const thread = { loaded: true, sessionId: "s", messages: [
-    { role: "user", text: "go" },
-    { role: "bot", text: `已改 ${WIN_PLAN}`, plan_refs: [".hermes/plans/a.md"] },
-  ] };
-  notePlans(thread); // baseline
-  thread.messages.push({ role: "user", text: "again" }, { role: "bot", text: `又改 ${WIN_PLAN}` });
-  notePlans(thread);
-  assert.equal(planForPanel(thread), null, "no auto-open without write_file");
-  const found = resolvePlanRef(thread.messages, planRefFor(thread.messages[3]));
-  thread.refPlans = new Map([[found.missing.key, found.missing]]);
-  focusPlan(thread, found.missing.key);
-  assert.equal(planForPanel(thread).key, found.missing.key);
-  assert.match(planForPanel(thread).markdown, /計劃檔內容唔在/);
+test("R-PL-10 patches apply by OLD/NEW in order; a patch that does not match is counted", () => {
+  assert.deepEqual(applyPlanPatch("a b c", { old: "b", new: "X" }), { text: "a X c", ok: true });
+  assert.equal(applyPlanPatch("a b c", { old: "zz", new: "X" }).ok, false);
+  assert.equal(applyPlanPatch("a b c", { old: "", new: "X" }).ok, false);
+  assert.equal(applyPlanPatch("a b", { old: "b", new: "" }).text, "a ");
+  const msgs = [
+    { role: "bot", text: "寫", plan: { path: WIN_PLAN, content: "# P\nalpha beta" } },
+    { role: "bot", text: "改", plan_patches: [{ path: WIN_PLAN, old: "alpha", new: "ALPHA" }, { path: WIN_PLAN, old: "nope", new: "x" }] },
+    { role: "bot", text: "再改", plan_patches: [{ path: WIN_PLAN.replace(/\\/g, "/"), old: "beta", new: "BETA" }, { path: "/w/.hermes/plans/other.md", old: "#", new: "!" }] },
+  ];
+  const built = reconstructPlan(msgs, planRefBase(WIN_PLAN));
+  assert.equal(built.text, "# P\nALPHA BETA");
+  assert.equal(built.applied, 2);
+  assert.equal(built.failed, 1);
+  // a later write_file starts over
+  const again = reconstructPlan([...msgs, { role: "bot", text: "重寫", plan: { path: WIN_PLAN, content: "# Q" } }], planRefBase(WIN_PLAN));
+  assert.deepEqual([again.text, again.applied, again.failed], ["# Q", 0, 0]);
+  assert.equal(reconstructPlan([{ role: "bot", text: "x", plan_patches: [{ path: WIN_PLAN, old: "a", new: "b" }] }], planRefBase(WIN_PLAN)).text, null);
+});
+
+test("R-PL-10 source order: live read, else rebuild with labels, else the notice", () => {
+  const ref = planRefFor({ role: "bot", text: `看 ${WIN_PLAN}` });
+  const base = [
+    { role: "bot", text: "寫", plan: { path: WIN_PLAN, content: "# P\nalpha" } },
+    { role: "bot", text: "改", plan_patches: [{ path: WIN_PLAN, old: "alpha", new: "beta" }] },
+  ];
+  const history = historyPlanRecord(base, ref);
+  assert.equal(history.markdown, "# P\nbeta");
+  assert.equal(history.note, "來源：對話紀錄重組");
+  assert.equal(history.key, `ref:${ref.base}`);
+  const partial = historyPlanRecord([base[0], { role: "bot", text: "改", plan_patches: [{ path: WIN_PLAN, old: "zzz", new: "y" }] }], ref);
+  assert.match(partial.note, /部分修改未套用/);
+  assert.equal(historyPlanRecord([base[0]], ref).note, "來源：對話紀錄");
+  const live = livePlanRecord(history, "# P\nlive text");
+  assert.equal(live.markdown, "# P\nlive text");
+  assert.equal(live.note, "來源：即時讀檔");
+  assert.equal(live.key, history.key);
+  const none = historyPlanRecord([{ role: "bot", text: `看 ${WIN_PLAN}` }], ref);
+  assert.match(none.markdown, /計劃檔內容唔在對話紀錄裡面。/);
+  assert.equal(none.note, "");
+});
+
+test("R-PL-10 the live path is the newest readable full path from tool calls", () => {
+  const base = planRefBase(WIN_PLAN);
+  const msgs = [
+    { role: "bot", text: "a", plan: { path: "C:\\old\\.hermes\\plans\\2026-11-20_202713-compile-spec-reconcile.md", content: "# x" } },
+    { role: "bot", text: "b", plan_refs: [".hermes/plans/2026-11-20_202713-compile-spec-reconcile.md"], plan_patches: [{ path: WIN_PLAN, old: "x", new: "y" }] },
+  ];
+  assert.equal(latestPlanPath(msgs, base), WIN_PLAN);
+  assert.equal(latestPlanPath([{ role: "bot", text: "t", plan_refs: [".hermes/plans/z.md"] }], "z"), "");
 });
 
 test("R-PL-10 wiring: both chip painters use planRefFor and openPlanRef", () => {
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   assert.equal((main.match(/openPlanRef\(id, /g) || []).length, 3);
   assert.match(main, /presented\.plan_refs = m\.plan_refs\.map\(String\)/);
+  assert.match(main, /presented\.plan_patches = m\.plan_patches\.map/);
+  assert.match(main, /invoke\("read_plan_file", \{ profile: gatewayProfile\(id\), path \}\)/);
+  assert.match(main, /focus\.note \? `> \$\{focus\.note\}/);
+});
+
+test("R-PL-10 the live read is one GET of /api/fs/read-text and nothing is written", () => {
+  const client = readFileSync(new URL("../src-tauri/src/client/mod.rs", import.meta.url), "utf8");
+  const fn = client.slice(client.indexOf("pub async fn read_plan_text"), client.indexOf("pub async fn ensure_bot_chat"));
+  assert.match(fn, /Method::GET, &url_path/);
+  assert.match(fn, /is_readable_plan_path\(path\)/);
+  assert.match(fn, /rest::FS_READ_TEXT/);
+  assert.doesNotMatch(fn, /POST|PUT|DELETE|write-text/);
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.match(lib, /async fn read_plan_file/);
+  const toml = readFileSync(new URL("../src-tauri/permissions/hermes.toml", import.meta.url), "utf8");
+  assert.match(toml, /allow-read-plan-file/);
 });

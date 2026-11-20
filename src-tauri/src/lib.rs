@@ -3031,6 +3031,25 @@ fn restart_app(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// R-PL-10: the live text of a plan file. Read only: one GET of `/api/fs/read-text`
+/// with the existing login. Only `.hermes/plans/*.md` paths are accepted.
+#[tauri::command]
+async fn read_plan_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile: String,
+    path: String,
+) -> Result<String, String> {
+    if !hermes::is_readable_plan_path(&path) {
+        return Err("唔係計劃檔路徑".into());
+    }
+    let cfg = load_config(&app)?;
+    require_hermes(&cfg)?;
+    let _ = bot_or_err(&cfg, &profile)?;
+    let chat = chat_client(&state, &cfg);
+    chat.read_plan_text(&path).await.map_err(|err| explain(&err))
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(interaction::APP_EXIT_CODE);
@@ -4738,6 +4757,7 @@ pub fn run() {
             arm_pin_close_guard,
             quit_app,
             restart_app,
+            read_plan_file,
             read_soul,
             write_soul,
             save_bot_meta

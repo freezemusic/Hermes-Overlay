@@ -9,6 +9,8 @@ pub mod rest {
     pub const HEALTH: &str = "/api/health";
     pub const PROFILES: &str = "/api/profiles";
     pub const SESSIONS: &str = "/api/sessions";
+    /// R-PL-10: read-only file text, plans path only (GET).
+    pub const FS_READ_TEXT: &str = "/api/fs/read-text";
     pub const WS_TICKET: &str = "/api/auth/ws-ticket";
     pub const CRON_JOBS: &str = "/api/cron/jobs";
     pub const WS: &str = "/api/ws";

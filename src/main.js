@@ -10,7 +10,7 @@ import { installLinkGuard } from "./linkguard.js";
 import { attachPayload, attachRefusal, attachSendBlock, base64FromDataUrl, buildContextText, chipText, clipboardImageFiles, dragHasFiles, droppedFiles, makeAttachment, pastedImageName } from "./attach.js";
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
 import { logQuietRefreshFailure, openHistory, schedulePlanFileCatchUp } from "./history-open.js";
-import { planRefFor, resolvePlanRef, composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, dismissPlan, focusPlan, nextComposeMode, normalizeComposeMode, notePlans, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, plansIn, rememberPlan } from "./plan.js";
+import { planRefFor, historyPlanRecord, livePlanRecord, latestPlanPath, planView, composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, dismissPlan, focusPlan, nextComposeMode, normalizeComposeMode, notePlans, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, plansIn, rememberPlan } from "./plan.js";
 import {
   SUBORB_FADE_MS,
   emptySuborbModel,
@@ -5229,18 +5229,36 @@ function ensurePlanChip(node, message, id) {
   node.appendChild(chip);
 }
 
-/** R-PL-10: 「睇計劃」 opens the newest known content of the referenced plan file, or a notice. */
+/**
+ * R-PL-10: 「睇計劃」 opens the plan file. It shows the history rebuild (or the
+ * notice) at once, then replaces it with the live file when the read-only
+ * `read_plan_file` (GET /api/fs/read-text) succeeds.
+ */
 function openPlanRef(id, message) {
   const thread = threadFor(id);
-  const found = resolvePlanRef(thread.messages, planRefFor(message));
-  if (!found) return;
-  if (found.plan) {
-    openPlanWindow(id, found.plan.key);
-    return;
-  }
+  const ref = planRefFor(message);
+  const history = historyPlanRecord(thread.messages, ref);
+  if (!history) return;
   if (!(thread.refPlans instanceof Map)) thread.refPlans = new Map();
-  thread.refPlans.set(found.missing.key, found.missing);
-  openPlanWindow(id, found.missing.key);
+  thread.refPlans.set(history.key, history);
+  openPlanWindow(id, history.key);
+  void loadLivePlan(id, thread, ref, history);
+}
+
+async function loadLivePlan(id, thread, ref, history) {
+  const path = latestPlanPath(thread.messages, ref.base);
+  if (!path || !inTauri() || state.mode !== "hermes") return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const text = await invoke("read_plan_file", { profile: gatewayProfile(id), path });
+    if (typeof text !== "string" || !text.trim()) return;
+    const view = planView(thread);
+    if (!view || view.focus !== history.key) return;
+    thread.refPlans.set(history.key, livePlanRecord({ ...history, path }, text));
+    paintPlan(id, { force: true });
+  } catch (err) {
+    debugLog("plan-read-fail", `bot=${id} ${String(err?.message || err).slice(0, 120)}`);
+  }
 }
 
 function syncChatInPlace(chat, thread, id, resting = false) {
@@ -5533,7 +5551,8 @@ function paintPlan(id, options = {}) {
   section.dataset.key = focus.key;
   const title = role(section, "plan-title");
   if (title && title.textContent !== "計劃") title.textContent = "計劃";
-  const lead = planBodyLead(focus.markdown, focus.title);
+  const baseLead = planBodyLead(focus.markdown, focus.title);
+  const lead = focus.note ? `> ${focus.note}\n\n${baseLead}` : baseLead;
   const mode = section.dataset.mode === "source" ? "source" : "preview";
   section.dataset.mode = mode;
   const previewBtn = role(section, "plan-preview-mode");
@@ -7444,6 +7463,9 @@ function presentMessage(m) {
   const file = m.plan && String(m.plan.content || "").trim();
   if (file) presented.plan = { path: String(m.plan.path || ""), content: String(m.plan.content) };
   if (Array.isArray(m.plan_refs) && m.plan_refs.length) presented.plan_refs = m.plan_refs.map(String);
+  if (Array.isArray(m.plan_patches) && m.plan_patches.length) {
+    presented.plan_patches = m.plan_patches.map((item) => ({ path: String(item.path || ""), old: String(item.old ?? ""), new: String(item.new ?? "") }));
+  }
   return presented;
 }
 

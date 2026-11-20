@@ -363,6 +363,18 @@ impl HermesClient {
         }
     }
 
+    /// R-PL-10: the text of one plan file, `GET /api/fs/read-text?path=` (read only).
+    /// Only an absolute `.hermes/plans/*.md` path is asked for. A truncated or binary
+    /// answer is a failure. The body is never logged.
+    pub async fn read_plan_text(&self, path: &str) -> Result<String, HermesError> {
+        if !hermes::is_readable_plan_path(path) {
+            return Err(HermesError::Protocol("唔係計劃檔路徑".into()));
+        }
+        let url_path = format!("{}{}", rest::FS_READ_TEXT, query("", &[("path", path.trim())]));
+        let value = self.rest(Method::GET, &url_path, None, REST_WAIT).await?;
+        plan_text_from_value(&value)
+    }
+
     pub async fn ensure_bot_chat(&self, profile: &str) -> Result<hermes::BotChatPick, HermesError> {
         let sessions = self.list_sessions_for_bot_chat(profile).await?;
         if let Some(found) = hermes::canonical_bot_chat(&sessions) {
@@ -1173,5 +1185,41 @@ mod tests {
             assert!(!code.contains("\"/api/"), "paths live in endpoints.rs");
             assert!(!code.contains("\"/auth/"), "paths live in endpoints.rs");
         }
+    }
+}
+
+/// The `text` of a read-text answer, or an error when it was cut short or is not text.
+pub fn plan_text_from_value(value: &Value) -> Result<String, HermesError> {
+    if value.get("truncated").and_then(Value::as_bool) == Some(true) {
+        return Err(HermesError::Protocol("計劃檔太大，讀唔晒".into()));
+    }
+    if value.get("binary").and_then(Value::as_bool) == Some(true) {
+        return Err(HermesError::Protocol("計劃檔唔係文字".into()));
+    }
+    match value.get("text").and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => Ok(text.to_string()),
+        _ => Err(HermesError::Protocol("計劃檔冇內容".into())),
+    }
+}
+
+#[cfg(test)]
+mod plan_read_tests {
+    use super::*;
+
+    #[test]
+    fn read_text_answer_is_checked() {
+        assert_eq!(plan_text_from_value(&json!({"text": "# A", "truncated": false, "binary": false})).unwrap(), "# A");
+        assert!(plan_text_from_value(&json!({"text": "# A", "truncated": true})).is_err());
+        assert!(plan_text_from_value(&json!({"text": "# A", "binary": true})).is_err());
+        assert!(plan_text_from_value(&json!({"text": "  "})).is_err());
+        assert!(plan_text_from_value(&json!({"nope": 1})).is_err());
+    }
+
+    #[test]
+    fn read_text_path_is_urlencoded_and_has_no_profile() {
+        let path = r"C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-20_202713-compile-spec-reconcile.md";
+        let q = format!("{}{}", rest::FS_READ_TEXT, query("", &[("path", path)]));
+        assert!(q.starts_with("/api/fs/read-text?path=C%3A%5CUsers%5Cfreez%5CDesktop%5CMetaTrader%20Workbench%5C.hermes"));
+        assert!(!q.contains("profile="));
     }
 }
