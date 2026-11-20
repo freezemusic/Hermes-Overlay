@@ -9,6 +9,45 @@ export function isHermesPlanPath(path) {
   return PLAN_PATH.test(String(path || ""));
 }
 
+/** R-PL-10: the lower-case file stem that identifies a plan file, whatever the folder or slash. */
+export function planRefBase(path) {
+  const match = String(path || "").match(PLAN_PATH);
+  if (!match) return "";
+  return (match[1].split(/[\\/]/).pop() || "").toLowerCase();
+}
+
+/** The `.hermes/plans/<file>.md` form of a path (or "" when it is not one). */
+function planRefRelative(path) {
+  const match = String(path || "").match(PLAN_PATH);
+  if (!match) return "";
+  return `.hermes/plans/${match[1].split(/[\\/]/).pop()}.md`;
+}
+
+/**
+ * R-PL-10 (Devon 2026-11-20 「有 .md 就可以看計劃」): the plan file a bot message
+ * refers to, by its own write_file, any tool call on that path (patch, read...)
+ * or the path in its text. Only shows the chip; it never opens a plan by itself.
+ */
+export function planRefFor(message) {
+  if (!message || message.role !== "bot" || message.live) return null;
+  const candidates = [String(message.plan?.path || ""), ...(Array.isArray(message.plan_refs) ? message.plan_refs : []), String(message.text || "")];
+  for (const raw of candidates) {
+    const base = planRefBase(raw);
+    if (base) return { base, path: planRefRelative(raw) };
+  }
+  return null;
+}
+
+/** Newest write_file content known for this ref, or a notice record when the history has none. */
+export function resolvePlanRef(messages, ref) {
+  if (!ref) return null;
+  const known = plansIn(messages).filter((item) => planRefBase(item.path) === ref.base);
+  if (known.length) return { plan: known[known.length - 1], missing: null };
+  const title = planFileTitle(ref.path) || "計劃";
+  const markdown = `計劃檔內容唔在對話紀錄裡面。\n\n\`${ref.path}\``;
+  return { plan: null, missing: { title, markdown, key: `ref:${ref.base}` } };
+}
+
 function planRecordFromFile(content, path) {
   const heading = String(content || "").match(/^#{1,3}\s+(.+)$/m);
   const title = heading
@@ -16,6 +55,7 @@ function planRecordFromFile(content, path) {
     : (planFileTitle(path) || planFileTitle(content) || "計劃");
   return {
     title,
+    path: String(path || ""),
     markdown: content,
     key: `${title}\n${content.length}\n${content.slice(0, 80)}\n${planTextHash(content)}`,
   };
@@ -477,6 +517,8 @@ export function planForPanel(thread) {
   const plans = plansIn(thread.messages || []);
   const focus = plans.find((item) => item.key === view.focus);
   if (focus) return focus;
+  const missing = thread.refPlans instanceof Map ? thread.refPlans.get(view.focus) : null;
+  if (missing) return missing;
   if (thread.loaded) return null;
   const cached = thread.planCache;
   if (!cached || cached.key !== view.focus) return null;

@@ -575,3 +575,57 @@ test("R-SO-09 Rust: set_suborb_mode is registered, allowed, and save_settings ke
   assert.match(perms, /identifier = "allow-set-suborb-mode"[\s\S]*?commands\.allow = \["set_suborb_mode"\]/);
   assert.match(caps, /"allow-set-suborb-mode"/);
 });
+
+import { planRefFor, planRefBase, resolvePlanRef } from "./plan.js";
+
+const WIN_PLAN = String.raw`C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-20_282713-compile-spec-reconcile.md`;
+
+test("R-PL-10 any bot message that names a plan .md gets a chip target (text, patch ref, write_file)", () => {
+  assert.equal(planRefBase(WIN_PLAN), "2026-11-20_282713-compile-spec-reconcile");
+  assert.equal(planRefFor({ role: "bot", text: `先停。 ${WIN_PLAN} 再決定` }).base, "2026-11-20_282713-compile-spec-reconcile");
+  assert.equal(planRefFor({ role: "bot", text: "計劃已改", plan_refs: [".hermes/plans/x.md"] }).path, ".hermes/plans/x.md");
+  assert.equal(planRefFor({ role: "bot", text: "", plan: { path: "/w/.hermes/plans/y.md", content: "# Y" } }).base, "y");
+  assert.equal(planRefFor({ role: "bot", text: "notes.md only" }), null);
+  assert.equal(planRefFor({ role: "bot", text: WIN_PLAN, live: true }), null);
+  assert.equal(planRefFor({ role: "user", text: WIN_PLAN }), null);
+});
+
+test("R-PL-10 the chip opens the newest write_file content of that path, else a notice", () => {
+  const msgs = [
+    { role: "user", text: "/plan" },
+    { role: "bot", text: "寫好", plan: { path: WIN_PLAN, content: "# 舊\n\nold body" } },
+    { role: "user", text: "改" },
+    { role: "bot", text: "再寫", plan: { path: WIN_PLAN.replace(/\\/g, "/"), content: "# 新\n\nnew body" } },
+    { role: "user", text: "patch it" },
+    { role: "bot", text: `已改 ${WIN_PLAN}`, plan_refs: [".hermes/plans/2026-11-20_282713-compile-spec-reconcile.md"] },
+  ];
+  const found = resolvePlanRef(msgs, planRefFor(msgs[5]));
+  assert.equal(found.missing, null);
+  assert.equal(found.plan.markdown, "# 新\n\nnew body");
+  const none = resolvePlanRef([{ role: "bot", text: `看 ${WIN_PLAN}` }], planRefFor({ role: "bot", text: `看 ${WIN_PLAN}` }));
+  assert.equal(none.plan, null);
+  assert.match(none.missing.markdown, /計劃檔內容唔在對話紀錄裡面。/);
+  assert.match(none.missing.markdown, /\.hermes\/plans\/2026-11-20_282713-compile-spec-reconcile\.md/);
+});
+
+test("R-PL-10 a notice plan can be focused and shown; patch/text refs never auto-open a plan", () => {
+  const thread = { loaded: true, sessionId: "s", messages: [
+    { role: "user", text: "go" },
+    { role: "bot", text: `已改 ${WIN_PLAN}`, plan_refs: [".hermes/plans/a.md"] },
+  ] };
+  notePlans(thread); // baseline
+  thread.messages.push({ role: "user", text: "again" }, { role: "bot", text: `又改 ${WIN_PLAN}` });
+  notePlans(thread);
+  assert.equal(planForPanel(thread), null, "no auto-open without write_file");
+  const found = resolvePlanRef(thread.messages, planRefFor(thread.messages[3]));
+  thread.refPlans = new Map([[found.missing.key, found.missing]]);
+  focusPlan(thread, found.missing.key);
+  assert.equal(planForPanel(thread).key, found.missing.key);
+  assert.match(planForPanel(thread).markdown, /計劃檔內容唔在/);
+});
+
+test("R-PL-10 wiring: both chip painters use planRefFor and openPlanRef", () => {
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  assert.equal((main.match(/openPlanRef\(id, /g) || []).length, 3);
+  assert.match(main, /presented\.plan_refs = m\.plan_refs\.map\(String\)/);
+});

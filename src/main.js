@@ -10,7 +10,7 @@ import { installLinkGuard } from "./linkguard.js";
 import { attachPayload, attachRefusal, attachSendBlock, base64FromDataUrl, buildContextText, chipText, clipboardImageFiles, dragHasFiles, droppedFiles, makeAttachment, pastedImageName } from "./attach.js";
 import { formatToastClock, orbMotion, reduceActivity, statusAfterWatchdog, TOAST_MS } from "./activity.js";
 import { logQuietRefreshFailure, openHistory, schedulePlanFileCatchUp } from "./history-open.js";
-import { composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, dismissPlan, focusPlan, nextComposeMode, normalizeComposeMode, notePlans, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, plansIn, rememberPlan } from "./plan.js";
+import { planRefFor, resolvePlanRef, composeBubble, composeModeLabel, composeModeWire, composeSkipsBusyQueue, effectiveComposeMode, dismissPlan, focusPlan, nextComposeMode, normalizeComposeMode, notePlans, offeredComposeModes, panelComposeModes, planBodyLead, savedSuborbMode, suborbModeWire, planChipText, planDemoMarkdown, planFileCaughtUp, planForPanel, plansIn, rememberPlan } from "./plan.js";
 import {
   SUBORB_FADE_MS,
   emptySuborbModel,
@@ -5203,9 +5203,7 @@ function primeCachedChat(shell) {
 
 function ensurePlanChip(node, message, id) {
   if (!id || message.role !== "bot" || message.live || node.querySelector(".plan-chip")) return;
-  const messages = threadFor(id).messages;
-  const plan = plansIn(messages).find((item) => messages[item.index] === message);
-  if (!plan) return;
+  if (!planRefFor(message)) return;
   const chip = document.createElement("button");
   chip.type = "button";
   chip.className = "plan-chip";
@@ -5213,9 +5211,23 @@ function ensurePlanChip(node, message, id) {
   chip.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    openPlanWindow(id, plan.key);
+    openPlanRef(id, message);
   });
   node.appendChild(chip);
+}
+
+/** R-PL-10: 「睇計劃」 opens the newest known content of the referenced plan file, or a notice. */
+function openPlanRef(id, message) {
+  const thread = threadFor(id);
+  const found = resolvePlanRef(thread.messages, planRefFor(message));
+  if (!found) return;
+  if (found.plan) {
+    openPlanWindow(id, found.plan.key);
+    return;
+  }
+  if (!(thread.refPlans instanceof Map)) thread.refPlans = new Map();
+  thread.refPlans.set(found.missing.key, found.missing);
+  openPlanWindow(id, found.missing.key);
 }
 
 function syncChatInPlace(chat, thread, id, resting = false) {
@@ -5922,9 +5934,7 @@ function bubbleEl(m, id) {
   if (m.live) bubble.dataset.live = "1";
   if (m.side) bubble.dataset.side = "1";
   if (id && m.role === "bot" && !m.live) {
-    const messages = threadFor(id).messages;
-    const plan = plansIn(messages).find((item) => messages[item.index] === m);
-    if (plan) {
+    if (planRefFor(m)) {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "plan-chip";
@@ -5932,7 +5942,7 @@ function bubbleEl(m, id) {
       chip.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        openPlanWindow(id, plan.key);
+        openPlanRef(id, m);
       });
       bubble.appendChild(chip);
     }
@@ -7420,6 +7430,7 @@ function presentMessage(m) {
   const presented = { role: m.role, text: m.text };
   const file = m.plan && String(m.plan.content || "").trim();
   if (file) presented.plan = { path: String(m.plan.path || ""), content: String(m.plan.content) };
+  if (Array.isArray(m.plan_refs) && m.plan_refs.length) presented.plan_refs = m.plan_refs.map(String);
   return presented;
 }
 
