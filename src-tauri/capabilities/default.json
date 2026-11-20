@@ -60,6 +60,7 @@
     "allow-arm-pin-close-guard",
     "allow-quit-app",
     "allow-restart-app",
+    "allow-read-plan-file",
     "allow-read-soul",
     "allow-write-soul",
     "allow-save-bot-meta",

@@ -38,14 +38,98 @@ export function planRefFor(message) {
   return null;
 }
 
-/** Newest write_file content known for this ref, or a notice record when the history has none. */
-export function resolvePlanRef(messages, ref) {
+/**
+ * R-PL-10: may this path be read from the server? Only an absolute
+ * `.hermes/plans/<one file>.md`, with separators normalised and no `..`, UNC or file: form.
+ */
+export function isReadablePlanPath(path) {
+  const raw = String(path || "").trim();
+  if (!raw || /[\u0000-\u001f]/.test(raw)) return false;
+  const norm = raw.replace(/\\/g, "/");
+  if (/^file:/i.test(norm) || norm.startsWith("//")) return false;
+  if (!(/^[A-Za-z]:\//.test(norm) || norm.startsWith("/"))) return false;
+  if (norm.split("/").includes("..")) return false;
+  const at = norm.indexOf("/.hermes/plans/");
+  if (at < 0) return false;
+  const file = norm.slice(at + "/.hermes/plans/".length);
+  return file.length > 3 && !file.includes("/") && file.toLowerCase().endsWith(".md");
+}
+
+/** The newest readable full path any tool call used for this plan file. */
+export function latestPlanPath(messages, base) {
+  const list = messages || [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const message = list[index];
+    if (!message || message.role !== "bot") continue;
+    const paths = [
+      ...(Array.isArray(message.plan_patches) ? message.plan_patches.map((item) => item.path) : []),
+      ...(Array.isArray(message.plan_refs) ? message.plan_refs : []),
+      message.plan?.path,
+    ].filter(Boolean).reverse();
+    for (const path of paths) {
+      if (planRefBase(path) === base && isReadablePlanPath(path)) return String(path);
+    }
+  }
+  return "";
+}
+
+/** One OLD/NEW replacement, like the server's patch tool: the first match. */
+export function applyPlanPatch(text, patch) {
+  const old = String(patch?.old ?? "");
+  if (!old) return { text, ok: false };
+  const at = String(text).indexOf(old);
+  if (at < 0) return { text, ok: false };
+  return { text: text.slice(0, at) + String(patch?.new ?? "") + text.slice(at + old.length), ok: true };
+}
+
+/**
+ * Rebuild a plan from history: the last write_file of this file, then every later
+ * patch on it in order. `failed` counts patches that did not apply.
+ */
+export function reconstructPlan(messages, base) {
+  let text = null;
+  let path = "";
+  let applied = 0;
+  let failed = 0;
+  for (const message of messages || []) {
+    if (!message || message.role !== "bot") continue;
+    const file = messagePlanFile(message);
+    if (file && planRefBase(file.path) === base) {
+      text = file.content;
+      path = file.path;
+      applied = 0;
+      failed = 0;
+    }
+    for (const patch of Array.isArray(message.plan_patches) ? message.plan_patches : []) {
+      if (planRefBase(patch.path) !== base || text === null) continue;
+      const done = applyPlanPatch(text, patch);
+      text = done.text;
+      if (done.ok) applied += 1;
+      else failed += 1;
+    }
+  }
+  return { text, path, applied, failed };
+}
+
+const PLAN_NOTICE = "計劃檔內容唔在對話紀錄裡面。";
+
+/** The record to show now from history alone (rebuilt, or the notice). */
+export function historyPlanRecord(messages, ref) {
   if (!ref) return null;
-  const known = plansIn(messages).filter((item) => planRefBase(item.path) === ref.base);
-  if (known.length) return { plan: known[known.length - 1], missing: null };
+  const built = reconstructPlan(messages, ref.base);
+  if (built.text !== null) {
+    const record = planRecordFromFile(built.text, built.path);
+    const label = built.applied || built.failed ? "來源：對話紀錄重組" : "來源：對話紀錄";
+    return { ...record, key: `ref:${ref.base}`, note: built.failed ? `${label} · 部分修改未套用` : label };
+  }
   const title = planFileTitle(ref.path) || "計劃";
-  const markdown = `計劃檔內容唔在對話紀錄裡面。\n\n\`${ref.path}\``;
-  return { plan: null, missing: { title, markdown, key: `ref:${ref.base}` } };
+  return { title, path: ref.path, markdown: `${PLAN_NOTICE}\n\n\`${ref.path}\``, key: `ref:${ref.base}`, note: "" };
+}
+
+/** The live file text, shown with its label. */
+export function livePlanRecord(history, text) {
+  const record = planRecordFromFile(text, history.path);
+  return { ...record, key: history.key, note: "來源：即時讀檔" };
 }
 
 function planRecordFromFile(content, path) {

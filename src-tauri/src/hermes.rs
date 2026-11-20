@@ -102,6 +102,18 @@ pub struct UiMessage {
     /// R-PL-10: `.hermes/plans/*.md` paths this turn's tool calls touched (patch, read, write...).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plan_refs: Vec<String>,
+    /// R-PL-10: successful `patch` calls on a plan file (OLD/NEW), in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan_patches: Vec<PlanPatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlanPatch {
+    #[serde(skip)]
+    pub id: String,
+    pub path: String,
+    pub old: String,
+    pub new: String,
 }
 
 impl UiMessage {
@@ -113,6 +125,7 @@ impl UiMessage {
             tool_call_id,
             plan: None,
             plan_refs: Vec::new(),
+            plan_patches: Vec::new(),
         }
     }
 }
@@ -1296,10 +1309,41 @@ fn plan_ref_in(text: &str) -> Option<String> {
     }
 }
 
+/// R-PL-10: may the overlay ask the server to read this path? Only an absolute
+/// `.hermes/plans/<one file>.md`, separators normalised, no `..`, UNC, `file:` or control chars.
+pub fn is_readable_plan_path(path: &str) -> bool {
+    let raw = path.trim();
+    if raw.is_empty() || raw.chars().any(|ch| ch.is_control()) {
+        return false;
+    }
+    let norm = raw.replace('\\', "/");
+    if norm.to_ascii_lowercase().starts_with("file:") || norm.starts_with("//") {
+        return false;
+    }
+    let bytes = norm.as_bytes();
+    let drive = bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/';
+    if !(drive || norm.starts_with('/')) {
+        return false;
+    }
+    if norm.split('/').any(|part| part == "..") {
+        return false;
+    }
+    let Some(at) = norm.find("/.hermes/plans/") else {
+        return false;
+    };
+    let file = &norm[at + "/.hermes/plans/".len()..];
+    file.len() > 3 && !file.contains('/') && file.to_ascii_lowercase().ends_with(".md")
+}
+
 fn collect_plan_refs(value: &Value, out: &mut Vec<String>) {
     match value {
         Value::String(text) => {
-            if let Some(found) = plan_ref_in(text) {
+            let whole = text.trim();
+            if is_readable_plan_path(whole) {
+                let whole = whole.to_string();
+                out.retain(|have| *have != whole);
+                out.push(whole);
+            } else if let Some(found) = plan_ref_in(text) {
                 if !out.contains(&found) {
                     out.push(found);
                 }
@@ -1311,15 +1355,60 @@ fn collect_plan_refs(value: &Value, out: &mut Vec<String>) {
     }
 }
 
-fn attach_plan_refs(messages: &mut [UiMessage], last_bot: Option<usize>, refs: &mut Vec<String>) {
-    if let Some(index) = last_bot {
-        for found in refs.drain(..) {
-            if !messages[index].plan_refs.contains(&found) {
-                messages[index].plan_refs.push(found);
-            }
+fn attach_plan_refs(
+    messages: &mut [UiMessage],
+    last_bot: Option<usize>,
+    refs: &mut Vec<String>,
+    patches: &mut Vec<PlanPatch>,
+) {
+    // Without a bot reply yet, keep them for the next one: a patch must never be lost.
+    let Some(index) = last_bot else { return };
+    for found in refs.drain(..) {
+        if !messages[index].plan_refs.contains(&found) {
+            messages[index].plan_refs.push(found);
         }
-    } else {
-        refs.clear();
+    }
+    messages[index].plan_patches.append(patches);
+}
+
+fn plan_patch_from_call(id: &str, name: &str, args: &Value) -> Option<PlanPatch> {
+    if name != "patch" {
+        return None;
+    }
+    let path = tool_arg_str(args, &["path", "file_path"]);
+    if !is_hermes_plan_path(&path) {
+        return None;
+    }
+    let old = tool_arg_str(args, &["old_string", "old"]);
+    if old.is_empty() {
+        return None;
+    }
+    let new = ["new_string", "new"]
+        .iter()
+        .find_map(|key| args.get(*key).and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string();
+    Some(PlanPatch { id: id.to_string(), path, old, new })
+}
+
+/// A patch whose result says it failed never changed the file.
+fn tool_result_failed(text: &str) -> bool {
+    match serde_json::from_str::<Value>(text) {
+        Ok(value) => {
+            value.get("success").and_then(Value::as_bool) == Some(false)
+                || value.get("error").map(|err| !err.is_null() && err.as_str() != Some("")).unwrap_or(false)
+        }
+        Err(_) => false,
+    }
+}
+
+fn drop_patch(messages: &mut [UiMessage], pending: &mut Vec<PlanPatch>, id: &str) {
+    if id.is_empty() {
+        return;
+    }
+    pending.retain(|patch| patch.id != id);
+    for message in messages.iter_mut() {
+        message.plan_patches.retain(|patch| patch.id != id);
     }
 }
 
@@ -1547,6 +1636,7 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
     let mut last_bot: Option<usize> = None;
     let mut turn_plan: Option<PlanFile> = None;
     let mut turn_refs: Vec<String> = Vec::new();
+    let mut turn_patches: Vec<PlanPatch> = Vec::new();
     for item in items {
         let role = item.get("role").and_then(Value::as_str).unwrap_or("");
         let tool_name = item
@@ -1588,7 +1678,7 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
         match role {
             "user" if !text.trim().is_empty() => {
                 attach_plan(&mut out, last_bot, turn_plan.take());
-                attach_plan_refs(&mut out, last_bot, &mut turn_refs);
+                attach_plan_refs(&mut out, last_bot, &mut turn_refs, &mut turn_patches);
                 last_bot = None;
                 out.push(UiMessage::new("user", text, String::new(), String::new()));
             }
@@ -1604,11 +1694,23 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
                             push_wait_notice(&mut out, &item, &id, kind, &args, &settled);
                         }
                         collect_plan_refs(&args, &mut turn_refs);
+                        if let Some(patch) = plan_patch_from_call(&id, &name, &args) {
+                            turn_patches.push(patch);
+                        }
                         if let Some(plan) = plan_file_from_write_args(&name, &args) {
                             turn_plan = Some(plan);
                         }
                     }
                 }
+            }
+            "tool" if !text.trim().is_empty() && tool_result_failed(&text) && !tool_call_id.is_empty() => {
+                drop_patch(&mut out, &mut turn_patches, &tool_call_id);
+                out.push(UiMessage::new(
+                    "tool",
+                    text,
+                    if tool_name.is_empty() { "tool".into() } else { tool_name },
+                    tool_call_id,
+                ));
             }
             "tool" if !text.trim().is_empty() => out.push(UiMessage::new(
                 "tool",
@@ -1624,7 +1726,7 @@ pub fn normalize_messages(value: &Value) -> Vec<UiMessage> {
         }
     }
     attach_plan(&mut out, last_bot, turn_plan.take());
-    attach_plan_refs(&mut out, last_bot, &mut turn_refs);
+    attach_plan_refs(&mut out, last_bot, &mut turn_refs, &mut turn_patches);
     let order = value
         .pointer("/pagination/order")
         .and_then(Value::as_str)
@@ -4777,12 +4879,14 @@ mod tests {
         let old = vec![UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new(),
             plan: None,
             plan_refs: Vec::new(),
+            plan_patches: Vec::new(),
         }];
         let (kept, emitted, reset) = apply_watch_fetch(
             &old,
             &[UiMessage { role: "bot".into(), text: "b".into(), tool_name: String::new(), tool_call_id: String::new(),
             plan: None,
             plan_refs: Vec::new(),
+            plan_patches: Vec::new(),
         }],
             false,
         );
@@ -4797,10 +4901,12 @@ mod tests {
             UiMessage { role: "user".into(), text: "q".into(), tool_name: String::new(), tool_call_id: String::new(),
             plan: None,
             plan_refs: Vec::new(),
+            plan_patches: Vec::new(),
         },
             UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new(),
             plan: None,
             plan_refs: Vec::new(),
+            plan_patches: Vec::new(),
         },
         ];
         let longer = vec![
@@ -4808,10 +4914,12 @@ mod tests {
             UiMessage { role: "bot".into(), text: "a".into(), tool_name: String::new(), tool_call_id: String::new(),
             plan: None,
             plan_refs: Vec::new(),
+            plan_patches: Vec::new(),
         },
             UiMessage { role: "bot".into(), text: "c".into(), tool_name: String::new(), tool_call_id: String::new(),
             plan: None,
             plan_refs: Vec::new(),
+            plan_patches: Vec::new(),
         },
         ];
         let (_, suffix, reset) = apply_watch_fetch(&seen, &longer, true);
@@ -4821,6 +4929,7 @@ mod tests {
         let diverged = vec![UiMessage { role: "bot".into(), text: "other".into(), tool_name: String::new(), tool_call_id: String::new(),
             plan: None,
             plan_refs: Vec::new(),
+            plan_patches: Vec::new(),
         }];
         let (_, replaced, reset) = apply_watch_fetch(&seen, &diverged, true);
         assert!(reset);
@@ -6245,9 +6354,52 @@ mod tests {
         let msgs = normalize_messages(&value);
         let bot = msgs.iter().find(|m| m.role == "bot").unwrap();
         assert!(bot.plan.is_none(), "a patch is not a write_file plan");
-        assert_eq!(bot.plan_refs, vec![".hermes/plans/2026-11-20_282713-compile-spec-reconcile.md".to_string()]);
+        assert_eq!(bot.plan_refs, vec![path.to_string()], "the full server path is kept for the live read");
         assert_eq!(plan_ref_in("see `.hermes\\plans\\x.md` now").as_deref(), Some(".hermes/plans/x.md"));
         assert!(plan_ref_in("notes/x.md").is_none());
+    }
+
+    #[test]
+    fn plan_path_validation_for_the_live_read() {
+        let real = r"C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\2026-11-20_202713-compile-spec-reconcile.md";
+        assert!(is_readable_plan_path(real));
+        assert!(is_readable_plan_path("/home/work/.hermes/plans/demo-plan.md"));
+        for bad in [
+            r"C:\Users\freez\.hermes\plans\..\config.yaml",
+            r"C:\Users\freez\.hermes\plans\x.txt",
+            r"C:\Users\freez\notes\x.md",
+            r"C:\Users\freez\.hermes\plans\sub\x.md",
+            r"\\server\share\.hermes\plans\x.md",
+            "file:///C:/a/.hermes/plans/x.md",
+            ".hermes/plans/x.md",
+            "",
+            "/a/.hermes/plans/.md",
+        ] {
+            assert!(!is_readable_plan_path(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn patches_on_a_plan_are_kept_in_order_and_failed_ones_dropped() {
+        let path = r"C:\Users\freez\Desktop\MetaTrader Workbench\.hermes\plans\p.md";
+        let value = serde_json::json!({"messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "w", "function": {"name": "write_file", "arguments": {"path": path, "content": "# P\nA B"}}},
+                {"id": "p1", "function": {"name": "patch", "arguments": {"path": path, "old_string": "A", "new_string": "X"}}},
+                {"id": "p2", "function": {"name": "patch", "arguments": {"path": path, "old_string": "B", "new_string": "Y"}}},
+                {"id": "p3", "function": {"name": "patch", "arguments": {"path": "/tmp/other.md", "old_string": "q", "new_string": "r"}}}
+            ]},
+            {"role": "tool", "content": "{\"success\": true}", "tool_name": "patch", "tool_call_id": "p1"},
+            {"role": "tool", "content": "{\"success\": false, \"error\": \"no match\"}", "tool_name": "patch", "tool_call_id": "p2"},
+            {"role": "assistant", "content": "done"}
+        ]});
+        let msgs = normalize_messages(&value);
+        let bot = msgs.iter().find(|m| m.role == "bot").unwrap();
+        assert_eq!(bot.plan_patches.len(), 1, "failed patch dropped, non-plan patch ignored");
+        assert_eq!(bot.plan_patches[0].old, "A");
+        assert_eq!(bot.plan_patches[0].new, "X");
+        assert_eq!(bot.plan_refs.first().map(String::as_str), Some(path));
     }
 
     #[test]
