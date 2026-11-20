@@ -198,6 +198,8 @@ import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkd
 import { DEMO_BANNER, SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
 import { chromeOrbText, DEMO_BANNER_EN, DEMO_BOTS_EN, DEMO_OLD_SESSION_EN, demoCommandEn, demoCronEn, demoKanbanEn, demoPlanEn, demoReplyEn, PREVIEW_BANNER, PREVIEW_BANNER_EN } from "./demo.js";
 import { applyTextSize, createTranslator, storedLanguage, storedTextSize, textScale, translate } from "./look.js";
+import { idsOfGoneBots } from "./settings-save.js";
+import { settingsNeedReconnect } from "./settings-save.js";
 import {
   clampPanelSize,
   dragCaptureRects,
@@ -4277,6 +4279,15 @@ function bindPanelDrag(panel) {
   });
 }
 
+/** Remove one bot or sub-orb shell with the plan window that was moved out to its plan-hit-host. */
+function dropBotShell(shell) {
+  shell._dropped = 1;
+  document.querySelectorAll(".plan-hit-host").forEach((host) => {
+    if (host._planShell === shell) host.remove();
+  });
+  shell.remove();
+}
+
 function removeBotPanels() {
   document.querySelectorAll(".morph[data-kind='bot'], .morph[data-kind='suborb']").forEach((shell) => {
     // A plan rehearsal parked off-screen must not put a dropped shell back (duplicate orb).
@@ -4317,6 +4328,7 @@ const state = {
   panelSizes: {},
   /** R-PN-10: open-panel saves start only after the restart restore ran. */
   openPanelsReady: false,
+  openPanelsHold: false,
   restoreBoxes: {},
   openPanelsSavedKey: "",
   /** R-OB-08 live dragged orb spots (id -> {x,y}, or null for a pending reset). */
@@ -9099,7 +9111,8 @@ function useMock(reason, bannerAction = "", sticky = "") {
   renderBots();
 }
 
-function useHermes(settings) {
+function useHermes(settings, opts = {}) {
+  const keepPanels = !!opts.keepPanels;
   cancelReconnect();
   state.catalog = null;
   state.catalogProfile = "";
@@ -9110,16 +9123,37 @@ function useHermes(settings) {
   state.showToolDetail = !!settings?.show_tool_detail;
   state.suborbPins = settings?.suborb_pins || {};
   state.suborbModesSaved = settings?.suborb_modes || {};
-  state.suborbModels = new Map();
+  if (!keepPanels) state.suborbModels = new Map();
   state.suborbExtra = hydrateCreatedSuborbs(settings?.suborb_created);
   state.composeCatalogs.clear();
-  state.bots = botsFromSettings(settings);
-  state.threads = new Map();
-  state.busy.clear();
-  removeBotPanels();
-  state.activeId = null;
-  state.slashPanelId = "";
-  state.openIds = [];
+  const nextBots = botsFromSettings(settings);
+  if (keepPanels) {
+    // R-PN-11: a reconnect keeps open panels, threads, drafts and plans of bots that remain.
+    state.bots = nextBots.map((bot) => {
+      const old = state.bots.find((item) => item.id === bot.id);
+      return old ? { ...old, name: bot.name, short: bot.short, color: bot.color, detail: bot.detail, composeMode: bot.composeMode } : bot;
+    });
+    const ids = state.bots.map((bot) => bot.id);
+    for (const key of idsOfGoneBots([...state.threads.keys()], ids)) state.threads.delete(key);
+    for (const key of idsOfGoneBots([...state.busy], ids)) state.busy.delete(key);
+    const goneOpen = new Set(idsOfGoneBots(state.openIds, ids));
+    document.querySelectorAll(".morph[data-kind='bot'], .morph[data-kind='suborb']").forEach((shell) => {
+      const id = shell.dataset.botId || "";
+      if (idsOfGoneBots([id], ids).length === 0) return;
+      dropBotShell(shell);
+    });
+    state.openIds = state.openIds.filter((id) => !goneOpen.has(id));
+    if (state.activeId && !state.openIds.includes(state.activeId) && idsOfGoneBots([state.activeId], ids).length) state.activeId = null;
+    if (state.slashPanelId && idsOfGoneBots([state.slashPanelId], ids).length) state.slashPanelId = "";
+  } else {
+    state.bots = nextBots;
+    state.threads = new Map();
+    state.busy.clear();
+    removeBotPanels();
+    state.activeId = null;
+    state.slashPanelId = "";
+    state.openIds = [];
+  }
   if (settings.keyring_error) {
     setBanner(`鑰匙圈：${settings.keyring_error}`, "error", "keyring");
   } else if (state.bots.length === 0) {
@@ -9135,9 +9169,9 @@ function useHermes(settings) {
   armRosterSync();
 }
 
-async function connectHermes(settings) {
+async function connectHermes(settings, opts = {}) {
   if (!inTauri() || settings?.mode !== "hermes") {
-    useHermes(settings);
+    useHermes(settings, opts);
     return;
   }
   const before = settings.bots || [];
@@ -9145,11 +9179,11 @@ async function connectHermes(settings) {
     const { invoke } = await import("@tauri-apps/api/core");
     const synced = await invoke("sync_profiles");
     const confirm = noteRosterPresence(synced);
-    useHermes(synced);
+    useHermes(synced, opts);
     if (confirm) armRosterSync(ROSTER_CONFIRM_MS);
     announceNewKeys(before, synced);
   } catch (err) {
-    useHermes(settings);
+    useHermes(settings, opts);
     if (gatewayDown(String(err))) noteGatewayDown();
     else setBanner(String(err), "error");
   }
@@ -9535,6 +9569,17 @@ function closeSettings() {
   renderSettingsOrb();
 }
 
+/** R-PN-11: look and behaviour settings take effect with no reconnect and no panel teardown. */
+function applyLiveSettings(settings) {
+  adoptKanbanPick(settings);
+  state.showBotNames = !!settings?.show_bot_names;
+  applyToolDetail(settings?.show_tool_detail);
+  state.suborbPins = settings?.suborb_pins || state.suborbPins;
+  applySavedLook(settings);
+  paintOrbNames();
+  scheduleOpenPanelsSave();
+}
+
 async function saveSettings(event) {
   event.preventDefault();
   if (!inTauri()) {
@@ -9542,6 +9587,8 @@ async function saveSettings(event) {
     return;
   }
   const bots = readRows().filter((bot) => bot.profile || bot.display_name);
+  const prevSettings = state.settings;
+  const tokenTyped = !!$("#dashboard-token").value;
   const { invoke } = await import("@tauri-apps/api/core");
   try {
     const settings = await invoke("save_settings", {
@@ -9558,12 +9605,23 @@ async function saveSettings(event) {
         bots,
       },
     });
+    const reconnect = settingsNeedReconnect(prevSettings, settings, tokenTyped);
     applyInteraction(settings.interaction);
     state.settings = settings;
     $("#settings-status").textContent = "已儲存。";
     $("#dashboard-token").value = "";
     if (settings.mode === "mock") useMock(DEMO_BANNER, "", "demo");
-    else await connectHermes(settings);
+    else if (reconnect && state.mode === "hermes") {
+      // R-PN-11: keep the panels; never let the save write an empty open_panels.
+      state.openPanelsHold = true;
+      try {
+        await connectHermes(settings, { keepPanels: true });
+      } finally {
+        state.openPanelsHold = false;
+        scheduleOpenPanelsSave();
+      }
+    } else if (reconnect) await connectHermes(settings);
+    else applyLiveSettings(settings);
     reconcileKeyPrompt(settings.bots || []);
     closeSettings();
   } catch (err) {
@@ -17105,7 +17163,7 @@ async function revealWhenCovered() {
 
 // R-PN-10: chat panels that were open reopen after an overlay restart.
 function scheduleOpenPanelsSave() {
-  if (!state.openPanelsReady) return;
+  if (!state.openPanelsReady || state.openPanelsHold) return;
   window.clearTimeout(scheduleOpenPanelsSave.timer);
   scheduleOpenPanelsSave.timer = window.setTimeout(() => { void saveOpenPanels(); }, 400);
 }
@@ -17145,7 +17203,7 @@ function takeRestoredBox(shell, width, height) {
 
 /** Writes config.json open_panels (only that key) when the open list changed. */
 async function saveOpenPanels() {
-  if (!state.openPanelsReady || state.mode !== "hermes" || !inTauri()) return;
+  if (!state.openPanelsReady || state.openPanelsHold || state.mode !== "hermes" || !inTauri()) return;
   const panels = currentOpenPanels();
   const key = openPanelsKey(panels);
   if (key === state.openPanelsSavedKey) return;
