@@ -198,6 +198,7 @@ import { createLivePainter, decorateCodeBlocks, isSafeLink, renderAssistantMarkd
 import { DEMO_BANNER, SETUP_BANNER, setupHintVisible, shouldAutoOpenSettings } from "./setup.js";
 import { chromeOrbText, DEMO_BANNER_EN, DEMO_BOTS_EN, DEMO_OLD_SESSION_EN, demoCommandEn, demoCronEn, demoKanbanEn, demoPlanEn, demoReplyEn, PREVIEW_BANNER, PREVIEW_BANNER_EN } from "./demo.js";
 import { applyTextSize, createTranslator, storedLanguage, storedTextSize, textScale, translate } from "./look.js";
+import { restartConfirmText } from "./restart.js";
 import { idsOfGoneBots } from "./settings-save.js";
 import { settingsNeedReconnect } from "./settings-save.js";
 import {
@@ -13123,6 +13124,27 @@ function noteWindowFocus() {
   syncLatch();
 }
 
+/** R-SY-13: tray 「重啟」: flush open_panels, confirm if drafts would be lost, restart the process. */
+async function restartOverlay() {
+  if (!inTauri() || restartOverlay.busy) return;
+  const rows = [...document.querySelectorAll(".bot-panel")].map((panel) => ({
+    text: role(panel, "input")?.value || "",
+    attachments: attachmentsOf(panel.dataset.botId || "").length,
+  }));
+  const ask = restartConfirmText(rows);
+  if (ask && !window.confirm(ask)) return;
+  restartOverlay.busy = true;
+  try {
+    window.clearTimeout(scheduleOpenPanelsSave.timer);
+    await saveOpenPanels();
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("restart_app");
+  } catch (err) {
+    restartOverlay.busy = false;
+    setBanner(String(err), "error");
+  }
+}
+
 function openSettingsFromShortcut() {
   state.dropdownOpen = false;
   openSettings();
@@ -17434,6 +17456,7 @@ async function boot() {
     await listen("hermes", (event) => handleHermes(event.payload));
     await listen("overlay-ui", (event) => {
       if (event.payload?.type === "open-settings") openSettingsFromShortcut();
+      if (event.payload?.type === "restart") void restartOverlay();
     });
     const settings = await invoke("get_settings");
     state.settings = settings;
