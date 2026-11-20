@@ -14072,6 +14072,12 @@ function renderSuborbs() {
       }
     };
     followers.forEach((item, index) => {
+      // R-PN-11: no parent orb yet (a rebuild in flight) means no fan slot. Such a
+      // disc is never placed at the (8,8) fallback; an existing one stays as it is.
+      if (!anchor) {
+        if (shellFor(item.id)) keep.add(item.id);
+        return;
+      }
       placeRow(item.row, item.id, homeOf(slots[index]), look);
     });
     // Dropped sub-orbs stay visible where they landed, including while the
@@ -14087,6 +14093,9 @@ function renderSuborbs() {
     const moreId = `suborb-more:${bot.id}`;
     if (view.overflow.length || (look === "collapsed" && followers.length)) {
       keep.add(moreId);
+      if (!anchor) {
+        // Nothing to anchor the 「+N」 slot to; leave an existing one untouched.
+      } else {
       const badgeMode = look === "collapsed";
       const shell = ensureSuborbMore(bot, view.overflow.length, badgeMode ? followers.length + view.overflow.length : 0);
       const slot = badgeMode ? badge : slots[followers.length];
@@ -14098,6 +14107,7 @@ function renderSuborbs() {
       const from = suborbDiscCentre(shell);
       placeSuborbShell(shell);
       glideSuborb(shell, from);
+      }
     }
     paintSuborbTabs(bot, view);
   }
