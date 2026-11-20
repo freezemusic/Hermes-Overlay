@@ -1816,6 +1816,9 @@ function setSeamPhase(plan, phase, { dom = true } = {}) {
   if (!plan) return;
   if (phase) plan._seamPhase = phase;
   else delete plan._seamPhase;
+  // R-PL-09: the width handle works once the plan has settled ("grown").
+  if (phase === "grown") plan.dataset.resizeReady = "1";
+  else delete plan.dataset.resizeReady;
   if (!dom) return;
   if (phase) plan.dataset.seam = phase;
   else delete plan.dataset.seam;
