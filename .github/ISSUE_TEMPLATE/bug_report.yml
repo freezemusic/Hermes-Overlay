@@ -13,15 +13,15 @@ body:
     attributes:
       label: Overlay 版本 / Overlay version
       description: 例如 0.3.0，或 `git rev-parse --short HEAD`／安裝檔檔名。
-      placeholder: "0.3.0 or b201293"
+      placeholder: "0.3.0 or d4c1951"
     validations:
       required: true
   - type: input
     id: hermes_version
     attributes:
       label: Hermes Agent 版本 / Hermes Agent version
-      description: 伺服器上 `hermes --version`（本專案以 v0.22.5 stable 實測）。
-      placeholder: "0.22.5"
+      description: 伺服器上 `hermes --version`。開發對照是 v0.22.5 stable。v0.23.4 只在隔離的 Linux 測試機上測過。
+      placeholder: "0.22.5 or 0.23.4"
     validations:
       required: true
   - type: input

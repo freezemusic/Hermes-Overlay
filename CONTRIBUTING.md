@@ -17,16 +17,18 @@
 
 - Node.js 20+（CI 用 22）
 - Rust stable（見 `rust-toolchain.toml`）
-- （可選）一台執行 `hermes serve` 的 Hermes Agent v0.22.5
+- （可選）一台執行 `hermes serve` 的 Hermes Agent。開發對照是 v0.22.5 stable（`bf0203a`）。v0.23.4 只在隔離的 Linux 測試機上用 tag `v0.3.0` 的實機測過
 
 ```bash
 npm ci
 npm run tauri dev          # 開發用 identifier：com.freezemusic.hermes-overlay.dev
-npm test                   # 前端單元測試（目前約 320 項）
-cargo test --manifest-path src-tauri/Cargo.toml   # Rust（約 182 passed、1 ignored）
+npm test                   # 前端單元測試
+cargo test --manifest-path src-tauri/Cargo.toml
 npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+tag `v0.3.0`（`d4c1951`）先前的結果：`npm test` 495 通過；`cargo test` 227 通過、1 略過。之後的提交要以你自己跑的結果為準。
 
 Linux 相依套件與平台注意事項見 README〈開發〉。沒有圖形介面時不要跑 `tauri dev`／`tauri build`，改用上面的 test／check。
 
