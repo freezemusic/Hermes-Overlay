@@ -227,6 +227,112 @@ export function suborbTether(parent, child, layer = null, screen = null, radii =
   return insetTetherEnds(a, b, radii || {});
 }
 
+/** Top-left used when a sub-orb had no fan slot and no drop (the old corner disc). */
+export const SUBORB_CORNER_FALLBACK_PX = 8;
+/**
+ * A resting sub-orb may keep `is-morphing` / `is-collapsing` / `opening=panel`
+ * after the clip if `animationend` never arrives. Longer than the open (480ms)
+ * and the close (~333ms); short enough that a stuck disc is put back on its slot.
+ */
+export const SUBORB_ANIM_FLAG_MS = 1200;
+
+/**
+ * True when this centre must not be stored or tethered (R-OB-08, R-PN-11).
+ * Off-screen, crossing the screen edge (centre within the disc radius of an
+ * edge), the origin, or the old (8,8) fallback. A drop clamped to the work
+ * area sits at least radius+4px in, so it is not rejected.
+ */
+export function suborbCentreRejected(point, { radius = 9.9, vw = 0, vh = 0, size = null } = {}) {
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return true;
+  const r = Math.max(0, Number(radius) || 0);
+  // `<= r` so a disc sitting on the corner (centre exactly one radius in) is
+  // unplaced. A clamped drop is radius+4px in, so it stays.
+  if (x <= r || y <= r) return true;
+  if (vw > 0 && x >= vw - r) return true;
+  if (vh > 0 && y >= vh - r) return true;
+  const disc = Number(size);
+  const half = Number.isFinite(disc) ? disc / 2 : r;
+  const fallbackX = SUBORB_CORNER_FALLBACK_PX + half;
+  const fallbackY = SUBORB_CORNER_FALLBACK_PX + half;
+  if (Math.hypot(x - fallbackX, y - fallbackY) <= 1) return true;
+  return false;
+}
+
+/**
+ * R-OB-08: a tether only goes to a sub-orb that is visibly resting in place.
+ * Mid-animation, fully faded, or parked on an unplaced centre gets no line.
+ * `unset` is the CSS default centre of a shell that was never placed
+ * (default `--ax`/`--ay` of 22px on a shell at the rail origin).
+ */
+export function suborbTetherWanted({
+  state = "orb",
+  opening = "",
+  morphing = false,
+  collapsing = false,
+  fan = "",
+  hidden = false,
+  opacity = 1,
+  centre = null,
+  radius = 9.9,
+  vw = 0,
+  vh = 0,
+  size = null,
+  unset = null,
+} = {}) {
+  if (state !== "orb") return false;
+  if (opening === "panel" || morphing || collapsing) return false;
+  if (fan === "collapsed" || fan === "tucked" || fan === "hidden") return false;
+  if (hidden) return false;
+  const fade = Number(opacity);
+  if (!Number.isFinite(fade) || fade <= 0.01) return false;
+  const disc = size == null ? radius * 2 : size;
+  if (suborbCentreRejected(centre, { radius, vw, vh, size: disc })) return false;
+  const ux = Number(unset?.x);
+  const uy = Number(unset?.y);
+  if (Number.isFinite(ux) && Number.isFinite(uy)) {
+    if (Math.hypot(Number(centre?.x) - ux, Number(centre?.y) - uy) <= 1) return false;
+  }
+  return true;
+}
+
+/**
+ * A sub-orb that should be a resting disc, but still carries an open/close
+ * flag past `limit`. An open panel (`state === "panel"` and not collapsing)
+ * is not resting; its seam may keep `is-morphing`.
+ */
+export function suborbStuckAnim({
+  state = "orb",
+  opening = "",
+  morphing = false,
+  collapsing = false,
+  since = 0,
+  now = 0,
+  limit = SUBORB_ANIM_FLAG_MS,
+} = {}) {
+  if (state === "panel" && !collapsing) return false;
+  const flagged = morphing === true || collapsing === true || opening === "panel";
+  if (!flagged) return false;
+  if (!(Number(since) > 0) || Number(now) - Number(since) < limit) return false;
+  return true;
+}
+
+/**
+ * Fan slot top-left (`homeX`/`homeY`) → disc centre, or null when that centre
+ * is the screen corner or any other unplaced spot.
+ */
+export function suborbPlaceCentre(slot, { size = 19.8, vw = 0, vh = 0 } = {}) {
+  const x = Number(slot?.x);
+  const y = Number(slot?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const disc = Number(size);
+  const s = Number.isFinite(disc) ? disc : 19.8;
+  const centre = { x: x + s / 2, y: y + s / 2 };
+  if (suborbCentreRejected(centre, { radius: s / 2, vw, vh, size: s })) return null;
+  return centre;
+}
+
 /** `orb_positions` from settings: only valid ids with whole, in-range coordinates. */
 export function normalizeOrbPositions(raw) {
   const out = {};
