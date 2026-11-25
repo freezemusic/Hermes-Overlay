@@ -318,6 +318,8 @@ impl HermesClient {
     // ---- sessions ------------------------------------------------------
 
     pub async fn list_sessions(&self, profile: &str) -> Result<Vec<SessionSummary>, HermesError> {
+        // Keep kanban and cron rows. Auto-spawn is filtered in the client (R-SO-06).
+        // exclude_sources would hide them from the session menu (R-SO-10).
         let path = format!(
             "{}{}",
             rest::SESSIONS,
@@ -1106,6 +1108,20 @@ mod tests {
         assert_eq!(live_run_in(&[], "stored-a"), None);
     }
 
+    #[test]
+    fn the_session_list_request_does_not_exclude_sources() {
+        let src = include_str!("mod.rs");
+        let start = src.find("pub async fn list_sessions(").expect("list_sessions");
+        let rest = &src[start..];
+        let end = rest.find("pub async fn list_sessions_for_bot_chat").expect("next");
+        let body = &rest[..end];
+        let query_line = body.lines().find(|line| line.contains("query(profile")).expect("query");
+        assert!(!query_line.contains("exclude_sources"));
+        assert!(query_line.contains("(\"archived\", \"include\")"));
+        assert!(query_line.contains("(\"order\", \"recent\")"));
+        assert!(query_line.contains("LIST_LIMIT"));
+    }
+
     fn sample_session(id: &str, archived: bool) -> SessionSummary {
         SessionSummary {
             id: id.into(),
@@ -1114,6 +1130,7 @@ mod tests {
             last_active: 2.0,
             preview: String::new(),
             source: "api_server".into(),
+            created_source: String::new(),
             started_at: 1.0,
             message_count: Some(3),
             delivery: false,

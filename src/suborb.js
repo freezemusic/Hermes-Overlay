@@ -16,6 +16,16 @@ export const SUBORB_FADE_EASE = PLAN_EASE;
 export const SUBORB_SIZE_RATIO = 0.45;
 export const SUBORB_MIN_PX = 14;
 export const SUBORB_GAP_PX = 6;
+/** Hermes sources that must never auto-spawn a sub-orb (R-SO-06). Hand pull-out and pins still show them. */
+export const AUTO_HIDDEN_SOURCES = ["kanban", "cron"];
+
+const AUTO_HIDDEN_SOURCE_SET = new Set(AUTO_HIDDEN_SOURCES);
+
+/** True when `source` or `created_source` is kanban or cron (case-insensitive). */
+export function isAutomatedSession(row) {
+  const hit = (value) => AUTO_HIDDEN_SOURCE_SET.has(String(value || "").trim().toLowerCase());
+  return hit(row?.source) || hit(row?.created_source);
+}
 
 /** By-id fetch and list-seed retry: 1s, 2s, 4s, 8s, 16s, then 30s. */
 export function pinFetchDelayMs(attempt) {
@@ -179,7 +189,8 @@ export const PULL_SUBORB_LABEL = "拎出做子光球";
 /**
  * R-SO-10: rows the main panel can pull out as a sub-orb. Same rules as
  * eligibleSuborb: no Bot Chat, not the row the main orb is bound to, no
- * archived row, no renew archive title. Newest activity first.
+ * archived row, no renew archive title. Kanban and cron rows stay in this
+ * list (R-SO-10); they are only kept off the auto-spawn path. Newest activity first.
  */
 export function pullOutCandidates(sessions = [], mainId = "") {
   return (sessions || [])
@@ -511,6 +522,9 @@ function stampMoved(prev, next) {
  * Which task sessions are on the orb, and which ids need a tail fetch.
  * The first list is a baseline: historical rows stay hidden unless pinned or forced.
  * A later new id, or a stamp that moved, becomes a sub-orb.
+ * Kanban and cron rows never auto-spawn, even when blocked or waiting (R-SO-06).
+ * A pin or a hand pull-out (`forced`) still shows them. `eligibleSuborb` does not
+ * apply this filter, so the session menu can still pull them out (R-SO-10).
  * An unpinned row leaves only after its panel is closed, the task is finished
  * and read, and SUBORB_DISMISS_MS has passed since that close.
  */
@@ -593,7 +607,8 @@ export function reconcileSuborbs(model, {
     const moved = !!(base && stampMoved(base, stamp));
     const forced = !!next.forced[row.id];
     const pinnedHere = pin.has(row.id);
-    const wanted = pinnedHere || forced || isNew || moved;
+    const automated = isAutomatedSession(row);
+    const wanted = pinnedHere || forced || (!automated && (isNew || moved));
     if (!wanted || next.retired[row.id] === key) {
       next.previous[row.id] = stamp;
       continue;

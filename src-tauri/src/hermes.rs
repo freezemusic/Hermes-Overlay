@@ -59,8 +59,10 @@ pub struct SessionSummary {
     pub hidden: Option<bool>,
     pub last_active: f64,
     pub preview: String,
-    /// Hermes session source (`api_server`, `desktop`, `tui`, …).
+    /// Hermes session source (`api_server`, `desktop`, `tui`, `kanban`, `cron`, …).
     pub source: String,
+    /// Hermes `created_source` (`kanban`, `cron`, …). Empty when the server omitted it.
+    pub created_source: String,
     /// Session row `started_at`. `0.0` means the list did not include one.
     pub started_at: f64,
     /// `message_count` when the list included it.
@@ -894,13 +896,13 @@ pub fn apply_watch_fetch(stored: &[UiMessage], fetched: &[UiMessage], replace: b
     }
 }
 
-/// Stable across row order. Includes the fields the session menu shows.
+/// Stable across row order. Includes the fields the session menu and sub-orb list use.
 pub fn session_list_fingerprint(sessions: &[SessionSummary]) -> String {
     let mut parts: Vec<String> = sessions
         .iter()
         .map(|session| {
             format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 session.id,
                 session.title,
                 session.last_active.to_bits(),
@@ -909,6 +911,7 @@ pub fn session_list_fingerprint(sessions: &[SessionSummary]) -> String {
                 session.archived,
                 session.ended,
                 session.source,
+                session.created_source,
                 session.preview,
                 session.busy,
             )
@@ -1124,6 +1127,13 @@ fn session_from_item(item: &Value) -> Option<SessionSummary> {
     let last_active = item.get("last_active").and_then(Value::as_f64).unwrap_or(started_at);
     let preview = item.get("preview").and_then(Value::as_str).unwrap_or("").to_string();
     let source = item.get("source").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let created_source = item
+        .get("created_source")
+        .or_else(|| item.get("createdSource"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let (ended, end_reason) = session_closed(item);
     let session_key = routing_key_of(item);
     let busy = session_busy(item);
@@ -1134,6 +1144,7 @@ fn session_from_item(item: &Value) -> Option<SessionSummary> {
         last_active,
         preview,
         source,
+        created_source,
         started_at,
         message_count: message_count_of(item),
         delivery: row_marks_delivery(item),
@@ -1210,6 +1221,9 @@ pub fn merge_sessions(
             }
             if found.source.is_empty() {
                 found.source = session.source;
+            }
+            if found.created_source.is_empty() {
+                found.created_source = session.created_source;
             }
             if found.last_active <= 0.0 {
                 found.last_active = session.last_active;
@@ -4823,6 +4837,39 @@ mod tests {
     }
 
     #[test]
+    fn session_rows_keep_created_source_when_the_server_sends_it() {
+        let rows = parse_session_list(&json!({"sessions": [
+            {"id": "k", "title": "看板任務", "source": "kanban", "created_source": "kanban", "message_count": 2, "last_active": 3.0},
+            {"id": "c", "title": "排程", "source": "cron", "createdSource": "cron"},
+            {"id": "a", "title": "筆記", "source": "api_server"},
+        ]}));
+        assert_eq!(rows[0].source, "kanban");
+        assert_eq!(rows[0].created_source, "kanban");
+        assert_eq!(rows[1].source, "cron");
+        assert_eq!(rows[1].created_source, "cron");
+        assert_eq!(rows[2].source, "api_server");
+        assert!(rows[2].created_source.is_empty());
+        let wrapped = parse_session_value(&json!({
+            "session": {"id": "k2", "title": "t", "created_source": "  kanban  "}
+        }))
+        .unwrap();
+        assert_eq!(wrapped.created_source, "kanban");
+        assert!(wrapped.source.is_empty());
+        let merged = merge_sessions(
+            parse_session_list(&json!({"data":[{"id":"k","title":"t","source":""}]})),
+            parse_session_list(&json!({"data":[{"id":"k","title":"t","source":"kanban","created_source":"kanban"}]})),
+        );
+        assert_eq!(merged[0].source, "kanban");
+        assert_eq!(merged[0].created_source, "kanban");
+        let kept = merge_sessions(
+            parse_session_list(&json!({"data":[{"id":"k","title":"t","source":"kanban","created_source":"kanban"}]})),
+            parse_session_list(&json!({"data":[{"id":"k","title":"t","source":"other","created_source":"other"}]})),
+        );
+        assert_eq!(kept[0].source, "kanban");
+        assert_eq!(kept[0].created_source, "kanban");
+    }
+
+    #[test]
     fn a_bot_chat_watch_uses_message_count_before_downloading() {
         let listed = parse_session_list(&json!({
             "data": [{
@@ -5047,6 +5094,7 @@ mod tests {
             last_active,
             preview: String::new(),
             source: source.into(),
+            created_source: String::new(),
             started_at: 0.0,
             message_count: None,
             delivery: false,
@@ -5157,6 +5205,7 @@ mod tests {
             last_active,
             preview: preview.into(),
             source: source.into(),
+            created_source: String::new(),
             started_at,
             message_count: Some(message_count),
             delivery: false,
