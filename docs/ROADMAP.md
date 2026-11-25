@@ -2,10 +2,10 @@
 
 這份文件說明 [README](../README.md#路線圖) 裡的路線圖是怎麼排出來的。查證日期是 2026-11-06（倫敦時間）。
 
-- **Overlay**：v0.3.0（PR #4）。
-- **對照版本**：Hermes Agent **v0.22.5 stable = `bf0203a`**，也就是 Devon 伺服器目前跑的版本（2026-11-06 在伺服器上用 `GET /api/status` 和 `hermes --version` 確認）。
+- **Overlay**：v0.3.0 預先發佈（tag `v0.3.0` = `d4c1951`，2026-11-25）。[PR #4](https://github.com/freezemusic/Hermes-Overlay/pull/4) 已於 2026-11-06 合併。下面的逐項表仍是 2026-11-06 的查證；表後的補正只改已經對不上預先發佈的狀態，沒有重做整份稽核。
+- **對照版本**：Hermes Agent **v0.22.5 stable = `bf0203a`**。2026-11-06 在 Devon 的伺服器上用 `GET /api/status` 和 `hermes --version` 確認過當天的版本。2026-11-25 的 Windows 安裝檔檢查沒有記錄伺服器版本。
 - **檔案路徑**：Desktop 的路徑沒有特別註明的，都在 `apps/desktop/` 底下。
-- **較新版本**：v0.23.0（`2bd378e`）只比對了路由差異，沒有實測。
+- **較新版本**：v0.23.0（`2bd378e`）在 2026-11-06 只比對了路由差異，沒有實測。其後的 v0.23.4（`8fc0374`）只在隔離 Linux 測試機上用 `d4c1951` 的實機測過（密碼登入、串流、計劃直接讀檔與重組後備）。沒有在 Windows 測，也沒有在 Devon 的伺服器測。
 
 ## 0. 怎麼讀這份文件
 
@@ -89,8 +89,8 @@
 | 6 | 搜尋歷史 session | `src/api/sessions.ts:445` → `/api/sessions/search` | ✅（測）200，查 "Bot" 有 12 筆 | 在 session 選單加搜尋框（Desktop picker／palette 共 2295 行，只做簡單版就好） | A | M | ❌ |
 | 7 | 斜線指令、Plan、旁問 `/btw` | `command.dispatch`（`slash.ts:557`）、`prompt.btw`（`slash.ts:728`）、`commands.catalog`（`slash.ts:1258`） | ✅（測）`commands.catalog` OK | ETag 快取寫了但沒用到（`lib.rs:2672 _etag`，`client/mod.rs:783` 用的是假的 `ws-N`） | A | S | 大致 ✅ |
 | 8 | 換模型、思考程度 | `model.options`（`plugins/hermes-bots/model-picker.tsx:92`）、`reasoning-pill.tsx:14`、`POST /api/model/set`（`models.py:376`） | ✅（測）`model.options` OK | 模型選單＋思考程度切換（Desktop 450 行） | A | M | ❌ |
-| 9 | 圖片附件、貼上截圖 | `upload-server-image.ts:36` → `/api/chat/image-upload`（`files.py:477`）；剪貼簿讀圖在 `electron/clipboard-image.ts` | ✅（測）上傳 200，回 path | 已實作（R-AT-01～04，`feat/chat-attach`）：唔使 plugin，webview 隱藏 `<input type="file">` 揀檔、`paste` 事件貼圖、`dragDropEnabled: false` 收拖放；圖片走 WS `image.attach_bytes`（唔係 `/api/chat/image-upload`）。拖放只喺面板（命中區）有效 | A+B | M | 🟡 code 完成，未喺真機／真伺服器驗 |
-| 10 | 檔案附件 | `plugins/hermes-bots/group-turns.ts:931-943`（`file.attach`）、`/api/files/upload`（`files.py:654`） | ✅（原） | 已實作（R-AT-02）：WS `file.attach {name, data_url}`，`ref_text` 放喺訊息前面（Desktop `buildContextText`）。每個 10 MB、每次 10 個 | A+B | S（接在 #9 後面） | 🟡 code 完成，未喺真機／真伺服器驗 |
+| 9 | 圖片附件、貼上截圖 | `upload-server-image.ts:36` → `/api/chat/image-upload`（`files.py:477`）；剪貼簿讀圖在 `electron/clipboard-image.ts` | ✅（測）上傳 200，回 path | v0.3.0 已有（R-AT-01～04）：選圖、貼上截圖、拖進面板；圖片走 WS `image.attach_bytes`。測試伺服器接受上載；真模型未驗證 | A+B | M | ⚠️ 程式在 v0.3.0；真模型未驗證 |
+| 10 | 檔案附件 | `plugins/hermes-bots/group-turns.ts:931-943`（`file.attach`）、`/api/files/upload`（`files.py:654`） | ✅（原） | v0.3.0 已有（R-AT-02）：WS `file.attach {name, data_url}`，`ref_text` 放喺訊息前面。每個 10 MB、每次 10 個。真模型未驗證 | A+B | S（接在 #9 後面） | ⚠️ 程式在 v0.3.0；真模型未驗證 |
 | 11 | 語音輸入、朗讀 | 麥克風用 `getUserMedia`（`hooks/use-mic-recorder.ts:270`）；`/api/audio/transcribe`、`/api/audio/speak`（`src/api/system.ts:189/211`）；Desktop 語音相關約 3.5k 行 | ✅（測）`/api/audio/voice-config` 200 | WebView2 的 `getUserMedia` 會跳權限詢問。**Windows 沒實測**（推論）。另外要 Devon 的伺服器已經設定 STT/TTS provider（未查證） | A+B | L | ❌ |
 | 12 | Rewind、編輯後重送 | `rewind.ts:191`（920 行），用 `prompt.submit` 截斷 | ✅（原）`methods_prompt.py:327-348`；`session.rewind` 回 −32601（測），但不需要 | 會刪歷史，要做確認對話框 | A | M | ❌ |
 | 13 | 多裝置同步 | 伺服器推事件 | ✅ | 已有。已知問題：自己有訊息在排隊時，手機那邊的回覆不會即時顯示（原因未查，推論是 Overlay 端的事件處理） | A（可能 B） | M | 部分 |
@@ -214,7 +214,7 @@
    - WebView2 的麥克風權限。
    - 拖曳到滑鼠穿透的視窗。
    - Windows 通知。
-   - 安裝後的系統匣和開機啟動。
+   - 安裝後的系統匣和開機啟動。2026-11-25：已安裝的 `d4c1951` 上，系統匣「重啟」由 Devon 確認；開機啟動不在那次檢查。
 2. **伺服器的 STT/TTS**：Devon 的伺服器有沒有設定語音辨識和語音合成，還沒查。
 3. **v0.23.0 的 Desktop**：沒有逐檔重新稽核，只比對了路由差異和改動量。
 4. **原因還沒找到**：
@@ -223,5 +223,6 @@
 5. **Tauri 輸出 MSIX**：只是推論，沒有實際試過。
 6. **工作量**：都是用程式碼行數和過去經驗推估的。
 7. **路線圖排序**：要等 Devon 列出他在 Desktop 實際會用的功能，再依此調整。
+8. **2026-11-25 預先發佈後仍未核對的範圍**（不改上面 2026-11-06 的分類統計）：附件沒有用真模型驗證（#9、#10）。Hermes v0.23.4 只在隔離 Linux 測試機上用 `d4c1951` 實機測過，Windows 安裝檔那次檢查沒有記錄伺服器版本。macOS 沒有建置、沒有實測。
 
 路線圖本身（各版要做的項目）在 [README](../README.md#路線圖)，2026-11-06 由 Devon 核准。

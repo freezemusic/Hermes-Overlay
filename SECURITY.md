@@ -1,14 +1,14 @@
 # 安全政策
 
-> English summary: Only the **0.3.x** line is intended for support once released. Report vulnerabilities via **GitHub private vulnerability reporting** (maintainers must enable it under Settings → Security). Never paste API keys, tokens, cookies, or passwords into issues. The app stores non-secret settings in `config.json` and secrets in the OS keyring only.
+> English summary: The supported line is **0.3.x**. `v0.3.0` is a pre-release tagged 2026-11-25 (`d4c1951`); its installers are unsigned. Verify downloads against the release's `SHA256SUMS.txt`. Report vulnerabilities via **GitHub private vulnerability reporting** (maintainers must enable it under Settings → Security). Never paste API keys, tokens, cookies, or passwords into issues. The app stores non-secret settings in `config.json` and secrets in the OS keyring only.
 
 ## 支援的版本
 
 | 版本 | 支援 |
 |------|------|
-| 0.3.x | 支援（目前開發中；尚未打 `v0.3.0` tag） |
+| 0.3.x | 支援。v0.3.0 是 2026-11-25 的預先發佈（tag `d4c1951`），安裝檔未簽名 |
 | 0.2.x | 無獨立 tag；請升級到 0.3 線 |
-| 0.1.x | 僅歷史 Release；不再修安全問題（請升級） |
+| 0.1.x | tag `v0.1.0` 保留，Release 草稿已刪，沒有公開 Release；不再修安全問題（請升級） |
 
 ## 如何回報弱點
 
@@ -56,4 +56,4 @@ Service 名稱＝bundle identifier（正式版 `com.freezemusic.hermes-overlay`�
 
 ## 安裝檔簽章
 
-發佈的安裝檔目前**未簽名**；Windows SmartScreen 警告是預期現象。驗證檔案請比對 Release 附上的 `*-SHA256SUMS.txt`（見 [docs/INSTALL.md](docs/INSTALL.md)）。
+發佈的安裝檔目前**未簽名**；Windows SmartScreen 警告是預期現象。v0.3.0 預先發佈請比對附上的 [`SHA256SUMS.txt`](https://github.com/freezemusic/Hermes-Overlay/releases/download/v0.3.0/SHA256SUMS.txt)（見 [docs/INSTALL.md](docs/INSTALL.md)）。release workflow 的 `windows-SHA256SUMS.txt`、`macos-SHA256SUMS.txt`、`linux-SHA256SUMS.txt` 沒有附在這次預先發佈。

@@ -1,6 +1,6 @@
 # Hermes Overlay
 
-> 狀態：**v0.3.0，開發中，尚未發佈。** 相容性：已用 Hermes Agent v0.22.5 stable（`bf0203a`）實測；v0.23.0 還沒測。
+> 狀態：**v0.3.0 預先發佈（2026-11-25，`d4c1951`）。** 開發時對照 Hermes Agent v0.22.5 stable（`bf0203a`）。v0.23.4（`8fc0374`）只在隔離的 Linux 測試機上用這個 commit 的實機測過。Windows 安裝檔由 Devon 確認計劃讀檔、開啟連結和系統匣「重啟」；該次沒有記錄伺服器的 Hermes 版本。
 
 Hermes Overlay 是一個跨平台（Windows／macOS／Linux）的桌面 Overlay。它是**透明、無邊框、永遠置頂**的視窗，用來和自架 [Hermes Agent](https://hermes-agent.nousresearch.com/) 伺服器上的 Bot 對話。
 
@@ -16,25 +16,25 @@ Hermes Overlay 是一個跨平台（Windows／macOS／Linux）的桌面 Overlay�
 
 長期目標是**完全取代 Hermes Desktop**：平常用 Hermes，只開 Overlay 就夠，不必再開 Desktop。做到這一點才算 v1.0。
 
-目前的 v0.3.0 大約涵蓋 Desktop 四成的功能面向（見下面的〈和 Hermes Desktop 比較〉）。送出、串流、批准、停止、切換 session 這些基本流程已經可以用。還缺的主要是附件、語音這類輸入方式，以及設定、profile、技能這些管理功能。
+目前的 v0.3.0 涵蓋下面比較表裡已有和部分有的項目。送出、串流、批准、停止、切換 session 這些基本流程已經可以用。附件可以選檔、拖入、貼上截圖，但沒有用真模型驗證。還缺語音，以及設定、profile、技能這些管理功能。
 
-## 目前版本：v0.3.0（開發中，尚未發佈）
+## 目前版本：v0.3.0（預先發佈）
 
 | 項目 | 現況 |
 |------|------|
-| 程式碼 | [PR #4](https://github.com/freezemusic/Hermes-Overlay/pull/4)（草稿），分支 `cursor/suborbs-new-session-5d9a` |
-| 已發佈 | 只有 tag `v0.1.0`（2026-10-15，`563c913`）。之後沒有再打 tag，也沒有發 Release |
-| 相容的 Hermes | Hermes Agent v0.22.5 stable（`bf0203a`），連 Hermes Dashboard（`hermes serve`，預設埠 9119）。v0.23.0 還沒測，它新增的路由在 v0.22.5 上沒有 |
-| 平台 | Windows 是主要使用環境，在 Devon 的筆電上實測。Linux（X11）在測試機上驗證。macOS 只有打包設定，沒有實測 |
+| 程式碼 | `main` 的 tag [`v0.3.0`](https://github.com/freezemusic/Hermes-Overlay/releases/tag/v0.3.0) = `d4c1951265ffecd34a7937b9c74ac7fad376063a`。[PR #4](https://github.com/freezemusic/Hermes-Overlay/pull/4) 已於 2026-11-06 合併（merge `c592310`），tag 還包含其後的提交 |
+| 已發佈 | [v0.3.0 預先發佈](https://github.com/freezemusic/Hermes-Overlay/releases/tag/v0.3.0)（2026-11-25）：Windows NSIS `Hermes.Overlay_0.3.0_x64-setup.exe`、Linux `Hermes.Overlay_0.3.0_amd64.deb`。tag `v0.1.0`（2026-10-15，`563c913`）保留；v0.1.0 的 Release 草稿已刪，沒有公開的 v0.1.0 Release |
+| 相容的 Hermes | 開發對照 Hermes Agent v0.22.5 stable（`bf0203a`），連 Hermes Dashboard（`hermes serve`，預設埠 9119）。v0.23.4（`8fc0374`）只在隔離 Linux 測試機驗證。2026-11-06 曾在 Devon 的伺服器看到 v0.22.5；2026-11-25 的 Windows 檢查沒有記錄伺服器版本 |
+| 平台 | Windows 是主要使用環境。Devon 在筆電上安裝 `d4c1951`，確認「睇計劃」直接讀檔、連結用系統瀏覽器開、系統匣「重啟」。Linux（X11）用同一 commit 的實機對 v0.23.4 做過密碼登入、串流、計劃直接讀檔和重組後備。macOS 只有打包設定，這次沒有建置也沒有實測 |
 | 簽章 | 安裝檔沒有簽章 |
 
 ### 版本怎麼算
 
 | 版本 | 內容 | 狀態 |
 |------|------|------|
-| v0.1 | 第一次連上自架的 Hermes gateway（8642）。包含螢幕邊緣的 Bot 光球、對話面板、串流回覆，以及 overlay-slash plugin | 已打 tag（2026-10-15） |
-| v0.2 | 可以每天使用。包含 Ctrl 穿透規則、批准卡和提問卡、停止和插話、計劃視窗、看板和排程光球、工具呼叫收成一行、一般／Plan／旁問三種模式、斷線自動重連 | [PR #3](https://github.com/freezemusic/Hermes-Overlay/pull/3)（`2a50abd`，2026-10-29） |
-| **v0.3** | 只走 Hermes Dashboard（9119）：拿掉 8642，也拿掉「Gateway 位址」和每個 Bot 的「API 金鑰」欄位。新增子光球和「開新 session」，看板拖卡改走 9119 並加上通知鈴，加入文字大小和英文介面，以及一次多題的提問卡 | PR #4，**目前版本** |
+| v0.1 | 第一次連上自架的 Hermes gateway（8642）。包含螢幕邊緣的 Bot 光球、對話面板、串流回覆，以及 overlay-slash plugin | tag `v0.1.0` 保留（2026-10-15）。Release 草稿已刪，沒有公開 Release |
+| v0.2 | 可以每天使用。包含 Ctrl 穿透規則、批准卡和提問卡、停止和插話、計劃視窗、看板和排程光球、工具呼叫收成一行、一般／Plan／旁問三種模式、斷線自動重連 | [PR #3](https://github.com/freezemusic/Hermes-Overlay/pull/3) 已合併（`2a50abd`，2026-10-29）。沒有 `v0.2.0` tag |
+| **v0.3** | 只走 Hermes Dashboard（9119）：拿掉 8642，也拿掉「Gateway 位址」和每個 Bot 的「API 金鑰」欄位。新增子光球和「開新 session」，看板拖卡改走 9119 並加上通知鈴，加入五級文字大小和英文介面，以及一次多題的提問卡。另有附件（真模型未驗證）、可拉大的面板、計劃視窗直接讀檔、系統匣「重啟」 | 預先發佈，**目前版本** |
 | v0.4–v0.8 | 見下面的〈路線圖〉 | 規劃中 |
 | v1.0 | 可以不開 Hermes Desktop | 長期目標 |
 
@@ -43,15 +43,20 @@ v0.3 拿掉了舊的設定欄位，舊版設定檔會自動搬一次（舊 gatew
 ## 已經能做的事
 
 - **對話**：串流回覆、Markdown、程式碼一鍵複製，連結用系統瀏覽器開啟。工具呼叫收成一行，點開才看得到細節。
-- **一般／Plan／旁問**：用 Shift+Tab 切換。Plan 會開計劃視窗，貼在面板旁邊。
+- **一般／Plan／旁問**：用 Shift+Tab 切換。Plan 會開計劃視窗，貼在面板旁邊。只有同一輪 `write_file` 寫入 `.hermes/plans/*.md` 才自動打開。訊息裡的「睇計劃」先直接讀伺服器上的檔（只用 GET），讀不到再用對話紀錄重組，頂部標明來源。
+- **附件**：「＋」可以選檔案或圖片，也可以把檔案拖進輸入列，或 Ctrl+V 貼上截圖。每個最多 10 MB，每次最多 10 個。沒有用真模型驗證 Bot 是否讀到內容。
 - **批准和提問**：只有「批准（一次）」和「拒絕」兩個選項，永遠不會自動批准。一次多題的提問會每題各出一張卡，可以選選項，也可以自己打字回答。
 - **停止、插話、排隊**：Bot 回覆時可以插話，和 Desktop 一樣只留下你的訊息。另一台裝置（手機、Desktop）正在執行時，會顯示「手機嗰邊行緊，排緊隊」。
 - **Session**：預設開啟 Desktop 的 Bot Chat，也可以手動切換。`/new` 和「＋」會開一個新的子光球，不會改動主光球。也支援 `/title`、`/branch`、`/model`、`/stop`。
 - **看板**：讀取 9119 的看板，可以切換看板、看卡片內容、拖卡改狀態，另外有通知鈴和未讀數字。
 - **排程**：排程光球會顯示執行中、完成或失敗，面板會標出哪個工作失敗。目前只能看，開關排程還是要在 Hermes 裡改。
 - **穿透**：光球平常不擋滑鼠，按住 Ctrl 才能點。面板平常可以點，按住 Ctrl 就會變透明，可以點到後面的視窗。
-- **外觀**：文字大小有四段可選。介面有繁中（香港）和英文。光球和面板的透明度都可以調。
+- **面板**：對話、看板、設定可以拉大，大小會記住。按住 Ctrl 可以把光球拖到別的位置。
+- **外觀**：文字大小有五級（特細、細、標準、大、特大）。介面有繁中（香港）和英文。光球和面板的透明度都可以調。
+- **系統匣**：「顯示光球」、「設定」、「重啟」、「結束」。工具視窗不佔工作列。
 - **連線**：斷線會自動重試，重試時不會自己建立 session。
+
+上面是程式有的行為。實機確認過的範圍見〈目前版本〉和 [docs/INSTALL.md](docs/INSTALL.md)。
 
 ## 和 Hermes Desktop 比較
 
@@ -66,7 +71,7 @@ v0.3 拿掉了舊的設定欄位，舊版設定檔會自動搬一次（舊 gatew
 | 搜尋 session | ❌ |
 | Plan／旁問、斜線選單 | ✅ |
 | 換模型 | ⚠️ 只有 `/model` 指令，沒有選單，也不能調整思考程度 |
-| 附件、圖片、長文貼上 | ❌ |
+| 附件、圖片、長文貼上 | ⚠️ 可以選檔案或圖片、拖進輸入列、貼上截圖（每個 10 MB、每次 10 個）。沒有用真模型驗證 |
 | 語音 | ❌ |
 | 回到前一步（rewind） | ❌ |
 | 手機和 Desktop 同時用同一個對話 | ⚠️ 可以即時看到，但自己的訊息還在排隊時，看不到對方的即時回覆 |
@@ -85,7 +90,7 @@ v0.3 拿掉了舊的設定欄位，舊版設定檔會自動搬一次（舊 gatew
 | 第一次使用的設定流程 | ⚠️ 只有設定頁和提示橫幅 |
 | 透明、置頂、滑鼠穿透 | ✅ 這是 Overlay 的本行 |
 
-25 項中，5 項已齊、10 項部分有、10 項還沒有，大約四成。
+25 項中，5 項已齊、11 項部分有、9 項還沒有。
 
 查證時也確認了一件事：Desktop 用到的伺服器 API，v0.22.5 的 9119 幾乎都有。所以要補齊的主要是 Overlay 自己的程式，不太需要等伺服器改版。
 
@@ -108,11 +113,11 @@ v0.3 拿掉了舊的設定欄位，舊版設定檔會自動搬一次（舊 gatew
 - [ ] 關閉程式時偶爾會當掉（結束時 tao 重複釋放記憶體），不會遺失資料
 - [ ] Hermes Desktop 關著時也能收到 Bot 主動發的訊息（R-SS-06）：在 Windows 實測，並確認 10 秒內出現
 - [ ] 在 Windows 實機補驗 REQUIREMENTS 中標示「Win 未驗」的項目
-- [ ] 美術監督剩下的意見：英文介面下的示範橫幅沒有翻譯、英文按鈕全部大寫、看板欄頭不跟著文字大小變
+- [ ] 美術監督剩下的意見：英文介面下的示範橫幅沒有翻譯、英文按鈕全部大寫、看板欄頭不跟著文字大小變。訊息輸入框的提示文字在英文介面仍然是中文（已知，只影響外觀，程式尚未改）
 
 ### v0.5：輸入與操作
 
-- [ ] 圖片和檔案附件：從檔案選擇、拖曳進來、從剪貼簿貼上
+- [ ] 圖片和檔案附件：v0.3.0 已有選檔、拖入、貼上截圖（每個 10 MB、每次 10 個）。還沒用真模型驗證 Bot 有沒有讀到內容
 - [ ] 換模型的選單，可以調整思考程度
 - [ ] 回到前一步（rewind）、編輯後重送
 - [ ] 新增、編輯看板卡片，以及留言
@@ -167,7 +172,7 @@ Desktop 改版很快：過去三個月大約發了 23 個正式版，從 v0.22.5
 
 **需要 Devon 決定：**
 
-- **自動更新**：技術上可以做，但需要發佈 Release。依照 REQUIREMENTS R-SY-05，沒有 Devon 同意不發 Release。
+- **自動更新**：技術上可以做，但需要發佈 Release。依照 REQUIREMENTS R-SY-05，沒有 Devon 明確要求就不發下一個 tag 或 Release。v0.3.0 預先發佈已於 2026-11-25 發出。
 - **Windows 程式碼簽章**：
   - Desktop 用的 Azure Artifact Signing 不開放英國的個人開發者申請。
   - OV 憑證每年大約 US$150–300。
@@ -177,7 +182,7 @@ Desktop 改版很快：過去三個月大約發了 23 個正式版，從 v0.22.5
 - **終端機**：要開在筆電上，還是伺服器上。
 - **寵物、喚醒詞**：喚醒詞代表麥克風要一直開著。
 - **外觀**：要不要對齊 Desktop 的主題系統。
-- **伺服器版本**：要不要升級到 Hermes v0.23.0。有些新路由只有 v0.23.0 才有。
+- **伺服器版本**：要不要把日常使用的伺服器升到 Hermes v0.23.4。Overlay 用到的路由在隔離的 v0.23.4 測試機上都有。v0.23.0 才有、而 Overlay 還沒用的路由，見 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## 已知問題
 
@@ -188,7 +193,10 @@ Desktop 改版很快：過去三個月大約發了 23 個正式版，從 v0.22.5
 - 關閉程式時偶爾會當掉（見 v0.4）。
 - 斜線選單沒有快取，每次打 `/` 都會問一次伺服器。
 - 自己的訊息在排隊時，手機那邊的回覆不會即時出現，要排完才補上。
-- 英文介面只翻譯了按鈕、標籤這類短字，較長的說明和少見的錯誤訊息還是中文。
+- 英文介面只翻譯了按鈕、標籤這類短字，較長的說明和少見的錯誤訊息還是中文。訊息輸入框的提示文字在英文介面仍然是中文（只影響外觀）。
+- 附件沒有用真模型驗證。測試只確認過伺服器接受上載的路徑；Bot 有沒有讀到內容尚未核對。
+- 計劃重組只認 `old_string`／`new_string` 形式的 `patch`。其他形式會標「部分修改未套用」。可以直接讀檔時不受影響。
+- Hermes v0.23.4 的串流事件多了 `turn_id`／`segment`／`offset`。Overlay 還沒用這些欄位；斷線重連後如果伺服器重送片段，回覆文字可能重複。隔離測試時沒有遇到。
 - 連不上伺服器時，`/` 選單和看板會顯示舊的「未裝 overlay-slash」提示，但其實不需要裝這個 plugin。
 - Bot Chat 的標題可能被伺服器改掉。這是伺服器端的問題，Overlay 不另外處理。
 
@@ -214,22 +222,17 @@ Desktop 改版很快：過去三個月大約發了 23 個正式版，從 v0.22.5
 
 | 項目 | 要求 |
 |------|------|
-| 作業系統 | **Windows 10／11 x64**（主要實測）。macOS／Linux 有 CI 打包，但日常實測以 Windows 為準 |
+| 作業系統 | **Windows 10／11 x64**（主要使用）。這次預先發佈另有 Linux `.deb`。macOS 這次沒有建置 |
 | WebView2 | 需要 WebView2 Runtime。`tauri.conf.json` 未覆寫 `webviewInstallMode`，沿用 Tauri 2 預設 `downloadBootstrapper`（silent） |
-| Hermes | **v0.22.5 stable** + `hermes serve`（預設埠 **9119**）。v0.23.0 未測 |
+| Hermes | **v0.22.5 stable** 或 **v0.23.4** + `hermes serve`（預設埠 **9119**）。v0.23.4 只在隔離的 Linux 測試機驗證。Windows 那次檢查沒有記錄伺服器版本 |
 | 簽章 | 安裝檔**沒有**程式碼簽章 |
 
-<!-- tested on: filled after laptop test -->
+安裝檔從 [v0.3.0 預先發佈](https://github.com/freezemusic/Hermes-Overlay/releases/tag/v0.3.0) 下載，**不用登入 GitHub**。這次是 Windows NSIS [`Hermes.Overlay_0.3.0_x64-setup.exe`](https://github.com/freezemusic/Hermes-Overlay/releases/download/v0.3.0/Hermes.Overlay_0.3.0_x64-setup.exe) 和 Linux [`Hermes.Overlay_0.3.0_amd64.deb`](https://github.com/freezemusic/Hermes-Overlay/releases/download/v0.3.0/Hermes.Overlay_0.3.0_amd64.deb)，雜湊在 [`SHA256SUMS.txt`](https://github.com/freezemusic/Hermes-Overlay/releases/download/v0.3.0/SHA256SUMS.txt)。沒有 MSI、AppImage、macOS 版。還在開發的提交才用 CI artifact（`windows-x64-nsis`），下載 artifact 要先登入 GitHub。安裝檔都**沒有簽章**。macOS 版若自行打包，開了 `macOSPrivateApi` 才能透明，所以**不能上架 Mac App Store**。
 
-安裝檔可以從 [GitHub Releases](https://github.com/freezemusic/Hermes-Overlay/releases) 下載。目前只有 v0.1.0 有 Release。v0.3.0 還沒發佈，Windows 版請用 CI 產生的 artifact `windows-x64-nsis`。安裝檔都**沒有簽章**。macOS 版開了 `macOSPrivateApi` 才能透明，所以**不能上架 Mac App Store**。
-
-發佈時的檔名如下：
-
-| 平台 | 檔案 |
-|------|------|
-| Windows | `Hermes Overlay_0.3.0_x64-setup.exe`（NSIS）、`Hermes Overlay_0.3.0_x64_en-US.msi` |
-| macOS | `Hermes Overlay_0.3.0_universal.dmg`（Apple silicon + Intel）、`Hermes Overlay.app.tar.gz` |
-| Linux | `Hermes Overlay_0.3.0_amd64.AppImage`、`Hermes Overlay_0.3.0_amd64.deb` |
+| 平台 | 這次的檔案 | SHA256 |
+|------|------------|--------|
+| Windows | `Hermes.Overlay_0.3.0_x64-setup.exe` | `8b389f07116a1d0128e52bde6320908008381d1bde61e41c1ee1c578f81df793` |
+| Linux | `Hermes.Overlay_0.3.0_amd64.deb` | `0dd80905556c779144fbbecb24013916515881626b6811136f5366dc6447c442` |
 
 ### 第一次開啟沒有簽章的版本
 
@@ -249,11 +252,10 @@ Desktop 改版很快：過去三個月大約發了 23 個正式版，從 v0.22.5
 - 登入資料存在鑰匙圈（Keychain）。
 
 **Linux**
-- AppImage 要先加上執行權限，再安裝 WebKit、GTK 和系統匣的相依套件（`.deb` 會自動安裝這三個）：
+- 這次預先發佈是 `.deb`，不是 AppImage：
 
   ```bash
-  chmod +x "Hermes Overlay_0.3.0_amd64.AppImage"
-  sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1
+  sudo apt install ./Hermes.Overlay_0.3.0_amd64.deb
   ```
 
 - 登入資料用 Secret Service 儲存。`.deb` **建議**一起安裝：
@@ -427,7 +429,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 1. **穿透**：純 Wayland 還不支援讀取全域游標和修飾鍵，所以會一直保持可點擊。Linux 請用 X11 或 XWayland。
 2. **沒有圖形介面的環境（CI）**：`tauri dev`／`tauri build` 需要顯示器和 WebKit。沒有圖形介面時，用 `npm test`、`cargo check` 和 `cargo test`。
 3. **Wayland**：部分合成器對透明和置頂的處理和 X11 不同。
-4. **Hermes 版本**：通訊協定是對照 Hermes Agent v0.22.5 stable（`bf0203a`）的實機和原始碼。單元測試用本機的假伺服器固定這些格式。v0.23.0 還沒測。
+4. **Hermes 版本**：通訊協定對照 Hermes Agent v0.22.5 stable（`bf0203a`）的實機和原始碼，再對照 v0.23.4（`8fc0374`）的隔離 Linux 測試機。單元測試用本機的假伺服器固定這些格式。v0.23.4 沒有在 Windows 上測。Windows 安裝檔那次檢查沒有記錄伺服器版本。
 5. **鑰匙圈**：需要 Secret Service、Keychain 或 Credential Manager，才能長期保存登入資料。
 
 ## 專案結構
