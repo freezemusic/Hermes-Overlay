@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Hermes Kanban 同 cron 自動開嘅 session 唔再自動出子光球，即使被擋住或者等緊回覆／批准。`source` 或 `created_source` 係 `kanban`／`cron` 先算（唔分大小寫；舊伺服器冇 `created_source` 就只睇 `source`）。人手仍然可以喺 session 選單拎出，釘選重開照舊返嚟。看板卡冇加新掣（R-SO-01、R-SO-06、R-SO-10）。
+
 ### Changed
 
 - 文件跟上已發出的 v0.3.0 預先發佈：安裝說明改為公開 Release 的 Windows NSIS 與 Linux `.deb`（下載不用登入 GitHub）。沒有改程式、tag、Release、workflow 或倉庫設定。

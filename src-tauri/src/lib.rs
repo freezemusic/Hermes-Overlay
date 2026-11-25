@@ -441,6 +441,9 @@ struct SessionChoice {
     hidden: bool,
     preview: String,
     source: String,
+    /// Hermes `created_source`. Omitted from the sessions event when the server did not send one.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    created_source: String,
     archived: bool,
     ended: bool,
     end_reason: String,
@@ -911,6 +914,7 @@ fn choice_of(session: &hermes::SessionSummary) -> SessionChoice {
         hidden: session.hidden.unwrap_or(false),
         preview: session.preview.clone(),
         source: session.source.clone(),
+        created_source: session.created_source.clone(),
         archived: session.archived,
         ended: session.ended,
         end_reason: session.end_reason.clone(),
@@ -938,6 +942,7 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
             hidden: session.hidden.unwrap_or(false),
             preview: session.preview.clone(),
             source: session.source.clone(),
+            created_source: session.created_source.clone(),
             archived: session.archived,
             ended: session.ended,
             end_reason: session.end_reason.clone(),
@@ -958,6 +963,7 @@ fn session_choices(sessions: &[hermes::SessionSummary], active: &str) -> Vec<Ses
                 hidden: false,
                 preview: String::new(),
                 source: String::new(),
+                created_source: String::new(),
                 archived: false,
                 ended: false,
                 end_reason: String::new(),
@@ -5237,6 +5243,7 @@ mod tests {
             last_active: 8.0,
             preview: String::new(),
             source: "desktop".into(),
+            created_source: String::new(),
             started_at: 0.0,
             message_count: None,
             delivery: false,
@@ -5254,6 +5261,7 @@ mod tests {
             last_active: 1.0,
             preview: String::new(),
             source: "api_server".into(),
+            created_source: String::new(),
             started_at: 0.0,
             message_count: None,
             delivery: false,
@@ -5280,6 +5288,45 @@ mod tests {
         let old_json = serde_json::to_value(old).expect("old json");
         assert_eq!(old_json["source"], "api_server");
         assert_eq!(old_json["archived"], true);
+        assert!(json.get("created_source").is_none());
+    }
+
+    #[test]
+    fn session_choice_forwards_created_source_and_omits_it_when_absent() {
+        let kanban = crate::hermes::SessionSummary {
+            id: "k".into(),
+            title: "看板任務".into(),
+            hidden: None,
+            last_active: 3.0,
+            preview: String::new(),
+            source: "kanban".into(),
+            created_source: "kanban".into(),
+            started_at: 1.0,
+            message_count: Some(2),
+            delivery: false,
+            parent_session_id: String::new(),
+            archived: false,
+            ended: false,
+            end_reason: String::new(),
+            session_key: String::new(),
+            busy: false,
+        };
+        let plain = crate::hermes::SessionSummary {
+            id: "a".into(),
+            title: "筆記".into(),
+            source: "api_server".into(),
+            created_source: String::new(),
+            ..kanban.clone()
+        };
+        let rows = super::session_choices(&[kanban, plain], "");
+        let kanban_row = rows.iter().find(|row| row.id == "k").expect("kanban");
+        let json = serde_json::to_value(kanban_row).expect("json");
+        assert_eq!(json["source"], "kanban");
+        assert_eq!(json["created_source"], "kanban");
+        let plain_row = rows.iter().find(|row| row.id == "a").expect("api");
+        let plain_json = serde_json::to_value(plain_row).expect("plain json");
+        assert_eq!(plain_json["source"], "api_server");
+        assert!(plain_json.get("created_source").is_none());
     }
 
     /// R-AR-04 (2026-11-03): the app makes no call to the old gateway (8642).
