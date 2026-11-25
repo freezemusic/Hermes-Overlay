@@ -231,8 +231,12 @@ import {
   dodgeCoverKey,
   boxCentre,
   separateSuborbDrop,
+  suborbCentreRejected,
+  suborbPlaceCentre,
   suborbRestCentre,
+  suborbStuckAnim,
   suborbTether,
+  suborbTetherWanted,
   tetherStyle,
   validOrbId,
 } from "./orbdrag.js";
@@ -735,6 +739,12 @@ function placeShellElement(shell) {
   return placed;
 }
 
+/** A stored axis of 0 is the screen corner, not "missing". `||` would turn it into 22. */
+function axisPx(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function layoutShell(shell) {
   if (!shell || shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
   if (shell.dataset.kind === "suborb") {
@@ -744,8 +754,8 @@ function layoutShell(shell) {
     paintClip(shell, insetsFor(shell.dataset.visual || shell.dataset.state || "orb", {
       boxW: placed.width,
       boxH: placed.height,
-      ax: placed.anchor?.x || Number(shell.dataset.ax) || ORB / 2,
-      ay: placed.anchor?.y || Number(shell.dataset.ay) || ORB / 2,
+      ax: axisPx(placed.anchor?.x, axisPx(shell.dataset.ax, ORB / 2)),
+      ay: axisPx(placed.anchor?.y, axisPx(shell.dataset.ay, ORB / 2)),
     }), shell.dataset.visual || shell.dataset.state || "orb");
     releaseSuborbGlow(shell);
     return;
@@ -12092,11 +12102,14 @@ function orbCentre(shell) {
  *  the screen and drag the disc off the dodge spot (kanban logged at 178,64
  *  but published at 441,42). Slide the existing anchor onto the point. */
 function relayoutOrb(shell) {
-  const point = shell?.dataset?.kind === "suborb"
+  const sub = shell?.dataset?.kind === "suborb";
+  const point = sub
     ? suborbLayoutCentre(shell)
     : anchorPoint(shell.dataset.botId);
-  const ax = Number(shell.dataset.ax) || ORB / 2;
-  const ay = Number(shell.dataset.ay) || ORB / 2;
+  if (!point) return;
+  if (sub && suborbCentreRejected(point, suborbParkArgs())) return;
+  const ax = axisPx(shell.dataset.ax, ORB / 2);
+  const ay = axisPx(shell.dataset.ay, ORB / 2);
   const left = `${point.x - ax}px`;
   const top = `${point.y - ay}px`;
   if (shell.style.left !== left || shell.style.top !== top) {
@@ -14053,6 +14066,77 @@ function glideSuborb(shell, from) {
   }
 }
 
+function suborbParkArgs(size = suborbSizePx(ORB)) {
+  return {
+    radius: size / 2,
+    vw: window.innerWidth || 0,
+    vh: window.innerHeight || 0,
+    size,
+  };
+}
+
+/** Stamp the first frame a sub-orb is mid open/close. 0 once the flags are gone. */
+function noteSuborbAnimClock(shell, now) {
+  const flagged = shell.classList.contains("is-morphing")
+    || shell.classList.contains("is-collapsing")
+    || shell.dataset.opening === "panel";
+  if (!flagged) {
+    delete shell._suborbFlagAt;
+    return 0;
+  }
+  if (!shell._suborbFlagAt) shell._suborbFlagAt = now;
+  return shell._suborbFlagAt;
+}
+
+/** Drop a leftover open/close flag and put the shell back on the resting disc. */
+function clearSuborbAnimFlags(shell) {
+  const id = shell.dataset.botId || "";
+  shell.classList.remove(
+    "is-morphing",
+    "is-collapsing",
+    "is-growing-panel",
+    "is-growing-pill",
+    "is-orb-moving",
+    "is-content-promoted",
+    "open",
+  );
+  shell.dataset.opening = "";
+  if (shell.dataset.intent === "open" || shell.dataset.intent === "close") shell.dataset.intent = "";
+  shell.dataset.state = "orb";
+  shell.dataset.visual = "orb";
+  if (id) {
+    shell.dataset.hitId = hitFor(id, "orb");
+    state.openIds = closePanel(state.openIds, id);
+    if (state.activeId === id) state.activeId = state.openIds.at(-1) || null;
+    if (state.slashPanelId === id) state.slashPanelId = state.activeId || "";
+  }
+  const panel = shell.querySelector(".bot-panel");
+  if (panel) panel.hidden = true;
+  const plan = planNode(shell);
+  if (plan) plan.hidden = true;
+  delete shell._suborbFlagAt;
+  releaseSuborbGlow(shell);
+}
+
+function suborbPaintOpacity(shell) {
+  const face = shell.querySelector(".suborb-face");
+  const disc = shell.querySelector(".suborb-disc");
+  let opacity = 1;
+  for (const node of [disc, face]) {
+    if (!node) continue;
+    if (node.hidden) return 0;
+    const inline = node.style || {};
+    if (inline.visibility === "hidden") return 0;
+    let raw = inline.opacity;
+    if ((raw === "" || raw == null) && typeof getComputedStyle === "function") {
+      try { raw = getComputedStyle(node).opacity; } catch { raw = ""; }
+    }
+    const n = Number(raw);
+    if (raw !== "" && raw != null && Number.isFinite(n)) opacity = Math.min(opacity, n);
+  }
+  return opacity;
+}
+
 function suborbFanHidden(shell) {
   const look = shell?.dataset?.fan || "";
   return look === "collapsed" || look === "tucked" || look === "hidden";
@@ -14113,22 +14197,42 @@ function renderSuborbs() {
     const placeRow = (row, id, slot, fanLook) => {
       keep.add(id);
       const shell = ensureSuborbShell(bot, row);
-      if (slot) {
-        shell.dataset.homeX = String(slot.x);
-        shell.dataset.homeY = String(slot.y);
+      // R-PN-11 / R-OB-08: a fan slot on the screen corner, or any unplaced
+      // default, is not a home. A good home from an earlier frame stays.
+      const slotCentre = suborbPlaceCentre(slot, { size, vw: window.innerWidth || 0, vh: window.innerHeight || 0 });
+      if (slotCentre) {
+        shell.dataset.homeX = String(slotCentre.x - size / 2);
+        shell.dataset.homeY = String(slotCentre.y - size / 2);
         shell.dataset.edge = anchor?.edge || "right";
+      } else if (!suborbPlacedFree(id)) {
+        const existing = suborbFanCentre(shell);
+        if (!existing || suborbCentreRejected(existing, suborbParkArgs(size))) {
+          delete shell.dataset.homeX;
+          delete shell.dataset.homeY;
+        }
       }
       setFanState(shell, fanLook);
       paintSuborbDisc(id, row);
+      const now = performance.now();
+      const since = noteSuborbAnimClock(shell, now);
+      if (suborbStuckAnim({
+        state: shell.dataset.state || "orb",
+        opening: shell.dataset.opening || "",
+        morphing: shell.classList.contains("is-morphing"),
+        collapsing: shell.classList.contains("is-collapsing"),
+        since,
+        now,
+      })) {
+        clearSuborbAnimFlags(shell);
+      }
       if (shell.dataset.state !== "panel" && shell.dataset.opening !== "panel" && !shell.classList.contains("is-morphing") && !shell.classList.contains("is-collapsing")) {
         const from = suborbDiscCentre(shell);
-        placeSuborbShell(shell);
-        glideSuborb(shell, from);
+        if (placeSuborbShell(shell)) glideSuborb(shell, from);
       }
     };
     followers.forEach((item, index) => {
       // R-PN-11: no parent orb yet (a rebuild in flight) means no fan slot. Such a
-      // disc is never placed at the (8,8) fallback; an existing one stays as it is.
+      // disc is never placed at the screen corner or the (8,8) fallback; an existing one stays as it is.
       if (!anchor) {
         if (shellFor(item.id)) keep.add(item.id);
         return;
@@ -14200,7 +14304,7 @@ function suborbHomeCentre(shell) {
   });
 }
 
-/** Drag, then dodge, then the drop, then the fan. */
+/** Drag, then dodge, then the drop, then the fan. Null when none of those exist — never the (8,8) corner. */
 function suborbLayoutCentre(shell) {
   const id = shell?.dataset?.botId || "";
   const drag = state.orbDrag;
@@ -14210,10 +14314,7 @@ function suborbLayoutCentre(shell) {
     saved: savedOrbPoint(id),
     drag: live,
     dodge: state.orbDodge?.[id] || null,
-  }) || {
-    x: 8 + suborbSizePx(ORB) / 2,
-    y: 8 + suborbSizePx(ORB) / 2,
-  };
+  });
 }
 
 /** True once this sub-orb has a drop (or a drag in progress), so it leaves the fan. */
@@ -14280,7 +14381,26 @@ function paintSuborbTethers() {
   const childR = suborbSizePx(ORB) / 2;
   const parts = [];
   for (const { shell, sub } of shells) {
-    const line = suborbTether(parentOrbBox(sub.profile), suborbDiscCentre(shell), layer, null, {
+    const centre = suborbDiscCentre(shell);
+    const saved = savedOrbPoint(shell.dataset.botId || "");
+    const homed = suborbFanCentre(shell);
+    // R-OB-08: no line to a sub-orb that is not visibly resting in place.
+    if (!suborbTetherWanted({
+      state: shell.dataset.state || "",
+      opening: shell.dataset.opening || "",
+      morphing: shell.classList.contains("is-morphing"),
+      collapsing: shell.classList.contains("is-collapsing"),
+      fan: shell.dataset.fan || "",
+      hidden: shell.hidden === true,
+      opacity: suborbPaintOpacity(shell),
+      centre,
+      radius: childR,
+      vw: window.innerWidth || 0,
+      vh: window.innerHeight || 0,
+      size: childR * 2,
+      unset: !saved && !homed ? { x: ORB / 2, y: ORB / 2 } : null,
+    })) continue;
+    const line = suborbTether(parentOrbBox(sub.profile), centre, layer, null, {
       parentRadius: parentR,
       childRadius: childR,
     });
@@ -14668,10 +14788,15 @@ function placeSuborbShell(shell) {
   const homeY = Number(shell.dataset.homeY);
   const openPanel = shell.dataset.state === "panel" || shell.dataset.opening === "panel";
   // A resting sub-orb uses its drop, dodge, or drag. An open panel still
-  // cascades from the fan slot (R-SO-09).
+  // cascades from the fan slot (R-SO-09). No (8,8) and no screen-corner centre.
   const centre = openPanel ? null : suborbLayoutCentre(shell);
-  const cx = centre ? centre.x : (Number.isFinite(homeX) ? homeX : 8) + size / 2;
-  const cy = centre ? centre.y : (Number.isFinite(homeY) ? homeY : 8) + size / 2;
+  const home = Number.isFinite(homeX) && Number.isFinite(homeY)
+    ? { x: homeX + size / 2, y: homeY + size / 2 }
+    : null;
+  const spot = centre || home;
+  if (!spot || suborbCentreRejected(spot, suborbParkArgs(size))) return null;
+  const cx = spot.x;
+  const cy = spot.y;
   shell.style.setProperty("--suborb-size", `${size}px`);
   const placed = placeShell(cx, cy, panelBox.w, panelBox.h, vw, vh);
   const origin = openPanel ? cascadeOriginBox(shell, size, vw, vh) || placed : placed;
@@ -14820,8 +14945,10 @@ function cascadeOriginBox(shell, size, vw, vh, box = suborbPanelSize(vw, vh)) {
   if (!first) return null;
   const homeX = Number(first.dataset.homeX);
   const homeY = Number(first.dataset.homeY);
-  const cx = (Number.isFinite(homeX) ? homeX : 8) + size / 2;
-  const cy = (Number.isFinite(homeY) ? homeY : 8) + size / 2;
+  if (!Number.isFinite(homeX) || !Number.isFinite(homeY)) return null;
+  const cx = homeX + size / 2;
+  const cy = homeY + size / 2;
+  if (suborbCentreRejected({ x: cx, y: cy }, suborbParkArgs(size))) return null;
   return placeShell(cx, cy, box.w, box.h, vw, vh);
 }
 
