@@ -87,6 +87,8 @@ import {
   chromeToggleAction,
   closeNudge,
   previewBlocked,
+  holdSuborbPillClip,
+  suborbReleasesGlow,
   revealClip,
   separateStackedPanels,
   includePlan,
@@ -751,6 +753,17 @@ function layoutShell(shell) {
     if (shell.dataset.dragged === "1" || shell.dataset.rehearsal === "1") return;
     const placed = placeSuborbShell(shell);
     if (!placed) return;
+    // R-SO-12: a preview pill stays the 320×44 window. paintClip + release
+    // would write the halo and then strip it, and the panel box shows through.
+    if (shell.dataset.state === "pill" || shell.dataset.visual === "pill") {
+      holdSuborbPillClip(shell, {
+        boxW: placed.width,
+        boxH: placed.height,
+        ax: axisPx(placed.anchor?.x, axisPx(shell.dataset.ax, ORB / 2)),
+        ay: axisPx(placed.anchor?.y, axisPx(shell.dataset.ay, ORB / 2)),
+      });
+      return;
+    }
     paintClip(shell, insetsFor(shell.dataset.visual || shell.dataset.state || "orb", {
       boxW: placed.width,
       boxH: placed.height,
@@ -11320,7 +11333,10 @@ function collectHits() {
       }
       if (box.w < 1 || box.h < 1) return;
       const panelBody = shell.querySelector?.(".bot-panel");
-      const asOrb = shell.dataset.state === "orb" || (
+      // A sub-orb pill is the same preview hit as a main-orb pill (R-MD-05):
+      // the visible capsule, not the disc and not the panel card.
+      const previewPill = shell.dataset.state === "pill" || shell.dataset.visual === "pill";
+      const asOrb = !previewPill && (shell.dataset.state === "orb" || (
         shell.dataset.kind === "suborb" && !suborbPublishesPanel({
           state: shell.dataset.state,
           hidden: !panelBody || panelBody.hidden,
@@ -11328,7 +11344,7 @@ function collectHits() {
           opening: shell.dataset.opening || "",
           morphing: shell.classList.contains("is-morphing") || shell.classList.contains("is-content-promoted"),
         })
-      );
+      ));
       const rect = {
         id: asOrb ? hitFor(shell.dataset.botId, "orb") : id,
         x: box.x,
@@ -14753,8 +14769,16 @@ function paintSuborbDisc(id, row) {
 
 function releaseSuborbGlow(shell) {
   if (!shell || shell.dataset.kind !== "suborb") return;
-  if (shell.dataset.state === "panel" || shell.dataset.opening === "panel") return;
-  if (shell.classList.contains("is-morphing") || shell.classList.contains("is-collapsing")) return;
+  // R-SO-12: a pill (and any panel / opening / morph) must keep its clip.
+  // Only a resting disc is transparent in CSS, so only that disc can drop it.
+  if (!suborbReleasesGlow({
+    kind: shell.dataset.kind,
+    state: shell.dataset.state || "",
+    visual: shell.dataset.visual || "",
+    opening: shell.dataset.opening || "",
+    morphing: shell.classList.contains("is-morphing"),
+    collapsing: shell.classList.contains("is-collapsing"),
+  })) return;
   const clear = (el) => {
     if (!el) return;
     el.getAnimations?.().forEach((anim) => {
@@ -14776,10 +14800,25 @@ function releaseSuborbGlow(shell) {
   }
 }
 
+function suborbPillGeom(shell, box) {
+  return {
+    boxW: box?.width || Number.parseFloat(shell.style.width) || 0,
+    boxH: box?.height || Number.parseFloat(shell.style.height) || 0,
+    ax: axisPx(box?.anchor?.x, axisPx(shell.dataset.ax, ORB / 2)),
+    ay: axisPx(box?.anchor?.y, axisPx(shell.dataset.ay, ORB / 2)),
+  };
+}
+
 function placeSuborbShell(shell) {
   if (!shell) return null;
   ensureResizeHandles(shell);
-  if (shell.dataset.dragged === "1") return clampDraggedShell(shell);
+  if (shell.dataset.dragged === "1") {
+    const clamped = clampDraggedShell(shell);
+    if (shell.dataset.state === "pill" || shell.dataset.visual === "pill") {
+      holdSuborbPillClip(shell, suborbPillGeom(shell, clamped));
+    }
+    return clamped;
+  }
   const vw = window.innerWidth || 1280;
   const vh = window.innerHeight || 800;
   const size = suborbSizePx(ORB);
@@ -14845,7 +14884,11 @@ function placeSuborbShell(shell) {
     height: box.height,
     anchor: { x: placed.anchor.x, y: ay, header },
   } : placed;
-  if (!box) releaseSuborbGlow(shell);
+  if (!box) {
+    if (shell.dataset.state === "pill" || shell.dataset.visual === "pill") {
+      holdSuborbPillClip(shell, suborbPillGeom(shell, next));
+    } else releaseSuborbGlow(shell);
+  }
   if (restoredAt) shell.dataset.dragged = "1";
   if (box) {
     const z = Number(shell.style.zIndex);
@@ -15647,6 +15690,7 @@ function showToast(id, toast) {
   shell.querySelector(".morph-pill")?.classList.toggle("is-error", toast.kind === "error");
   window.clearTimeout(shell._pillTimer);
   if ((shell.dataset.visual || shell.dataset.state) !== "pill") void runShellMorph(shell, "pill");
+  else if (shell.dataset.kind === "suborb") holdSuborbPillClip(shell, shellGeom(shell));
   shell._pillTimer = window.setTimeout(() => {
     if (shell.dataset.state === "pill" && shell.dataset.opening !== "panel") void runShellMorph(shell, "orb");
   }, TOAST_MS);

@@ -458,7 +458,7 @@ Devon 每個工具都人手批。Overlay **唔可以**開啟 `approvals.unattend
 - 來源：Devon；SPEC §5.3；2026-10-22 手提（mt-orch 的 explicit `20261015_011713_2242f9` 要留低）。驗收（兩邊）：揀另一條 → 即刻顯示，config 寫上 explicit；關咗再開 → 同一條，旗仲喺。
 - 狀態：❓ / ⚠️(盒：重畫 67ms／333ms ✅；「再開留喺 explicit」未驗)。
 
-**R-SS-05** 面板開住 Bot Chat 時，新訊息（包括 cron 輸出）即時加入對話；光球收埋時出預覽膠囊（24 小時 `HH:MM`，約 5s）。
+**R-SS-05** 面板開住 Bot Chat 時，新訊息（包括 cron 輸出）即時加入對話；光球收埋時出預覽膠囊（24 小時 `HH:MM`，約 5s）。收埋嘅子光球同一條，只見膠囊形（R-SO-12）。
 - 來源：SPEC §5.8、§7。狀態：❓ / ❓。
 
 **R-SS-06** 就算 Hermes Desktop 冇開，都要收到 Hermes 主動發出嘅訊息。**（未解決）**
@@ -532,7 +532,7 @@ config.json 唔好為呢件事重寫其他 key（看板、顯示名、工具細�
 **R-MD-04** code block 黑底白字加「複製」掣；空 code block 冇複製掣。
 - 來源：美術監督 v20、PR3c；SPEC §10.4。狀態：❓ / ✅(盒)。
 
-**R-MD-05** 新訊息係由光球變出嚟嘅預覽膠囊（唔係獨立 toast），24 小時 `HH:MM`，5s；平時睇得見但穿透，Ctrl+撳先展開成面板。
+**R-MD-05** 新訊息係由光球變出嚟嘅預覽膠囊（唔係獨立 toast），24 小時 `HH:MM`，5s；平時睇得見但穿透，Ctrl+撳先展開成面板。子光球收埋時一樣，而且唔可以露出面板框（R-SO-12）。
 - 來源：SPEC §1.8、§7.1–7.3。狀態：❓ / ❓。
 
 **R-MD-06** 每個 Bot 面板嘅對話，預設只顯示用戶訊息、助手文字、批准卡、澄清卡、錯誤，同計劃預覽。連續工具事件（live 嘅開始、進度、完成、失敗，同歷史 `role: tool`）收成一行，例如 `用咗 6 個工具 · browser_exec ×5, search_files`，加一個小 chevron。進行中只顯示而家嗰個工具名（`執行緊 browser_exec…`），同一個 row 更新，唔好每個開始／完成各出一張卡。展開先列出每次呼叫一行（名稱加一行以內嘅 label／參數）。工具結果再撳一次先展開，約 10 行高、等寬、可捲。主流程唔渲染原始工具結果 JSON。每個 run 嘅展開狀態只留喺記憶體。設定有「顯示工具細節」，預設關；打開就展開工具列。串流釘住底部、只讀、同「未送出」保持不變。BLOCKED `execute_code` 仍然只出 R-AP-03 嗰句一次。工具列、批准卡或澄清卡插喺串流中間時，先 flush，再結束而家嗰個 live 氣泡，然後先偵測計劃。之後嘅文字開新氣泡，排喺嗰行下面。次序係工具前文字、工具列或卡、工具後文字；live 同重新載入一樣。計劃正文喺呢個中斷時就計數，唔使等成個 run 完；中斷之後嘅文字唔會併入計劃正文。run 完結同之後嘅對帳只就地更新已有氣泡，唔好整份對話再播一次入場。Steer 或排隊嘅 commentary 仍然唔拆開正在講嘅氣泡。
@@ -719,6 +719,11 @@ R-SO-01 至 R-SO-05 係 2026-10-21 草稿。R-SO-06 起係 2026-10-29 嘅驗收�
 **R-SO-11** 釘住嘅子光球重開之後要返嚟（2026-11-13）。`config.json` 仍然有 pin，重開 overlay 之後嗰粒子光球要畫返出嚟，主光球嘅子光球光暈同幼線一併返。最近清單只得 100 條（`GET /api/sessions?limit=100`）。釘選唔喺呢 100 條入面，啟動同每次 reconcile 都要用現有 `HermesClient` 同登入，`GET /api/sessions/{id}?profile=` 逐條補返，加落清單。唔好記錄金鑰、token 或者 Authorization。伺服器回 404，或者嗰行 `archived`，先至取消釘選。網絡、逾時、5xx 或者其他錯誤要留低個 pin，並且按 1s、2s、4s、8s、16s、之後 30s 再試，唔好當佢刪咗。Overlay 自己建立嘅 `api_*` session，要把畫子光球所需嘅 metadata（id、標題、source、started_at、last_active、message_count）寫入 config 頂層 `suborb_created`，只 splice 呢一個鍵，格式要兼容舊檔（冇呢個鍵照樣載入，空就唔寫）。寫入同刪除都唔好改 `suborb_pins` 或者其他鍵。`seed_session_lists` 如果某個 profile 嘅清單失敗，要寫入記錄（profile 同錯誤種類，唔好有 body 或金鑰），並且用同一個 backoff 再試；唔好靜靜 `continue`，亦唔好因此發出一份空清單。黃點留到用戶再開嗰塊面板，唔好因為重開或者呢次回讀而當已讀。補 pin、重試清單，都唔好把第一份伺服器清單入面未釘嘅舊列變成子光球（R-SO-06）。拖過嘅子光球留喺 `orb_positions` 嘅放手位置。幼線仍然永遠見得到：一條 bot 色 1px、0.6，由主光球外 2px 到子光球外 1px（R-OB-08）。
 - 來源：Devon（2026-11-13）：mt-orch 釘住 `20261110_221455_d3abe7` 同 `api_1794591121_502fdcfc`，重開之後兩粒都冇畫，主光球冇子光球光暈，但 config 仍然有兩個 pin。
 - 驗收（單元）：模擬重開之後，唔喺最近 100 條嘅釘選仍然畫出；`api_*` 嘅 metadata 重開之後仲喺；清單失敗會再試而且唔刪 pin；404 同 archived 先至取消釘選。
+- 狀態：❓ / ❓（單元測試）。
+
+**R-SO-12** 收埋嘅子光球收到回覆，要彈同主光球一樣嘅預覽膠囊（Devon 2026-11-26：「子光球都要彈預覽膠囊，修好遮罩就得」）。子光球 session 收埋（唔係 panel）時，回覆、工具進度同完成都走 `showToast`：24 小時 `HH:MM`，約 5 秒（`TOAST_MS`），睇得見但穿透，Ctrl+撳先展開成面板（R-SS-05、R-MD-05）。殼仍然係記住嘅面板大細（`panel_sizes._suborb`），可見形狀只可以係膠囊（320×44，圓角係高度一半）：`clip-path` 跟錨點剪出膠囊，玻璃同 `#0000f2` 細環跟住個形，唔可以係 `none`，亦唔可以露出成塊面板嘅磨砂玻璃同藍邊。`releaseSuborbGlow` 只可以作用喺真係休息緊嘅子光球（`data-state` 係 `orb`，而且唔係開緊、變形緊、收緊）；膠囊、面板、開緊、變形、收合都唔可以拆走 clip。`placeSuborbShell`、`layoutShell`、`renderSuborbs` 再擺位（扇形、reconcile、拖過嘅殼）都要保留或者按新錨點重算膠囊 clip 同環。重複嘅工具 toast 只係重開 5 秒計時，唔好拆遮罩。膠囊收返光球之後要返休息樣：冇殘留細環、冇磨砂；幼線仍然唔連去動畫中、螢幕角、(0,0)、(8,8) 或者未擺位嘅子光球（R-OB-08、R-PN-11）。四邊（上、下、左、右；start／end 錨）同主光球同一條：start 左 padding 52px、字由左讀；end 右 padding 52px、`row-reverse`。層次同主光球膠囊一樣：殼同字都係 z-index 3（`.morph[data-state="pill"]`），高過休息光球（主 1、子 2），低過面板（6），所以隔籬光球唔會蓋住膠囊玻璃。命中係 `pill:` 可見膠囊，唔好因為子光球而改回光碟命中，亦唔好發成塊面板。
+- 來源：Devon 2026-11-26。System Architect（mt-orch）回覆時，收埋嘅子光球彈出約 617×978 嘅磨砂玻璃框（記住嘅 `_suborb` 面板），膠囊字只喺左下。
+- 驗收（單元）：`suborb-events.test.js`「R-SO-12」。膠囊 clip 唔係 `none`，可見 320×44；`releaseSuborbGlow` 對 pill 係 no-op；`placeSuborbShell`／`layoutShell`／`renderSuborbs` 會保住 clip。休息子光球仍然拆 clip（光暈唔被面板殼裁）。幼線測試仍然跳過 pill、動畫中、角、(0,0)、(8,8)。
 - 狀態：❓ / ❓（單元測試）。
 
 **R-NS-01** 每個 bot 面板同子光球面闆有一粒細嘅「＋」圖示掣（24px 見方，同標題列其他控制一樣嘅框同字色），tooltip（`title`）同 `aria-label` 都係「開新 session」。主面板放喺 session 選單隔籬同一行；子光球面闆冇選單，就放喺標題列「釘住」左邊。唔可以用成行闊嘅文字掣，亦唔可以令標題列或者選單嗰行變高。鍵盤 Tab 去到，Enter／Space 撳得；撳咗喺 composer 頂出標題表格（`aria-expanded` 跟住變），焦點去標題輸入。**通則：面板入面嘅控制一律係細圖示掣加 tooltip，唔好用大文字掣。** 撳咗可以打可選標題；留空就用 `<bot 名> 任務 YYYY-MM-DD HH:MM:SS`。同一秒再建立就加 ` (2)`。經 gateway `POST /api/sessions`（`source: api_server`，Hermes 0.22.5 已有呢條，同 session picker 嘅建立路徑一樣）開一條新 session，然後開做未釘住嘅子光球面闆。Devon 可以之後先釘。

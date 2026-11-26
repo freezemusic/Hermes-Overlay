@@ -4011,6 +4011,11 @@ html[data-pass="1"] .plan-hit-host * {
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) {
   z-index: 2;
 }
+/* Preview capsule, main orbs and sub-orbs. The line is already z-index 3;
+   the shell has to match or a neighbour paints over the glass. Panels stay at 6. */
+.morph[data-state="pill"]:not(.is-collapsing) {
+  z-index: 3;
+}
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .bot-panel,
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .plan-window,
 .morph[data-kind="suborb"][data-state="orb"]:not(.is-morphing):not(.is-collapsing) .morph-stroke,

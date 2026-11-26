@@ -48,6 +48,7 @@ test("R-OB-08 a sub-orb at (0,0) or any unplaced centre gets no tether", () => {
   assert.equal(wanted({ opacity: 0.01 }), false);
   assert.equal(wanted({ hidden: true }), false);
   assert.equal(wanted({ state: "panel" }), false);
+  assert.equal(wanted({ state: "pill" }), false, "a preview pill is not a resting disc");
 });
 
 test("R-OB-08 a resting on-screen sub-orb still gets a tether", () => {
