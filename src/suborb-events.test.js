@@ -16,6 +16,16 @@ import {
   suborbPublishesPanel,
   suborbSizePx,
 } from "./suborb.js";
+import {
+  ORB,
+  PILL_W,
+  holdSuborbPillClip,
+  placeShell,
+  suborbPillMask,
+  suborbReleasesGlow,
+  visibleSize,
+} from "./morph.js";
+import { suborbStuckAnim, suborbTetherWanted } from "./orbdrag.js";
 
 const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
 const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
@@ -421,6 +431,132 @@ test("an idle sub-orb glow is not clipped by the hidden panel shell", () => {
   assert.match(glow, /getAnimations/);
   const layout = main.slice(main.indexOf("function layoutShell"), main.indexOf("function parkFinalBox"));
   assert.match(layout, /releaseSuborbGlow\(shell\)/);
+});
+
+test("R-SO-12 a collapsed sub-orb preview keeps the pill clip, never the panel box", () => {
+  assert.equal(suborbReleasesGlow({ state: "pill", visual: "pill" }), false);
+  assert.equal(suborbReleasesGlow({ state: "pill", visual: "orb" }), false);
+  assert.equal(suborbReleasesGlow({ state: "orb", visual: "pill" }), false);
+  assert.equal(suborbReleasesGlow({ state: "panel", visual: "panel" }), false);
+  assert.equal(suborbReleasesGlow({ state: "orb", opening: "panel" }), false);
+  assert.equal(suborbReleasesGlow({ state: "orb", morphing: true }), false);
+  assert.equal(suborbReleasesGlow({ state: "orb", collapsing: true }), false);
+  assert.equal(suborbReleasesGlow({ kind: "bot", state: "orb", visual: "orb" }), false);
+  assert.equal(suborbReleasesGlow({ state: "orb", visual: "orb" }), true);
+  assert.equal(suborbReleasesGlow({ state: "orb", visual: "" }), true);
+
+  const screen = { w: 1920, h: 1200 };
+  const panel = { w: 617, h: 978 };
+  const spots = [
+    { edge: "left", x: 36, y: 420 },
+    { edge: "right", x: 1884, y: 420 },
+    { edge: "top", x: 280, y: 28 },
+    { edge: "bottom", x: 1640, y: 1164 },
+  ];
+  for (const spot of spots) {
+    const placed = placeShell(spot.x, spot.y, panel.w, panel.h, screen.w, screen.h);
+    assert.equal(placed.edge, spot.edge);
+    const mask = suborbPillMask({
+      boxW: placed.width,
+      boxH: placed.height,
+      ax: placed.anchor.x,
+      ay: placed.anchor.y,
+    });
+    const visible = visibleSize(mask.insets, placed.width, placed.height);
+    assert.notEqual(mask.clip, "none");
+    assert.match(mask.clip, /^inset\(/);
+    assert.doesNotMatch(mask.clip, /none/);
+    assert.equal(visible.w, PILL_W);
+    assert.equal(visible.h, ORB);
+    assert.equal(mask.insets.radius, ORB / 2);
+    assert.equal(mask.ring, "inset 0 0 0 1px #0000f2");
+    assert.ok(visible.w * visible.h < placed.width * placed.height / 4);
+    const end = placed.anchor.x > placed.width / 2;
+    assert.equal(end ? mask.insets.right : mask.insets.left, 0);
+    assert.ok(placed.anchor.y >= mask.insets.top - 0.01);
+    assert.ok(placed.anchor.y <= placed.height - mask.insets.bottom + 0.01);
+  }
+
+  const dom = new JSDOM("<!doctype html><body></body>");
+  const { document } = dom.window;
+  const shell = document.createElement("div");
+  shell.className = "morph";
+  shell.dataset.kind = "suborb";
+  shell.dataset.state = "pill";
+  shell.dataset.visual = "pill";
+  shell.style.width = "617px";
+  shell.style.height = "978px";
+  shell.style.clipPath = "none";
+  const fill = document.createElement("div");
+  fill.className = "morph-fill";
+  fill.style.clipPath = "none";
+  shell.append(fill);
+  const geom = { boxW: 617, boxH: 978, ax: 22, ay: 956 };
+  shell.classList.add("is-morphing");
+  assert.equal(holdSuborbPillClip(shell, geom), null);
+  assert.equal(shell.style.clipPath, "none");
+  shell.classList.remove("is-morphing");
+  const pinned = holdSuborbPillClip(shell, geom);
+  assert.notEqual(shell.style.clipPath, "none");
+  assert.equal(shell.style.clipPath, pinned.clip);
+  assert.equal(fill.style.clipPath, pinned.fill);
+  assert.equal(fill.style.boxShadow, pinned.ring);
+  assert.notEqual(fill.style.clipPath, "none");
+  const moved = { boxW: 617, boxH: 978, ax: 595, ay: 22 };
+  const again = holdSuborbPillClip(shell, moved);
+  assert.equal(shell.style.clipPath, again.clip);
+  assert.notEqual(shell.style.clipPath, "none");
+  assert.equal(visibleSize(again.insets, 617, 978).w, PILL_W);
+  assert.equal(visibleSize(again.insets, 617, 978).h, ORB);
+  const kept = holdSuborbPillClip(shell, moved);
+  assert.deepEqual(kept, again);
+  assert.equal(shell.style.clipPath, again.clip);
+
+  assert.equal(suborbTetherWanted({
+    state: "pill",
+    centre: { x: 520, y: 340 },
+    radius: 9.9,
+    size: 19.8,
+    vw: 1920,
+    vh: 1080,
+  }), false);
+  assert.equal(suborbStuckAnim({ state: "pill", since: 1, now: 99_000 }), false);
+
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.morph\[data-state="pill"\]:not\(\.is-collapsing\) \{\s*z-index:\s*3;/);
+  assert.match(css, /\.morph\[data-anchor="start"\] \.morph-pill \{[^}]*padding:\s*0 12px 0 52px/s);
+  assert.match(css, /\.morph\[data-anchor="end"\] \.morph-pill \{[^}]*flex-direction:\s*row-reverse/s);
+  assert.match(css, /\.morph\[data-anchor="end"\] \.morph-pill \{[^}]*padding:\s*0 52px 0 12px/s);
+  assert.doesNotMatch(css, /\.morph\[data-kind="suborb"\][^{]*\.morph-pill \{[^}]*padding/s);
+
+  const glow = main.slice(main.indexOf("function releaseSuborbGlow"), main.indexOf("function suborbPillGeom"));
+  const guardAt = glow.indexOf("suborbReleasesGlow");
+  const noneAt = glow.indexOf('clipPath = "none"');
+  assert.ok(guardAt >= 0 && noneAt > guardAt);
+  assert.match(glow, /if \(!suborbReleasesGlow/);
+  const place = main.slice(main.indexOf("function placeSuborbShell"), main.indexOf("function wireSuborbPanel"));
+  assert.match(place, /holdSuborbPillClip/);
+  assert.doesNotMatch(place, /if \(!box\) releaseSuborbGlow/);
+  const layout = main.slice(main.indexOf("function layoutShell"), main.indexOf("function parkFinalBox"));
+  const pillBranch = layout.indexOf('dataset.state === "pill"');
+  const releaseAt = layout.indexOf("releaseSuborbGlow(shell)");
+  assert.ok(pillBranch >= 0 && pillBranch < releaseAt);
+  assert.match(layout, /holdSuborbPillClip/);
+  const render = main.slice(main.indexOf("function renderSuborbs()"), main.indexOf("/** Fan slot centre written by renderSuborbs"));
+  assert.match(render, /placeSuborbShell\(shell\)/);
+  const toast = main.slice(main.indexOf("function showToast"), main.indexOf("function toggleKanban"));
+  assert.match(toast, /runShellMorph\(shell, "pill"\)/);
+  assert.match(toast, /holdSuborbPillClip/);
+  assert.doesNotMatch(toast, /kind !== "suborb"/);
+  const hits = main.slice(main.indexOf("function collectHits"), main.indexOf("let hitFrame"));
+  assert.match(hits, /const previewPill = shell\.dataset\.state === "pill"/);
+  assert.match(hits, /!previewPill && \(shell\.dataset\.state === "orb"/);
+  const closed = main.slice(main.indexOf("function commitClosedShell"), main.indexOf("function restingTransform"));
+  assert.match(closed, /removeProperty\("box-shadow"\)/);
+  const clear = main.slice(main.indexOf("function clearSuborbAnimFlags"), main.indexOf("function suborbPaintOpacity"));
+  const forced = clear.indexOf('dataset.state = "orb"');
+  const dropped = clear.indexOf("releaseSuborbGlow(shell)");
+  assert.ok(forced >= 0 && forced < dropped);
 });
 
 test("Esc after a closed sub-orb closes the main panel that is still open", () => {

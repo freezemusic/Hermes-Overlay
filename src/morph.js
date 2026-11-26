@@ -1025,6 +1025,94 @@ export function previewBlocked({
   return visual === "panel" || visual === "wide" || visual === "tall";
 }
 
+/** 1px blue ring written onto the fill when a preview pill settles. */
+export const PILL_RING = "inset 0 0 0 1px #0000f2";
+
+/**
+ * R-SO-12: only a resting sub-orb disc may drop its clip. A preview pill,
+ * an open panel, and anything mid-animation keep whatever mask they have.
+ */
+export function suborbReleasesGlow({
+  kind = "suborb",
+  state = "",
+  visual = "",
+  opening = "",
+  morphing = false,
+  collapsing = false,
+} = {}) {
+  if (kind !== "suborb") return false;
+  if (state === "pill" || visual === "pill") return false;
+  if (state !== "orb") return false;
+  if (visual && visual !== "orb") return false;
+  if (opening === "panel") return false;
+  if (morphing || collapsing) return false;
+  return true;
+}
+
+/** Pill window inside a pre-sized panel box. Same insets as a main-orb pill. */
+export function suborbPillMask(geom = {}) {
+  const insets = insetsFor("pill", geom);
+  return {
+    clip: clipPath(insets),
+    fill: clipPath(tighten(insets)),
+    ring: PILL_RING,
+    insets,
+  };
+}
+
+/**
+ * Pin a settled sub-orb preview to the pill shape at `geom`. A live morph
+ * owns the clip; calling this mid-animation does nothing. An unchanged
+ * mask is left alone so a fan re-layout does not cancel the fill:forwards
+ * clip (cancelling it flashes the full panel for one frame).
+ */
+export function holdSuborbPillClip(shell, geom = {}) {
+  if (!shell?.style) return null;
+  if (shell.classList?.contains("is-morphing") || shell.classList?.contains("is-collapsing")) return null;
+  const mask = suborbPillMask(geom);
+  const fill = shell.querySelector?.(".morph-fill") || null;
+  const clip = shell.style.clipPath || "";
+  const clipHeld = clip && clip !== "none";
+  const fillHeld = !fill || (fill.style.clipPath && fill.style.clipPath !== "none" && fill.style.boxShadow === mask.ring);
+  const noted = shell.dataset
+    && Number(shell.dataset.clipTop) === mask.insets.top
+    && Number(shell.dataset.clipRight) === mask.insets.right
+    && Number(shell.dataset.clipBottom) === mask.insets.bottom
+    && Number(shell.dataset.clipLeft) === mask.insets.left
+    && Number(shell.dataset.clipRadius) === mask.insets.radius;
+  // String equality misses a browser-normalized inset. The dataset numbers
+  // plus a pill radius mean the window is already the capsule. `none` and
+  // the open-panel `round 3px` are the full box and must be rewritten.
+  const looksPill = /round 22px\b/.test(clip) || /round 999px\b/.test(clip);
+  if (clipHeld && fillHeld && (clip === mask.clip || (noted && looksPill))) return mask;
+  const dropClip = (el) => {
+    el?.getAnimations?.().forEach((anim) => {
+      let frames = [];
+      try { frames = anim.effect?.getKeyframes?.() || []; } catch { frames = []; }
+      const clips = frames.some((frame) => frame && (
+        frame.clipPath != null || Object.prototype.hasOwnProperty.call(frame, "clipPath")
+      ));
+      if (!clips) return;
+      try { anim.cancel(); } catch { /* already idle */ }
+    });
+  };
+  dropClip(shell);
+  dropClip(fill);
+  shell.style.clipPath = mask.clip;
+  if (fill) {
+    fill.style.clipPath = mask.fill;
+    fill.style.boxShadow = mask.ring;
+  }
+  if (shell.dataset) {
+    shell.dataset.clipTop = String(mask.insets.top);
+    shell.dataset.clipRight = String(mask.insets.right);
+    shell.dataset.clipBottom = String(mask.insets.bottom);
+    shell.dataset.clipLeft = String(mask.insets.left);
+    shell.dataset.clipRadius = String(mask.insets.radius);
+  }
+  return mask;
+}
+
 function planNodeOf(shell) {
   if (!shell?.querySelector) return null;
   return shell.querySelector(".plan-window") || shell._planHost?.querySelector(".plan-window") || null;
