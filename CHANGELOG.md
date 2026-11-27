@@ -2,9 +2,13 @@
 
 本專案依 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/) 格式記錄變更，版本號依 [Semantic Versioning](https://semver.org/lang/zh-TW/)。
 
-> English: `[0.3.0]` is the 2026-11-25 pre-release at tag `v0.3.0` (`d4c1951`). `[Unreleased]` is documentation after that tag. The v0.1.0 GitHub Release draft was deleted; tag `v0.1.0` remains. There was never a `v0.2.0` tag.
+> English: `[0.3.1]` is the 2026-11-27 pre-release at tag `v0.3.1`: three sub-orb fixes (#38, #39, #40) and install-doc updates (#37) on top of `v0.3.0`, plus the version bump. `[0.3.0]` is the 2026-11-25 pre-release at tag `v0.3.0` (`d4c1951`). The v0.1.0 GitHub Release draft was deleted; tag `v0.1.0` remains. There was never a `v0.2.0` tag.
 
 ## [Unreleased]
+
+## [0.3.1] - 2026-11-27
+
+**狀態**：預先發佈（tag `v0.3.1`）。相對 v0.3.0 只有下面三個子光球修正（[#38](https://github.com/freezemusic/Hermes-Overlay/pull/38)、[#39](https://github.com/freezemusic/Hermes-Overlay/pull/39)、[#40](https://github.com/freezemusic/Hermes-Overlay/pull/40)）、安裝文件（[#37](https://github.com/freezemusic/Hermes-Overlay/pull/37)）同版本號 0.3.1。Windows：Devon 在已安裝的 `55563dc` 上確認收埋嘅子光球收到回覆只彈預覽膠囊，冇再露出成塊磨砂面板。附件仍然沒有用真模型驗證；英文介面的輸入框提示仍然是中文。
 
 ### Fixed
 
@@ -99,7 +103,8 @@
 
 ---
 
-[Unreleased]: https://github.com/freezemusic/Hermes-Overlay/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/freezemusic/Hermes-Overlay/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/freezemusic/Hermes-Overlay/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/freezemusic/Hermes-Overlay/compare/v0.1.0...v0.3.0
 [0.2.0]: https://github.com/freezemusic/Hermes-Overlay/compare/v0.1.0...2a50abd68a8161af37bf305a4da8bd742a476eb0
 [0.1.0]: https://github.com/freezemusic/Hermes-Overlay/tree/v0.1.0
